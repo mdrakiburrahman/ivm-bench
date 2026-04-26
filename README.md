@@ -1,2 +1,2 @@
-# dbt-incremental-benchmark
+# ivm-bench
 Benchmark all the Incremental View Maintenances
