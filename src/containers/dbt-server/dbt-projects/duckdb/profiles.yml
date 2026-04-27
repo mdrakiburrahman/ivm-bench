@@ -1,0 +1,9 @@
+tpcdi:
+  target: duckdb
+  outputs:
+    duckdb:
+      type: duckdb
+      path: /data/processed/duckdb/benchmark.duckdb
+      threads: 12
+      extensions:
+        - delta

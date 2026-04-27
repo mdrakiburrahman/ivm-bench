@@ -14,6 +14,10 @@ COPY app.py /app/app.py
 
 # Install dbt deps for each project at build time
 RUN cd /app/dbt-projects/spark && dbt deps --profiles-dir . 2>/dev/null || true
+RUN cd /app/dbt-projects/duckdb && dbt deps --profiles-dir . 2>/dev/null || true
+
+# Preinstall DuckDB delta extension to avoid runtime download
+RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL delta'); c.close()"
 
 EXPOSE 5000
 

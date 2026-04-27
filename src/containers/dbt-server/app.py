@@ -493,10 +493,120 @@ def get_progress(run_id):
         resp.headers["Retry-After"] = "2"
     return resp
 
+@app.route("/runs/<run_id>/progress/stream")
+def stream_progress(run_id):
+    """
+    SSE-style streaming progress endpoint.  Returns pre-formatted text lines
+    that the client can echo directly — no JSON parsing needed.
 
-# ---------------------------------------------------------------------------
-# Init
-# ---------------------------------------------------------------------------
+    Protocol (text/event-stream):
+      event: progress
+      data: <formatted line>
+
+      event: done
+      data: <status>   (completed | failed)
+
+    The client can simply: curl -N .../stream | grep '^data: ' | sed 's/^data: //'
+    """
+    import time as _time
+
+    def _fmt_event(e, idx, total):
+        """Format a single node event as a dbt-CLI-style line."""
+        st = e.get("status", "")
+        name = e.get("name", "")
+        rtype = e.get("resource_type", "model")
+        t = e.get("execution_time_s")
+        rows = e.get("rows_affected")
+
+        if st == "running":
+            return f"  {idx:>3} of {total}  START {rtype} {name}"
+        elif st in ("success", "pass"):
+            ts = f"{t:.2f}s" if t else "?"
+            row_str = f" [{rows} rows]" if rows else ""
+            return f"  {idx:>3} of {total}  OK    {rtype} {name}{row_str} [{ts}]"
+        elif st == "error":
+            ts = f"{t:.2f}s" if t else "?"
+            return f"  {idx:>3} of {total}  ERROR {rtype} {name} [{ts}]"
+        else:
+            return f"  {idx:>3} of {total}  {st:5s} {rtype} {name}"
+
+    def generate():
+        cursor = 0
+
+        while True:
+            # Check run status
+            conn = get_db()
+            run = conn.execute(
+                "SELECT status FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            conn.close()
+
+            if not run:
+                yield "event: error\ndata: not found\n\n"
+                return
+
+            run_status = run["status"]
+
+            with PROGRESS_LOCK:
+                live = LIVE_PROGRESS.get(run_id)
+
+            if live is None and run_status in ("completed", "failed"):
+                # Emit final events from DB if cursor == 0
+                if cursor == 0:
+                    conn = get_db()
+                    nodes = conn.execute(
+                        "SELECT unique_id, name, resource_type, "
+                        "execution_time_s, status, rows_affected "
+                        "FROM run_nodes WHERE run_id=? ORDER BY rowid",
+                        (run_id,),
+                    ).fetchall()
+                    conn.close()
+                    total = len(nodes)
+                    for i, n in enumerate(nodes):
+                        line = _fmt_event(dict(n), i + 1, total)
+                        yield f"event: progress\ndata: {line}\n\n"
+                yield f"event: done\ndata: {run_status}\n\n"
+                return
+
+            if live is None:
+                # Queued but not started yet
+                _time.sleep(2)
+                continue
+
+            with PROGRESS_LOCK:
+                all_events = list(live["events"].values())
+                total = max(live["total"], len(all_events))
+
+            new_events = all_events[cursor:]
+            if new_events:
+                for i, e in enumerate(new_events):
+                    idx = cursor + i + 1
+                    line = _fmt_event(e, idx, total)
+                    yield f"event: progress\ndata: {line}\n\n"
+                cursor = len(all_events)
+
+                # Summary line for running nodes
+                running = [e for e in all_events if e["status"] == "running"]
+                completed = [e for e in all_events if e["status"] != "running"]
+                if running and run_status == "running":
+                    rn_str = ", ".join(e["name"] for e in running[:4])
+                    if len(running) > 4:
+                        rn_str += f" (+{len(running) - 4} more)"
+                    summary = (
+                        f"  ... {len(completed)}/{total} done, "
+                        f"{len(running)} running: {rn_str}"
+                    )
+                    yield f"event: progress\ndata: {summary}\n\n"
+
+            if run_status in ("completed", "failed"):
+                yield f"event: done\ndata: {run_status}\n\n"
+                return
+
+            _time.sleep(2)
+
+    return Response(generate(), mimetype="text/event-stream")
+
+
 
 init_db()
 

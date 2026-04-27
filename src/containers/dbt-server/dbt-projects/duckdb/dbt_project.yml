@@ -1,0 +1,38 @@
+name: 'tpcdi'
+version: '1.0.0'
+config-version: 2
+
+profile: 'tpcdi'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+dispatch:
+  - macro_namespace: dbt_utils
+    search_order: ["tpcdi", "dbt_utils"]
+
+on-run-start:
+  - "{{ register_tpcdi_sources() }}"
+
+models:
+  tpcdi:
+    bronze:
+      +schema: bronze
+      +materialized: table
+    silver:
+      +schema: silver
+      +materialized: table
+    gold:
+      +schema: gold
+      +materialized: table
+    work:
+      +schema: work
+      +materialized: ephemeral

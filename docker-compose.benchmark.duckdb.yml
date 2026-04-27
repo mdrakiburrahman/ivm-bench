@@ -1,0 +1,20 @@
+services:
+  dbt-server:
+    build:
+      context: ./src/containers/dbt-server
+    cpus: 30
+    mem_limit: 120g
+    ports:
+      - "5000:5000"
+    environment:
+      STATE_DIR: /data/state
+    volumes:
+      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ./mount/results/${SCALE_FACTOR:-3}/duckdb:/data/processed/duckdb
+      - ./mount/results/${SCALE_FACTOR:-3}/dbt-server:/data/state
+    healthcheck:
+      test: curl -sf http://localhost:5000/health || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
