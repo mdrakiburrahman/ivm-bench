@@ -1,0 +1,4 @@
+flask>=3.0
+gunicorn>=22.0
+dbt-core>=1.9,<1.10
+https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl

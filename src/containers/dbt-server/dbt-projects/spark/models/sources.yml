@@ -1,0 +1,43 @@
+version: 2
+
+sources:
+  - name: tpcdi
+    database: tpcdi
+    schema: tpcdi
+    tables:
+      # Batch1 reference/historical
+      - name: batch1_cash_transaction
+      - name: batch1_customer_mgmt
+      - name: batch1_daily_market
+      - name: batch1_date
+      - name: batch1_finwire
+      - name: batch1_holding_history
+      - name: batch1_hr
+      - name: batch1_industry
+      - name: batch1_prospect
+      - name: batch1_status_type
+      - name: batch1_tax_rate
+      - name: batch1_trade
+      - name: batch1_trade_history
+      - name: batch1_trade_type
+      - name: batch1_watch_history
+      # Batch2 incremental
+      - name: batch2_account
+      - name: batch2_cash_transaction
+      - name: batch2_customer
+      - name: batch2_daily_market
+      - name: batch2_holding_history
+      - name: batch2_prospect
+      - name: batch2_trade
+      - name: batch2_watch_history
+      # Batch3 incremental
+      - name: batch3_account
+      - name: batch3_cash_transaction
+      - name: batch3_customer
+      - name: batch3_daily_market
+      - name: batch3_holding_history
+      - name: batch3_prospect
+      - name: batch3_trade
+      - name: batch3_watch_history
+      # Audit
+      - name: audit

@@ -1,0 +1,17 @@
+tpcdi:
+  target: spark
+  outputs:
+    spark:
+      type: fabricspark
+      method: livy
+      livy_mode: local
+      livy_url: "http://spark:8998"
+      host: spark
+      connect_retries: 25
+      connect_timeout: 10
+      lakehouse: tpcdi
+      schema: tpcdi
+      threads: 12
+      retry_all: true
+      spark_config:
+        name: dbt-tpcdi-benchmark

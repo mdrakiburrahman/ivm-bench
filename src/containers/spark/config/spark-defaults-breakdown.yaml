@@ -1,0 +1,14 @@
+driver:
+    pct_ram: 10
+    pct_cores: 10
+
+executor:
+    pct_ram: 80
+    pct_cores: 90
+
+resource_allocation:
+    min_cores: 1
+
+parallelism:
+    shuffle_partitions: 32
+    default_parallelism: 32
