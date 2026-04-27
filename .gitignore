@@ -1,0 +1,5 @@
+.temp/*
+.env
+.logs/
+!results/.gitkeep
+mount/*

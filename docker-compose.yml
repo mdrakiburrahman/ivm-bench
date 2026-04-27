@@ -1,0 +1,33 @@
+services:
+  tpc-di-gen:
+    build:
+      context: ./src/containers/tpc-di-gen
+    cpus: 32
+    mem_limit: 128g
+    volumes:
+      - /home/mdrrahman/ivm-bench/mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen
+    environment:
+      DIGEN_PATH: /data/digen
+      SCALE_FACTOR: "${SCALE_FACTOR:-3}"
+
+  spark-digen-delta:
+    build:
+      context: ./src/containers/spark-digen-delta
+      args:
+        SBT_IMAGE: "sbtscala/scala-sbt:eclipse-temurin-17.0.15_6_1.12.6_2.12.21"
+        SPARK_VERSION: "3.5.8"
+        SCALA_VERSION: "2.12.18"
+        DELTA_VERSION: "3.3.2"
+        HADOOP_VERSION: "3.3.4"
+    cpus: 32
+    mem_limit: 128g
+    volumes:
+      - /home/mdrrahman/ivm-bench/mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen:ro
+      - /home/mdrrahman/ivm-bench/mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
+    environment:
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
+      DIGEN_PATH: /data/digen
+      DELTA_PATH: /data/delta
+    depends_on:
+      tpc-di-gen:
+        condition: service_completed_successfully
