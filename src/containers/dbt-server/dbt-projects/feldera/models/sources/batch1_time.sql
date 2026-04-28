@@ -1,0 +1,10 @@
+sk_timeid BIGINT,
+timevalue VARCHAR,
+hourid INTEGER,
+hourdesc VARCHAR,
+minuteid INTEGER,
+minutedesc VARCHAR,
+secondid INTEGER,
+seconddesc VARCHAR,
+markethoursflag BOOLEAN,
+officehoursflag BOOLEAN

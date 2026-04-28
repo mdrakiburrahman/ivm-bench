@@ -9,6 +9,14 @@
 
 DOCKER_VERSION="5:27.5.1-1~ubuntu.24.04~noble"
 
+PACKAGES=""
+if ! command -v jq &> /dev/null; then PACKAGES="$PACKAGES jq"; fi
+if [ ! -z "$PACKAGES" ]; then
+    echo "Packages $PACKAGES not found - installing..."
+    sudo apt-get update 2>&1 > /dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $PACKAGES 2>&1 > /dev/null
+fi
+
 if ! [ -x "$(command -v docker)" ]; then
   echo "docker is not installed on your devbox, installing..."
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -

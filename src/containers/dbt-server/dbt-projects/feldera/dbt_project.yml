@@ -1,0 +1,423 @@
+name: tpcdi
+version: 1.0.0
+config-version: 2
+profile: tpcdi
+model-paths:
+- models
+seed-paths:
+- seeds
+macro-paths:
+- macros
+snapshot-paths:
+- snapshots
+analysis-paths:
+- analyses
+test-paths:
+- tests
+clean-targets:
+- target
+- dbt_packages
+quoting:
+  identifier: true
+dispatch:
+- macro_namespace: dbt_utils
+  search_order:
+  - tpcdi
+  - dbt_utils
+models:
+  tpcdi:
+    sources:
+      +materialized: table
+      batch1_cash_transaction:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/cash_transaction
+              mode: snapshot
+          name: batch1_cash_transaction_input
+      batch1_customer_mgmt:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/customer_mgmt
+              mode: snapshot
+          name: batch1_customer_mgmt_input
+      batch1_daily_market:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/daily_market
+              mode: snapshot
+          name: batch1_daily_market_input
+      batch1_date:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/date
+              mode: snapshot
+          name: batch1_date_input
+      batch1_finwire:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/finwire
+              mode: snapshot
+          name: batch1_finwire_input
+      batch1_holding_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/holding_history
+              mode: snapshot
+          name: batch1_holding_history_input
+      batch1_hr:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/hr
+              mode: snapshot
+          name: batch1_hr_input
+      batch1_industry:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/industry
+              mode: snapshot
+          name: batch1_industry_input
+      batch1_prospect:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/prospect
+              mode: snapshot
+          name: batch1_prospect_input
+      batch1_status_type:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/status_type
+              mode: snapshot
+          name: batch1_status_type_input
+      batch1_tax_rate:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/tax_rate
+              mode: snapshot
+          name: batch1_tax_rate_input
+      batch1_time:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/time
+              mode: snapshot
+          name: batch1_time_input
+      batch1_trade:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/trade
+              mode: snapshot
+          name: batch1_trade_input
+      batch1_trade_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/trade_history
+              mode: snapshot
+          name: batch1_trade_history_input
+      batch1_trade_type:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/trade_type
+              mode: snapshot
+          name: batch1_trade_type_input
+      batch1_watch_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/watch_history
+              mode: snapshot
+          name: batch1_watch_history_input
+      batch2_account:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/account
+              mode: snapshot
+          name: batch2_account_input
+      batch2_batch_date:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/batch_date
+              mode: snapshot
+          name: batch2_batch_date_input
+      batch2_cash_transaction:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/cash_transaction
+              mode: snapshot
+          name: batch2_cash_transaction_input
+      batch2_customer:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/customer
+              mode: snapshot
+          name: batch2_customer_input
+      batch2_daily_market:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/daily_market
+              mode: snapshot
+          name: batch2_daily_market_input
+      batch2_holding_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/holding_history
+              mode: snapshot
+          name: batch2_holding_history_input
+      batch2_prospect:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/prospect
+              mode: snapshot
+          name: batch2_prospect_input
+      batch2_trade:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/trade
+              mode: snapshot
+          name: batch2_trade_input
+      batch2_watch_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch2/watch_history
+              mode: snapshot
+          name: batch2_watch_history_input
+      batch3_account:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/account
+              mode: snapshot
+          name: batch3_account_input
+      batch3_batch_date:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/batch_date
+              mode: snapshot
+          name: batch3_batch_date_input
+      batch3_cash_transaction:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/cash_transaction
+              mode: snapshot
+          name: batch3_cash_transaction_input
+      batch3_customer:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/customer
+              mode: snapshot
+          name: batch3_customer_input
+      batch3_daily_market:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/daily_market
+              mode: snapshot
+          name: batch3_daily_market_input
+      batch3_holding_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/holding_history
+              mode: snapshot
+          name: batch3_holding_history_input
+      batch3_prospect:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/prospect
+              mode: snapshot
+          name: batch3_prospect_input
+      batch3_trade:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/trade
+              mode: snapshot
+          name: batch3_trade_input
+      batch3_watch_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch3/watch_history
+              mode: snapshot
+          name: batch3_watch_history_input
+      audit:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/audit
+              mode: snapshot
+          name: audit_input
+    bronze:
+      +materialized: view
+    silver:
+      +materialized: view
+    gold:
+      +materialized: view
+      +stored: true
+      dim_account:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/dim_account
+                mode: truncate
+            name: dim_account_output
+      dim_broker:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/dim_broker
+                mode: truncate
+            name: dim_broker_output
+      dim_company:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/dim_company
+                mode: truncate
+            name: dim_company_output
+      dim_customer:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/dim_customer
+                mode: truncate
+            name: dim_customer_output
+      dim_date:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/dim_date
+                mode: truncate
+            name: dim_date_output
+      dim_security:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/dim_security
+                mode: truncate
+            name: dim_security_output
+      dim_trade:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/dim_trade
+                mode: truncate
+            name: dim_trade_output
+      fact_cash_balances:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/fact_cash_balances
+                mode: truncate
+            name: fact_cash_balances_output
+      fact_cash_transactions:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/fact_cash_transactions
+                mode: truncate
+            name: fact_cash_transactions_output
+      fact_holdings:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/fact_holdings
+                mode: truncate
+            name: fact_holdings_output
+      fact_market_history:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/fact_market_history
+                mode: truncate
+            name: fact_market_history_output
+      fact_trade:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/fact_trade
+                mode: truncate
+            name: fact_trade_output
+      fact_watches:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/feldera/gold/fact_watches
+                mode: truncate
+            name: fact_watches_output
+    work:
+      +materialized: view

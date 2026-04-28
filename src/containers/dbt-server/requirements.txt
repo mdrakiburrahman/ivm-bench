@@ -1,7 +1,8 @@
 flask>=3.0
 gunicorn>=22.0
-dbt-core>=1.9,<1.10
+dbt-core~=1.11
 https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
-dbt-duckdb>=1.9,<1.10
-duckdb>=1.2,<1.3
+dbt-duckdb>=1.9
+duckdb>=1.5.2
 deltalake>=0.18
+dbt-feldera

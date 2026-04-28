@@ -1,0 +1,12 @@
+tpcdi:
+  target: feldera
+  outputs:
+    feldera:
+      type: feldera
+      host: "{{ env_var('FELDERA_URL', 'http://pipeline-manager:8080') }}"
+      database: "default"
+      schema: "tpcdi"
+      compilation_profile: dev
+      workers: 4
+      timeout: 600
+      threads: 1

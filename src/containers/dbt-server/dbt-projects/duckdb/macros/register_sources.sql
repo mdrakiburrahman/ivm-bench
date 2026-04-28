@@ -3,7 +3,14 @@
     Register raw Delta Lake tables as views using DuckDB's delta_scan().
     Called via on-run-start in dbt_project.yml.
     Sources live at /data/raw/delta/<batch>/<table>.
+    Views are created in the ducklake catalog.
   #}
+
+  {# Ensure ducklake is the active database for all DDL #}
+  {% set use_ducklake %}
+    USE ducklake
+  {% endset %}
+  {% do run_query(use_ducklake) %}
 
   {# Ensure schemas exist #}
   {% set create_schema %}
