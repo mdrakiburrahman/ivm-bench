@@ -270,7 +270,7 @@ fi
 # dbt build only waits for compilation+startup, not snapshot ingestion.
 FELDERA_URL="http://localhost:8080"
 PIPELINE_NAME="tpcdi"
-PIPELINE_WAIT_RETRIES=120
+PIPELINE_WAIT_RETRIES=1200
 echo "=== Phase 2c: Waiting for Feldera pipeline to finish processing snapshots ==="
 PIPELINE_IDLE=0
 for i in $(seq 1 $PIPELINE_WAIT_RETRIES); do

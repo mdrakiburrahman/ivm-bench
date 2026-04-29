@@ -35,6 +35,8 @@ models:
             config:
               uri: /data/raw/delta/batch1/cash_transaction
               mode: snapshot
+              num_parsers: 8
+              max_concurrent_readers: 35
           name: batch1_cash_transaction_input
       batch1_customer_mgmt:
         +connectors:
@@ -43,6 +45,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/customer_mgmt
               mode: snapshot
+              num_parsers: 8
           name: batch1_customer_mgmt_input
       batch1_daily_market:
         +connectors:
@@ -51,6 +54,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/daily_market
               mode: snapshot
+              num_parsers: 8
           name: batch1_daily_market_input
       batch1_date:
         +connectors:
@@ -59,6 +63,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/date
               mode: snapshot
+              num_parsers: 8
           name: batch1_date_input
       batch1_finwire:
         +connectors:
@@ -67,6 +72,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/finwire
               mode: snapshot
+              num_parsers: 8
           name: batch1_finwire_input
       batch1_holding_history:
         +connectors:
@@ -75,6 +81,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/holding_history
               mode: snapshot
+              num_parsers: 8
           name: batch1_holding_history_input
       batch1_hr:
         +connectors:
@@ -83,6 +90,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/hr
               mode: snapshot
+              num_parsers: 8
           name: batch1_hr_input
       batch1_industry:
         +connectors:
@@ -91,6 +99,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/industry
               mode: snapshot
+              num_parsers: 8
           name: batch1_industry_input
       batch1_prospect:
         +connectors:
@@ -99,6 +108,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/prospect
               mode: snapshot
+              num_parsers: 8
           name: batch1_prospect_input
       batch1_status_type:
         +connectors:
@@ -107,6 +117,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/status_type
               mode: snapshot
+              num_parsers: 8
           name: batch1_status_type_input
       batch1_tax_rate:
         +connectors:
@@ -115,6 +126,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/tax_rate
               mode: snapshot
+              num_parsers: 8
           name: batch1_tax_rate_input
       batch1_time:
         +connectors:
@@ -123,6 +135,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/time
               mode: snapshot
+              num_parsers: 8
           name: batch1_time_input
       batch1_trade:
         +connectors:
@@ -131,6 +144,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/trade
               mode: snapshot
+              num_parsers: 8
           name: batch1_trade_input
       batch1_trade_history:
         +connectors:
@@ -139,6 +153,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/trade_history
               mode: snapshot
+              num_parsers: 8
           name: batch1_trade_history_input
       batch1_trade_type:
         +connectors:
@@ -147,6 +162,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/trade_type
               mode: snapshot
+              num_parsers: 8
           name: batch1_trade_type_input
       batch1_watch_history:
         +connectors:
@@ -155,6 +171,7 @@ models:
             config:
               uri: /data/raw/delta/batch1/watch_history
               mode: snapshot
+              num_parsers: 8
           name: batch1_watch_history_input
       batch2_account:
         +connectors:
@@ -163,6 +180,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/account
               mode: snapshot
+              num_parsers: 8
           name: batch2_account_input
       batch2_batch_date:
         +connectors:
@@ -171,6 +189,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/batch_date
               mode: snapshot
+              num_parsers: 8
           name: batch2_batch_date_input
       batch2_cash_transaction:
         +connectors:
@@ -179,6 +198,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/cash_transaction
               mode: snapshot
+              num_parsers: 8
           name: batch2_cash_transaction_input
       batch2_customer:
         +connectors:
@@ -187,6 +207,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/customer
               mode: snapshot
+              num_parsers: 8
           name: batch2_customer_input
       batch2_daily_market:
         +connectors:
@@ -195,6 +216,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/daily_market
               mode: snapshot
+              num_parsers: 8
           name: batch2_daily_market_input
       batch2_holding_history:
         +connectors:
@@ -203,6 +225,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/holding_history
               mode: snapshot
+              num_parsers: 8
           name: batch2_holding_history_input
       batch2_prospect:
         +connectors:
@@ -211,6 +234,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/prospect
               mode: snapshot
+              num_parsers: 8
           name: batch2_prospect_input
       batch2_trade:
         +connectors:
@@ -219,6 +243,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/trade
               mode: snapshot
+              num_parsers: 8
           name: batch2_trade_input
       batch2_watch_history:
         +connectors:
@@ -227,6 +252,7 @@ models:
             config:
               uri: /data/raw/delta/batch2/watch_history
               mode: snapshot
+              num_parsers: 8
           name: batch2_watch_history_input
       batch3_account:
         +connectors:
@@ -235,6 +261,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/account
               mode: snapshot
+              num_parsers: 8
           name: batch3_account_input
       batch3_batch_date:
         +connectors:
@@ -243,6 +270,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/batch_date
               mode: snapshot
+              num_parsers: 8
           name: batch3_batch_date_input
       batch3_cash_transaction:
         +connectors:
@@ -251,6 +279,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/cash_transaction
               mode: snapshot
+              num_parsers: 8
           name: batch3_cash_transaction_input
       batch3_customer:
         +connectors:
@@ -259,6 +288,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/customer
               mode: snapshot
+              num_parsers: 8
           name: batch3_customer_input
       batch3_daily_market:
         +connectors:
@@ -267,6 +297,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/daily_market
               mode: snapshot
+              num_parsers: 8
           name: batch3_daily_market_input
       batch3_holding_history:
         +connectors:
@@ -275,6 +306,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/holding_history
               mode: snapshot
+              num_parsers: 8
           name: batch3_holding_history_input
       batch3_prospect:
         +connectors:
@@ -283,6 +315,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/prospect
               mode: snapshot
+              num_parsers: 8
           name: batch3_prospect_input
       batch3_trade:
         +connectors:
@@ -291,6 +324,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/trade
               mode: snapshot
+              num_parsers: 8
           name: batch3_trade_input
       batch3_watch_history:
         +connectors:
@@ -299,6 +333,7 @@ models:
             config:
               uri: /data/raw/delta/batch3/watch_history
               mode: snapshot
+              num_parsers: 8
           name: batch3_watch_history_input
       audit:
         +connectors:
@@ -307,6 +342,7 @@ models:
             config:
               uri: /data/raw/delta/audit
               mode: snapshot
+              num_parsers: 8
           name: audit_input
     bronze:
       +materialized: view

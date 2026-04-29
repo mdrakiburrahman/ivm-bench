@@ -6,7 +6,7 @@ tpcdi:
       host: "{{ env_var('FELDERA_URL', 'http://pipeline-manager:8080') }}"
       database: "default"
       schema: "tpcdi"
-      compilation_profile: dev
-      workers: 4
-      timeout: 600
+      compilation_profile: optimized
+      workers: 16
+      timeout: 1200
       threads: 1
