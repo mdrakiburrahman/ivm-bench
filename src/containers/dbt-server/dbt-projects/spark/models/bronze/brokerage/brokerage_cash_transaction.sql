@@ -1,25 +1,7 @@
--- Bronze: union cash_transaction across all batches
+-- Bronze: read cash_transaction from staging table (all loaded batches)
 select
     ct_ca_id,
     ct_dts,
     ct_amt,
     ct_name
-from {{ source('tpcdi', 'batch1_cash_transaction') }}
-
-union all
-
-select
-    ct_ca_id,
-    ct_dts,
-    ct_amt,
-    ct_name
-from {{ source('tpcdi', 'batch2_cash_transaction') }}
-
-union all
-
-select
-    ct_ca_id,
-    ct_dts,
-    ct_amt,
-    ct_name
-from {{ source('tpcdi', 'batch3_cash_transaction') }}
+from {{ source('tpcdi', 'staging_cash_transaction') }}

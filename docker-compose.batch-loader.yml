@@ -1,0 +1,17 @@
+services:
+  spark-batch-loader:
+    build:
+      context: ./src/containers/spark-batch-loader
+      args:
+        SBT_IMAGE: "sbtscala/scala-sbt:eclipse-temurin-17.0.15_6_1.12.6_2.12.21"
+        SPARK_VERSION: "3.5.8"
+        SCALA_VERSION: "2.12.18"
+        DELTA_VERSION: "3.3.2"
+        HADOOP_VERSION: "3.3.4"
+    cpus: 32
+    mem_limit: 128g
+    volumes:
+      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
+    environment:
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
+      DELTA_PATH: /data/delta

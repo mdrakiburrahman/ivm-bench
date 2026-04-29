@@ -1,25 +1,7 @@
--- Bronze: union holding_history across all batches
+-- Bronze: read holding_history from staging table (all loaded batches)
 select
     hh_h_t_id,
     hh_t_id,
     hh_before_qty,
     hh_after_qty
-from {{ ref('batch1_holding_history') }}
-
-union all
-
-select
-    hh_h_t_id,
-    hh_t_id,
-    hh_before_qty,
-    hh_after_qty
-from {{ ref('batch2_holding_history') }}
-
-union all
-
-select
-    hh_h_t_id,
-    hh_t_id,
-    hh_before_qty,
-    hh_after_qty
-from {{ ref('batch3_holding_history') }}
+from {{ ref('staging_holding_history') }}

@@ -1,6 +1,6 @@
--- Bronze: flatten customer_mgmt XML struct + union with batch2/3 flat customer/account data
+-- Bronze: flatten customer_mgmt XML struct + union with staging customer/account data
 -- batch1 customer_mgmt Delta table has nested structs (ROW types from spark-xml).
--- Access nested fields via table.column.field dot notation per Feldera docs.
+-- Staging customer/account tables accumulate batch2/3 flat CDC rows.
 
 with batch1_xml as (
     select
@@ -48,8 +48,8 @@ with batch1_xml as (
         cm.Customer.Account.CA_NAME as ca_name
     from {{ ref('batch1_customer_mgmt') }} cm
 ),
--- Batch2/3 customer files have flat columns with CDC prefix
-batch2_customers as (
+-- Staging customer table accumulates batch2/3 CDC rows
+staging_customers as (
     select
         CAST(cdc_dsn AS TIMESTAMP) as action_ts,
         case cdc_flag when 'I' then 'NEW' when 'U' then 'UPDCUST' end as action_type,
@@ -78,43 +78,11 @@ batch2_customers as (
         CAST(null AS INTEGER) as ca_tax_st,
         CAST(null AS BIGINT) as ca_b_id,
         CAST(null AS VARCHAR) as ca_name
-    from {{ ref('batch2_customer') }}
+    from {{ ref('staging_customer') }}
     where cdc_flag in ('I', 'U')
 ),
-batch3_customers as (
-    select
-        CAST(cdc_dsn AS TIMESTAMP) as action_ts,
-        case cdc_flag when 'I' then 'NEW' when 'U' then 'UPDCUST' end as action_type,
-        CAST(customerid AS BIGINT) as c_id,
-        taxid as c_tax_id,
-        gender as c_gndr,
-        CAST(tier AS INTEGER) as c_tier,
-        dob as c_dob,
-        lastname as c_l_name,
-        firstname as c_f_name,
-        middleinitial as c_m_name,
-        addressline1 as c_adline1,
-        addressline2 as c_adline2,
-        postalcode as c_zipcode,
-        city as c_city,
-        stateprov as c_state_prov,
-        country as c_ctry,
-        email1 as c_prim_email,
-        email2 as c_alt_email,
-        CONCAT_WS('-', c_ctry_1, c_area_1, c_local_1, c_ext_1) as c_phone_1,
-        CONCAT_WS('-', c_ctry_2, c_area_2, c_local_2, c_ext_2) as c_phone_2,
-        CONCAT_WS('-', c_ctry_3, c_area_3, c_local_3, c_ext_3) as c_phone_3,
-        lcl_tx_id as c_lcl_tx_id,
-        nat_tx_id as c_nat_tx_id,
-        CAST(null AS BIGINT) as ca_id,
-        CAST(null AS INTEGER) as ca_tax_st,
-        CAST(null AS BIGINT) as ca_b_id,
-        CAST(null AS VARCHAR) as ca_name
-    from {{ ref('batch3_customer') }}
-    where cdc_flag in ('I', 'U')
-),
--- Batch2/3 account files
-batch2_accounts as (
+-- Staging account table accumulates batch2/3 CDC rows
+staging_accounts as (
     select
         CAST(cdc_dsn AS TIMESTAMP) as action_ts,
         case cdc_flag when 'I' then 'ADDACCT' when 'U' then 'UPDACCT' end as action_type,
@@ -143,48 +111,12 @@ batch2_accounts as (
         CAST(taxstatus AS INTEGER) as ca_tax_st,
         ca_b_id as ca_b_id,
         accountdesc as ca_name
-    from {{ ref('batch2_account') }}
-    where cdc_flag in ('I', 'U')
-),
-batch3_accounts as (
-    select
-        CAST(cdc_dsn AS TIMESTAMP) as action_ts,
-        case cdc_flag when 'I' then 'ADDACCT' when 'U' then 'UPDACCT' end as action_type,
-        CAST(ca_c_id AS BIGINT) as c_id,
-        CAST(null AS VARCHAR) as c_tax_id,
-        CAST(null AS VARCHAR) as c_gndr,
-        CAST(null AS INTEGER) as c_tier,
-        CAST(null AS DATE) as c_dob,
-        CAST(null AS VARCHAR) as c_l_name,
-        CAST(null AS VARCHAR) as c_f_name,
-        CAST(null AS VARCHAR) as c_m_name,
-        CAST(null AS VARCHAR) as c_adline1,
-        CAST(null AS VARCHAR) as c_adline2,
-        CAST(null AS VARCHAR) as c_zipcode,
-        CAST(null AS VARCHAR) as c_city,
-        CAST(null AS VARCHAR) as c_state_prov,
-        CAST(null AS VARCHAR) as c_ctry,
-        CAST(null AS VARCHAR) as c_prim_email,
-        CAST(null AS VARCHAR) as c_alt_email,
-        CAST(null AS VARCHAR) as c_phone_1,
-        CAST(null AS VARCHAR) as c_phone_2,
-        CAST(null AS VARCHAR) as c_phone_3,
-        CAST(null AS VARCHAR) as c_lcl_tx_id,
-        CAST(null AS VARCHAR) as c_nat_tx_id,
-        CAST(accountid AS BIGINT) as ca_id,
-        CAST(taxstatus AS INTEGER) as ca_tax_st,
-        ca_b_id as ca_b_id,
-        accountdesc as ca_name
-    from {{ ref('batch3_account') }}
+    from {{ ref('staging_account') }}
     where cdc_flag in ('I', 'U')
 )
 
 select * from batch1_xml
 union all
-select * from batch2_customers
+select * from staging_customers
 union all
-select * from batch3_customers
-union all
-select * from batch2_accounts
-union all
-select * from batch3_accounts
+select * from staging_accounts

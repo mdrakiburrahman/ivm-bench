@@ -2,7 +2,8 @@
   {#
     Register raw Delta Lake tables as external tables in Spark's catalog.
     Called via on-run-start in dbt_project.yml.
-    Sources live at /data/raw/delta/<batch>/<table>.
+    Reference tables: /data/raw/delta/batch1/<table>
+    Staging tables: /data/raw/delta/staging/<table>
   #}
 
   {# Ensure database exists #}
@@ -11,11 +12,10 @@
   {% endset %}
   {% do run_query(create_db) %}
 
-  {# ── Batch1-only tables (reference + historical) ── #}
+  {# ── Batch1-only reference tables ── #}
   {% set batch1_tables = [
-    'cash_transaction', 'customer_mgmt', 'daily_market', 'date', 'finwire',
-    'holding_history', 'hr', 'industry', 'prospect', 'status_type',
-    'tax_rate', 'time', 'trade', 'trade_history', 'trade_type', 'watch_history'
+    'customer_mgmt', 'date', 'finwire', 'hr', 'industry',
+    'status_type', 'tax_rate', 'trade_history', 'trade_type'
   ] %}
 
   {% for tbl in batch1_tables %}
@@ -27,21 +27,19 @@
     {% do run_query(create_tbl) %}
   {% endfor %}
 
-  {# ── Batch2/3 incremental tables ── #}
-  {% set incremental_tables = [
-    'account', 'batch_date', 'cash_transaction', 'customer',
-    'daily_market', 'holding_history', 'prospect', 'trade', 'watch_history'
+  {# ── Staging tables (grow with batch appends) ── #}
+  {% set staging_tables = [
+    'cash_transaction', 'daily_market', 'holding_history', 'prospect',
+    'trade', 'watch_history', 'account', 'customer', 'batch_date'
   ] %}
 
-  {% for batch_num in [2, 3] %}
-    {% for tbl in incremental_tables %}
-      {% set create_tbl %}
-        CREATE TABLE IF NOT EXISTS tpcdi.batch{{ batch_num }}_{{ tbl }}
-        USING DELTA
-        LOCATION '/data/raw/delta/batch{{ batch_num }}/{{ tbl }}'
-      {% endset %}
-      {% do run_query(create_tbl) %}
-    {% endfor %}
+  {% for tbl in staging_tables %}
+    {% set create_tbl %}
+      CREATE TABLE IF NOT EXISTS tpcdi.staging_{{ tbl }}
+      USING DELTA
+      LOCATION '/data/raw/delta/staging/{{ tbl }}'
+    {% endset %}
+    {% do run_query(create_tbl) %}
   {% endfor %}
 
   {# ── Audit table ── #}
