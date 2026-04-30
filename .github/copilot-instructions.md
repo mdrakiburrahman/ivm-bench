@@ -16,10 +16,11 @@ The goal is to test the impact of Incremental View Maintenance on the dbt model 
 2. `spark-digen-delta`: Scala Spark job reads flat files, writes Delta Lake tables (CDF enabled) → `mount/raw/<SF>/delta/`
 3. Sequential: `spark-digen-delta` starts only after `tpc-di-gen` exits successfully. Both are idempotent (skip if output exists).
 
-**Phase 2 — dbt benchmark** (`docker-compose.benchmark.yml`):
+**Phase 2 — dbt benchmark** (per-engine compose files: `docker-compose.benchmark.engine.yml`):
 
 1. `dbt-server`: Flask REST API that runs `dbt build` asynchronously, streams live progress, stores results in SQLite.
 2. Various engines under test
+3. `docker-compose.batch-loader.yml`: `spark-batch-loader` stages Delta batches (batch2/batch3) into source tables before incremental runs, to simulate incoming load.
 
 ### dbt-server REST API (`src/containers/dbt-server/app.py`)
 
@@ -46,15 +47,15 @@ All data flows through `mount/` which is gitignored:
 
 - `mount/raw/<SF>/digen/` — Raw flat files (input)
 - `mount/raw/<SF>/delta/` — Delta Lake source tables (input to dbt)
-- `mount/results/<SF>/spark/` — Spark warehouse output (Delta tables from dbt)
-- `mount/results/<SF>/dbt-server/` — SQLite state + `run-spark.json` results
+- `mount/results/<SF>/<engine>/` — Engine table output as Delta Lake
+- `mount/results/<SF>/dbt-server/` — SQLite state + per-engine run JSON results
 
 ### Adding a new engine
 
 1. Create `src/containers/dbt-server/dbt-projects/<engine>/` with `dbt_project.yml`, `profiles.yml`, `models/`, `macros/`.
 2. The `POST /run/<engine>` endpoint automatically discovers projects by directory name.
 3. Results land in `mount/results/<SF>/<engine>/`.
-4. Update `benchmark.sh` to trigger the new engine.
+4. Update `src/.scripts/benchmark.sh` to trigger the new engine.
 
 ### Do not commit without review
 
