@@ -38,6 +38,10 @@ Runs 3 batches per engine (init staging → append batch2 → append batch3).
 | `mount/results/<SF>/<engine>/`                             | Engine output (Delta tables from dbt)            |
 | `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json` | Per-batch benchmark results                      |
 
+## Results
+
+![Results Snapshot](results.png)
+
 ---
 
 ## Disclaimer

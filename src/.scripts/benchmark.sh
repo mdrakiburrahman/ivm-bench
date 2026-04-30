@@ -407,4 +407,12 @@ docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
 echo "=== Phase 2c: Feldera completed successfully ==="
 
 echo ""
+echo "=== Phase 3: Generating results chart ==="
+docker compose -f "$DUCKDB_COMPOSE" up -d 2>&1 | tail -3
+wait_for_health 5000
+curl -sf -o results.png http://localhost:5000/chart
+docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
+echo "  Chart saved to results.png"
+
+echo ""
 echo "=== All benchmarks completed successfully ==="

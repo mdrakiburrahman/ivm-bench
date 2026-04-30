@@ -607,6 +607,99 @@ def stream_progress(run_id):
     return Response(generate(), mimetype="text/event-stream")
 
 
+@app.route("/chart")
+def chart():
+    """
+    Generate a PNG chart of model execution times across engines and batches.
+    Discovers run-<engine>-batch<N>.json files in STATE_DIR.
+    Returns image/png.
+    """
+    import glob as _glob
+    from io import BytesIO
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # Discover and parse result files
+    records = []
+    for filepath in sorted(_glob.glob(os.path.join(STATE_DIR, "run-*.json"))):
+        filename = os.path.basename(filepath)
+        m = re.match(r"run-(\w+)-batch(\d+)\.json", filename)
+        if not m:
+            continue
+        engine = m.group(1)
+        batch_num = int(m.group(2))
+
+        with open(filepath) as f:
+            data = json.load(f)
+
+        for node in data.get("nodes", []):
+            if node.get("resource_type") != "model":
+                continue
+            records.append({
+                "query_label": node["name"],
+                "engine": engine,
+                "batch_num": batch_num,
+                "duration_s": node["execution_time_s"],
+            })
+
+    if not records:
+        return jsonify({"error": "No result files found in STATE_DIR"}), 404
+
+    # Organize data
+    batches = sorted(set(r["batch_num"] for r in records))
+    engines = sorted(set(r["engine"] for r in records))
+    queries = sorted(set(r["query_label"] for r in records))
+
+    # Build lookup: (batch, engine, query) -> duration
+    lookup = {}
+    for r in records:
+        lookup[(r["batch_num"], r["engine"], r["query_label"])] = r["duration_s"]
+
+    # Create side-by-side subplots (one per batch)
+    n_batches = len(batches)
+    n_engines = len(engines)
+    n_queries = len(queries)
+    bar_height = 0.8 / n_engines
+    colors = plt.cm.tab10.colors
+
+    fig, axes = plt.subplots(
+        1, n_batches,
+        figsize=(7 * n_batches, max(10, n_queries * 0.45)),
+        sharey=True,
+    )
+    if n_batches == 1:
+        axes = [axes]
+
+    for ax_idx, batch in enumerate(batches):
+        ax = axes[ax_idx]
+        y = range(n_queries)
+
+        for i, engine in enumerate(engines):
+            vals = [lookup.get((batch, engine, q), 0) for q in queries]
+            positions = [yi + i * bar_height for yi in y]
+            ax.barh(positions, vals, bar_height, label=engine, color=colors[i % len(colors)])
+
+        ax.set_xlabel("Duration (seconds)", fontsize=11)
+        ax.set_title(f"Batch {batch}", fontsize=13)
+        ax.set_yticks([yi + bar_height * (n_engines - 1) / 2 for yi in y])
+        if ax_idx == 0:
+            ax.set_yticklabels(queries, fontsize=9)
+        ax.legend(loc="lower right", fontsize=10)
+        ax.grid(axis="x", alpha=0.3)
+
+    fig.suptitle("dbt Model Execution Time by Engine (SF=5)", fontsize=14, y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    # Return PNG
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return Response(buf.getvalue(), mimetype="image/png")
+
+
 
 init_db()
 
