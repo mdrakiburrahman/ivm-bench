@@ -306,62 +306,7 @@ if ! wait_for_health; then
   exit 1
 fi
 
-# Feldera helper: wait for pipeline to finish processing all input data
-FELDERA_URL="http://localhost:8080"
-PIPELINE_NAME="tpcdi"
-PIPELINE_WAIT_RETRIES=1200
-
-get_pipeline_processed() {
-  curl -sf "${FELDERA_URL}/v0/pipelines/${PIPELINE_NAME}/stats" 2>/dev/null \
-    | jq -r '.global_metrics.total_processed_records // 0'
-}
-
-get_pipeline_input() {
-  curl -sf "${FELDERA_URL}/v0/pipelines/${PIPELINE_NAME}/stats" 2>/dev/null \
-    | jq -r '.global_metrics.total_input_records // 0'
-}
-
-# Wait for Feldera pipeline to finish processing.
-# If baseline_input is provided, first wait for total_input_records to exceed it
-# (meaning the new batch has been observed), then wait for processing to catch up.
-wait_for_feldera_pipeline() {
-  local baseline_input="${1:-0}"
-  echo "=== Waiting for Feldera pipeline to finish processing (baseline_input=$baseline_input) ==="
-  local PIPELINE_IDLE=0
-
-  for i in $(seq 1 $PIPELINE_WAIT_RETRIES); do
-    local PIPELINE_STATUS
-    PIPELINE_STATUS=$(curl -sf "${FELDERA_URL}/v0/pipelines/${PIPELINE_NAME}/stats" 2>/dev/null || echo "{}")
-    local STATE TOTAL_IN TOTAL_PROC COMPLETE
-    STATE=$(echo "$PIPELINE_STATUS" | jq -r '.global_metrics.state // "unknown"')
-    TOTAL_IN=$(echo "$PIPELINE_STATUS" | jq -r '.global_metrics.total_input_records // 0')
-    TOTAL_PROC=$(echo "$PIPELINE_STATUS" | jq -r '.global_metrics.total_processed_records // 0')
-    COMPLETE=$(echo "$PIPELINE_STATUS" | jq -r '.global_metrics.pipeline_complete // false')
-
-    # If we have a baseline, wait for new input to arrive first
-    if [[ "$baseline_input" -gt 0 ]] && [[ "$TOTAL_IN" -le "$baseline_input" ]]; then
-      echo "  waiting for new input... input=$TOTAL_IN (baseline=$baseline_input) ($i/$PIPELINE_WAIT_RETRIES)"
-      sleep 5
-      continue
-    fi
-
-    # Now wait for processing to catch up to input
-    if [[ "$TOTAL_IN" -gt 0 ]] && [[ "$TOTAL_PROC" -ge "$TOTAL_IN" ]]; then
-      PIPELINE_IDLE=1
-      echo "  Pipeline idle: processed=$TOTAL_PROC >= input=$TOTAL_IN"
-      break
-    fi
-
-    echo "  waiting for pipeline... state=$STATE processed=$TOTAL_PROC/$TOTAL_IN ($i/$PIPELINE_WAIT_RETRIES)"
-    sleep 5
-  done
-
-  if [[ "$PIPELINE_IDLE" != "1" ]]; then
-    echo "=== WARNING — Feldera pipeline did not reach idle state within timeout ==="
-  fi
-}
-
-# Batch 1: dbt build creates the pipeline, then wait for initial snapshot ingestion
+# Batch 1: dbt build creates the pipeline, dbt-server polls until pipeline finishes + Delta flush
 run_dbt feldera 1
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Feldera dbt run failed (batch 1) ==="
@@ -370,36 +315,29 @@ if [[ "$RUN_STATUS" == "failed" ]]; then
   docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
-wait_for_feldera_pipeline 0
 
-# Batch 2: capture baseline, append data, wait for Feldera to process new rows
-BASELINE_INPUT=$(get_pipeline_input)
-BATCH2_START=$(date +%s)
+# Batch 2: capture baseline BEFORE append, then append, then wait
+BASELINE_INPUT=$(curl -sf "http://localhost:5000/stats/feldera" | jq -r '.total_input_records // 0')
+START_EPOCH=$(date +%s.%N)
 batch_loader append 2
-wait_for_feldera_pipeline "$BASELINE_INPUT"
-BATCH2_END=$(date +%s)
-BATCH2_DURATION=$((BATCH2_END - BATCH2_START))
-echo "  Feldera batch 2 processing time: ${BATCH2_DURATION}s"
-# Save Feldera batch2 timing and pipeline stats
-PIPELINE_STATS=$(curl -sf "${FELDERA_URL}/v0/pipelines/${PIPELINE_NAME}/stats" 2>/dev/null || echo "{}")
-jq -n --argjson stats "$PIPELINE_STATS" --arg duration "$BATCH2_DURATION" \
-  '{batch: 2, engine: "feldera", processing_seconds: ($duration | tonumber), pipeline_stats: $stats}' \
-  > "$RESULTS_DIR/run-feldera-batch2.json"
+echo "=== Phase 2c: Waiting for Feldera pipeline to process batch 2 ==="
+WAIT_RESPONSE=$(curl -sf -X POST "http://localhost:5000/wait/feldera" \
+  -H 'Content-Type: application/json' \
+  -d "{\"scale_factor\": $SCALE_FACTOR, \"batch_num\": 2, \"baseline_input\": $BASELINE_INPUT, \"start_epoch_s\": $START_EPOCH}")
+FELDERA_B2_DURATION=$(echo "$WAIT_RESPONSE" | jq -r '.duration_s // "?"')
+echo "  Feldera batch 2 processing time: ${FELDERA_B2_DURATION}s"
 echo "  results saved to $RESULTS_DIR/run-feldera-batch2.json"
 
-# Batch 3: capture baseline, append data, wait for Feldera to process new rows
-BASELINE_INPUT=$(get_pipeline_input)
-BATCH3_START=$(date +%s)
+# Batch 3: capture baseline BEFORE append, then append, then wait
+BASELINE_INPUT=$(curl -sf "http://localhost:5000/stats/feldera" | jq -r '.total_input_records // 0')
+START_EPOCH=$(date +%s.%N)
 batch_loader append 3
-wait_for_feldera_pipeline "$BASELINE_INPUT"
-BATCH3_END=$(date +%s)
-BATCH3_DURATION=$((BATCH3_END - BATCH3_START))
-echo "  Feldera batch 3 processing time: ${BATCH3_DURATION}s"
-# Save Feldera batch3 timing and pipeline stats
-PIPELINE_STATS=$(curl -sf "${FELDERA_URL}/v0/pipelines/${PIPELINE_NAME}/stats" 2>/dev/null || echo "{}")
-jq -n --argjson stats "$PIPELINE_STATS" --arg duration "$BATCH3_DURATION" \
-  '{batch: 3, engine: "feldera", processing_seconds: ($duration | tonumber), pipeline_stats: $stats}' \
-  > "$RESULTS_DIR/run-feldera-batch3.json"
+echo "=== Phase 2c: Waiting for Feldera pipeline to process batch 3 ==="
+WAIT_RESPONSE=$(curl -sf -X POST "http://localhost:5000/wait/feldera" \
+  -H 'Content-Type: application/json' \
+  -d "{\"scale_factor\": $SCALE_FACTOR, \"batch_num\": 3, \"baseline_input\": $BASELINE_INPUT, \"start_epoch_s\": $START_EPOCH}")
+FELDERA_B3_DURATION=$(echo "$WAIT_RESPONSE" | jq -r '.duration_s // "?"')
+echo "  Feldera batch 3 processing time: ${FELDERA_B3_DURATION}s"
 echo "  results saved to $RESULTS_DIR/run-feldera-batch3.json"
 
 echo "=== Phase 2c: Tearing down Feldera benchmark stack ==="
