@@ -325,11 +325,40 @@ def _feldera_wait_for_all_delta_commits(start_time_epoch_s):
     return False, _get_latest_delta_commit_ts()
 
 
-def _feldera_wait_for_delta_settle(start_time_epoch_s, settle_seconds=30):
+def _feldera_wait_for_commit_done():
     """
-    After pipeline is idle, wait for Delta commits to settle (no new commits
-    appearing for settle_seconds). Used for batch 2/3 where not all tables
-    may be updated.
+    Poll Feldera stats until the internal commit/checkpoint is complete.
+    Returns True when transaction_status is NoTransaction (commit finished).
+    Must be called AFTER _feldera_poll_until_idle().
+    """
+    deadline = time.monotonic() + FELDERA_POLL_TIMEOUT_S
+    app.logger.info("Waiting for Feldera commit to complete (transaction_status -> NoTransaction)")
+
+    while time.monotonic() < deadline:
+        stats = _feldera_get_stats()
+        if not stats:
+            time.sleep(FELDERA_POLL_INTERVAL_S)
+            continue
+
+        gm = stats.get("global_metrics", {})
+        tx_status = gm.get("transaction_status", "NoTransaction")
+
+        if tx_status == "NoTransaction":
+            app.logger.info("Feldera commit complete (transaction_status=NoTransaction)")
+            return True
+
+        app.logger.info("Feldera commit in progress (transaction_status=%s)", tx_status)
+        time.sleep(FELDERA_POLL_INTERVAL_S)
+
+    app.logger.error("Timeout waiting for Feldera commit to complete")
+    return False
+
+
+def _feldera_wait_for_delta_settle(start_time_epoch_s, settle_seconds=3):
+    """
+    After pipeline commit is done, wait briefly for Delta output flush.
+    Uses a short settle window (default 3s) since outputs flush during/immediately
+    after the commit. Used for batch 2/3 where not all tables may be updated.
     Returns (success: bool, commit_times: dict).
     """
     deadline = time.monotonic() + FELDERA_POLL_TIMEOUT_S
@@ -355,14 +384,14 @@ def _feldera_wait_for_delta_settle(start_time_epoch_s, settle_seconds=30):
         if current_max_ts == 0:
             # No commits after start_time yet — keep waiting
             stable_since = None
-            time.sleep(FELDERA_POLL_INTERVAL_S)
+            time.sleep(1)
             continue
 
         if current_max_ts > last_max_ts:
             # New commit appeared — reset settle timer
             last_max_ts = current_max_ts
             stable_since = time.monotonic()
-            time.sleep(FELDERA_POLL_INTERVAL_S)
+            time.sleep(1)
             continue
 
         # No new commits since last check
@@ -374,7 +403,7 @@ def _feldera_wait_for_delta_settle(start_time_epoch_s, settle_seconds=30):
             )
             return True, commit_times
 
-        time.sleep(FELDERA_POLL_INTERVAL_S)
+        time.sleep(1)
 
     app.logger.error("Timeout waiting for Delta commits to settle")
     return False, _get_latest_delta_commit_ts()
@@ -506,6 +535,12 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
             success, _ = _feldera_poll_until_idle(baseline_input=0)
             if not success:
                 _fail_run(run_id, "Feldera pipeline did not reach idle state within timeout", time.monotonic() - start_ts)
+                _cleanup_progress(run_id)
+                return
+
+            # Wait for internal commit to complete
+            if not _feldera_wait_for_commit_done():
+                _fail_run(run_id, "Feldera commit did not complete within timeout", time.monotonic() - start_ts)
                 _cleanup_progress(run_id)
                 return
 
@@ -1065,7 +1100,14 @@ def wait_feldera():
             "pipeline_stats": final_stats,
         }), 504
 
-    # Wait for Delta commits to settle (not all tables may be updated in batch 2/3)
+    # Wait for internal commit to complete (checkpoint written to storage)
+    if not _feldera_wait_for_commit_done():
+        return jsonify({
+            "error": "Feldera commit did not complete within timeout",
+            "pipeline_stats": final_stats,
+        }), 504
+
+    # Brief wait for Delta output flush (outputs flush during/right after commit)
     success, _ = _feldera_wait_for_delta_settle(start_epoch_s)
     if not success:
         return jsonify({
