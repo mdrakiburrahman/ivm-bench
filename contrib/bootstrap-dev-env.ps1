@@ -1,7 +1,7 @@
 <#
 
 .SYNOPSIS
-  Bootstraps a Windows Cloud DevBox with WSL pre-reqs to develop in monitoring repo.
+  Bootstraps a Windows DevBox with WSL.
 
 .NOTES
 
