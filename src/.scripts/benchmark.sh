@@ -34,6 +34,18 @@ RESULTS_DIR="mount/results/${SCALE_FACTOR}/dbt-server"
 HEALTH_RETRIES=60
 
 # ---------------------------------------------------------------------------
+# Timing variables (seconds per engine per batch)
+# ---------------------------------------------------------------------------
+SPARK_B1=0; SPARK_B2=0; SPARK_B3=0
+DUCKDB_B1=0; DUCKDB_B2=0; DUCKDB_B3=0
+FELDERA_B1=0; FELDERA_B2=0; FELDERA_B3=0
+
+fmt_duration() {
+  local secs=$1
+  printf "%02d:%02d:%02d" $((secs/3600)) $(((secs%3600)/60)) $((secs%60))
+}
+
+# ---------------------------------------------------------------------------
 # Helper: stream dbt progress from the SSE endpoint and set RUN_STATUS
 # Usage:  stream_progress <run_id>
 #         (sets global RUN_STATUS to "completed", "failed", or "not found")
@@ -198,7 +210,9 @@ if ! wait_for_health; then
 fi
 
 # Batch 1 run
+_t0=$(date +%s)
 run_dbt spark 1
+SPARK_B1=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Spark dbt run failed (batch 1) ==="
   docker compose -f "$BENCHMARK_COMPOSE" logs dbt-server 2>/dev/null || true
@@ -209,7 +223,9 @@ fi
 
 # Batch 2: append + run
 batch_loader append 2
+_t0=$(date +%s)
 run_dbt spark 2
+SPARK_B2=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Spark dbt run failed (batch 2) ==="
   docker compose -f "$BENCHMARK_COMPOSE" logs dbt-server 2>/dev/null || true
@@ -219,7 +235,9 @@ fi
 
 # Batch 3: append + run
 batch_loader append 3
+_t0=$(date +%s)
 run_dbt spark 3
+SPARK_B3=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Spark dbt run failed (batch 3) ==="
   docker compose -f "$BENCHMARK_COMPOSE" logs dbt-server 2>/dev/null || true
@@ -253,7 +271,9 @@ if ! wait_for_health; then
 fi
 
 # Batch 1 run
+_t0=$(date +%s)
 run_dbt duckdb 1
+DUCKDB_B1=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — DuckDB dbt run failed (batch 1) ==="
   docker compose -f "$DUCKDB_COMPOSE" logs dbt-server 2>/dev/null || true
@@ -263,7 +283,9 @@ fi
 
 # Batch 2: append + run
 batch_loader append 2
+_t0=$(date +%s)
 run_dbt duckdb 2
+DUCKDB_B2=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — DuckDB dbt run failed (batch 2) ==="
   docker compose -f "$DUCKDB_COMPOSE" logs dbt-server 2>/dev/null || true
@@ -273,7 +295,9 @@ fi
 
 # Batch 3: append + run
 batch_loader append 3
+_t0=$(date +%s)
 run_dbt duckdb 3
+DUCKDB_B3=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — DuckDB dbt run failed (batch 3) ==="
   docker compose -f "$DUCKDB_COMPOSE" logs dbt-server 2>/dev/null || true
@@ -307,7 +331,9 @@ if ! wait_for_health; then
 fi
 
 # Batch 1: dbt build creates the pipeline, dbt-server polls until pipeline finishes + Delta flush
+_t0=$(date +%s)
 run_dbt feldera 1
+FELDERA_B1=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Feldera dbt run failed (batch 1) ==="
   docker compose -f "$FELDERA_COMPOSE" logs dbt-server 2>/dev/null || true
@@ -317,6 +343,7 @@ if [[ "$RUN_STATUS" == "failed" ]]; then
 fi
 
 # Batch 2: capture baseline BEFORE append, then append, then wait
+_t0=$(date +%s)
 BASELINE_INPUT=$(curl -sf "http://localhost:5000/stats/feldera" | jq -r '.total_input_records // 0')
 START_EPOCH=$(date +%s.%N)
 batch_loader append 2
@@ -324,11 +351,13 @@ echo "=== Phase 2c: Waiting for Feldera pipeline to process batch 2 ==="
 WAIT_RESPONSE=$(curl -sf -X POST "http://localhost:5000/wait/feldera" \
   -H 'Content-Type: application/json' \
   -d "{\"scale_factor\": $SCALE_FACTOR, \"batch_num\": 2, \"baseline_input\": $BASELINE_INPUT, \"start_epoch_s\": $START_EPOCH}")
+FELDERA_B2=$(( $(date +%s) - _t0 ))
 FELDERA_B2_DURATION=$(echo "$WAIT_RESPONSE" | jq -r '.duration_s // "?"')
 echo "  Feldera batch 2 processing time: ${FELDERA_B2_DURATION}s"
 echo "  results saved to $RESULTS_DIR/run-feldera-batch2.json"
 
 # Batch 3: capture baseline BEFORE append, then append, then wait
+_t0=$(date +%s)
 BASELINE_INPUT=$(curl -sf "http://localhost:5000/stats/feldera" | jq -r '.total_input_records // 0')
 START_EPOCH=$(date +%s.%N)
 batch_loader append 3
@@ -336,6 +365,7 @@ echo "=== Phase 2c: Waiting for Feldera pipeline to process batch 3 ==="
 WAIT_RESPONSE=$(curl -sf -X POST "http://localhost:5000/wait/feldera" \
   -H 'Content-Type: application/json' \
   -d "{\"scale_factor\": $SCALE_FACTOR, \"batch_num\": 3, \"baseline_input\": $BASELINE_INPUT, \"start_epoch_s\": $START_EPOCH}")
+FELDERA_B3=$(( $(date +%s) - _t0 ))
 FELDERA_B3_DURATION=$(echo "$WAIT_RESPONSE" | jq -r '.duration_s // "?"')
 echo "  Feldera batch 3 processing time: ${FELDERA_B3_DURATION}s"
 echo "  results saved to $RESULTS_DIR/run-feldera-batch3.json"
@@ -354,3 +384,10 @@ echo "  Chart saved to results.png"
 
 echo ""
 echo "=== All benchmarks completed successfully ==="
+echo ""
+printf "            %-12s%-12s%s\n" "1" "2" "3"
+printf "Spark:      %s -> %s -> %s\n" "$(fmt_duration $SPARK_B1)" "$(fmt_duration $SPARK_B2)" "$(fmt_duration $SPARK_B3)"
+printf "DuckDB:     %s -> %s -> %s\n" "$(fmt_duration $DUCKDB_B1)" "$(fmt_duration $DUCKDB_B2)" "$(fmt_duration $DUCKDB_B3)"
+printf "Feldera:    %s -> %s -> %s\n" "$(fmt_duration $FELDERA_B1)" "$(fmt_duration $FELDERA_B2)" "$(fmt_duration $FELDERA_B3)"
+echo ""
+echo "============================================="

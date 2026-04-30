@@ -1,10 +1,34 @@
-# ivm-bench
+<!-- PROJECT LOGO -->
+<p align="center">
+  <img src="https://rakirahman.blob.core.windows.net/public/images/Misc/dbt-incremental.png" alt="Logo" width="30%">
+  <h3 align="center">dbt - Incremental View Maintenance Benchmark</h3>
+  <p align="center">
+     Benchmarking engine-specific IVM implementations using a TPC-DI dbt project, <em>without</em> using <a href="https://docs.getdbt.com/docs/build/incremental-models">dbt incremental</a> (because watermark columns are unreliable).
+     <br />
+    <br />
+    <a href="https://docs.getdbt.com/">dbt Docs</a>
+    ·
+    <a href="https://materializedview.io/p/everything-to-know-incremental-view-maintenance">Everything You Need to Know About Incremental View Maintenance</a>
+    ·
+    <a href="https://rakirahman.blob.core.windows.net/public/books/INCREMENTAL_VIEW_MAINTENANCE.pdf">Short doc on IVM</a>
+    ·
+    <a href="https://bit.ly/dbsp-paper-full">DBSP Paper</a>
+    ·
+    <a href="https://bit.ly/https://bit.ly/openivm-paper">OpenIVM Paper</a>
+    <br />
+    <br />
+  </p>
+</p>
+
+<br>
 
 Benchmarks Incremental View Maintenance capabilities on various Open Source engines with [the TPC-DI-based data model](https://www.tpc.org/tpcdi/) for **educational purposes**.
 
 ## Dev Setup
 
-See [`contrib/README.md`](contrib/README.md).
+The only requirement is Docker.
+
+See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows machine.
 
 ## Quickstart
 
@@ -19,7 +43,7 @@ sudo rm -rf ${GIT_ROOT}/mount/results/${SCALE_FACTOR}
 bash src/.scripts/benchmark.sh
 ```
 
-Runs 3 batches per engine (init staging → append batch2 → append batch3).
+Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
 
 ### Engines
 
