@@ -390,4 +390,5 @@ printf "Spark:      %s -> %s -> %s\n" "$(fmt_duration $SPARK_B1)" "$(fmt_duratio
 printf "DuckDB:     %s -> %s -> %s\n" "$(fmt_duration $DUCKDB_B1)" "$(fmt_duration $DUCKDB_B2)" "$(fmt_duration $DUCKDB_B3)"
 printf "Feldera:    %s -> %s -> %s\n" "$(fmt_duration $FELDERA_B1)" "$(fmt_duration $FELDERA_B2)" "$(fmt_duration $FELDERA_B3)"
 echo ""
-echo "============================================="
+TOTAL_SECS=$(( SPARK_B1 + SPARK_B2 + SPARK_B3 + DUCKDB_B1 + DUCKDB_B2 + DUCKDB_B3 + FELDERA_B1 + FELDERA_B2 + FELDERA_B3 ))
+printf "================= %s ==================\n" "$(fmt_duration $TOTAL_SECS)"
