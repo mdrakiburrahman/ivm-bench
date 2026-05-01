@@ -19,7 +19,7 @@ services:
     depends_on:
       mssql-metastore:
         condition: service_healthy
-    cpus: 30
+    cpus: 32
     mem_limit: 120g
     environment:
       METASTORE_HOST: mssql-metastore
@@ -40,8 +40,8 @@ services:
     depends_on:
       spark:
         condition: service_healthy
-    cpus: 2
-    mem_limit: 6g
+    cpus: 4
+    mem_limit: 8g
     ports:
       - "5000:5000"
     environment:

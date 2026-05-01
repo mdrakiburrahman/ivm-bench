@@ -1,7 +1,7 @@
 services:
   pipeline-manager:
     image: images.feldera.com/feldera/pipeline-manager:latest
-    cpus: 30
+    cpus: 32
     mem_limit: 120g
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
@@ -21,8 +21,8 @@ services:
     depends_on:
       pipeline-manager:
         condition: service_healthy
-    cpus: 2
-    mem_limit: 6g
+    cpus: 4
+    mem_limit: 8g
     ports:
       - "5000:5000"
     environment:

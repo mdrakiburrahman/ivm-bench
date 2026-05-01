@@ -10,5 +10,5 @@ resource_allocation:
     min_cores: 1
 
 parallelism:
-    shuffle_partitions: 32
-    default_parallelism: 32
+    shuffle_partitions: 16
+    default_parallelism: 16

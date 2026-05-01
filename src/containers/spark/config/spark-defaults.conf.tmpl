@@ -18,6 +18,11 @@ spark.default.parallelism=${SPARK_SUBMIT_DEFAULT_PARALLELISM}
 # Performance — AQE and single-machine optimizations
 spark.sql.adaptive.enabled=true
 spark.sql.adaptive.coalescePartitions.enabled=true
+spark.sql.adaptive.advisoryPartitionSizeInMB=128
+spark.sql.adaptive.skewJoin.enabled=true
+spark.sql.autoBroadcastJoinThreshold=104857600
+spark.driver.maxResultSize=4g
+spark.sql.inMemoryColumnarStorage.compressed=true
 spark.locality.wait=0s
 
 # Warehouse location

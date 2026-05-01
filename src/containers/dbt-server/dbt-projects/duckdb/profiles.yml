@@ -10,6 +10,8 @@ tpcdi:
         allow_unsigned_extensions: true
       settings:
         preserve_insertion_order: false
+        memory_limit: '115GB'
+        threads: 32
       extensions:
         - parquet
         - sqlite

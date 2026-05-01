@@ -13,5 +13,5 @@ services:
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
-      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=16 -XX:ConcGCThreads=8 -XX:+UseNUMA -XX:+AlwaysPreTouch"
       DELTA_PATH: /data/delta

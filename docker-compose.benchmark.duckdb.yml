@@ -2,7 +2,7 @@ services:
   dbt-server:
     build:
       context: ./src/containers/dbt-server
-    cpus: 30
+    cpus: 32
     mem_limit: 120g
     ports:
       - "5000:5000"
