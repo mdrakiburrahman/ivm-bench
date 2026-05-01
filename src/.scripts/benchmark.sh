@@ -9,7 +9,7 @@ LOGS_DIR=".logs"
 mkdir -p "$LOGS_DIR"
 
 # Pre-create mount directories so Docker doesn't create them as root
-for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/dbt-server"; do
+for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/dbt-server" "mount/logs/${SCALE_FACTOR}/spark" "mount/logs/${SCALE_FACTOR}/duckdb" "mount/logs/${SCALE_FACTOR}/feldera"; do
   mkdir -p "$d" 2>/dev/null || {
     docker run --rm -v "$(pwd)/mount:/mount" alpine mkdir -p "/${d}" 2>/dev/null
     docker run --rm -v "$(pwd)/mount:/mount" alpine chown -R "$(id -u):$(id -g)" /mount 2>/dev/null
@@ -139,6 +139,40 @@ batch_loader() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: capture all container logs before teardown
+# Usage:  capture_logs <compose_file> <engine>
+# ---------------------------------------------------------------------------
+capture_logs() {
+  local compose_file="$1"
+  local engine="$2"
+  local logs_dest="mount/logs/${SCALE_FACTOR}/${engine}"
+  mkdir -p "$logs_dest" 2>/dev/null || true
+
+  echo "=== Capturing container logs for $engine ==="
+  local services
+  services=$(docker compose -f "$compose_file" ps --services 2>/dev/null || true)
+  for svc in $services; do
+    docker compose -f "$compose_file" logs --no-color "$svc" > "$logs_dest/${svc}.log" 2>&1 || true
+  done
+  echo "  logs saved to $logs_dest/"
+}
+
+# ---------------------------------------------------------------------------
+# Helper: fetch dbt lineage for an engine
+# Usage:  fetch_lineage <engine>
+# ---------------------------------------------------------------------------
+fetch_lineage() {
+  local engine="$1"
+  echo "=== Fetching dbt lineage for $engine ==="
+  local lineage_file="$RESULTS_DIR/lineage-${engine}.json"
+  if curl -sf "http://localhost:5000/lineage/$engine" | jq . > "$lineage_file" 2>/dev/null; then
+    echo "  lineage saved to $lineage_file"
+  else
+    echo "  WARNING: failed to fetch lineage for $engine (non-fatal)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Phase 1 — Data generation (idempotent)
 # ---------------------------------------------------------------------------
 echo "=== Phase 1: Building datagen images ==="
@@ -204,7 +238,7 @@ docker compose -f "$BENCHMARK_COMPOSE" up -d 2>&1 | tee "$LOGS_DIR/benchmark-up.
 
 echo "=== Phase 2a: Waiting for dbt-server health ==="
 if ! wait_for_health; then
-  docker compose -f "$BENCHMARK_COMPOSE" logs 2>/dev/null || true
+  capture_logs "$BENCHMARK_COMPOSE" spark
   docker compose -f "$BENCHMARK_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -215,8 +249,7 @@ run_dbt spark 1
 SPARK_B1=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Spark dbt run failed (batch 1) ==="
-  docker compose -f "$BENCHMARK_COMPOSE" logs dbt-server 2>/dev/null || true
-  docker compose -f "$BENCHMARK_COMPOSE" logs spark 2>/dev/null || true
+  capture_logs "$BENCHMARK_COMPOSE" spark
   docker compose -f "$BENCHMARK_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -228,7 +261,7 @@ run_dbt spark 2
 SPARK_B2=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Spark dbt run failed (batch 2) ==="
-  docker compose -f "$BENCHMARK_COMPOSE" logs dbt-server 2>/dev/null || true
+  capture_logs "$BENCHMARK_COMPOSE" spark
   docker compose -f "$BENCHMARK_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -240,12 +273,14 @@ run_dbt spark 3
 SPARK_B3=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Spark dbt run failed (batch 3) ==="
-  docker compose -f "$BENCHMARK_COMPOSE" logs dbt-server 2>/dev/null || true
+  capture_logs "$BENCHMARK_COMPOSE" spark
   docker compose -f "$BENCHMARK_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
 
 echo "=== Phase 2a: Tearing down Spark benchmark stack ==="
+fetch_lineage spark
+capture_logs "$BENCHMARK_COMPOSE" spark
 docker compose -f "$BENCHMARK_COMPOSE" down --remove-orphans 2>/dev/null || true
 echo "=== Phase 2a: Spark completed successfully ==="
 
@@ -265,7 +300,7 @@ docker compose -f "$DUCKDB_COMPOSE" up -d 2>&1 | tee "$LOGS_DIR/duckdb-up.log"
 
 echo "=== Phase 2b: Waiting for dbt-server health ==="
 if ! wait_for_health; then
-  docker compose -f "$DUCKDB_COMPOSE" logs 2>/dev/null || true
+  capture_logs "$DUCKDB_COMPOSE" duckdb
   docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -276,7 +311,7 @@ run_dbt duckdb 1
 DUCKDB_B1=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — DuckDB dbt run failed (batch 1) ==="
-  docker compose -f "$DUCKDB_COMPOSE" logs dbt-server 2>/dev/null || true
+  capture_logs "$DUCKDB_COMPOSE" duckdb
   docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -288,7 +323,7 @@ run_dbt duckdb 2
 DUCKDB_B2=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — DuckDB dbt run failed (batch 2) ==="
-  docker compose -f "$DUCKDB_COMPOSE" logs dbt-server 2>/dev/null || true
+  capture_logs "$DUCKDB_COMPOSE" duckdb
   docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -300,12 +335,14 @@ run_dbt duckdb 3
 DUCKDB_B3=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — DuckDB dbt run failed (batch 3) ==="
-  docker compose -f "$DUCKDB_COMPOSE" logs dbt-server 2>/dev/null || true
+  capture_logs "$DUCKDB_COMPOSE" duckdb
   docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
 
 echo "=== Phase 2b: Tearing down DuckDB benchmark stack ==="
+fetch_lineage duckdb
+capture_logs "$DUCKDB_COMPOSE" duckdb
 docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
 echo "=== Phase 2b: DuckDB completed successfully ==="
 
@@ -325,7 +362,7 @@ docker compose -f "$FELDERA_COMPOSE" up -d 2>&1 | tee "$LOGS_DIR/feldera-up.log"
 
 echo "=== Phase 2c: Waiting for dbt-server health ==="
 if ! wait_for_health; then
-  docker compose -f "$FELDERA_COMPOSE" logs 2>/dev/null || true
+  capture_logs "$FELDERA_COMPOSE" feldera
   docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -336,8 +373,7 @@ run_dbt feldera 1
 FELDERA_B1=$(( $(date +%s) - _t0 ))
 if [[ "$RUN_STATUS" == "failed" ]]; then
   echo "=== FAILURE — Feldera dbt run failed (batch 1) ==="
-  docker compose -f "$FELDERA_COMPOSE" logs dbt-server 2>/dev/null || true
-  docker compose -f "$FELDERA_COMPOSE" logs pipeline-manager 2>/dev/null || true
+  capture_logs "$FELDERA_COMPOSE" feldera
   docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
   exit 1
 fi
@@ -371,6 +407,8 @@ echo "  Feldera batch 3 processing time: ${FELDERA_B3_DURATION}s"
 echo "  results saved to $RESULTS_DIR/run-feldera-batch3.json"
 
 echo "=== Phase 2c: Tearing down Feldera benchmark stack ==="
+fetch_lineage feldera
+capture_logs "$FELDERA_COMPOSE" feldera
 docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
 echo "=== Phase 2c: Feldera completed successfully ==="
 

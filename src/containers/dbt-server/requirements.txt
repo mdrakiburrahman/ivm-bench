@@ -7,3 +7,4 @@ dbt-duckdb>=1.9
 duckdb>=1.5.2
 deltalake>=0.18
 dbt-feldera
+sqlglot>=26.0
