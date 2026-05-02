@@ -78,7 +78,9 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ## Results
 
-![Results Snapshot](results.png)
+## Scale Factor: 3
+
+![Results](scale-factor-3.png)
 
 ---
 

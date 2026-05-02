@@ -17,6 +17,7 @@ from flask import Flask, g, request
 
 from handlers.chart import ChartHandler
 from handlers.container_stats import ContainerStatsHandler
+from handlers.delta_stats import DeltaStatsHandler
 from handlers.feldera import FelderaHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
@@ -67,6 +68,7 @@ def register_handlers(flask_app: Flask) -> None:
         LineageHandler(),
         SQLAnalysisHandler(),
         ContainerStatsHandler(),
+        DeltaStatsHandler(),
     ]
     for handler in handlers:
         handler.register(flask_app)

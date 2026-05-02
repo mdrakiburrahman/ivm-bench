@@ -61,6 +61,14 @@ All data flows through `mount/` which is gitignored:
 
 The repo owner reviews all changes before committing. Do not run `git commit` autonomously.
 
+### Host environment constraints
+
+The dev host only has the dependencies installed in `src/.scripts/benchmark.sh`, nothing more.
+
+Do not assume it has Python or anything else. Do not try to install new software ad-hoc, and if you want to add something to `src/.scripts/benchmark.sh`, ask explicit permission of the user.
+
+Instead, if you need to test application code, spin up the relevant container and add things in there, (e.g. `docker compose up dbt-server`) rather than installing dependencies on the host.
+
 ### During a `/plan`, always clarify any doubts or ambiguity with the end user
 
 Do not make assumptions unless you are **crystal clear** on the user's intent.

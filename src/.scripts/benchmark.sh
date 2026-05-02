@@ -218,6 +218,21 @@ stop_stats() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: capture delta stats for staging tables
+# Usage:  capture_delta_stats <batch_num>
+# ---------------------------------------------------------------------------
+capture_delta_stats() {
+  local batch_num="$1"
+  echo "=== Capturing delta stats for batch $batch_num ==="
+  local stats_file="$RESULTS_DIR/delta-stats-batch${batch_num}.json"
+  if curl -sf "http://localhost:5000/delta-stats" | jq . > "$stats_file" 2>/dev/null; then
+    echo "  delta stats saved to $stats_file"
+  else
+    echo "  WARNING: failed to capture delta stats for batch $batch_num (non-fatal)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Phase 1 — Data generation (idempotent)
 # ---------------------------------------------------------------------------
 echo "=== Phase 1: Building datagen images ==="
@@ -289,6 +304,7 @@ if ! wait_for_health; then
 fi
 
 start_stats spark
+capture_delta_stats 1
 _t0=$(date +%s)
 run_dbt spark 1
 SPARK_B1=$(( $(date +%s) - _t0 ))
@@ -301,6 +317,7 @@ fi
 
 # Batch 2: append + run
 batch_loader append 2
+capture_delta_stats 2
 _t0=$(date +%s)
 run_dbt spark 2
 SPARK_B2=$(( $(date +%s) - _t0 ))
@@ -313,6 +330,7 @@ fi
 
 # Batch 3: append + run
 batch_loader append 3
+capture_delta_stats 3
 _t0=$(date +%s)
 run_dbt spark 3
 SPARK_B3=$(( $(date +%s) - _t0 ))
@@ -467,9 +485,9 @@ echo ""
 echo "=== Phase 3: Generating results chart ==="
 docker compose -f "$DUCKDB_COMPOSE" up -d 2>&1 | tail -3
 wait_for_health 5000
-curl -sf -o results.png "http://localhost:5000/chart?sf=${SCALE_FACTOR}"
+curl -sf -o "scale-factor-${SCALE_FACTOR}.png" "http://localhost:5000/chart?sf=${SCALE_FACTOR}"
 docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
-echo "  Chart saved to results.png"
+echo "  Chart saved to scale-factor-${SCALE_FACTOR}.png"
 
 echo ""
 echo "=== All benchmarks completed successfully ==="
