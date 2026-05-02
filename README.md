@@ -38,7 +38,7 @@ See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows
 export GIT_ROOT=$(git rev-parse --show-toplevel)
 
 # 3 - 2147483647
-export SCALE_FACTOR=3
+export SCALE_FACTOR=100
 
 sudo rm -rf ${GIT_ROOT}/mount
 bash src/.scripts/benchmark.sh
@@ -80,11 +80,15 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ### Notes
 
-* The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start
+* The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start in batch 1
 
 ### Scale Factor: 3
 
 ![Results](scale-factor-3.png)
+
+### Scale Factor: 100
+
+![Results](scale-factor-100.png)
 
 ---
 
