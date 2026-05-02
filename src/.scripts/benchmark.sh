@@ -9,7 +9,7 @@ LOGS_DIR=".logs"
 mkdir -p "$LOGS_DIR"
 
 # Pre-create mount directories so Docker doesn't create them as root
-for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/dbt-server" "mount/logs/${SCALE_FACTOR}/spark" "mount/logs/${SCALE_FACTOR}/duckdb" "mount/logs/${SCALE_FACTOR}/feldera" "mount/stats/${SCALE_FACTOR}/spark" "mount/stats/${SCALE_FACTOR}/duckdb" "mount/stats/${SCALE_FACTOR}/feldera"; do
+for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/openivm" "mount/results/${SCALE_FACTOR}/dbt-server" "mount/logs/${SCALE_FACTOR}/spark" "mount/logs/${SCALE_FACTOR}/duckdb" "mount/logs/${SCALE_FACTOR}/feldera" "mount/stats/${SCALE_FACTOR}/spark" "mount/stats/${SCALE_FACTOR}/duckdb" "mount/stats/${SCALE_FACTOR}/feldera"; do
   mkdir -p "$d" 2>/dev/null || {
     docker run --rm -v "$(pwd)/mount:/mount" alpine mkdir -p "/${d}" 2>/dev/null
     docker run --rm -v "$(pwd)/mount:/mount" alpine chown -R "$(id -u):$(id -g)" /mount 2>/dev/null
@@ -31,6 +31,7 @@ DUCKDB_COMPOSE="docker-compose.benchmark.duckdb.yml"
 FELDERA_COMPOSE="docker-compose.benchmark.feldera.yml"
 
 RESULTS_DIR="mount/results/${SCALE_FACTOR}/dbt-server"
+OPENIVM_WORK_DIR="mount/results/${SCALE_FACTOR}/openivm"
 HEALTH_RETRIES=60
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ HEALTH_RETRIES=60
 SPARK_B1=0; SPARK_B2=0; SPARK_B3=0
 DUCKDB_B1=0; DUCKDB_B2=0; DUCKDB_B3=0
 FELDERA_B1=0; FELDERA_B2=0; FELDERA_B3=0
+OPENIVM_B1=0; OPENIVM_B2=0; OPENIVM_B3=0
 
 fmt_duration() {
   local secs=$1
@@ -414,20 +416,49 @@ docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
 echo "=== Phase 2b: DuckDB completed successfully ==="
 
 # ---------------------------------------------------------------------------
-# Phase 2c — Feldera benchmark (3 batches, pipeline stays running)
+# Phase 2c — OpenIVM benchmark (3 batches, DuckLake + OpenIVM executable)
 # ---------------------------------------------------------------------------
 echo ""
 echo "=========================================="
-echo "=== Phase 2c: Feldera benchmark start ==="
+echo "=== Phase 2c: OpenIVM benchmark start ==="
+echo "=========================================="
+
+_t0=$(date +%s)
+src/.scripts/openivm-benchmark.py \
+  --scale-factor "$SCALE_FACTOR" \
+  --raw-delta-dir "mount/raw/${SCALE_FACTOR}/delta" \
+  --results-dir "$RESULTS_DIR" \
+  --duckdb-batch1-json "$RESULTS_DIR/run-duckdb-batch1.json" \
+  --work-dir "$OPENIVM_WORK_DIR"
+OPENIVM_TOTAL=$(( $(date +%s) - _t0 ))
+
+if [[ -f "$RESULTS_DIR/run-openivm-batch1.json" ]]; then
+  OPENIVM_B1=$(jq -r '.duration_s | floor' "$RESULTS_DIR/run-openivm-batch1.json")
+fi
+if [[ -f "$RESULTS_DIR/run-openivm-batch2.json" ]]; then
+  OPENIVM_B2=$(jq -r '.duration_s | floor' "$RESULTS_DIR/run-openivm-batch2.json")
+fi
+if [[ -f "$RESULTS_DIR/run-openivm-batch3.json" ]]; then
+  OPENIVM_B3=$(jq -r '.duration_s | floor' "$RESULTS_DIR/run-openivm-batch3.json")
+fi
+
+echo "=== Phase 2c: OpenIVM completed successfully (${OPENIVM_TOTAL}s total) ==="
+
+# ---------------------------------------------------------------------------
+# Phase 2d — Feldera benchmark (3 batches, pipeline stays running)
+# ---------------------------------------------------------------------------
+echo ""
+echo "=========================================="
+echo "=== Phase 2d: Feldera benchmark start ==="
 echo "=========================================="
 
 # Re-init staging from batch1 (fresh start for Feldera)
 batch_loader init
 
-echo "=== Phase 2c: Starting Feldera benchmark stack (pipeline-manager → dbt-server) ==="
+echo "=== Phase 2d: Starting Feldera benchmark stack (pipeline-manager → dbt-server) ==="
 docker compose -f "$FELDERA_COMPOSE" up -d 2>&1 | tee "$LOGS_DIR/feldera-up.log"
 
-echo "=== Phase 2c: Waiting for dbt-server health ==="
+echo "=== Phase 2d: Waiting for dbt-server health ==="
 if ! wait_for_health; then
   capture_logs "$FELDERA_COMPOSE" feldera
   docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
@@ -450,7 +481,7 @@ _t0=$(date +%s)
 BASELINE_INPUT=$(curl -sf "http://localhost:5000/stats/feldera" | jq -r '.total_input_records // 0')
 START_EPOCH=$(date +%s.%N)
 batch_loader append 2
-echo "=== Phase 2c: Waiting for Feldera pipeline to process batch 2 ==="
+echo "=== Phase 2d: Waiting for Feldera pipeline to process batch 2 ==="
 WAIT_RESPONSE=$(curl -sf -X POST "http://localhost:5000/wait/feldera" \
   -H 'Content-Type: application/json' \
   -d "{\"scale_factor\": $SCALE_FACTOR, \"batch_num\": 2, \"baseline_input\": $BASELINE_INPUT, \"start_epoch_s\": $START_EPOCH}")
@@ -464,7 +495,7 @@ _t0=$(date +%s)
 BASELINE_INPUT=$(curl -sf "http://localhost:5000/stats/feldera" | jq -r '.total_input_records // 0')
 START_EPOCH=$(date +%s.%N)
 batch_loader append 3
-echo "=== Phase 2c: Waiting for Feldera pipeline to process batch 3 ==="
+echo "=== Phase 2d: Waiting for Feldera pipeline to process batch 3 ==="
 WAIT_RESPONSE=$(curl -sf -X POST "http://localhost:5000/wait/feldera" \
   -H 'Content-Type: application/json' \
   -d "{\"scale_factor\": $SCALE_FACTOR, \"batch_num\": 3, \"baseline_input\": $BASELINE_INPUT, \"start_epoch_s\": $START_EPOCH}")
@@ -473,13 +504,13 @@ FELDERA_B3_DURATION=$(echo "$WAIT_RESPONSE" | jq -r '.duration_s // "?"')
 echo "  Feldera batch 3 processing time: ${FELDERA_B3_DURATION}s"
 echo "  results saved to $RESULTS_DIR/run-feldera-batch3.json"
 
-echo "=== Phase 2c: Tearing down Feldera benchmark stack ==="
+echo "=== Phase 2d: Tearing down Feldera benchmark stack ==="
 stop_stats
 fetch_sql_analysis feldera
 fetch_lineage feldera
 capture_logs "$FELDERA_COMPOSE" feldera
 docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
-echo "=== Phase 2c: Feldera completed successfully ==="
+echo "=== Phase 2d: Feldera completed successfully ==="
 
 echo ""
 echo "=== Phase 3: Generating results chart ==="
@@ -495,7 +526,8 @@ echo ""
 printf "            %-12s%-12s%s\n" "1" "2" "3"
 printf "Spark:      %s -> %s -> %s\n" "$(fmt_duration $SPARK_B1)" "$(fmt_duration $SPARK_B2)" "$(fmt_duration $SPARK_B3)"
 printf "DuckDB:     %s -> %s -> %s\n" "$(fmt_duration $DUCKDB_B1)" "$(fmt_duration $DUCKDB_B2)" "$(fmt_duration $DUCKDB_B3)"
+printf "OpenIVM:    %s -> %s -> %s\n" "$(fmt_duration $OPENIVM_B1)" "$(fmt_duration $OPENIVM_B2)" "$(fmt_duration $OPENIVM_B3)"
 printf "Feldera:    %s -> %s -> %s\n" "$(fmt_duration $FELDERA_B1)" "$(fmt_duration $FELDERA_B2)" "$(fmt_duration $FELDERA_B3)"
 echo ""
-TOTAL_SECS=$(( SPARK_B1 + SPARK_B2 + SPARK_B3 + DUCKDB_B1 + DUCKDB_B2 + DUCKDB_B3 + FELDERA_B1 + FELDERA_B2 + FELDERA_B3 ))
+TOTAL_SECS=$(( SPARK_B1 + SPARK_B2 + SPARK_B3 + DUCKDB_B1 + DUCKDB_B2 + DUCKDB_B3 + OPENIVM_B1 + OPENIVM_B2 + OPENIVM_B3 + FELDERA_B1 + FELDERA_B2 + FELDERA_B3 ))
 printf "================= %s ==================\n" "$(fmt_duration $TOTAL_SECS)"

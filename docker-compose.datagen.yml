@@ -5,7 +5,7 @@ services:
     cpus: 32
     mem_limit: 128g
     volumes:
-      - /home/mdrrahman/ivm-bench/mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen
+      - ./mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen
     environment:
       DIGEN_PATH: /data/digen
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
@@ -22,8 +22,8 @@ services:
     cpus: 32
     mem_limit: 128g
     volumes:
-      - /home/mdrrahman/ivm-bench/mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen:ro
-      - /home/mdrrahman/ivm-bench/mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
+      - ./mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen:ro
+      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
       JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
       DIGEN_PATH: /data/digen

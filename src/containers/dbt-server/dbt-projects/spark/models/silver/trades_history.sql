@@ -21,14 +21,14 @@ select
     coalesce(
         lag(th_dts) over (
             partition by t_id
-            order by th_dts desc
+            order by th_dts desc, t_dts desc, t_st_id desc
         ) - interval 1 millisecond,
         to_timestamp('9999-12-31 23:59:59.999')
     ) as end_timestamp,
     case
         when row_number() over (
             partition by t_id
-            order by th_dts desc
+            order by th_dts desc, t_dts desc, t_st_id desc
         ) = 1 then true
         else false
     end as is_current
