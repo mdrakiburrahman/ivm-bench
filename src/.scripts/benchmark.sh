@@ -4,6 +4,13 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 export SCALE_FACTOR="${SCALE_FACTOR:-3}"
+
+if [[ -z "${BATCH_1_PCT:-}" || -z "${BATCH_2_PCT:-}" || -z "${BATCH_3_PCT:-}" ]]; then
+  echo "ERROR: BATCH_1_PCT, BATCH_2_PCT, and BATCH_3_PCT must all be set."
+  echo "  Example: export BATCH_1_PCT=1 BATCH_2_PCT=0.001 BATCH_3_PCT=0.002"
+  exit 1
+fi
+export BATCH_1_PCT BATCH_2_PCT BATCH_3_PCT
 LOGS_DIR=".logs"
 
 mkdir -p "$LOGS_DIR"
@@ -611,9 +618,14 @@ echo ""
 echo "=== Phase 3: Generating results chart ==="
 docker compose -f "$DUCKDB_COMPOSE" up -d 2>&1 | tail -3
 wait_for_health 5000
-curl -sf -o "scale-factor-${SCALE_FACTOR}.png" "http://localhost:5000/chart?sf=${SCALE_FACTOR}"
+
+_b1_slug="${BATCH_1_PCT//./_}"
+_b2_slug="${BATCH_2_PCT//./_}"
+_b3_slug="${BATCH_3_PCT//./_}"
+CHART_FILE="scale-factor-${SCALE_FACTOR}-${_b1_slug}-${_b2_slug}-${_b3_slug}.png"
+curl -sf -o "$CHART_FILE" "http://localhost:5000/chart?sf=${SCALE_FACTOR}&b1pct=${BATCH_1_PCT}&b2pct=${BATCH_2_PCT}&b3pct=${BATCH_3_PCT}"
 docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
-echo "  Chart saved to scale-factor-${SCALE_FACTOR}.png"
+echo "  Chart saved to $CHART_FILE"
 
 echo ""
 echo "=== All benchmarks completed successfully ==="

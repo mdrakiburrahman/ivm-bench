@@ -8,6 +8,9 @@ services:
       STATE_DIR: /data/state
       STATS_DIR: /data/stats
       SCALE_FACTOR: ${SCALE_FACTOR:-3}
+      BATCH_1_PCT: "${BATCH_1_PCT}"
+      BATCH_2_PCT: "${BATCH_2_PCT}"
+      BATCH_3_PCT: "${BATCH_3_PCT}"
     volumes:
       - ./mount/results/${SCALE_FACTOR:-3}/dbt-server:/data/state
       - ./mount/logs/${SCALE_FACTOR:-3}:/data/logs

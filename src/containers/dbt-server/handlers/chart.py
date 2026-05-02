@@ -36,6 +36,11 @@ def chart():
     import numpy as np
 
     sf = request.args.get("sf", os.environ.get("SCALE_FACTOR", "?"))
+    batch_pcts = {
+        1: request.args.get("b1pct", os.environ.get("BATCH_1_PCT", "")),
+        2: request.args.get("b2pct", os.environ.get("BATCH_2_PCT", "")),
+        3: request.args.get("b3pct", os.environ.get("BATCH_3_PCT", "")),
+    }
 
     # --- Load execution time records ---
     records = []
@@ -148,7 +153,7 @@ def chart():
             ax.set_yticks(y_positions)
             ax.set_yticklabels(table_names, fontsize=8)
             ax.invert_yaxis()
-            ax.set_title(f"Batch {batch} — {sum(size_vals):.2f} GB", fontsize=11)
+            ax.set_title(f"Batch {batch} — {sum(size_vals):.2f} GB — {batch_pcts.get(batch, '?')}%", fontsize=11)
             ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v/1e6:.1f}M" if v >= 1e6 else f"{v/1e3:.0f}K" if v >= 1e3 else f"{v:.0f}"))
 
             # Top x-axis: size in GB (orange bars)
@@ -205,7 +210,9 @@ def chart():
             sep_y = q_idx * group_spacing - 0.2
             ax.axhline(y=sep_y, color='gray', linewidth=0.3, alpha=0.5)
 
-    fig.suptitle(f"dbt Model Execution Time by Engine (SF={sf})", fontsize=14, y=0.99)
+    pct_parts = [f"B{b}={batch_pcts.get(b, '?')}%" for b in batches if batch_pcts.get(b)]
+    pct_label = f" ({', '.join(pct_parts)})" if pct_parts else ""
+    fig.suptitle(f"dbt Model Execution Time by Engine (SF={sf}{pct_label})", fontsize=14, y=0.99)
     plt.tight_layout(rect=[0, 0, 1, 0.97])
 
     buf = BytesIO()

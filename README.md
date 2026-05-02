@@ -39,6 +39,9 @@ export GIT_ROOT=$(git rev-parse --show-toplevel)
 
 # 3 - 2147483647
 export SCALE_FACTOR=3
+export BATCH_1_PCT=1      # 1% of DIGen batch 1 data
+export BATCH_2_PCT=0.001  # 0.001% of DIGen batch 2 data
+export BATCH_3_PCT=0.002  # 0.002% of DIGen batch 3 data
 
 sudo rm -rf ${GIT_ROOT}/mount
 bash src/.scripts/benchmark.sh
@@ -87,10 +90,6 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 ### Scale Factor: 3
 
 ![Results](scale-factor-3.png)
-
-### Scale Factor: 100
-
-![Results](scale-factor-100.png)
 
 ---
 
