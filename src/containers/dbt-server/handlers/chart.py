@@ -147,7 +147,7 @@ def chart():
             ax.set_yticks(y_positions)
             ax.set_yticklabels(table_names, fontsize=8)
             ax.invert_yaxis()
-            ax.set_title(f"Batch {batch} — Source Data", fontsize=11)
+            ax.set_title(f"Batch {batch} — {sum(size_vals):.2f} GB", fontsize=11)
             ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v/1e6:.1f}M" if v >= 1e6 else f"{v/1e3:.0f}K" if v >= 1e3 else f"{v:.0f}"))
 
             # Top x-axis: size in GB (orange bars)

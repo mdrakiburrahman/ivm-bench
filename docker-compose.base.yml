@@ -10,6 +10,7 @@ services:
       SCALE_FACTOR: ${SCALE_FACTOR:-3}
     volumes:
       - ./mount/results/${SCALE_FACTOR:-3}/dbt-server:/data/state
+      - ./mount/logs/${SCALE_FACTOR:-3}:/data/logs
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
       test: curl -sf http://localhost:5000/health || exit 1

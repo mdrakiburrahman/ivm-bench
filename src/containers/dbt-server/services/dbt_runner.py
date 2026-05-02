@@ -38,6 +38,9 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
 
     init_progress(run_id)
 
+    log_path = f"/data/logs/{engine}"
+    os.makedirs(log_path, exist_ok=True)
+
     cmd = [
         "dbt", "build",
         "--profiles-dir", project_dir,
@@ -45,6 +48,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
         "--target", engine,
         "--log-format", "json",
         "--log-level", "info",
+        "--log-path", log_path,
     ]
     if full_refresh:
         cmd.append("--full-refresh")
