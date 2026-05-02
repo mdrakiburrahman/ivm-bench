@@ -21,6 +21,7 @@ from handlers.delta_stats import DeltaStatsHandler
 from handlers.feldera import FelderaHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
+from handlers.openivm import OpenIVMHandler
 from handlers.runs import RunsHandler
 from handlers.sql_analysis import SQLAnalysisHandler
 from services.db import init_db
@@ -62,6 +63,7 @@ def register_handlers(flask_app: Flask) -> None:
     """Register all route handlers."""
     handlers = [
         HealthHandler(),
+        OpenIVMHandler(),
         RunsHandler(),
         FelderaHandler(),
         ChartHandler(),

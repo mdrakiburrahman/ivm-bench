@@ -38,7 +38,7 @@ See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows
 export GIT_ROOT=$(git rev-parse --show-toplevel)
 
 # 3 - 2147483647
-export SCALE_FACTOR=100
+export SCALE_FACTOR=3
 
 sudo rm -rf ${GIT_ROOT}/mount
 bash src/.scripts/benchmark.sh
@@ -65,7 +65,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | ------- | -------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Spark   | `docker-compose.benchmark.spark.yml`   | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
 | DuckDB  | `docker-compose.benchmark.duckdb.yml`  | Batch SQL            | In-process, reads Delta via `delta` extension, writes via a hack with [this community extension](https://github.com/djouallah/delta_export) that blows up the Delta transaction log each time |
-| OpenIVM | `third_party/openivm/` submodule + `src/.scripts/openivm-benchmark.py` | DuckLake IVM | Uses OpenIVM's built DuckDB executable, creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, and validates outputs with `EXCEPT ALL` |
+| OpenIVM | `docker-compose.benchmark.openivm.yml` | DuckLake IVM         | Built from source in a container (`docker-compose.openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL`                   |
 | Feldera | `docker-compose.benchmark.feldera.yml` | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
 
 ## Mount layout
@@ -76,14 +76,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | `mount/raw/<SF>/delta/staging/`                            | Unified staging (grows via `spark-batch-loader`) |
 | `mount/results/<SF>/<engine>/`                             | Engine output (Delta tables from dbt)            |
 | `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json` | Per-batch benchmark results                      |
-
-OpenIVM is a git submodule. Initialize and build it before running only the
-OpenIVM path directly:
-
-```bash
-git submodule update --init --recursive third_party/openivm
-(cd third_party/openivm && GEN=ninja make)
-```
+| `mount/bin/openivm/duckdb`                                 | OpenIVM DuckDB binary (built by container)       |
 
 ## Results
 

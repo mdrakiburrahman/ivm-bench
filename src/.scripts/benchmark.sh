@@ -9,7 +9,7 @@ LOGS_DIR=".logs"
 mkdir -p "$LOGS_DIR"
 
 # Pre-create mount directories so Docker doesn't create them as root
-for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/openivm" "mount/results/${SCALE_FACTOR}/dbt-server" "mount/logs/${SCALE_FACTOR}/spark" "mount/logs/${SCALE_FACTOR}/duckdb" "mount/logs/${SCALE_FACTOR}/feldera" "mount/stats/${SCALE_FACTOR}/spark" "mount/stats/${SCALE_FACTOR}/duckdb" "mount/stats/${SCALE_FACTOR}/feldera"; do
+for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/openivm" "mount/results/${SCALE_FACTOR}/dbt-server" "mount/bin/openivm" "mount/logs/${SCALE_FACTOR}/spark" "mount/logs/${SCALE_FACTOR}/duckdb" "mount/logs/${SCALE_FACTOR}/feldera" "mount/logs/${SCALE_FACTOR}/openivm" "mount/stats/${SCALE_FACTOR}/spark" "mount/stats/${SCALE_FACTOR}/duckdb" "mount/stats/${SCALE_FACTOR}/feldera" "mount/stats/${SCALE_FACTOR}/openivm"; do
   mkdir -p "$d" 2>/dev/null || {
     docker run --rm -v "$(pwd)/mount:/mount" alpine mkdir -p "/${d}" 2>/dev/null
     docker run --rm -v "$(pwd)/mount:/mount" alpine chown -R "$(id -u):$(id -g)" /mount 2>/dev/null
@@ -23,15 +23,17 @@ docker compose -f docker-compose.batch-loader.yml down --remove-orphans 2>/dev/n
 docker compose -f docker-compose.benchmark.spark.yml down --remove-orphans 2>/dev/null || true
 docker compose -f docker-compose.benchmark.duckdb.yml down --remove-orphans 2>/dev/null || true
 docker compose -f docker-compose.benchmark.feldera.yml down --remove-orphans 2>/dev/null || true
+docker compose -f docker-compose.benchmark.openivm.yml down --remove-orphans 2>/dev/null || true
 
 DATAGEN_COMPOSE="docker-compose.datagen.yml"
+OPENIVM_BUILD_COMPOSE="docker-compose.openivm-build.yml"
 BATCH_LOADER_COMPOSE="docker-compose.batch-loader.yml"
 BENCHMARK_COMPOSE="docker-compose.benchmark.spark.yml"
 DUCKDB_COMPOSE="docker-compose.benchmark.duckdb.yml"
+OPENIVM_COMPOSE="docker-compose.benchmark.openivm.yml"
 FELDERA_COMPOSE="docker-compose.benchmark.feldera.yml"
 
 RESULTS_DIR="mount/results/${SCALE_FACTOR}/dbt-server"
-OPENIVM_WORK_DIR="mount/results/${SCALE_FACTOR}/openivm"
 HEALTH_RETRIES=60
 
 # ---------------------------------------------------------------------------
@@ -125,6 +127,40 @@ run_dbt() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: trigger an OpenIVM run, stream progress, save results
+# Usage:  run_openivm <batch_num>
+#         (sets global RUN_STATUS)
+# ---------------------------------------------------------------------------
+run_openivm() {
+  local batch_num="$1"
+  local full_refresh="true"
+  if [[ "$batch_num" != "1" ]]; then
+    full_refresh="false"
+  fi
+
+  echo "=== Triggering OpenIVM run (batch=$batch_num, SF=$SCALE_FACTOR, full_refresh=$full_refresh) ==="
+  local RUN_RESPONSE
+  RUN_RESPONSE=$(curl -sf -X POST "http://localhost:5000/run/openivm" \
+    -H 'Content-Type: application/json' \
+    -d "{\"scale_factor\": $SCALE_FACTOR, \"full_refresh\": $full_refresh, \"batch_num\": $batch_num}")
+  local RUN_ID
+  RUN_ID=$(echo "$RUN_RESPONSE" | jq -r '.run_id')
+  echo "  run_id=$RUN_ID"
+
+  echo ""
+  echo "=== OpenIVM progress (batch $batch_num) ==="
+  echo ""
+
+  stream_progress "$RUN_ID"
+
+  echo ""
+
+  mkdir -p "$RESULTS_DIR" 2>/dev/null || true
+  curl -sf "http://localhost:5000/runs/$RUN_ID" | jq . > "$RESULTS_DIR/run-openivm-batch${batch_num}.json"
+  echo "  results saved to $RESULTS_DIR/run-openivm-batch${batch_num}.json"
+}
+
+# ---------------------------------------------------------------------------
 # Helper: run spark-batch-loader (init or append)
 # Usage:  batch_loader init
 #         batch_loader append <batch_num>
@@ -166,12 +202,13 @@ capture_logs() {
 # ---------------------------------------------------------------------------
 fetch_lineage() {
   local engine="$1"
-  echo "=== Fetching dbt lineage for $engine ==="
-  local lineage_file="$RESULTS_DIR/lineage-${engine}.json"
+  local output_name="${2:-$engine}"
+  echo "=== Fetching dbt lineage for $output_name ==="
+  local lineage_file="$RESULTS_DIR/lineage-${output_name}.json"
   if curl -sf "http://localhost:5000/lineage/$engine" | jq . > "$lineage_file" 2>/dev/null; then
     echo "  lineage saved to $lineage_file"
   else
-    echo "  WARNING: failed to fetch lineage for $engine (non-fatal)"
+    echo "  WARNING: failed to fetch lineage for $output_name (non-fatal)"
   fi
 }
 
@@ -181,12 +218,13 @@ fetch_lineage() {
 # ---------------------------------------------------------------------------
 fetch_sql_analysis() {
   local engine="$1"
-  echo "=== Fetching SQL analysis for $engine ==="
-  local analysis_file="$RESULTS_DIR/sql-analysis-${engine}.json"
+  local output_name="${2:-$engine}"
+  echo "=== Fetching SQL analysis for $output_name ==="
+  local analysis_file="$RESULTS_DIR/sql-analysis-${output_name}.json"
   if curl -sf "http://localhost:5000/sql/$engine" | jq . > "$analysis_file" 2>/dev/null; then
     echo "  sql analysis saved to $analysis_file"
   else
-    echo "  WARNING: failed to fetch sql analysis for $engine (non-fatal)"
+    echo "  WARNING: failed to fetch sql analysis for $output_name (non-fatal)"
   fi
 }
 
@@ -276,12 +314,28 @@ echo "=== Building batch-loader image ==="
 docker compose -f "$BATCH_LOADER_COMPOSE" build
 
 # ---------------------------------------------------------------------------
+# Build OpenIVM binary (once, idempotent)
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Building OpenIVM binary ==="
+docker compose -f "$OPENIVM_BUILD_COMPOSE" build 2>&1 | tee "$LOGS_DIR/openivm-build.log"
+docker compose -f "$OPENIVM_BUILD_COMPOSE" up openivm-builder 2>&1 | tee -a "$LOGS_DIR/openivm-build.log"
+docker compose -f "$OPENIVM_BUILD_COMPOSE" down --remove-orphans 2>/dev/null || true
+
+if [[ ! -f "mount/bin/openivm/duckdb" ]]; then
+  echo "=== FAILURE — OpenIVM binary not found at mount/bin/openivm/duckdb ==="
+  exit 1
+fi
+echo "=== OpenIVM binary ready ==="
+
+# ---------------------------------------------------------------------------
 # Phase 2 — dbt benchmark (multi-batch)
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Phase 2: Building benchmark images ==="
 docker compose -f "$BENCHMARK_COMPOSE" build
 docker compose -f "$DUCKDB_COMPOSE" build
+docker compose -f "$OPENIVM_COMPOSE" build
 docker compose -f "$FELDERA_COMPOSE" build
 
 # ---------------------------------------------------------------------------
@@ -411,6 +465,16 @@ echo "=== Phase 2b: Tearing down DuckDB benchmark stack ==="
 stop_stats
 fetch_sql_analysis duckdb
 fetch_lineage duckdb
+
+# Persist DuckDB manifest for OpenIVM to reuse (it needs compiled SQL + DAG)
+echo "=== Phase 2b: Persisting DuckDB manifest for OpenIVM ==="
+DBT_SERVER_CONTAINER=$(docker compose -f "$DUCKDB_COMPOSE" ps -q dbt-server 2>/dev/null | head -1)
+if [[ -n "$DBT_SERVER_CONTAINER" ]]; then
+  docker cp "${DBT_SERVER_CONTAINER}:/app/dbt-projects/duckdb/target/manifest.json" \
+    "$RESULTS_DIR/manifest-duckdb.json" 2>/dev/null || \
+    echo "  WARNING: Could not copy DuckDB manifest (non-fatal)"
+fi
+
 capture_logs "$DUCKDB_COMPOSE" duckdb
 docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
 echo "=== Phase 2b: DuckDB completed successfully ==="
@@ -423,26 +487,57 @@ echo "=========================================="
 echo "=== Phase 2c: OpenIVM benchmark start ==="
 echo "=========================================="
 
+echo "=== Phase 2c: Starting OpenIVM benchmark stack (dbt-server only) ==="
+docker compose -f "$OPENIVM_COMPOSE" up -d 2>&1 | tee "$LOGS_DIR/openivm-up.log"
+
+echo "=== Phase 2c: Waiting for dbt-server health ==="
+if ! wait_for_health; then
+  capture_logs "$OPENIVM_COMPOSE" openivm
+  docker compose -f "$OPENIVM_COMPOSE" down --remove-orphans 2>/dev/null || true
+  exit 1
+fi
+
+start_stats openivm
 _t0=$(date +%s)
-src/.scripts/openivm-benchmark.py \
-  --scale-factor "$SCALE_FACTOR" \
-  --raw-delta-dir "mount/raw/${SCALE_FACTOR}/delta" \
-  --results-dir "$RESULTS_DIR" \
-  --duckdb-batch1-json "$RESULTS_DIR/run-duckdb-batch1.json" \
-  --work-dir "$OPENIVM_WORK_DIR"
-OPENIVM_TOTAL=$(( $(date +%s) - _t0 ))
-
-if [[ -f "$RESULTS_DIR/run-openivm-batch1.json" ]]; then
-  OPENIVM_B1=$(jq -r '.duration_s | floor' "$RESULTS_DIR/run-openivm-batch1.json")
-fi
-if [[ -f "$RESULTS_DIR/run-openivm-batch2.json" ]]; then
-  OPENIVM_B2=$(jq -r '.duration_s | floor' "$RESULTS_DIR/run-openivm-batch2.json")
-fi
-if [[ -f "$RESULTS_DIR/run-openivm-batch3.json" ]]; then
-  OPENIVM_B3=$(jq -r '.duration_s | floor' "$RESULTS_DIR/run-openivm-batch3.json")
+run_openivm 1
+OPENIVM_B1=$(( $(date +%s) - _t0 ))
+if [[ "$RUN_STATUS" == "failed" ]]; then
+  echo "=== FAILURE — OpenIVM run failed (batch 1) ==="
+  capture_logs "$OPENIVM_COMPOSE" openivm
+  docker compose -f "$OPENIVM_COMPOSE" down --remove-orphans 2>/dev/null || true
+  exit 1
 fi
 
-echo "=== Phase 2c: OpenIVM completed successfully (${OPENIVM_TOTAL}s total) ==="
+# Batch 2: append + refresh (source loading handled inside dbt-server)
+_t0=$(date +%s)
+run_openivm 2
+OPENIVM_B2=$(( $(date +%s) - _t0 ))
+if [[ "$RUN_STATUS" == "failed" ]]; then
+  echo "=== FAILURE — OpenIVM run failed (batch 2) ==="
+  capture_logs "$OPENIVM_COMPOSE" openivm
+  docker compose -f "$OPENIVM_COMPOSE" down --remove-orphans 2>/dev/null || true
+  exit 1
+fi
+
+# Batch 3: append + refresh
+_t0=$(date +%s)
+run_openivm 3
+OPENIVM_B3=$(( $(date +%s) - _t0 ))
+if [[ "$RUN_STATUS" == "failed" ]]; then
+  echo "=== FAILURE — OpenIVM run failed (batch 3) ==="
+  capture_logs "$OPENIVM_COMPOSE" openivm
+  docker compose -f "$OPENIVM_COMPOSE" down --remove-orphans 2>/dev/null || true
+  exit 1
+fi
+
+echo "=== Phase 2c: Tearing down OpenIVM benchmark stack ==="
+stop_stats
+# OpenIVM uses DuckDB's compiled SQL, so sql/lineage analysis is identical
+fetch_sql_analysis duckdb openivm
+fetch_lineage duckdb openivm
+capture_logs "$OPENIVM_COMPOSE" openivm
+docker compose -f "$OPENIVM_COMPOSE" down --remove-orphans 2>/dev/null || true
+echo "=== Phase 2c: OpenIVM completed successfully ==="
 
 # ---------------------------------------------------------------------------
 # Phase 2d — Feldera benchmark (3 batches, pipeline stays running)

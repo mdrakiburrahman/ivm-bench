@@ -14,6 +14,7 @@ ENGINE_COLORS = {
     "duckdb": "#f7e900",
     "spark": "#da571b",
     "feldera": "#ca46bf",
+    "openivm": "#4a90d9",
 }
 
 
