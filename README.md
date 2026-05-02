@@ -78,7 +78,11 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ## Results
 
-## Scale Factor: 3
+### Notes
+
+* The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start
+
+### Scale Factor: 3
 
 ![Results](scale-factor-3.png)
 
