@@ -1,43 +1,22 @@
--- Silver: daily_market with 52-week highs/lows
--- Rewritten as self-join (Feldera does not support ROWS BETWEEN window frames)
-with
-    s1 as (
-        select a.dm_date,
-               a.dm_s_symb,
-               a.dm_close,
-               a.dm_high,
-               a.dm_low,
-               a.dm_vol,
-               MIN(b.dm_low) as fifty_two_week_low,
-               MAX(b.dm_high) as fifty_two_week_high
-        from {{ ref('brokerage_daily_market') }} a
-        join {{ ref('brokerage_daily_market') }} b
-            on a.dm_s_symb = b.dm_s_symb
-            and b.dm_date between a.dm_date - INTERVAL '365' DAY and a.dm_date
-        GROUP BY a.dm_date, a.dm_s_symb, a.dm_close, a.dm_high, a.dm_low, a.dm_vol
-    ),
-    s2 as (
-        select a.dm_date,
-               a.dm_s_symb,
-               a.dm_close,
-               a.dm_high,
-               a.dm_low,
-               a.dm_vol,
-               a.fifty_two_week_low,
-               a.fifty_two_week_high,
-               MIN(b.dm_date) as fifty_two_week_low_date,
-               MIN(c.dm_date) as fifty_two_week_high_date
-        from s1 a
-        join {{ ref('brokerage_daily_market') }} b
-            on a.dm_s_symb = b.dm_s_symb
-            and a.fifty_two_week_low = b.dm_low
-            and b.dm_date between a.dm_date - INTERVAL '365' DAY and a.dm_date
-        join {{ ref('brokerage_daily_market') }} c
-            on a.dm_s_symb = c.dm_s_symb
-            and a.fifty_two_week_high = c.dm_high
-            and c.dm_date between a.dm_date - INTERVAL '365' DAY and a.dm_date
-        GROUP BY a.dm_date, a.dm_s_symb, a.dm_close, a.dm_high, a.dm_low, a.dm_vol,
-                 a.fifty_two_week_low, a.fifty_two_week_high
-    )
-select *
-from s2
+-- Silver: daily_market with cumulative highs/lows
+with cumulative as (
+    select
+        dm_date, dm_s_symb, dm_close, dm_high, dm_low, dm_vol,
+        min(dm_low) over w as fifty_two_week_low,
+        max(dm_high) over w as fifty_two_week_high
+    from {{ ref('brokerage_daily_market') }}
+    window w as (partition by dm_s_symb order by dm_date)
+),
+flagged as (
+    select *,
+        case when dm_low = fifty_two_week_low then dm_date else null end as low_date_flag,
+        case when dm_high = fifty_two_week_high then dm_date else null end as high_date_flag
+    from cumulative
+)
+select
+    dm_date, dm_s_symb, dm_close, dm_high, dm_low, dm_vol,
+    fifty_two_week_low,
+    fifty_two_week_high,
+    max(low_date_flag) over (partition by dm_s_symb order by dm_date) as fifty_two_week_low_date,
+    max(high_date_flag) over (partition by dm_s_symb order by dm_date) as fifty_two_week_high_date
+from flagged

@@ -1,48 +1,22 @@
--- Silver: daily_market with 52-week highs/lows (ported: qualify → subquery)
-with
-    s1 as (
-        select
-            min(dm_low) over (
-                partition by dm_s_symb
-                order by dm_date asc
-                rows between 364 preceding and current row
-            ) as fifty_two_week_low,
-            max(dm_high) over (
-                partition by dm_s_symb
-                order by dm_date asc
-                rows between 364 preceding and current row
-            ) as fifty_two_week_high,
-            *
-        from {{ ref("brokerage_daily_market") }}
-    ),
-    s2 as (
-        select a.*,
-               b.dm_date as fifty_two_week_low_date,
-               c.dm_date as fifty_two_week_high_date,
-               row_number() over (
-                   partition by a.dm_s_symb, a.dm_date
-                   order by b.dm_date, c.dm_date
-               ) as rn
-        from s1 a
-        join s1 b
-            on a.dm_s_symb = b.dm_s_symb
-            and a.fifty_two_week_low = b.dm_low
-            and b.dm_date between add_months(a.dm_date, -12) and a.dm_date
-        join s1 c
-            on a.dm_s_symb = c.dm_s_symb
-            and a.fifty_two_week_high = c.dm_high
-            and c.dm_date between add_months(a.dm_date, -12) and a.dm_date
-    )
+-- Silver: daily_market with cumulative highs/lows
+with cumulative as (
+    select
+        dm_date, dm_s_symb, dm_close, dm_high, dm_low, dm_vol,
+        min(dm_low) over w as fifty_two_week_low,
+        max(dm_high) over w as fifty_two_week_high
+    from {{ ref("brokerage_daily_market") }}
+    window w as (partition by dm_s_symb order by dm_date)
+),
+flagged as (
+    select *,
+        case when dm_low = fifty_two_week_low then dm_date else null end as low_date_flag,
+        case when dm_high = fifty_two_week_high then dm_date else null end as high_date_flag
+    from cumulative
+)
 select
-    dm_date,
-    dm_s_symb,
-    dm_close,
-    dm_high,
-    dm_low,
-    dm_vol,
+    dm_date, dm_s_symb, dm_close, dm_high, dm_low, dm_vol,
     fifty_two_week_low,
     fifty_two_week_high,
-    fifty_two_week_low_date,
-    fifty_two_week_high_date
-from s2
-where rn = 1
+    max(low_date_flag) over (partition by dm_s_symb order by dm_date) as fifty_two_week_low_date,
+    max(high_date_flag) over (partition by dm_s_symb order by dm_date) as fifty_two_week_high_date
+from flagged
