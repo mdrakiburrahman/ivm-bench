@@ -3,7 +3,7 @@
 import os
 import re
 
-from flask import Blueprint, Flask, Response, jsonify
+from flask import Blueprint, Flask, Response, jsonify, request
 
 from handlers.base import BaseHandler
 from services.db import STATE_DIR
@@ -107,7 +107,7 @@ def chart():
             sep_y = q_idx * group_spacing - 0.2
             ax.axhline(y=sep_y, color='gray', linewidth=0.3, alpha=0.5)
 
-    fig.suptitle("dbt Model Execution Time by Engine (SF=5)", fontsize=14, y=0.98)
+    fig.suptitle(f"dbt Model Execution Time by Engine (SF={request.args.get('sf', os.environ.get('SCALE_FACTOR', '?'))})", fontsize=14, y=0.98)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
     buf = BytesIO()

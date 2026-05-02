@@ -16,25 +16,17 @@ services:
       start_period: 30s
 
   dbt-server:
-    build:
-      context: ./src/containers/dbt-server
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
     depends_on:
       pipeline-manager:
         condition: service_healthy
     cpus: 4
     mem_limit: 8g
-    ports:
-      - "5000:5000"
     environment:
-      STATE_DIR: /data/state
       FELDERA_URL: "http://pipeline-manager:8080"
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
       - ./mount/results/${SCALE_FACTOR:-3}/feldera:/data/processed/feldera
-      - ./mount/results/${SCALE_FACTOR:-3}/dbt-server:/data/state
-    healthcheck:
-      test: curl -sf http://localhost:5000/health || exit 1
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
+      - ./mount/stats/${SCALE_FACTOR:-3}/feldera:/data/stats

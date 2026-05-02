@@ -9,7 +9,7 @@ LOGS_DIR=".logs"
 mkdir -p "$LOGS_DIR"
 
 # Pre-create mount directories so Docker doesn't create them as root
-for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/dbt-server" "mount/logs/${SCALE_FACTOR}/spark" "mount/logs/${SCALE_FACTOR}/duckdb" "mount/logs/${SCALE_FACTOR}/feldera"; do
+for d in "mount/results/${SCALE_FACTOR}/spark" "mount/results/${SCALE_FACTOR}/duckdb" "mount/results/${SCALE_FACTOR}/feldera" "mount/results/${SCALE_FACTOR}/dbt-server" "mount/logs/${SCALE_FACTOR}/spark" "mount/logs/${SCALE_FACTOR}/duckdb" "mount/logs/${SCALE_FACTOR}/feldera" "mount/stats/${SCALE_FACTOR}/spark" "mount/stats/${SCALE_FACTOR}/duckdb" "mount/stats/${SCALE_FACTOR}/feldera"; do
   mkdir -p "$d" 2>/dev/null || {
     docker run --rm -v "$(pwd)/mount:/mount" alpine mkdir -p "/${d}" 2>/dev/null
     docker run --rm -v "$(pwd)/mount:/mount" alpine chown -R "$(id -u):$(id -g)" /mount 2>/dev/null
@@ -152,7 +152,8 @@ capture_logs() {
   local services
   services=$(docker compose -f "$compose_file" ps --services 2>/dev/null || true)
   for svc in $services; do
-    docker compose -f "$compose_file" logs --no-color "$svc" > "$logs_dest/${svc}.log" 2>&1 || true
+    docker compose -f "$compose_file" logs --no-color --timestamps "$svc" \
+      > "$logs_dest/${svc}.log" 2>/dev/null || true
   done
   echo "  logs saved to $logs_dest/"
 }
@@ -170,6 +171,50 @@ fetch_lineage() {
   else
     echo "  WARNING: failed to fetch lineage for $engine (non-fatal)"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: fetch SQL analysis (AST + operators) for an engine
+# Usage:  fetch_sql_analysis <engine>
+# ---------------------------------------------------------------------------
+fetch_sql_analysis() {
+  local engine="$1"
+  echo "=== Fetching SQL analysis for $engine ==="
+  local analysis_file="$RESULTS_DIR/sql-analysis-${engine}.json"
+  if curl -sf "http://localhost:5000/sql/$engine" | jq . > "$analysis_file" 2>/dev/null; then
+    echo "  sql analysis saved to $analysis_file"
+  else
+    echo "  WARNING: failed to fetch sql analysis for $engine (non-fatal)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: start container stats collection
+# Usage:  start_stats <engine>
+# ---------------------------------------------------------------------------
+start_stats() {
+  local engine="$1"
+  echo "=== Starting container stats collection for $engine ==="
+  if curl -sf -X POST "http://localhost:5000/stats/containers/start" \
+    -H 'Content-Type: application/json' \
+    -d "{\"engine\": \"$engine\", \"scale_factor\": $SCALE_FACTOR}" >/dev/null 2>&1; then
+    echo "  stats collection started"
+  else
+    echo "  WARNING: failed to start stats collection (non-fatal)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Helper: stop container stats collection
+# Usage:  stop_stats
+# ---------------------------------------------------------------------------
+stop_stats() {
+  echo "=== Stopping container stats collection ==="
+  local resp
+  resp=$(curl -sf -X POST "http://localhost:5000/stats/containers/stop" 2>/dev/null || echo "{}")
+  local count
+  count=$(echo "$resp" | jq -r '.sample_count // 0')
+  echo "  stats collection stopped ($count samples)"
 }
 
 # ---------------------------------------------------------------------------
@@ -243,7 +288,7 @@ if ! wait_for_health; then
   exit 1
 fi
 
-# Batch 1 run
+start_stats spark
 _t0=$(date +%s)
 run_dbt spark 1
 SPARK_B1=$(( $(date +%s) - _t0 ))
@@ -279,6 +324,8 @@ if [[ "$RUN_STATUS" == "failed" ]]; then
 fi
 
 echo "=== Phase 2a: Tearing down Spark benchmark stack ==="
+stop_stats
+fetch_sql_analysis spark
 fetch_lineage spark
 capture_logs "$BENCHMARK_COMPOSE" spark
 docker compose -f "$BENCHMARK_COMPOSE" down --remove-orphans 2>/dev/null || true
@@ -305,7 +352,7 @@ if ! wait_for_health; then
   exit 1
 fi
 
-# Batch 1 run
+start_stats duckdb
 _t0=$(date +%s)
 run_dbt duckdb 1
 DUCKDB_B1=$(( $(date +%s) - _t0 ))
@@ -341,6 +388,8 @@ if [[ "$RUN_STATUS" == "failed" ]]; then
 fi
 
 echo "=== Phase 2b: Tearing down DuckDB benchmark stack ==="
+stop_stats
+fetch_sql_analysis duckdb
 fetch_lineage duckdb
 capture_logs "$DUCKDB_COMPOSE" duckdb
 docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
@@ -367,7 +416,7 @@ if ! wait_for_health; then
   exit 1
 fi
 
-# Batch 1: dbt build creates the pipeline, dbt-server polls until pipeline finishes + Delta flush
+start_stats feldera
 _t0=$(date +%s)
 run_dbt feldera 1
 FELDERA_B1=$(( $(date +%s) - _t0 ))
@@ -407,6 +456,8 @@ echo "  Feldera batch 3 processing time: ${FELDERA_B3_DURATION}s"
 echo "  results saved to $RESULTS_DIR/run-feldera-batch3.json"
 
 echo "=== Phase 2c: Tearing down Feldera benchmark stack ==="
+stop_stats
+fetch_sql_analysis feldera
 fetch_lineage feldera
 capture_logs "$FELDERA_COMPOSE" feldera
 docker compose -f "$FELDERA_COMPOSE" down --remove-orphans 2>/dev/null || true
@@ -416,7 +467,7 @@ echo ""
 echo "=== Phase 3: Generating results chart ==="
 docker compose -f "$DUCKDB_COMPOSE" up -d 2>&1 | tail -3
 wait_for_health 5000
-curl -sf -o results.png http://localhost:5000/chart
+curl -sf -o results.png "http://localhost:5000/chart?sf=${SCALE_FACTOR}"
 docker compose -f "$DUCKDB_COMPOSE" down --remove-orphans 2>/dev/null || true
 echo "  Chart saved to results.png"
 

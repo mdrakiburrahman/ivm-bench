@@ -35,18 +35,15 @@ services:
       start_period: 60s
 
   dbt-server:
-    build:
-      context: ./src/containers/dbt-server
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
     depends_on:
       spark:
         condition: service_healthy
     cpus: 4
     mem_limit: 8g
-    ports:
-      - "5000:5000"
-    environment:
-      STATE_DIR: /data/state
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ./mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark
-      - ./mount/results/${SCALE_FACTOR:-3}/dbt-server:/data/state
+      - ./mount/stats/${SCALE_FACTOR:-3}/spark:/data/stats

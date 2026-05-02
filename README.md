@@ -36,11 +36,25 @@ See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows
 
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
-export SCALE_FACTOR=5
 
-sudo rm -rf ${GIT_ROOT}/mount/raw/${SCALE_FACTOR}
-sudo rm -rf ${GIT_ROOT}/mount/results/${SCALE_FACTOR}
+# 3 - 2147483647
+export SCALE_FACTOR=3
+
+sudo rm -rf ${GIT_ROOT}/mount
 bash src/.scripts/benchmark.sh
+```
+
+At the end, you should see:
+
+```text
+=== All benchmarks completed successfully ===
+
+            1           2           3
+Spark:      00:03:05 -> 00:02:16 -> 00:02:17
+DuckDB:     00:02:27 -> 00:02:33 -> 00:02:35
+Feldera:    00:11:43 -> 00:01:24 -> 00:01:00
+
+================= 00:29:20 ==================
 ```
 
 Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).

@@ -1,0 +1,19 @@
+services:
+  dbt-server-base:
+    build:
+      context: ./src/containers/dbt-server
+    ports:
+      - "5000:5000"
+    environment:
+      STATE_DIR: /data/state
+      STATS_DIR: /data/stats
+      SCALE_FACTOR: ${SCALE_FACTOR:-3}
+    volumes:
+      - ./mount/results/${SCALE_FACTOR:-3}/dbt-server:/data/state
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: curl -sf http://localhost:5000/health || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
