@@ -17,6 +17,13 @@ object TpcdiToDelta {
     val digenPath = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
     val deltaPath = sys.env.getOrElse("DELTA_PATH", "/data/delta")
 
+    val batchPct = Map(
+      1 -> sys.env.getOrElse("BATCH_1_PCT", sys.error("BATCH_1_PCT env var required")).toDouble,
+      2 -> sys.env.getOrElse("BATCH_2_PCT", sys.error("BATCH_2_PCT env var required")).toDouble,
+      3 -> sys.env.getOrElse("BATCH_3_PCT", sys.error("BATCH_3_PCT env var required")).toDouble,
+    )
+    println(s"=== Batch limits: B1=${batchPct(1)}%, B2=${batchPct(2)}%, B3=${batchPct(3)}% ===")
+
     val spark = SparkSession.builder()
       .appName("TpcdiToDelta")
       .master("local[*]")
@@ -27,13 +34,23 @@ object TpcdiToDelta {
     var written = 0
     var skipped = 0
 
-    def writeDelta(df: DataFrame, outPath: String, label: String): Unit = {
+    def applyLimit(df: DataFrame, batch: Int, label: String): DataFrame = {
+      val pct = batchPct(batch)
+      if (pct >= 100.0) return df
+      val totalRows = df.count()
+      val limitRows = math.max(1L, math.ceil(totalRows * pct / 100.0).toLong).toInt
+      println(s"  LIMIT: $label — ${pct}% of $totalRows rows = $limitRows rows")
+      df.limit(limitRows)
+    }
+
+    def writeDelta(df: DataFrame, outPath: String, label: String, batch: Int): Unit = {
       if (deltaExists(outPath)) {
         println(s"  SKIP: $label — Delta table already exists")
         skipped += 1
       } else {
+        val limited = applyLimit(df, batch, label)
         println(s"  WRITE: $label → $outPath")
-        df.write.format("delta")
+        limited.write.format("delta")
           .option("delta.enableChangeDataFeed", "true")
           .mode("overwrite")
           .save(outPath)
@@ -117,7 +134,7 @@ object TpcdiToDelta {
     for ((file, schema, table) <- refTables) {
       val src = s"$digenPath/Batch1/$file"
       if (sourceExists(src))
-        writeDelta(readCsv(src, schema), s"$deltaPath/batch1/$table", s"batch1/$table")
+        writeDelta(readCsv(src, schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
       else
         println(s"  WARN: Source not found: $src")
     }
@@ -136,7 +153,7 @@ object TpcdiToDelta {
 
     val hrSrc = s"$digenPath/Batch1/HR.csv"
     if (sourceExists(hrSrc))
-      writeDelta(readCsv(hrSrc, hrSchema, ","), s"$deltaPath/batch1/hr", "batch1/hr")
+      writeDelta(readCsv(hrSrc, hrSchema, ","), s"$deltaPath/batch1/hr", "batch1/hr", 1)
 
     // ════════════════════════════════════════════════════════════════════════
     // BatchDate — all batches, same schema
@@ -149,7 +166,7 @@ object TpcdiToDelta {
     for (b <- 1 to 3) {
       val src = s"$digenPath/Batch$b/BatchDate.txt"
       if (sourceExists(src))
-        writeDelta(readCsv(src, batchDateSchema), s"$deltaPath/batch$b/batch_date", s"batch$b/batch_date")
+        writeDelta(readCsv(src, batchDateSchema), s"$deltaPath/batch$b/batch_date", s"batch$b/batch_date", b)
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -215,7 +232,7 @@ object TpcdiToDelta {
     for ((file, schema, table) <- batch1Txn) {
       val src = s"$digenPath/Batch1/$file"
       if (sourceExists(src))
-        writeDelta(readCsv(src, schema), s"$deltaPath/batch1/$table", s"batch1/$table")
+        writeDelta(readCsv(src, schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
       else
         println(s"  WARN: Source not found: $src")
     }
@@ -287,7 +304,7 @@ object TpcdiToDelta {
     for (b <- 2 to 3; (file, schema, table) <- incrTxn) {
       val src = s"$digenPath/Batch$b/$file"
       if (sourceExists(src))
-        writeDelta(readCsv(src, schema), s"$deltaPath/batch$b/$table", s"batch$b/$table")
+        writeDelta(readCsv(src, schema), s"$deltaPath/batch$b/$table", s"batch$b/$table", b)
       else
         println(s"  WARN: Source not found: $src")
     }
@@ -335,7 +352,7 @@ object TpcdiToDelta {
     for (b <- 1 to 3) {
       val src = s"$digenPath/Batch$b/Customer.txt"
       if (sourceExists(src))
-        writeDelta(readCsv(src, customerSchema), s"$deltaPath/batch$b/customer", s"batch$b/customer")
+        writeDelta(readCsv(src, customerSchema), s"$deltaPath/batch$b/customer", s"batch$b/customer", b)
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -356,7 +373,7 @@ object TpcdiToDelta {
     for (b <- 1 to 3) {
       val src = s"$digenPath/Batch$b/Account.txt"
       if (sourceExists(src))
-        writeDelta(readCsv(src, accountSchema), s"$deltaPath/batch$b/account", s"batch$b/account")
+        writeDelta(readCsv(src, accountSchema), s"$deltaPath/batch$b/account", s"batch$b/account", b)
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -391,7 +408,7 @@ object TpcdiToDelta {
     for (b <- 1 to 3) {
       val src = s"$digenPath/Batch$b/Prospect.csv"
       if (sourceExists(src))
-        writeDelta(readCsv(src, prospectSchema, ","), s"$deltaPath/batch$b/prospect", s"batch$b/prospect")
+        writeDelta(readCsv(src, prospectSchema, ","), s"$deltaPath/batch$b/prospect", s"batch$b/prospect", b)
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -414,7 +431,7 @@ object TpcdiToDelta {
             .withColumnRenamed("value", "line")
             .withColumn("rec_type", substring(col("line"), 16, 3))
             .withColumn("pts", to_timestamp(substring(col("line"), 1, 15), "yyyyMMdd-HHmmss"))
-          writeDelta(rawDf, finwireOutPath, "batch1/finwire")
+          writeDelta(rawDf, finwireOutPath, "batch1/finwire", 1)
         } else {
           println("  WARN: No FINWIRE files found in Batch1")
         }
@@ -437,7 +454,7 @@ object TpcdiToDelta {
           .format("xml")
           .option("rowTag", "TPCDI:Action")
           .load(xmlSrc)
-        writeDelta(xmlDf, custMgmtOutPath, "batch1/customer_mgmt")
+        writeDelta(xmlDf, custMgmtOutPath, "batch1/customer_mgmt", 1)
       } else {
         println("  WARN: CustomerMgmt.xml not found")
       }
@@ -472,7 +489,7 @@ object TpcdiToDelta {
             .option("delimiter", ",")
             .schema(auditSchema)
             .csv(auditFiles: _*)
-          writeDelta(auditDf, auditOutPath, "audit")
+          writeDelta(auditDf, auditOutPath, "audit", 1)
         } else {
           println("  WARN: No audit CSV files found")
         }

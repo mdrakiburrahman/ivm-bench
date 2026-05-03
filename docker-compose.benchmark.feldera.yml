@@ -1,8 +1,8 @@
 services:
   pipeline-manager:
     image: images.feldera.com/feldera/pipeline-manager:latest
-    cpus: 32
-    mem_limit: 120g
+    cpus: ${FELDERA_CPUS:-32}
+    mem_limit: ${FELDERA_MEM:-120g}
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
       - ./mount/results/${SCALE_FACTOR:-3}/feldera:/data/processed/feldera
@@ -22,8 +22,8 @@ services:
     depends_on:
       pipeline-manager:
         condition: service_healthy
-    cpus: 4
-    mem_limit: 8g
+    cpus: ${DBT_SERVER_CPUS:-4}
+    mem_limit: ${DBT_SERVER_MEM:-8g}
     environment:
       FELDERA_URL: "http://pipeline-manager:8080"
     volumes:

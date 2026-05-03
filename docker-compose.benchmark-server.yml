@@ -1,0 +1,29 @@
+services:
+  benchmark-server:
+    build:
+      context: ./src/containers/benchmark-server
+    ports:
+      - "9000:9000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:${REPO_HOST_PATH:-.}:rw
+      - ./mount/benchmark-state:/data/state
+    environment:
+      REPO_DIR: "${REPO_HOST_PATH:-.}"
+      DOCKER_HOST_ADDRESS: "host.docker.internal"
+      SCALE_FACTOR: "${SCALE_FACTOR:-3}"
+      BATCH_1_PCT: "${BATCH_1_PCT}"
+      BATCH_2_PCT: "${BATCH_2_PCT}"
+      BATCH_3_PCT: "${BATCH_3_PCT}"
+      PARALLEL: "${PARALLEL:-0}"
+      ENGINES: "${ENGINES:-spark,duckdb,openivm,feldera}"
+      HOST_CORES: "${HOST_CORES:-}"
+      HOST_MEMORY: "${HOST_MEMORY:-}"
+    healthcheck:
+      test: curl -sf http://localhost:9000/health || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s

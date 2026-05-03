@@ -36,25 +36,28 @@ See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows
 
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
+export SCALE_FACTOR=3                        # 3 - 2147483647
+export BATCH_1_PCT=1                         # 1% of DIGen batch 1 data
+export BATCH_2_PCT=0.001                     # 0.001% of DIGen batch 2 data
+export BATCH_3_PCT=0.002                     # 0.002% of DIGen batch 3 data
+export PARALLEL=1                            # 0, 1
+export ENGINES=spark,duckdb,openivm,feldera  # Comma seperated engines to run
 
-# 3 - 2147483647
-export SCALE_FACTOR=100
-
-sudo rm -rf ${GIT_ROOT}/mount
 bash src/.scripts/benchmark.sh
 ```
 
-At the end, you should see:
+At the end, you should see the benchmark-server stream results like:
 
 ```text
 === All benchmarks completed successfully ===
 
             1           2           3
-Spark:      00:03:05 -> 00:02:16 -> 00:02:17
-DuckDB:     00:02:27 -> 00:02:33 -> 00:02:35
-Feldera:    00:11:43 -> 00:01:24 -> 00:01:00
+Duckdb:     00:00:22 -> 00:00:26 -> 00:00:28
+Spark:      00:03:44 -> 00:02:22 -> 00:02:18
+Feldera:    00:11:38 -> 00:00:39 -> 00:00:34
+Openivm:    00:00:46 -> 00:00:32 -> 00:00:32
 
-================= 00:29:20 ==================
+================= 00:24:24 ==================
 ```
 
 Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
@@ -65,7 +68,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | ------- | -------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Spark   | `docker-compose.benchmark.spark.yml`   | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
 | DuckDB  | `docker-compose.benchmark.duckdb.yml`  | Batch SQL            | In-process, reads Delta via `delta` extension, writes via a hack with [this community extension](https://github.com/djouallah/delta_export) that blows up the Delta transaction log each time |
-| OpenIVM | `third_party/openivm/` submodule + `src/.scripts/openivm-benchmark.py` | DuckLake IVM | Uses OpenIVM's built DuckDB executable, creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, and validates outputs with `EXCEPT ALL` |
+| OpenIVM | `docker-compose.benchmark.openivm.yml` | DuckLake IVM         | Built from source in a container (`docker-compose.openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL`                   |
 | Feldera | `docker-compose.benchmark.feldera.yml` | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
 
 ## Mount layout
@@ -76,14 +79,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | `mount/raw/<SF>/delta/staging/`                            | Unified staging (grows via `spark-batch-loader`) |
 | `mount/results/<SF>/<engine>/`                             | Engine output (Delta tables from dbt)            |
 | `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json` | Per-batch benchmark results                      |
-
-OpenIVM is a git submodule. Initialize and build it before running only the
-OpenIVM path directly:
-
-```bash
-git submodule update --init --recursive third_party/openivm
-(cd third_party/openivm && GEN=ninja make)
-```
+| `mount/bin/openivm/duckdb`                                 | OpenIVM DuckDB binary (built by container)       |
 
 ## Results
 
@@ -91,13 +87,9 @@ git submodule update --init --recursive third_party/openivm
 
 * The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start in batch 1
 
-### Scale Factor: 3
+### Scale Factor: 3 (1%, 0.001%, 0.002%)
 
-![Results](scale-factor-3.png)
-
-### Scale Factor: 100
-
-![Results](scale-factor-100.png)
+![Results](scale-factor-3-1-0_001-0_002.png)
 
 ---
 

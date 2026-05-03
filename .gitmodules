@@ -1,3 +1,0 @@
-[submodule "third_party/openivm"]
-	path = third_party/openivm
-	url = https://github.com/ila/openivm.git

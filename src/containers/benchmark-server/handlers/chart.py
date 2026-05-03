@@ -1,12 +1,22 @@
-"""Chart handler — generates PNG visualization of benchmark results."""
+"""Chart handler — generates PNG visualization of benchmark results.
 
+Adapted from dbt-server's chart handler to run directly in benchmark-server.
+Reads run-*.json and delta-stats-*.json files from the results directory.
+"""
+
+import glob as _glob
+import json
+import logging
 import os
 import re
+from io import BytesIO
+from typing import Optional
 
 from flask import Blueprint, Flask, Response, jsonify, request
 
 from handlers.base import BaseHandler
-from services.db import STATE_DIR
+
+logger = logging.getLogger(__name__)
 
 bp = Blueprint("chart", __name__)
 
@@ -19,32 +29,31 @@ ENGINE_COLORS = {
 
 
 def _get_engine_color(engine: str) -> str:
-    """Get hex color for an engine, with fallback."""
     return ENGINE_COLORS.get(engine.lower(), "#888888")
 
 
-@bp.route("/chart")
-def chart():
-    """Generate a PNG chart with source data stats (top) and execution times (bottom)."""
-    import glob as _glob
-    import json
-    from io import BytesIO
+def generate_chart_png(
+    state_dir: str,
+    sf: str = "?",
+    b1pct: str = "",
+    b2pct: str = "",
+    b3pct: str = "",
+    engine_resources: Optional[dict] = None,
+) -> Optional[bytes]:
+    """Generate a PNG chart from result JSON files in state_dir.
 
+    Returns PNG bytes, or None if no data is available.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
 
-    sf = request.args.get("sf", os.environ.get("SCALE_FACTOR", "?"))
-    batch_pcts = {
-        1: request.args.get("b1pct", os.environ.get("BATCH_1_PCT", "")),
-        2: request.args.get("b2pct", os.environ.get("BATCH_2_PCT", "")),
-        3: request.args.get("b3pct", os.environ.get("BATCH_3_PCT", "")),
-    }
+    batch_pcts = {1: b1pct, 2: b2pct, 3: b3pct}
 
     # --- Load execution time records ---
     records = []
-    for filepath in sorted(_glob.glob(os.path.join(STATE_DIR, "run-*.json"))):
+    for filepath in sorted(_glob.glob(os.path.join(state_dir, "run-*.json"))):
         filename = os.path.basename(filepath)
         m = re.match(r"run-(\w+)-batch(\d+)\.json", filename)
         if not m:
@@ -66,7 +75,7 @@ def chart():
             })
 
     if not records:
-        return jsonify({"error": "No result files found in STATE_DIR"}), 404
+        return None
 
     batches = sorted(set(r["batch_num"] for r in records))
     engines = sorted(set(r["engine"] for r in records))
@@ -77,7 +86,6 @@ def chart():
         lookup[(r["batch_num"], r["engine"], r["query_label"])] = r["duration_s"]
 
     # Filter: only show models that appear in at least 2 engines
-    # (excludes engine-specific scaffolding like Feldera staging pass-throughs)
     queries = []
     for q in all_queries:
         engines_with_data = set()
@@ -89,20 +97,22 @@ def chart():
             queries.append(q)
 
     if not queries:
-        return jsonify({"error": "All model durations are zero"}), 404
+        return None
 
     n_batches = len(batches)
     n_engines = len(engines)
     n_queries = len(queries)
 
     # --- Load delta-stats for source data panels ---
-    delta_stats = {}  # batch_num -> list of {name, rows, size_gb}
+    delta_stats = {}
     for batch in batches:
-        stats_file = os.path.join(STATE_DIR, f"delta-stats-batch{batch}.json")
-        if os.path.exists(stats_file):
-            with open(stats_file) as f:
-                data = json.load(f)
-            delta_stats[batch] = data.get("tables", [])
+        # Support both naming conventions
+        for pattern in [f"delta-stats-batch{batch}.json", f"delta-stats-*-batch{batch}.json"]:
+            for stats_file in _glob.glob(os.path.join(state_dir, pattern)):
+                with open(stats_file) as f:
+                    data = json.load(f)
+                if batch not in delta_stats:
+                    delta_stats[batch] = data.get("tables", [])
 
     has_delta_stats = len(delta_stats) > 0
 
@@ -128,7 +138,7 @@ def chart():
             bot_axes = [bot_axes]
         top_axes = None
 
-    # --- Top row: Source data stats (horizontal bar chart per batch) ---
+    # --- Top row: Source data stats ---
     if has_delta_stats and top_axes is not None:
         for ax_idx, batch in enumerate(batches):
             ax = top_axes[ax_idx]
@@ -146,7 +156,6 @@ def chart():
             group_gap = bar_h * 2 + 0.5
             y_positions = np.arange(n_tables) * group_gap
 
-            # Bottom x-axis: rows (blue bars)
             ax.barh(y_positions - bar_h / 2, rows_vals, bar_h * 0.9, label="Rows", color="#4a90d9", alpha=0.8)
             ax.set_xlabel("Rows", color="#4a90d9", fontsize=9)
             ax.tick_params(axis="x", labelcolor="#4a90d9", labelsize=8)
@@ -156,13 +165,11 @@ def chart():
             ax.set_title(f"Batch {batch} — {sum(size_vals):.2f} GB — {batch_pcts.get(batch, '?')}%", fontsize=11)
             ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v/1e6:.1f}M" if v >= 1e6 else f"{v/1e3:.0f}K" if v >= 1e3 else f"{v:.0f}"))
 
-            # Top x-axis: size in GB (orange bars)
             ax2 = ax.twiny()
             ax2.barh(y_positions + bar_h / 2, size_vals, bar_h * 0.9, label="Size (GB)", color="#e07b39", alpha=0.8)
             ax2.set_xlabel("Size (GB)", color="#e07b39", fontsize=9)
             ax2.tick_params(axis="x", labelcolor="#e07b39", labelsize=8)
 
-            # Combined legend
             lines1, labels1 = ax.get_legend_handles_labels()
             lines2, labels2 = ax2.get_legend_handles_labels()
             ax.legend(lines1 + lines2, labels1 + labels2, loc="lower right", fontsize=8)
@@ -213,13 +220,45 @@ def chart():
     pct_parts = [f"B{b}={batch_pcts.get(b, '?')}%" for b in batches if batch_pcts.get(b)]
     pct_label = f" ({', '.join(pct_parts)})" if pct_parts else ""
     fig.suptitle(f"dbt Model Execution Time by Engine (SF={sf}{pct_label})", fontsize=14, y=0.99)
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    if engine_resources:
+        parts = []
+        for eng in sorted(engine_resources.keys()):
+            r = engine_resources[eng]
+            parts.append(f"{eng}: {r['cpus']} CPU / {r['memory_gb']} GB")
+        subtitle = "  |  ".join(parts)
+        fig.text(0.5, 0.97, subtitle, ha="center", va="top", fontsize=9, color="gray")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
 
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
-    return Response(buf.getvalue(), mimetype="image/png")
+    return buf.getvalue()
+
+
+@bp.route("/chart")
+def chart():
+    """Generate a PNG chart from benchmark results."""
+    repo_dir = os.environ.get("REPO_DIR", "/repo")
+    sf = request.args.get("sf", os.environ.get("SCALE_FACTOR", "3"))
+    b1pct = request.args.get("b1pct", os.environ.get("BATCH_1_PCT", ""))
+    b2pct = request.args.get("b2pct", os.environ.get("BATCH_2_PCT", ""))
+    b3pct = request.args.get("b3pct", os.environ.get("BATCH_3_PCT", ""))
+
+    results_dir = os.path.join(repo_dir, "mount", "results", str(sf), "dbt-server")
+
+    png_data = generate_chart_png(
+        state_dir=results_dir,
+        sf=str(sf),
+        b1pct=b1pct,
+        b2pct=b2pct,
+        b3pct=b3pct,
+    )
+    if png_data is None:
+        return jsonify({"error": "No result files found"}), 404
+
+    return Response(png_data, mimetype="image/png")
 
 
 class ChartHandler(BaseHandler):

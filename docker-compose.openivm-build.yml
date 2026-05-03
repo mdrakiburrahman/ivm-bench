@@ -1,0 +1,8 @@
+services:
+  openivm-builder:
+    build:
+      context: ./src/containers/openivm
+    volumes:
+      - ./mount/bin/openivm:/output
+    environment:
+      OUTPUT_DIR: /output
