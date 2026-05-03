@@ -138,9 +138,6 @@ echo ""
 
 RESULTS_JSON=$(curl -sf "http://localhost:9000/benchmark/status")
 print_results "$RESULTS_JSON"
-RESULTS_DIR="mount/results/${SCALE_FACTOR}/dbt-server"
-mkdir -p "$RESULTS_DIR"
-echo "$RESULTS_JSON" | jq . > "$RESULTS_DIR/benchmark-results.json" 2>/dev/null || true
 
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
