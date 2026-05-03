@@ -51,13 +51,13 @@ At the end, you should see the benchmark-server stream results like:
 ```text
 === All benchmarks completed successfully ===
 
-                1           2           3
-Duckdb:         00:00:22 -> 00:00:26 -> 00:00:28
-Spark:          00:03:44 -> 00:02:22 -> 00:02:18
-Feldera:        00:11:38 -> 00:00:39 -> 00:00:34
-Duckdb-openivm: 00:00:46 -> 00:00:32 -> 00:00:32
+                 1           2           3
+Duckdb:          00:00:22 -> 00:00:26 -> 00:00:26
+Duckdb-openivm:  00:00:53 -> 00:00:33 -> 00:00:35
+Feldera:         00:11:20 -> 00:00:39 -> 00:00:37
+Spark:           00:03:32 -> 00:02:16 -> 00:02:14
 
-================= 00:24:24 ==================
+====================== 00:16:51 ======================
 ```
 
 Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
@@ -86,6 +86,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 ### Notes
 
 - The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start in batch 1
+- Since duckdb runs in proc in the `dbt-server`, 2 additional cores are allocated for the server vs. other engines which run dedicated
 
 ### Scale Factor: 3 (1%, 0.001%, 0.002%)
 
