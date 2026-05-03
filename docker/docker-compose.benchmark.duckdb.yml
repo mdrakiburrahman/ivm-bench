@@ -6,6 +6,6 @@ services:
     cpus: ${DUCKDB_CPUS:-32}
     mem_limit: ${DUCKDB_MEM:-120g}
     volumes:
-      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
-      - ./mount/results/${SCALE_FACTOR:-3}/duckdb:/data/processed/duckdb
-      - ./mount/stats/${SCALE_FACTOR:-3}/duckdb:/data/stats
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/duckdb:/data/processed/duckdb
+      - ../mount/stats/${SCALE_FACTOR:-3}/duckdb:/data/stats

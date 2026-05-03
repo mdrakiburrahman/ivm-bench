@@ -64,12 +64,12 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ### Engines
 
-| Engine         | Compose file                                  | Mode                 | Notes                                                                                                                                                                                         |
-| -------------- | --------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Spark          | `docker-compose.benchmark.spark.yml`          | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
-| DuckDB         | `docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, reads Delta via `delta` extension, writes via a hack with [this community extension](https://github.com/djouallah/delta_export) that blows up the Delta transaction log each time |
-| DuckDB-OpenIVM | `docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL`            |
-| Feldera        | `docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
+| Engine         | Compose file                                         | Mode                 | Notes                                                                                                                                                                                         |
+| -------------- | ---------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spark          | `docker/docker-compose.benchmark.spark.yml`          | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
+| DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, reads Delta via `delta` extension, writes via a hack with [this community extension](https://github.com/djouallah/delta_export) that blows up the Delta transaction log each time |
+| DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL`     |
+| Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
 
 ## Mount layout
 
@@ -88,9 +88,13 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 - The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start in batch 1
 - Since duckdb runs in proc in the `dbt-server`, 2 additional cores are allocated for the server vs. other engines which run dedicated
 
+### Benchmark Heuristics
+
+![Heuristics](imgs/benchmark-heuristics.png)
+
 ### Scale Factor: 3 (1%, 0.001%, 0.002%)
 
-![Results](scale-factor-3-1-0_001-0_002.png)
+![Results](imgs/scale-factor-3-1-0_001-0_002.png)
 
 ---
 

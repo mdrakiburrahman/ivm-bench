@@ -83,7 +83,7 @@ class EngineRunner:
 
         batch_extra = [self._batch_override_file] if self._batch_override_file else []
         self._batch_mgr = DockerManager(
-            compose_file=os.path.join(config.repo_dir, "docker-compose.batch-loader.yml"),
+            compose_file=os.path.join(config.repo_dir, "docker/docker-compose.batch-loader.yml"),
             project_name=f"batch-{engine_config.name}",
             env={
                 **config.base_env(),

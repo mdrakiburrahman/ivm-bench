@@ -56,10 +56,10 @@ ENGINE_PORTS = {
 }
 
 ENGINE_COMPOSE_FILES = {
-    "spark": "docker-compose.benchmark.spark.yml",
-    "duckdb": "docker-compose.benchmark.duckdb.yml",
-    "duckdb-openivm": "docker-compose.benchmark.duckdb-openivm.yml",
-    "feldera": "docker-compose.benchmark.feldera.yml",
+    "spark": "docker/docker-compose.benchmark.spark.yml",
+    "duckdb": "docker/docker-compose.benchmark.duckdb.yml",
+    "duckdb-openivm": "docker/docker-compose.benchmark.duckdb-openivm.yml",
+    "feldera": "docker/docker-compose.benchmark.feldera.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine)

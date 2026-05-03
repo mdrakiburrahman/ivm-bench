@@ -1,8 +1,8 @@
 services:
   duckdb-openivm-builder:
     build:
-      context: ./src/containers/duckdb-openivm
+      context: ../src/containers/duckdb-openivm
     volumes:
-      - ./mount/bin/duckdb-openivm:/output
+      - ../mount/bin/duckdb-openivm:/output
     environment:
       OUTPUT_DIR: /output

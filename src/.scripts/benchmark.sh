@@ -31,7 +31,7 @@ export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export REPO_HOST_PATH="$(pwd)"
 
-COMPOSE_FILE="docker-compose.benchmark-server.yml"
+COMPOSE_FILE="docker/docker-compose.benchmark-server.yml"
 HEALTH_RETRIES=60
 
 fmt_duration() {
