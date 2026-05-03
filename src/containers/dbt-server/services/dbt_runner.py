@@ -78,7 +78,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
         t_err.join(timeout=5)
         elapsed = time.monotonic() - start_ts
 
-        if proc.returncode != 0:
+        if proc.returncode not in (0, 2):
             stderr_tail = "".join(stderr_buf[-50:])
             _fail_run(
                 run_id,

@@ -76,14 +76,14 @@ def compute_engine_configs(config: BenchmarkConfig) -> Dict[str, EngineConfig]:
             main_cpus = per_engine_cores - dbt_cpus
             main_mem = per_engine_mem - dbt_mem
         else:
-            # DuckDB / OpenIVM: dbt-server IS the engine
+            # DuckDB / DuckDB-OpenIVM: dbt-server IS the engine
             main_cpus = per_engine_cores
             main_mem = per_engine_mem
             dbt_cpus = per_engine_cores
             dbt_mem = per_engine_mem
 
         staging = "staging"
-        if config.parallel and engine != "openivm":
+        if config.parallel and engine != "duckdb-openivm":
             staging = f"staging-{engine}"
 
         result[engine] = EngineConfig(

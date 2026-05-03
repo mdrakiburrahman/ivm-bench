@@ -1,0 +1,9 @@
+tpcdi:
+  target: duckdb-openivm
+  outputs:
+    duckdb-openivm:
+      type: openivm
+      database: ducklake
+      schema: main
+      bin_path: '/data/bin/duckdb-openivm/duckdb'
+      work_dir: '/data/processed/duckdb-openivm'

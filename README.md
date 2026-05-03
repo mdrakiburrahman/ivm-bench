@@ -36,12 +36,12 @@ See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows
 
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
-export SCALE_FACTOR=3                        # 3 - 2147483647
-export BATCH_1_PCT=1                         # 1% of DIGen batch 1 data
-export BATCH_2_PCT=0.001                     # 0.001% of DIGen batch 2 data
-export BATCH_3_PCT=0.002                     # 0.002% of DIGen batch 3 data
-export PARALLEL=1                            # 0, 1
-export ENGINES=spark,duckdb,openivm,feldera  # Comma seperated engines to run
+export SCALE_FACTOR=3                               # 3 - 2147483647
+export BATCH_1_PCT=1                                # 1% of DIGen batch 1 data
+export BATCH_2_PCT=0.001                            # 0.001% of DIGen batch 2 data
+export BATCH_3_PCT=0.002                            # 0.002% of DIGen batch 3 data
+export PARALLEL=1                                   # 0, 1
+export ENGINES=spark,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
 
 bash src/.scripts/benchmark.sh
 ```
@@ -51,11 +51,11 @@ At the end, you should see the benchmark-server stream results like:
 ```text
 === All benchmarks completed successfully ===
 
-            1           2           3
-Duckdb:     00:00:22 -> 00:00:26 -> 00:00:28
-Spark:      00:03:44 -> 00:02:22 -> 00:02:18
-Feldera:    00:11:38 -> 00:00:39 -> 00:00:34
-Openivm:    00:00:46 -> 00:00:32 -> 00:00:32
+                1           2           3
+Duckdb:         00:00:22 -> 00:00:26 -> 00:00:28
+Spark:          00:03:44 -> 00:02:22 -> 00:02:18
+Feldera:        00:11:38 -> 00:00:39 -> 00:00:34
+Duckdb-openivm: 00:00:46 -> 00:00:32 -> 00:00:32
 
 ================= 00:24:24 ==================
 ```
@@ -64,12 +64,12 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ### Engines
 
-| Engine  | Compose file                           | Mode                 | Notes                                                                                                                                                                                         |
-| ------- | -------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Spark   | `docker-compose.benchmark.spark.yml`   | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
-| DuckDB  | `docker-compose.benchmark.duckdb.yml`  | Batch SQL            | In-process, reads Delta via `delta` extension, writes via a hack with [this community extension](https://github.com/djouallah/delta_export) that blows up the Delta transaction log each time |
-| OpenIVM | `docker-compose.benchmark.openivm.yml` | DuckLake IVM         | Built from source in a container (`docker-compose.openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL`                   |
-| Feldera | `docker-compose.benchmark.feldera.yml` | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
+| Engine         | Compose file                                  | Mode                 | Notes                                                                                                                                                                                         |
+| -------------- | --------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spark          | `docker-compose.benchmark.spark.yml`          | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
+| DuckDB         | `docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, reads Delta via `delta` extension, writes via a hack with [this community extension](https://github.com/djouallah/delta_export) that blows up the Delta transaction log each time |
+| DuckDB-OpenIVM | `docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL`            |
+| Feldera        | `docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
 
 ## Mount layout
 
@@ -79,13 +79,13 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | `mount/raw/<SF>/delta/staging/`                            | Unified staging (grows via `spark-batch-loader`) |
 | `mount/results/<SF>/<engine>/`                             | Engine output (Delta tables from dbt)            |
 | `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json` | Per-batch benchmark results                      |
-| `mount/bin/openivm/duckdb`                                 | OpenIVM DuckDB binary (built by container)       |
+| `mount/bin/duckdb-openivm/duckdb`                          | DuckDB-OpenIVM binary (built by container)       |
 
 ## Results
 
 ### Notes
 
-* The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start in batch 1
+- The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start in batch 1
 
 ### Scale Factor: 3 (1%, 0.001%, 0.002%)
 
