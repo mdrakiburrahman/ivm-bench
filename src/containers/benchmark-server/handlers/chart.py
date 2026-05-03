@@ -38,6 +38,7 @@ def generate_chart_png(
     b1pct: str = "",
     b2pct: str = "",
     b3pct: str = "",
+    engine_resources: Optional[dict] = None,
 ) -> Optional[bytes]:
     """Generate a PNG chart from result JSON files in state_dir.
 
@@ -219,7 +220,15 @@ def generate_chart_png(
     pct_parts = [f"B{b}={batch_pcts.get(b, '?')}%" for b in batches if batch_pcts.get(b)]
     pct_label = f" ({', '.join(pct_parts)})" if pct_parts else ""
     fig.suptitle(f"dbt Model Execution Time by Engine (SF={sf}{pct_label})", fontsize=14, y=0.99)
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    if engine_resources:
+        parts = []
+        for eng in sorted(engine_resources.keys()):
+            r = engine_resources[eng]
+            parts.append(f"{eng}: {r['cpus']} CPU / {r['memory_gb']} GB")
+        subtitle = "  |  ".join(parts)
+        fig.text(0.5, 0.97, subtitle, ha="center", va="top", fontsize=9, color="gray")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
 
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")

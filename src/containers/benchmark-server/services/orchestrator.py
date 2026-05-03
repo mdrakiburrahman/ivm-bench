@@ -333,6 +333,7 @@ class Orchestrator:
         self.emit("=== Phase 2: Engine benchmarks ===")
 
         engine_configs = compute_engine_configs(self._config)
+        self._engine_configs = engine_configs
         engines = self._config.engines
 
         if self._config.parallel and len(engines) > 1:
@@ -502,12 +503,21 @@ class Orchestrator:
             b3 = self._config.batch_3_pct
             results_dir = os.path.join(repo, "mount", "results", str(sf), "dbt-server")
 
+            engine_resources = {}
+            if hasattr(self, "_engine_configs") and self._engine_configs:
+                for name, ecfg in self._engine_configs.items():
+                    engine_resources[name] = {
+                        "cpus": ecfg.main_resources.cpus,
+                        "memory_gb": ecfg.main_resources.memory_gb,
+                    }
+
             png_data = generate_chart_png(
                 state_dir=results_dir,
                 sf=str(sf),
                 b1pct=b1,
                 b2pct=b2,
                 b3pct=b3,
+                engine_resources=engine_resources,
             )
             if png_data:
                 b1_slug = b1.replace(".", "_")
