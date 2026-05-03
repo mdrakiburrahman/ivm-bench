@@ -139,6 +139,7 @@ class Orchestrator:
             self._update_benchmark_run("failed", self._result.total_duration_s, str(e))
 
         finally:
+            self._save_benchmark_results()
             self._dump_server_log()
             self._running = False
             self._log_queue.put("__DONE__")
@@ -156,6 +157,21 @@ class Orchestrator:
             )
             conn.commit()
             conn.close()
+
+    def _save_benchmark_results(self) -> None:
+        """Persist benchmark results JSON to mount/results/<SF>/dbt-server/."""
+        try:
+            sf = str(self._config.scale_factor)
+            results_dir = os.path.join(
+                self._config.repo_dir, "mount", "results", sf, "dbt-server"
+            )
+            os.makedirs(results_dir, exist_ok=True)
+            results_path = os.path.join(results_dir, "benchmark-results.json")
+            with open(results_path, "w") as f:
+                json.dump(self._result.to_dict(), f, indent=2)
+            logger.info("Benchmark results written to %s", results_path)
+        except Exception as e:
+            logger.warning("Failed to save benchmark results: %s", e)
 
     def _dump_server_log(self) -> None:
         """Copy the benchmark-server log file to mount/logs/<SF>/."""
