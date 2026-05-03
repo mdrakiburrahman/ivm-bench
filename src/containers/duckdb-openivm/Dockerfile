@@ -13,10 +13,8 @@ RUN git clone "${OPENIVM_REPO}" . && \
     git checkout "${OPENIVM_COMMIT}" && \
     git submodule update --init --recursive
 
-# Build DuckDB + OpenIVM CLI binary
 RUN GEN=ninja make -j$(nproc)
 
-# Minimal output stage
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

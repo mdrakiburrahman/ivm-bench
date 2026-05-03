@@ -19,7 +19,6 @@ from handlers.benchmark import BenchmarkHandler
 from handlers.chart import ChartHandler
 from services.db import init_db
 
-# Configure logging — stderr + local file (copied to mount at benchmark end)
 LOG_FILE = "/tmp/benchmark-server.log"
 
 log_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")

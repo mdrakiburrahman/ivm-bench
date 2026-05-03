@@ -1,4 +1,4 @@
-"""OpenIVM adapter implementation — standalone, no dbt-duckdb dependency."""
+"""Standalone OpenIVM adapter implementation."""
 
 import logging
 from typing import List, Optional, Sequence

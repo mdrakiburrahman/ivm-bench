@@ -1,7 +1,6 @@
 """Standalone dbt adapter for DuckDB-OpenIVM.
 
 ALL SQL goes through the OpenIVM CLI binary subprocess.
-No dependency on dbt-duckdb or the Python duckdb module.
 """
 import os
 
