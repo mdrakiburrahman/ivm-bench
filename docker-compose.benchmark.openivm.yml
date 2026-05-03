@@ -3,8 +3,8 @@ services:
     extends:
       file: docker-compose.base.yml
       service: dbt-server-base
-    cpus: 32
-    mem_limit: 120g
+    cpus: ${OPENIVM_CPUS:-32}
+    mem_limit: ${OPENIVM_MEM:-120g}
     environment:
       OPENIVM_BIN: /data/bin/openivm/duckdb
       RAW_DELTA_DIR: /data/raw/delta

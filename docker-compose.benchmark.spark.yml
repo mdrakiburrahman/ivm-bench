@@ -4,8 +4,8 @@ services:
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "Hive@Pass123"
-    cpus: 2
-    mem_limit: 4g
+    cpus: ${MSSQL_CPUS:-2}
+    mem_limit: ${MSSQL_MEM:-4g}
     healthcheck:
       test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Hive@Pass123" -C -Q "SELECT 1" -b
       interval: 10s
@@ -19,8 +19,8 @@ services:
     depends_on:
       mssql-metastore:
         condition: service_healthy
-    cpus: 32
-    mem_limit: 120g
+    cpus: ${SPARK_CPUS:-32}
+    mem_limit: ${SPARK_MEM:-120g}
     environment:
       METASTORE_HOST: mssql-metastore
       METASTORE_PORT: "1433"
@@ -41,8 +41,8 @@ services:
     depends_on:
       spark:
         condition: service_healthy
-    cpus: 4
-    mem_limit: 8g
+    cpus: ${DBT_SERVER_CPUS:-4}
+    mem_limit: ${DBT_SERVER_MEM:-8g}
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ./mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark

@@ -50,7 +50,7 @@ while kill -0 "$DIGEN_PID" 2>/dev/null; do
   ELAPSED=$((ELAPSED + 5))
   if [[ -f "$LOCAL_GEN/Batch1/Date.txt" ]]; then
     # Sentinel exists — check if files are still being written
-    LATEST_MOD=$(find "$LOCAL_GEN" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+    LATEST_MOD=$(find "$LOCAL_GEN" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1) || true
     NOW=$(date +%s)
     AGE=$((NOW - ${LATEST_MOD:-0}))
     if [[ $AGE -gt $DIGEN_SETTLE_LIMIT ]]; then

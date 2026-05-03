@@ -57,8 +57,10 @@ def get_manifest(engine: str, force_compile: bool = False) -> dict[str, Any] | N
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning("Failed to read existing manifest for '%s': %s", engine, e)
 
-        # Run dbt compile
+        # Run dbt compile — delete stale manifest first to avoid loading outdated state
         logger.info("Running dbt compile for engine '%s'...", engine)
+        if os.path.exists(manifest_path):
+            os.remove(manifest_path)
         cmd = [
             "dbt", "compile",
             "--profiles-dir", project_dir,
@@ -73,12 +75,17 @@ def get_manifest(engine: str, force_compile: bool = False) -> dict[str, Any] | N
             result = subprocess.run(
                 cmd, capture_output=True, text=True, env=env, timeout=300,
             )
-            if result.returncode != 0:
+            if result.returncode not in (0, 2):
                 logger.error(
                     "dbt compile failed for '%s' (rc=%d): %s",
                     engine, result.returncode, result.stderr[-2000:]
                 )
                 return None
+            if result.returncode == 2:
+                logger.warning(
+                    "dbt compile for '%s' completed with warnings (rc=2)",
+                    engine,
+                )
         except subprocess.TimeoutExpired:
             logger.error("dbt compile timed out for engine '%s'", engine)
             return None

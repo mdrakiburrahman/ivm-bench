@@ -435,7 +435,7 @@ def run_openivm(run_id: str, scale_factor: int, full_refresh: bool, batch_num: i
         # is guaranteed to have compiled_code. The dbt project target/ may have
         # an uncompiled manifest, so prefer the persisted copy.
         manifest = None
-        fallback = os.path.join(os.environ.get("STATE_DIR", "/data/state"), "manifest-duckdb.json")
+        fallback = os.path.join(str(OPENIVM_WORK_DIR), "manifest-duckdb.json")
         if os.path.exists(fallback):
             with open(fallback) as f:
                 manifest = json.load(f)
@@ -460,8 +460,11 @@ def run_openivm(run_id: str, scale_factor: int, full_refresh: bool, batch_num: i
         if full_refresh:
             # Wipe previous state for a clean batch 1.
             # Can't rmtree the mount root inside Docker, so clear contents.
+            # Preserve manifest-duckdb.json (copied from DuckDB engine run).
             if OPENIVM_WORK_DIR.exists():
                 for child in OPENIVM_WORK_DIR.iterdir():
+                    if child.name == "manifest-duckdb.json":
+                        continue
                     if child.is_dir():
                         shutil.rmtree(child)
                     else:

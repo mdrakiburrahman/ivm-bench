@@ -2,8 +2,8 @@ services:
   tpc-di-gen:
     build:
       context: ./src/containers/tpc-di-gen
-    cpus: 32
-    mem_limit: 128g
+    cpus: ${DATAGEN_CPUS:-32}
+    mem_limit: ${DATAGEN_MEM:-128g}
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen
     environment:
@@ -19,8 +19,8 @@ services:
         SCALA_VERSION: "2.12.18"
         DELTA_VERSION: "3.3.2"
         HADOOP_VERSION: "3.3.4"
-    cpus: 32
-    mem_limit: 128g
+    cpus: ${DATAGEN_CPUS:-32}
+    mem_limit: ${DATAGEN_MEM:-128g}
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen:ro
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta

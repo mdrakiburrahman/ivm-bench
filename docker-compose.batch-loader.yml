@@ -8,10 +8,10 @@ services:
         SCALA_VERSION: "2.12.18"
         DELTA_VERSION: "3.3.2"
         HADOOP_VERSION: "3.3.4"
-    cpus: 32
-    mem_limit: 128g
+    cpus: ${BATCH_LOADER_CPUS:-32}
+    mem_limit: ${BATCH_LOADER_MEM:-128g}
     volumes:
       - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
-      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=16 -XX:ConcGCThreads=8 -XX:+UseNUMA -XX:+AlwaysPreTouch"
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx${BATCH_LOADER_HEAP:-80g} -Xms${BATCH_LOADER_HEAP:-80g} -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=${BATCH_LOADER_GC_THREADS:-16} -XX:ConcGCThreads=${BATCH_LOADER_CONC_GC_THREADS:-8} -XX:+UseNUMA -XX:+AlwaysPreTouch"
       DELTA_PATH: /data/delta
