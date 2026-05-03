@@ -14,7 +14,7 @@ ENGINE_COLORS = {
     "duckdb": "#f7e900",
     "spark": "#da571b",
     "feldera": "#ca46bf",
-    "openivm": "#4a90d9",
+    "duckdb-openivm": "#4a90d9",
 }
 
 
@@ -46,7 +46,7 @@ def chart():
     records = []
     for filepath in sorted(_glob.glob(os.path.join(STATE_DIR, "run-*.json"))):
         filename = os.path.basename(filepath)
-        m = re.match(r"run-(\w+)-batch(\d+)\.json", filename)
+        m = re.match(r"run-(.+)-batch(\d+)\.json", filename)
         if not m:
             continue
         engine = m.group(1)

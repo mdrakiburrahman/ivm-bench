@@ -15,15 +15,14 @@ RUN git clone "${OPENIVM_REPO}" . && \
 
 RUN GEN=ninja make -j$(nproc)
 
-# Minimal output stage
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /src/build/release/duckdb /opt/openivm/duckdb
+COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /opt/openivm/duckdb
+RUN chmod +x /entrypoint.sh /opt/duckdb-openivm/duckdb
 
 ENTRYPOINT ["/entrypoint.sh"]

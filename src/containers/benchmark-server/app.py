@@ -19,12 +19,21 @@ from handlers.benchmark import BenchmarkHandler
 from handlers.chart import ChartHandler
 from services.db import init_db
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stderr,
-)
+LOG_FILE = "/tmp/benchmark-server.log"
+
+log_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+stderr_handler = logging.StreamHandler(sys.stderr)
+stderr_handler.setFormatter(log_fmt)
+root_logger.addHandler(stderr_handler)
+
+file_handler = logging.FileHandler(LOG_FILE, mode="w")
+file_handler.setFormatter(log_fmt)
+root_logger.addHandler(file_handler)
+
 logger = logging.getLogger("benchmark-server")
 
 app = Flask(__name__)

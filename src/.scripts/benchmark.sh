@@ -9,7 +9,7 @@
 #   BATCH_2_PCT    — % of batch 2 data (required)
 #   BATCH_3_PCT    — % of batch 3 data (required)
 #   PARALLEL       — 0 = serial (default), 1 = run engines in parallel
-#   ENGINES        — comma-separated engine list (default: spark,duckdb,openivm,feldera)
+#   ENGINES        — comma-separated engine list (default: spark,duckdb,duckdb-openivm,feldera)
 #   HOST_CORES     — override auto-detected CPU count
 #   HOST_MEMORY    — override auto-detected memory in GB
 # ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ if [[ -z "${BATCH_1_PCT:-}" || -z "${BATCH_2_PCT:-}" || -z "${BATCH_3_PCT:-}" ]]
 fi
 export BATCH_1_PCT BATCH_2_PCT BATCH_3_PCT
 export PARALLEL="${PARALLEL:-0}"
-export ENGINES="${ENGINES:-spark,duckdb,openivm,feldera}"
+export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export REPO_HOST_PATH="$(pwd)"
@@ -34,11 +34,58 @@ export REPO_HOST_PATH="$(pwd)"
 COMPOSE_FILE="docker-compose.benchmark-server.yml"
 HEALTH_RETRIES=60
 
-capture_benchmark_server_logs() {
-  local log_dir="mount/logs/${SCALE_FACTOR}"
-  mkdir -p "$log_dir"
-  docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps \
-    > "${log_dir}/benchmark-server.log" 2>&1 || true
+fmt_duration() {
+  local secs="$1"
+  local int_secs
+  int_secs=$(printf '%.0f' "$secs")
+  local h m s
+  h=$((int_secs / 3600))
+  m=$(( (int_secs % 3600) / 60 ))
+  s=$((int_secs % 60))
+  printf '%02d:%02d:%02d' "$h" "$m" "$s"
+}
+
+print_results() {
+  local json="$1"
+  local status
+  status=$(echo "$json" | jq -r '.status')
+
+  if [[ "$status" == "completed" ]]; then
+    echo "=== All benchmarks completed successfully ==="
+  else
+    echo "=== Benchmark finished with status: ${status} ==="
+  fi
+  echo ""
+
+  # Find the longest engine name for alignment
+  local max_len=0
+  for name in $(echo "$json" | jq -r '.engines | keys[]'); do
+    (( ${#name} > max_len )) && max_len=${#name}
+  done
+
+  # Header
+  local pad=$((max_len + 2))
+  printf "%-${pad}s 1           2           3\n" ""
+
+  # Per-engine rows
+  for name in $(echo "$json" | jq -r '.engines | keys[]'); do
+    local label
+    label="$(echo "${name:0:1}" | tr '[:lower:]' '[:upper:]')${name:1}:"
+    local b1 b2 b3
+    b1=$(echo "$json" | jq -r ".engines[\"$name\"].batches[0].duration_s")
+    b2=$(echo "$json" | jq -r ".engines[\"$name\"].batches[1].duration_s")
+    b3=$(echo "$json" | jq -r ".engines[\"$name\"].batches[2].duration_s")
+    printf "%-${pad}s %s -> %s -> %s\n" "$label" "$(fmt_duration "$b1")" "$(fmt_duration "$b2")" "$(fmt_duration "$b3")"
+  done
+
+  echo ""
+  local total
+  total=$(echo "$json" | jq -r '.total_duration_s')
+  local total_fmt
+  total_fmt=$(fmt_duration "$total")
+  local ruler_len=$(( ${#total_fmt} + pad + 30 ))
+  local side=$(( (ruler_len - ${#total_fmt} - 2) / 2 ))
+  printf "%${side}s %s %s\n" "$(printf '=%.0s' $(seq 1 $side))" "$total_fmt" "$(printf '=%.0s' $(seq 1 $side))"
 }
 
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
@@ -58,7 +105,6 @@ done
 
 if [[ "$HEALTH_OK" != "1" ]]; then
   echo "=== FAILURE — benchmark-server did not become healthy ==="
-  capture_benchmark_server_logs
   docker compose -f "$COMPOSE_FILE" logs
   docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
   exit 1
@@ -85,11 +131,8 @@ done < <(curl -sfN "http://localhost:9000/benchmark/stream" 2>/dev/null)
 
 echo ""
 
-echo "=== Final results ==="
-curl -sf "http://localhost:9000/benchmark/status" | jq .
-
-echo "=== Capturing benchmark-server logs ==="
-capture_benchmark_server_logs
+RESULTS_JSON=$(curl -sf "http://localhost:9000/benchmark/status")
+print_results "$RESULTS_JSON"
 
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
@@ -97,5 +140,3 @@ if [[ "$FINAL_STATUS" != "completed" ]]; then
   echo "=== BENCHMARK FAILED ==="
   exit 1
 fi
-
-echo "=== BENCHMARK COMPLETED ==="

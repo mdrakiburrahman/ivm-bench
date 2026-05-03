@@ -28,7 +28,7 @@ class EngineRunner:
     Handles engine-specific differences:
     - Spark: batch_loader init/append, full_refresh=true always
     - DuckDB: batch_loader init/append, full_refresh=true always
-    - OpenIVM: no batch_loader, batch_num param, full_refresh only batch 1
+    - DuckDB-OpenIVM: no batch_loader, batch_num param, full_refresh only batch 1
     - Feldera: batch_loader init/append, streaming wait for batches 2/3
     """
 
@@ -65,7 +65,7 @@ class EngineRunner:
                 extra_compose_files=[self._override_file],
             )
             # Also create a batch-loader override so appends go to per-engine staging
-            if engine_config.name != "openivm":
+            if engine_config.name != "duckdb-openivm":
                 self._batch_override_file = self._create_batch_staging_override()
         else:
             self._engine_mgr = DockerManager(
@@ -161,7 +161,7 @@ class EngineRunner:
             self._emit(f"[{name}] Starting benchmark")
 
             # Initialize staging (serial mode only — parallel mode uses orchestrator init)
-            if name != "openivm" and not self._parallel:
+            if name != "duckdb-openivm" and not self._parallel:
                 self._batch_loader_init()
 
             # Start engine stack
@@ -185,9 +185,6 @@ class EngineRunner:
                         f"{name} batch {batch_num} failed: "
                         f"{self._result.batches[batch_num - 1].error}"
                     )
-                # After DuckDB batch 1: save manifest for OpenIVM dependency
-                if name == "duckdb" and batch_num == 1:
-                    self._export_duckdb_manifest()
 
             # Post-run: stats, lineage, sql analysis, logs
             self._stop_stats()
@@ -226,9 +223,9 @@ class EngineRunner:
         self._persist_batch_result(batch_num, batch)
 
         try:
-            # Append data for batches 2/3 (except OpenIVM which handles internally,
+            # Append data for batches 2/3 (except DuckDB-OpenIVM which handles internally,
             # and Feldera batches 2/3 which handle append inside _run_feldera_wait)
-            if batch_num > 1 and name != "openivm" and not (name == "feldera" and batch_num > 1):
+            if batch_num > 1 and name != "duckdb-openivm" and not (name == "feldera" and batch_num > 1):
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
 
@@ -239,8 +236,8 @@ class EngineRunner:
                     self._run_feldera_batch1()
                 else:
                     self._run_feldera_wait(batch_num)
-            elif name == "openivm":
-                self._run_openivm(batch_num)
+            elif name == "duckdb-openivm":
+                self._run_duckdb_openivm(batch_num)
             else:
                 self._run_dbt(batch_num)
 
@@ -369,21 +366,49 @@ class EngineRunner:
 
             time.sleep(1)
 
-    def _run_openivm(self, batch_num: int) -> None:
-        """Trigger an OpenIVM run."""
+    def _run_duckdb_openivm(self, batch_num: int) -> None:
+        """Run DuckDB-OpenIVM: init/append sources, then standard dbt build."""
         full_refresh = batch_num == 1
+
+        # Source management: init or append before dbt build
+        if batch_num == 1:
+            self._emit("[duckdb-openivm] Initialising DuckLake sources")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/duckdb-openivm/init", timeout=600,
+            )
+            resp.raise_for_status()
+            src_result = resp.json()
+            self._emit(
+                f"[duckdb-openivm] Sources initialised: {src_result.get('tables_created', '?')} tables"
+            )
+        else:
+            self._emit(f"[duckdb-openivm] Appending batch {batch_num} sources")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/duckdb-openivm/append/{batch_num}",
+                timeout=600,
+            )
+            resp.raise_for_status()
+            src_result = resp.json()
+            self._emit(
+                f"[duckdb-openivm] Batch {batch_num} appended: "
+                f"{src_result.get('tables_appended', '?')} tables"
+            )
+
+        # Standard dbt build
         resp = requests.post(
-            f"{self._dbt_url}/run/openivm",
+            f"{self._dbt_url}/run/duckdb-openivm",
             json={
                 "scale_factor": self._config.scale_factor,
                 "full_refresh": full_refresh,
-                "batch_num": batch_num,
             },
             timeout=30,
         )
         resp.raise_for_status()
         run_id = resp.json()["run_id"]
-        self._emit(f"[openivm] run_id={run_id} (batch={batch_num}, full_refresh={full_refresh})")
+        self._emit(
+            f"[duckdb-openivm] dbt run_id={run_id} "
+            f"(batch={batch_num}, full_refresh={full_refresh})"
+        )
 
         self._stream_dbt_progress(run_id, batch_num)
         self._check_run_result(run_id, batch_num)
@@ -450,7 +475,7 @@ class EngineRunner:
         """
         name = self._engine.name
         batch = self._result.batches[batch_num - 1]
-        max_polls = 60
+        max_polls = 360
         for _ in range(max_polls):
             try:
                 resp = requests.get(f"{self._dbt_url}/runs/{run_id}", timeout=30)
@@ -509,7 +534,7 @@ class EngineRunner:
     def _cleanup_staging(self) -> None:
         """Clean up per-engine staging directory after completion."""
         if not self._engine.staging_dir or self._engine.staging_dir == "staging":
-            return  # Serial mode or OpenIVM — don't clean shared staging
+            return  # Serial mode or DuckDB-OpenIVM — don't clean shared staging
         sf = self._config.scale_factor
         staging_path = os.path.join(
             self._config.repo_dir, "mount", "raw", str(sf), "delta",
@@ -577,17 +602,14 @@ class EngineRunner:
     def _fetch_lineage(self) -> None:
         """Fetch dbt lineage."""
         name = self._engine.name
-        # OpenIVM uses DuckDB's lineage
-        lineage_engine = "duckdb" if name == "openivm" else name
-        output_name = name
         try:
-            resp = requests.get(f"{self._dbt_url}/lineage/{lineage_engine}", timeout=30)
+            resp = requests.get(f"{self._dbt_url}/lineage/{name}", timeout=30)
             results_dir = os.path.join(
                 self._config.repo_dir,
                 "mount", "results", str(self._config.scale_factor), "dbt-server",
             )
             os.makedirs(results_dir, exist_ok=True)
-            with open(os.path.join(results_dir, f"lineage-{output_name}.json"), "w") as f:
+            with open(os.path.join(results_dir, f"lineage-{name}.json"), "w") as f:
                 json.dump(resp.json(), f, indent=2)
             self._emit(f"[{name}] Lineage saved")
         except Exception as e:
@@ -596,16 +618,14 @@ class EngineRunner:
     def _fetch_sql_analysis(self) -> None:
         """Fetch SQL analysis."""
         name = self._engine.name
-        sql_engine = "duckdb" if name == "openivm" else name
-        output_name = name
         try:
-            resp = requests.get(f"{self._dbt_url}/sql/{sql_engine}", timeout=30)
+            resp = requests.get(f"{self._dbt_url}/sql/{name}", timeout=30)
             results_dir = os.path.join(
                 self._config.repo_dir,
                 "mount", "results", str(self._config.scale_factor), "dbt-server",
             )
             os.makedirs(results_dir, exist_ok=True)
-            with open(os.path.join(results_dir, f"sql-analysis-{output_name}.json"), "w") as f:
+            with open(os.path.join(results_dir, f"sql-analysis-{name}.json"), "w") as f:
                 json.dump(resp.json(), f, indent=2)
             self._emit(f"[{name}] SQL analysis saved")
         except Exception as e:
@@ -661,22 +681,6 @@ class EngineRunner:
             self._engine_mgr.capture_all_logs(logs_dir)
         except Exception as e:
             logger.warning("Failed to capture logs: %s", e)
-
-    def _export_duckdb_manifest(self) -> None:
-        """Copy DuckDB's compiled manifest from the container to a mounted volume.
-
-        Uses /data/processed/duckdb/ (which is host-mounted) so the orchestrator
-        can copy it to OpenIVM's work dir.
-        """
-        try:
-            self._engine_mgr.exec_in(
-                "dbt-server",
-                ["cp", "/app/dbt-projects/duckdb/target/manifest.json",
-                 "/data/processed/duckdb/manifest-duckdb.json"],
-            )
-            self._emit("[duckdb] Manifest exported to processed dir for OpenIVM")
-        except Exception as e:
-            logger.warning("Failed to export DuckDB manifest: %s", e)
 
     # ----- Health checking -----
 

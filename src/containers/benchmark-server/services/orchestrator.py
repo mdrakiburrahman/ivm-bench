@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class Orchestrator:
     """
     Orchestrates the full benchmark pipeline:
-      Phase 1: Data generation + OpenIVM build (parallel)
+      Phase 1: Data generation + DuckDB-OpenIVM build (parallel)
       Phase 2: Engine benchmarks (parallel or serial)
       Phase 3: Chart generation + summary
     """
@@ -139,6 +139,7 @@ class Orchestrator:
             self._update_benchmark_run("failed", self._result.total_duration_s, str(e))
 
         finally:
+            self._dump_server_log()
             self._running = False
             self._log_queue.put("__DONE__")
 
@@ -156,6 +157,19 @@ class Orchestrator:
             conn.commit()
             conn.close()
 
+    def _dump_server_log(self) -> None:
+        """Copy the benchmark-server log file to mount/logs/<SF>/."""
+        try:
+            src = "/tmp/benchmark-server.log"
+            sf = str(self._config.scale_factor)
+            dst_dir = os.path.join(self._config.repo_dir, "mount", "logs", sf)
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(dst_dir, "benchmark-server.log")
+            shutil.copy2(src, dst)
+            logger.info("Server log written to %s", dst)
+        except Exception as e:
+            logger.warning("Failed to dump server log: %s", e)
+
     # ----- Phase 1: Prep -----
 
     def _teardown_existing(self) -> None:
@@ -165,10 +179,10 @@ class Orchestrator:
         compose_configs = [
             ("docker-compose.datagen.yml", "datagen"),
             ("docker-compose.batch-loader.yml", "batch-loader-build"),
-            ("docker-compose.openivm-build.yml", "openivm-build"),
+            ("docker-compose.duckdb-openivm-build.yml", "duckdb-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "openivm", "feldera"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:
@@ -227,7 +241,7 @@ class Orchestrator:
             ])
         dirs.extend([
             f"mount/results/{sf}/dbt-server",
-            f"mount/bin/openivm",
+            f"mount/bin/duckdb-openivm",
         ])
         for d in dirs:
             full = os.path.join(repo, d)
@@ -235,7 +249,7 @@ class Orchestrator:
             os.chmod(full, 0o777)
 
     def _phase1_prep(self) -> None:
-        """Phase 1: datagen + openivm-build + batch-loader build (parallel)."""
+        """Phase 1: datagen + duckdb-openivm-build + batch-loader build (parallel)."""
         self.emit("")
         self.emit("=== Phase 1: Data generation & build ===")
 
@@ -243,8 +257,8 @@ class Orchestrator:
         with ThreadPoolExecutor(max_workers=3) as pool:
             tasks.append(pool.submit(self._run_datagen))
 
-            if "openivm" in self._config.engines:
-                tasks.append(pool.submit(self._run_openivm_build))
+            if "duckdb-openivm" in self._config.engines:
+                tasks.append(pool.submit(self._run_duckdb_openivm_build))
 
             tasks.append(pool.submit(self._build_batch_loader))
 
@@ -290,27 +304,28 @@ class Orchestrator:
         delta_dir = os.path.join(repo, "mount", "raw", sf, "delta")
         os.system(f"docker run --rm -v {delta_dir}:/data alpine chmod -R 777 /data")
 
-    def _run_openivm_build(self) -> None:
-        """Build OpenIVM binary (idempotent)."""
-        self.emit("  [openivm-build] Building")
+    def _run_duckdb_openivm_build(self) -> None:
+        """Build DuckDB-OpenIVM binary (idempotent)."""
+        self.emit("  [duckdb-openivm-build] Building")
         repo = self._config.repo_dir
         mgr = DockerManager(
-            os.path.join(repo, "docker-compose.openivm-build.yml"),
-            project_name="openivm-build",
+            os.path.join(repo, "docker-compose.duckdb-openivm-build.yml"),
+            project_name="duckdb-openivm-build",
             cwd=repo,
         )
         mgr.build()
         mgr.up(
-            services=["openivm-builder"],
+            services=["duckdb-openivm-builder"],
             detach=False,
-            stream_callback=lambda line: logger.debug("[openivm-build] %s", line),
+            stream_callback=lambda line: logger.debug("[duckdb-openivm-build] %s", line),
         )
         mgr.down()
 
-        binary = os.path.join(repo, "mount", "bin", "openivm", "duckdb")
+        binary = os.path.join(repo, "mount", "bin", "duckdb-openivm", "duckdb")
         if not os.path.exists(binary):
-            raise RuntimeError("OpenIVM binary not found at mount/bin/openivm/duckdb")
-        self.emit("  [openivm-build] Complete")
+            raise RuntimeError("DuckDB-OpenIVM binary not found at mount/bin/duckdb-openivm/duckdb")
+
+        self.emit("  [duckdb-openivm-build] Complete")
 
     def _build_batch_loader(self) -> None:
         """Build the batch-loader image."""
@@ -372,9 +387,9 @@ class Orchestrator:
         repo = self._config.repo_dir
         sf = str(self._config.scale_factor)
 
-        # Determine which engines need staging (OpenIVM handles its own batches)
+        # Determine which engines need staging (DuckDB-OpenIVM handles its own batches)
         engines_needing_staging = [
-            e for e in self._config.engines if e != "openivm"
+            e for e in self._config.engines if e != "duckdb-openivm"
         ]
         if not engines_needing_staging:
             return
@@ -418,31 +433,11 @@ class Orchestrator:
             self._result.engines[name] = result
             if result.status == "failed":
                 raise RuntimeError(f"Engine {name} failed: {result.error}")
-            # After DuckDB completes, copy manifest for OpenIVM (serial mode)
-            if name == "duckdb" and "openivm" in self._config.engines:
-                self._copy_duckdb_manifest_for_openivm()
 
     def _run_engines_parallel(self, engine_configs: Dict) -> None:
-        """Run engines concurrently.
-
-        If both DuckDB and OpenIVM are selected, OpenIVM is deferred to a
-        second wave because it requires DuckDB's compiled manifest.
-        """
+        """Run all engines concurrently in a single wave."""
         engines = list(self._config.engines)
-        needs_duckdb_first = "duckdb" in engines and "openivm" in engines
-
-        # Wave 1: all engines except OpenIVM (if it depends on DuckDB)
-        wave1 = [e for e in engines if not (needs_duckdb_first and e == "openivm")]
-        wave2 = [e for e in engines if needs_duckdb_first and e == "openivm"]
-
-        if wave2:
-            self.emit(f"  Wave 1: {', '.join(wave1)} (OpenIVM deferred — needs DuckDB manifest)")
-        self._run_engine_wave(wave1, engine_configs)
-
-        if wave2:
-            self._copy_duckdb_manifest_for_openivm()
-            self.emit(f"  Wave 2: {', '.join(wave2)}")
-            self._run_engine_wave(wave2, engine_configs)
+        self._run_engine_wave(engines, engine_configs)
 
         # Check if any failed
         failed = [n for n, r in self._result.engines.items() if r.status == "failed"]
@@ -469,22 +464,6 @@ class Orchestrator:
                     er = EngineResult(engine=name, status="failed", error=str(e))
                     self._result.engines[name] = er
                     self.emit(f"[{name}] FAILED: {e}")
-
-    def _copy_duckdb_manifest_for_openivm(self) -> None:
-        """Copy DuckDB's run manifest to OpenIVM's state dir."""
-        repo = self._config.repo_dir
-        sf = str(self._config.scale_factor)
-        src = os.path.join(repo, "mount", "results", sf, "duckdb", "manifest-duckdb.json")
-        openivm_state = os.path.join(repo, "mount", "results", sf, "openivm")
-
-        if not os.path.isfile(src):
-            self.emit("  [warning] DuckDB manifest not found — OpenIVM may fail")
-            return
-
-        os.makedirs(openivm_state, exist_ok=True)
-        dst = os.path.join(openivm_state, "manifest-duckdb.json")
-        shutil.copy2(src, dst)
-        self.emit("  [staging] DuckDB manifest copied to OpenIVM state dir")
 
     # ----- Phase 3: Chart -----
 
