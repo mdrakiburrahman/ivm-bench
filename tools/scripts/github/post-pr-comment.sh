@@ -89,30 +89,13 @@ $(echo -e "$TABLE")
 📦 [View workflow run & artifacts](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
 fi
 
-# Find existing comment with our marker to update (avoid spam)
-EXISTING_COMMENT_ID=$(curl -sf \
+# Post a new comment each run
+echo "Creating PR comment..."
+curl -sf \
+  -X POST \
   -H "Authorization: token ${GITHUB_TOKEN}" \
   -H "Accept: application/vnd.github.v3+json" \
-  "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
-  | jq -r ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
-  | head -1)
-
-if [[ -n "$EXISTING_COMMENT_ID" && "$EXISTING_COMMENT_ID" != "null" ]]; then
-  echo "Updating existing PR comment ${EXISTING_COMMENT_ID}..."
-  curl -sf \
-    -X PATCH \
-    -H "Authorization: token ${GITHUB_TOKEN}" \
-    -H "Accept: application/vnd.github.v3+json" \
-    "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_COMMENT_ID}" \
-    -d "$(jq -n --arg body "$BODY" '{body: $body}')" > /dev/null || echo "WARNING: Failed to update PR comment"
-else
-  echo "Creating new PR comment..."
-  curl -sf \
-    -X POST \
-    -H "Authorization: token ${GITHUB_TOKEN}" \
-    -H "Accept: application/vnd.github.v3+json" \
-    "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-    -d "$(jq -n --arg body "$BODY" '{body: $body}')" > /dev/null || echo "WARNING: Failed to create PR comment"
-fi
+  "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+  -d "$(jq -n --arg body "$BODY" '{body: $body}')" > /dev/null || echo "WARNING: Failed to create PR comment"
 
 echo "PR comment posted successfully."
