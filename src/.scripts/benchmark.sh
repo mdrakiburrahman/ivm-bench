@@ -88,7 +88,12 @@ print_results() {
   printf "%${side}s %s %s\n" "$(printf '=%.0s' $(seq 1 $side))" "$total_fmt" "$(printf '=%.0s' $(seq 1 $side))"
 }
 
-docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+cleanup() {
+  docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+}
+trap cleanup EXIT
+
+cleanup
 
 echo "=== Starting benchmark-server ==="
 docker compose -f "$COMPOSE_FILE" up -d --build

@@ -1,0 +1,93 @@
+name: GCI
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      scale_factor:
+        description: "TPC-DI scale factor"
+        default: "3"
+        type: string
+      batch_1_pct:
+        description: "% of batch 1 data"
+        default: "1"
+        type: string
+      batch_2_pct:
+        description: "% of batch 2 data"
+        default: "0.001"
+        type: string
+      batch_3_pct:
+        description: "% of batch 3 data"
+        default: "0.002"
+        type: string
+      parallel:
+        description: "Run engines in parallel (0 or 1)"
+        default: "1"
+        type: string
+      engines:
+        description: "Comma-separated engine list"
+        default: "spark,duckdb,duckdb-openivm,feldera"
+        type: string
+
+concurrency:
+  group: gci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: write
+  actions: read
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 120
+
+    env:
+      SCALE_FACTOR: ${{ inputs.scale_factor || '3' }}
+      BATCH_1_PCT: ${{ inputs.batch_1_pct || '1' }}
+      BATCH_2_PCT: ${{ inputs.batch_2_pct || '0.001' }}
+      BATCH_3_PCT: ${{ inputs.batch_3_pct || '0.002' }}
+      PARALLEL: ${{ inputs.parallel || '1' }}
+      ENGINES: ${{ inputs.engines || 'spark,duckdb,duckdb-openivm,feldera' }}
+
+    steps:
+      - name: "🧹 Clean Docker-owned files"
+        run: |
+          sudo rm -rf mount/ 2>/dev/null || true
+
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: "🔧 Bootstrap dev environment"
+        run: bash contrib/bootstrap-dev-env.sh
+
+      - name: "🏁 Run benchmark"
+        run: bash src/.scripts/benchmark.sh
+
+      - name: "💬 Post PR comment"
+        if: github.event_name == 'pull_request' && !cancelled()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash tools/scripts/github/post-pr-comment.sh
+
+      - name: "📦 Upload artifacts"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-sf${{ env.SCALE_FACTOR }}
+          path: |
+            mount/logs/
+            mount/results/${{ env.SCALE_FACTOR }}/dbt-server/
+            mount/stats/
+            scale-factor-*.png
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: "🧹 Docker cleanup"
+        if: always()
+        run: |
+          docker compose -f docker-compose.benchmark-server.yml down --remove-orphans 2>/dev/null || true
+          docker system prune -f 2>/dev/null || true
