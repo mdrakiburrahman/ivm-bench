@@ -10,7 +10,7 @@ services:
       RAW_DELTA_DIR: /data/raw/delta
       DUCKDB_OPENIVM_WORK_DIR: /data/processed/duckdb-openivm
     volumes:
-      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
-      - ./mount/results/${SCALE_FACTOR:-3}/duckdb-openivm:/data/processed/duckdb-openivm
-      - ./mount/bin/duckdb-openivm:/data/bin/duckdb-openivm:ro
-      - ./mount/stats/${SCALE_FACTOR:-3}/duckdb-openivm:/data/stats
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/duckdb-openivm:/data/processed/duckdb-openivm
+      - ../mount/bin/duckdb-openivm:/data/bin/duckdb-openivm:ro
+      - ../mount/stats/${SCALE_FACTOR:-3}/duckdb-openivm:/data/stats

@@ -1,7 +1,7 @@
 services:
   spark-batch-loader:
     build:
-      context: ./src/containers/spark-batch-loader
+      context: ../src/containers/spark-batch-loader
       args:
         SBT_IMAGE: "sbtscala/scala-sbt:eclipse-temurin-17.0.15_6_1.12.6_2.12.21"
         SPARK_VERSION: "3.5.8"
@@ -11,7 +11,7 @@ services:
     cpus: ${BATCH_LOADER_CPUS:-32}
     mem_limit: ${BATCH_LOADER_MEM:-128g}
     volumes:
-      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
       JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx${BATCH_LOADER_HEAP:-80g} -Xms${BATCH_LOADER_HEAP:-80g} -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=${BATCH_LOADER_GC_THREADS:-16} -XX:ConcGCThreads=${BATCH_LOADER_CONC_GC_THREADS:-8} -XX:+UseNUMA -XX:+AlwaysPreTouch"
       DELTA_PATH: /data/delta

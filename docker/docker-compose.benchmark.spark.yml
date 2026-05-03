@@ -15,7 +15,7 @@ services:
 
   spark:
     build:
-      context: ./src/containers/spark
+      context: ../src/containers/spark
     depends_on:
       mssql-metastore:
         condition: service_healthy
@@ -25,8 +25,8 @@ services:
       METASTORE_HOST: mssql-metastore
       METASTORE_PORT: "1433"
     volumes:
-      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
-      - ./mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark
     healthcheck:
       test: curl -sf http://localhost:8998/sessions || exit 1
       interval: 10s
@@ -44,6 +44,6 @@ services:
     cpus: ${DBT_SERVER_CPUS:-4}
     mem_limit: ${DBT_SERVER_MEM:-8g}
     volumes:
-      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
-      - ./mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark
-      - ./mount/stats/${SCALE_FACTOR:-3}/spark:/data/stats
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark
+      - ../mount/stats/${SCALE_FACTOR:-3}/spark:/data/stats

@@ -4,8 +4,8 @@ services:
     cpus: ${FELDERA_CPUS:-32}
     mem_limit: ${FELDERA_MEM:-120g}
     volumes:
-      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
-      - ./mount/results/${SCALE_FACTOR:-3}/feldera:/data/processed/feldera
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
+      - ../mount/results/${SCALE_FACTOR:-3}/feldera:/data/processed/feldera
     ports:
       - "8080:8080"
     healthcheck:
@@ -27,6 +27,6 @@ services:
     environment:
       FELDERA_URL: "http://pipeline-manager:8080"
     volumes:
-      - ./mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
-      - ./mount/results/${SCALE_FACTOR:-3}/feldera:/data/processed/feldera
-      - ./mount/stats/${SCALE_FACTOR:-3}/feldera:/data/stats
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
+      - ../mount/results/${SCALE_FACTOR:-3}/feldera:/data/processed/feldera
+      - ../mount/stats/${SCALE_FACTOR:-3}/feldera:/data/stats

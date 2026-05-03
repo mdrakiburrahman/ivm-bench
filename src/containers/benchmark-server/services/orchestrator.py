@@ -193,9 +193,9 @@ class Orchestrator:
         self.emit("=== Tearing down any running containers ===")
         # Teardown by known project names from previous benchmark runs
         compose_configs = [
-            ("docker-compose.datagen.yml", "datagen"),
-            ("docker-compose.batch-loader.yml", "batch-loader-build"),
-            ("docker-compose.duckdb-openivm-build.yml", "duckdb-openivm-build"),
+            ("docker/docker-compose.datagen.yml", "datagen"),
+            ("docker/docker-compose.batch-loader.yml", "batch-loader-build"),
+            ("docker/docker-compose.duckdb-openivm-build.yml", "duckdb-openivm-build"),
         ]
         # Engine-specific project names
         for engine in ["spark", "duckdb", "duckdb-openivm", "feldera"]:
@@ -204,7 +204,7 @@ class Orchestrator:
             if cf:
                 compose_configs.append((cf, f"bench-{engine}"))
                 compose_configs.append((cf, f"build-{engine}"))
-            compose_configs.append(("docker-compose.batch-loader.yml", f"batch-{engine}"))
+            compose_configs.append(("docker/docker-compose.batch-loader.yml", f"batch-{engine}"))
         # Also teardown with default project names
         # (chart-gen no longer needed — chart is generated in-process)
 
@@ -255,6 +255,8 @@ class Orchestrator:
                 f"mount/logs/{sf}/{engine}",
                 f"mount/stats/{sf}/{engine}",
             ])
+            if engine == "feldera":
+                dirs.append(f"mount/debug/{sf}/feldera")
         dirs.extend([
             f"mount/results/{sf}/dbt-server",
             f"mount/bin/duckdb-openivm",
@@ -288,7 +290,7 @@ class Orchestrator:
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
         mgr = DockerManager(
-            os.path.join(repo, "docker-compose.datagen.yml"),
+            os.path.join(repo, "docker/docker-compose.datagen.yml"),
             project_name="datagen",
             env=self._config.base_env(),
             cwd=repo,
@@ -325,7 +327,7 @@ class Orchestrator:
         self.emit("  [duckdb-openivm-build] Building")
         repo = self._config.repo_dir
         mgr = DockerManager(
-            os.path.join(repo, "docker-compose.duckdb-openivm-build.yml"),
+            os.path.join(repo, "docker/docker-compose.duckdb-openivm-build.yml"),
             project_name="duckdb-openivm-build",
             cwd=repo,
         )
@@ -348,7 +350,7 @@ class Orchestrator:
         self.emit("  [batch-loader] Building image")
         repo = self._config.repo_dir
         mgr = DockerManager(
-            os.path.join(repo, "docker-compose.batch-loader.yml"),
+            os.path.join(repo, "docker/docker-compose.batch-loader.yml"),
             project_name="batch-loader-build",
             env=self._config.base_env(),
             cwd=repo,
@@ -412,7 +414,7 @@ class Orchestrator:
 
         self.emit("  [staging] Running batch_loader init (shared)")
         batch_mgr = DockerManager(
-            compose_file=os.path.join(repo, "docker-compose.batch-loader.yml"),
+            compose_file=os.path.join(repo, "docker/docker-compose.batch-loader.yml"),
             project_name="batch-init-shared",
             env=self._config.base_env(),
             cwd=repo,
@@ -484,27 +486,29 @@ class Orchestrator:
     # ----- Phase 3: Chart -----
 
     def _phase3_chart(self) -> None:
-        """Phase 3: Generate results chart directly (no Docker container needed)."""
+        """Phase 3: Generate results charts directly (no Docker container needed)."""
         self.emit("")
-        self.emit("=== Phase 3: Generating results chart ===")
+        self.emit("=== Phase 3: Generating results charts ===")
 
+        repo = self._config.repo_dir
+        sf = self._config.scale_factor
+        b1 = self._config.batch_1_pct
+        b2 = self._config.batch_2_pct
+        b3 = self._config.batch_3_pct
+        results_dir = os.path.join(repo, "mount", "results", str(sf), "dbt-server")
+        stats_dir = os.path.join(repo, "mount", "stats", str(sf))
+
+        engine_resources = {}
+        if hasattr(self, "_engine_configs") and self._engine_configs:
+            for name, ecfg in self._engine_configs.items():
+                engine_resources[name] = {
+                    "cpus": ecfg.main_resources.cpus,
+                    "memory_gb": ecfg.main_resources.memory_gb,
+                }
+
+        # --- Scale-factor chart ---
         try:
             from handlers.chart import generate_chart_png
-
-            repo = self._config.repo_dir
-            sf = self._config.scale_factor
-            b1 = self._config.batch_1_pct
-            b2 = self._config.batch_2_pct
-            b3 = self._config.batch_3_pct
-            results_dir = os.path.join(repo, "mount", "results", str(sf), "dbt-server")
-
-            engine_resources = {}
-            if hasattr(self, "_engine_configs") and self._engine_configs:
-                for name, ecfg in self._engine_configs.items():
-                    engine_resources[name] = {
-                        "cpus": ecfg.main_resources.cpus,
-                        "memory_gb": ecfg.main_resources.memory_gb,
-                    }
 
             png_data = generate_chart_png(
                 state_dir=results_dir,
@@ -513,21 +517,42 @@ class Orchestrator:
                 b2pct=b2,
                 b3pct=b3,
                 engine_resources=engine_resources,
+                stats_dir=stats_dir,
             )
             if png_data:
                 b1_slug = b1.replace(".", "_")
                 b2_slug = b2.replace(".", "_")
                 b3_slug = b3.replace(".", "_")
                 chart_file = f"scale-factor-{sf}-{b1_slug}-{b2_slug}-{b3_slug}.png"
-                chart_path = os.path.join(repo, chart_file)
+                imgs_dir = os.path.join(repo, "imgs")
+                os.makedirs(imgs_dir, exist_ok=True)
+                chart_path = os.path.join(imgs_dir, chart_file)
                 with open(chart_path, "wb") as f:
                     f.write(png_data)
-                self.emit(f"  Chart saved to {chart_file}")
+                self.emit(f"  Scale-factor chart saved to imgs/{chart_file}")
             else:
-                self.emit("  WARNING: No data available for chart generation")
+                self.emit("  WARNING: No data available for scale-factor chart")
         except Exception as e:
-            self.emit(f"  WARNING: Chart generation failed: {e}")
-            logger.warning("Chart generation failed: %s", e)
+            self.emit(f"  WARNING: Scale-factor chart generation failed: {e}")
+            logger.warning("Scale-factor chart generation failed: %s", e)
+
+        # --- Heuristics chart ---
+        try:
+            from handlers.chart import generate_heuristics_png
+
+            heuristics_data = generate_heuristics_png(state_dir=results_dir)
+            if heuristics_data:
+                imgs_dir = os.path.join(repo, "imgs")
+                os.makedirs(imgs_dir, exist_ok=True)
+                heuristics_path = os.path.join(imgs_dir, "benchmark-heuristics.png")
+                with open(heuristics_path, "wb") as f:
+                    f.write(heuristics_data)
+                self.emit("  Heuristics chart saved to imgs/benchmark-heuristics.png")
+            else:
+                self.emit("  WARNING: No data available for heuristics chart")
+        except Exception as e:
+            self.emit(f"  WARNING: Heuristics chart generation failed: {e}")
+            logger.warning("Heuristics chart generation failed: %s", e)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 services:
   dbt-server-base:
     build:
-      context: ./src/containers/dbt-server
+      context: ../src/containers/dbt-server
     ports:
       - "${DBT_SERVER_PORT:-5000}:5000"
     environment:
@@ -12,7 +12,7 @@ services:
       BATCH_2_PCT: "${BATCH_2_PCT}"
       BATCH_3_PCT: "${BATCH_3_PCT}"
     volumes:
-      - ./mount/logs/${SCALE_FACTOR:-3}:/data/logs
+      - ../mount/logs/${SCALE_FACTOR:-3}:/data/logs
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
       test: curl -sf http://localhost:5000/health || exit 1

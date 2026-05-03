@@ -23,4 +23,4 @@ COPY app.py /app/app.py
 
 EXPOSE 9000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:9000", "--timeout", "86400", "--workers", "1", "--threads", "8", "--preload", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:9000", "--timeout", "604800", "--workers", "1", "--threads", "8", "--preload", "app:app"]
