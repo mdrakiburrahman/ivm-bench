@@ -34,6 +34,13 @@ export REPO_HOST_PATH="$(pwd)"
 COMPOSE_FILE="docker-compose.benchmark-server.yml"
 HEALTH_RETRIES=60
 
+capture_benchmark_server_logs() {
+  local log_dir="mount/logs/${SCALE_FACTOR}"
+  mkdir -p "$log_dir"
+  docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps \
+    > "${log_dir}/benchmark-server.log" 2>&1 || true
+}
+
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
 echo "=== Starting benchmark-server ==="
@@ -51,6 +58,7 @@ done
 
 if [[ "$HEALTH_OK" != "1" ]]; then
   echo "=== FAILURE — benchmark-server did not become healthy ==="
+  capture_benchmark_server_logs
   docker compose -f "$COMPOSE_FILE" logs
   docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
   exit 1
@@ -79,6 +87,10 @@ echo ""
 
 echo "=== Final results ==="
 curl -sf "http://localhost:9000/benchmark/status" | jq .
+
+echo "=== Capturing benchmark-server logs ==="
+capture_benchmark_server_logs
+
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
 if [[ "$FINAL_STATUS" != "completed" ]]; then
