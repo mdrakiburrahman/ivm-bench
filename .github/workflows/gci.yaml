@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   benchmark:
-    runs-on: raki-windows-big-4
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 120
 
     env:
