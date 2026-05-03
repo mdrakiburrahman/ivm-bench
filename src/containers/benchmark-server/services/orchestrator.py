@@ -255,6 +255,8 @@ class Orchestrator:
                 f"mount/logs/{sf}/{engine}",
                 f"mount/stats/{sf}/{engine}",
             ])
+            if engine == "feldera":
+                dirs.append(f"mount/debug/{sf}/feldera")
         dirs.extend([
             f"mount/results/{sf}/dbt-server",
             f"mount/bin/duckdb-openivm",

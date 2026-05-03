@@ -30,4 +30,4 @@ RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL delta; IN
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "7200", "--workers", "1", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "604800", "--workers", "1", "app:app"]

@@ -201,7 +201,7 @@ class EngineRunner:
             logger.exception("Engine %s failed", name)
 
         finally:
-            # Capture logs and tear down
+            self._collect_feldera_debug()
             self._capture_logs()
             self._engine_mgr.down()
             self._cleanup_staging()
@@ -302,7 +302,7 @@ class EngineRunner:
                 "baseline_input": 0,
                 "start_epoch_s": time.time(),
             },
-            timeout=7200,
+            timeout=604800,
         )
         wait_data = wait_resp.json()
         duration = wait_data.get("duration_s", "?")
@@ -431,7 +431,7 @@ class EngineRunner:
                 "baseline_input": baseline_input,
                 "start_epoch_s": start_epoch,
             },
-            timeout=7200,
+            timeout=604800,
         )
         wait_data = wait_resp.json()
         duration = wait_data.get("duration_s", "?")
@@ -453,7 +453,7 @@ class EngineRunner:
             resp = requests.get(
                 f"{self._dbt_url}/runs/{run_id}/progress/stream",
                 stream=True,
-                timeout=7200,
+                timeout=604800,
             )
             for line in resp.iter_lines(decode_unicode=True):
                 if not line:
@@ -630,6 +630,47 @@ class EngineRunner:
             self._emit(f"[{name}] SQL analysis saved")
         except Exception as e:
             logger.warning("Failed to fetch sql analysis for %s: %s", name, e)
+
+    def _collect_feldera_debug(self) -> None:
+        """Download Feldera support bundle (circuit profile, heap, metrics, etc.).
+
+        Only runs for the feldera engine. The bundle includes a fresh snapshot
+        plus all historically retained snapshots from the pipeline-manager.
+        Non-fatal: logs a warning on failure. Writes to a .part file first
+        and renames on success to avoid leaving corrupt artifacts.
+        """
+        if self._engine.name != "feldera":
+            return
+
+        self._emit("[feldera] Collecting debug support bundle")
+        docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
+        url = f"http://{docker_host}:8080/v0/pipelines/tpcdi/support_bundle?collect=true"
+
+        debug_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "debug", str(self._config.scale_factor), "feldera",
+        )
+        os.makedirs(debug_dir, exist_ok=True)
+        bundle_path = os.path.join(debug_dir, "support-bundle.zip")
+        part_path = bundle_path + ".part"
+
+        try:
+            resp = requests.get(url, timeout=(10, 300), stream=True)
+            resp.raise_for_status()
+
+            with open(part_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            os.replace(part_path, bundle_path)
+            size_mb = os.path.getsize(bundle_path) / (1024 * 1024)
+            self._emit(f"[feldera] Support bundle saved ({size_mb:.1f} MB): {bundle_path}")
+        except Exception as e:
+            # Clean up partial download
+            if os.path.exists(part_path):
+                os.unlink(part_path)
+            logger.warning("Failed to collect Feldera debug bundle: %s", e)
+            self._emit(f"[feldera] WARNING: Failed to collect debug bundle: {e}")
 
     def _save_run_result(self, run_id: str, batch_num: int) -> None:
         """Save dbt run results JSON."""

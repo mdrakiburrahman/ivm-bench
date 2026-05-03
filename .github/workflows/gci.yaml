@@ -82,7 +82,8 @@ jobs:
             mount/logs/
             mount/results/${{ env.SCALE_FACTOR }}/dbt-server/
             mount/stats/
-            scale-factor-*.png
+            mount/debug/
+            *.png
           if-no-files-found: warn
           retention-days: 30
 
