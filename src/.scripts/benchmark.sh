@@ -138,8 +138,6 @@ echo ""
 
 RESULTS_JSON=$(curl -sf "http://localhost:9000/benchmark/status")
 print_results "$RESULTS_JSON"
-
-# Persist results JSON for CI and post-analysis
 RESULTS_DIR="mount/results/${SCALE_FACTOR}/dbt-server"
 mkdir -p "$RESULTS_DIR"
 echo "$RESULTS_JSON" | jq . > "$RESULTS_DIR/benchmark-results.json" 2>/dev/null || true
