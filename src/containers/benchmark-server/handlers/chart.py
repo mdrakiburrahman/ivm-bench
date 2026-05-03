@@ -487,7 +487,7 @@ def generate_chart_png(
         )
 
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
@@ -791,7 +791,7 @@ def generate_heuristics_png(state_dir: str) -> Optional[bytes]:
     )
 
     buf = BytesIO()
-    fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
