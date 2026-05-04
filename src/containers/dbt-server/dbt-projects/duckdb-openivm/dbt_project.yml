@@ -33,6 +33,8 @@ models:
     gold:
       +schema: gold
       +materialized: materialized_view
+      analytics:
+        +materialized: table
     work:
       +schema: work
       +materialized: ephemeral

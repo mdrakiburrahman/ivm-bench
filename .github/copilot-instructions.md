@@ -67,6 +67,19 @@ All data flows through `mount/` which is gitignored:
 
 Each benchmark run cleans `mount/` except `mount/benchmark-state/`. See `services/orchestrator.py`.
 
+## Debugging failures
+
+All engines included in the benchmark must report successful metrics.
+
+If any do not despite being included in the benchmark, there could be a silent failure in query parsing or timeout, investigate the logs!
+
+The detailed logs of all containers and `dbt` runs will be stored here:
+
+```
+.logs
+mount/logs
+```
+
 ### Do not commit without review
 
 The repo owner reviews all changes before committing. Do not run `git commit` autonomously.

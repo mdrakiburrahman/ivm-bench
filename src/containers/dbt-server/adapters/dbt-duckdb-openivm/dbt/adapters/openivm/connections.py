@@ -18,8 +18,12 @@ OPENIVM_BIN = os.environ.get("DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duc
 WORK_DIR = os.environ.get("DUCKDB_OPENIVM_WORK_DIR", "/data/processed/duckdb-openivm")
 
 
+MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
+RETRY_BACKOFF = float(os.environ.get("OPENIVM_RETRY_BACKOFF", "3.0"))
+
+
 def _run_cli(sql: str, expect_output: bool = False) -> str:
-    """Execute SQL via the OpenIVM DuckDB CLI binary."""
+    """Execute SQL via the OpenIVM DuckDB CLI binary, with retry on lock errors."""
     db_file = os.path.join(WORK_DIR, "openivm.duckdb")
     meta_path = os.path.join(WORK_DIR, "openivm.ducklake")
     data_path = os.path.join(WORK_DIR, "data")
@@ -35,17 +39,33 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         f"(DATA_PATH '{data_path}', data_inlining_row_limit 0);\n"
     )
 
-    proc = subprocess.run(
-        [OPENIVM_BIN, db_file],
-        input=preamble + sql + "\n",
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=3600,
-    )
-    if proc.returncode != 0:
-        raise DbtDatabaseError(f"OpenIVM CLI failed (rc={proc.returncode}):\n{proc.stdout[-2000:]}")
-    return proc.stdout
+    last_error = None
+    for attempt in range(MAX_RETRIES + 1):
+        proc = subprocess.run(
+            [OPENIVM_BIN, db_file],
+            input=preamble + sql + "\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=3600,
+        )
+        if proc.returncode == 0:
+            return proc.stdout
+
+        output = proc.stdout or ""
+        if "database is locked" in output and attempt < MAX_RETRIES:
+            wait = RETRY_BACKOFF * (2 ** attempt)
+            logger.warning(
+                "OpenIVM CLI hit 'database is locked' (attempt %d/%d), retrying in %.1fs",
+                attempt + 1, MAX_RETRIES + 1, wait,
+            )
+            time.sleep(wait)
+            last_error = output
+            continue
+
+        raise DbtDatabaseError(f"OpenIVM CLI failed (rc={proc.returncode}):\n{output[-2000:]}")
+
+    raise DbtDatabaseError(f"OpenIVM CLI failed after {MAX_RETRIES + 1} attempts (database locked):\n{last_error[-2000:]}")
 
 
 class OpenIVMConnectionManager(SQLConnectionManager):
