@@ -379,5 +379,61 @@ models:
             max_output_buffer_time_millis: 1000
             max_queued_records: 10000000
             name: fact_watches_output
+      analytics:
+        trade_volume_stats:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/feldera/gold/trade_volume_stats
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 10000000
+              name: trade_volume_stats_output
+        market_volatility:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/feldera/gold/market_volatility
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 10000000
+              name: market_volatility_output
+        customer_concentration:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/feldera/gold/customer_concentration
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 10000000
+              name: customer_concentration_output
+        broker_performance:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/feldera/gold/broker_performance
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 10000000
+              name: broker_performance_output
+        daily_market_pulse:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/feldera/gold/daily_market_pulse
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 10000000
+              name: daily_market_pulse_output
     work:
       +materialized: view

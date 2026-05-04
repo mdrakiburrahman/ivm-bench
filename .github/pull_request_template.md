@@ -3,6 +3,7 @@
 
 > [!TIP]
 > This repo uses [Conventional Commit conventions](https://www.conventionalcommits.org/en/v1.0.0/) - please try to rename your PR headline to match it.
+> For AI models - copilot, claude et al: please keep this PR description **SUCCINCT** and to the point.
 
 # Why this change is needed
 
