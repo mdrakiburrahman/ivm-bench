@@ -274,11 +274,13 @@ class EngineRunner:
         self._save_run_result(run_id, batch_num)
 
     def _run_feldera_batch1(self) -> None:
-        """Feldera batch 1: compile all models (starts pipeline), then wait for processing.
+        """Feldera batch 1: compile pipeline (paused), resume, then poll for processing.
 
-        Unlike other engines, Feldera's dbt process stays 'running' after compilation
-        because the pipeline is long-lived. We stream compilation progress using a
-        cursor-based approach, then call /wait/feldera for actual processing time.
+        Flow:
+        1. dbt run compiles all models → deploys pipeline → starts → pauses
+           (adapter auto-pauses after start so no data is ingested prematurely)
+        2. Resume pipeline via dbt-server /resume/feldera
+        3. Poll /wait/feldera for stats-based per-output completion tracking
         """
         resp = requests.post(
             f"{self._dbt_url}/run/feldera",
@@ -289,24 +291,51 @@ class EngineRunner:
         run_id = resp.json()["run_id"]
         self._emit(f"[feldera] dbt run_id={run_id}")
 
-        # Stream compilation progress using cursor polling (not SSE, which hangs)
+        # Stream compilation progress using cursor polling
         self._poll_feldera_compilation(run_id)
+        self._emit("[feldera] Compilation done — pipeline is paused, ready to measure")
 
-        # Now wait for the pipeline to actually process the data
-        self._emit("[feldera] Compilation done — waiting for pipeline to process batch 1")
+        # Fetch compile time recorded by the adapter
+        compile_time_s = None
+        try:
+            ct_resp = requests.get(f"{self._dbt_url}/compile-time/feldera", timeout=10)
+            if ct_resp.status_code == 200:
+                compile_time_s = ct_resp.json().get("compile_time_s")
+        except Exception:
+            pass
+
+        # Resume pipeline — this is the start of the benchmark measurement
+        resume_resp = requests.post(f"{self._dbt_url}/resume/feldera", timeout=60)
+        resume_resp.raise_for_status()
+        start_epoch = resume_resp.json().get("resumed_at_epoch_s", time.time())
+
+        self._emit("[feldera] Pipeline resumed — waiting for processing to complete")
+
+        # Wait for pipeline to process all data, tracking per-output times
         wait_resp = requests.post(
             f"{self._dbt_url}/wait/feldera",
             json={
                 "scale_factor": self._config.scale_factor,
                 "batch_num": 1,
-                "baseline_input": 0,
-                "start_epoch_s": time.time(),
+                "start_epoch_s": start_epoch,
+                "compile_time_s": compile_time_s,
             },
             timeout=604800,
         )
         wait_data = wait_resp.json()
+
+        if wait_resp.status_code != 200:
+            raise RuntimeError(f"Feldera batch 1 wait failed: {wait_data.get('error', 'unknown')}")
+
         duration = wait_data.get("duration_s", "?")
+        compile_info = wait_data.get("compile_time_s")
         self._emit(f"[feldera] Pipeline processing time: {duration}s")
+        if compile_info:
+            self._emit(f"[feldera] Compile time (not included in duration): {compile_info}s")
+
+        # Store compile time in result for chart annotation
+        if compile_info:
+            self._result.extra["compile_time_s"] = compile_info
 
         # Save result
         results_dir = os.path.join(
@@ -321,7 +350,7 @@ class EngineRunner:
         """Poll dbt-server progress endpoint until all Feldera models are compiled."""
         cursor = 0
         stale_count = 0
-        max_stale = 300  # 5 min with no progress
+        max_stale = 1800  # 30 min — Feldera pipeline compilation can take 5+ min
 
         while True:
             try:
@@ -352,12 +381,18 @@ class EngineRunner:
                     cursor = data.get("next_cursor", cursor + len(events))
                 else:
                     stale_count += 1
+                    # Emit periodic status when waiting for Feldera pipeline compilation
+                    if cursor >= total > 0 and stale_count % 30 == 0:
+                        self._emit(f"[feldera] Waiting for pipeline compilation... ({stale_count}s)")
 
-                # All models compiled — Feldera stays "running" but we're done
-                if cursor >= total > 0:
+                # Wait for the dbt run to fully complete (including on-run-end
+                # hook which compiles the Feldera pipeline binary and starts it paused).
+                # Just having all model events isn't enough — the on-run-end hook
+                # triggers the actual Feldera compilation which can take minutes.
+                if status == "completed":
                     return
-                if status in ("completed", "failed"):
-                    return
+                if status == "failed":
+                    raise RuntimeError("Feldera dbt run failed during compilation")
                 if stale_count > max_stale:
                     raise TimeoutError("Feldera compilation stalled")
 
@@ -415,12 +450,28 @@ class EngineRunner:
         self._save_run_result(run_id, batch_num)
 
     def _run_feldera_wait(self, batch_num: int) -> None:
-        """For Feldera batches 2/3: capture baseline, append, wait for pipeline."""
-        baseline_resp = requests.get(f"{self._dbt_url}/stats/feldera", timeout=30)
-        baseline_input = baseline_resp.json().get("total_input_records", 0)
-        start_epoch = time.time()
+        """Feldera batches 2/3: pause → append → resume → poll stats.
 
+        Flow:
+        1. Pause pipeline (stops ingestion)
+        2. Append new data via batch-loader
+        3. Resume pipeline (starts measurement)
+        4. Poll /wait/feldera for per-output completion
+        """
+        # Pause pipeline before appending new data
+        self._emit(f"[feldera] Pausing pipeline before batch {batch_num} append")
+        pause_resp = requests.post(f"{self._dbt_url}/pause/feldera", timeout=60)
+        pause_resp.raise_for_status()
+
+        # Append data while pipeline is paused
         self._batch_loader_append(batch_num)
+        self._capture_delta_stats(batch_num)
+
+        # Resume pipeline — this is the start of measurement
+        self._emit(f"[feldera] Resuming pipeline for batch {batch_num}")
+        resume_resp = requests.post(f"{self._dbt_url}/resume/feldera", timeout=60)
+        resume_resp.raise_for_status()
+        start_epoch = resume_resp.json().get("resumed_at_epoch_s", time.time())
 
         self._emit(f"[feldera] Waiting for pipeline to process batch {batch_num}")
         wait_resp = requests.post(
@@ -428,12 +479,17 @@ class EngineRunner:
             json={
                 "scale_factor": self._config.scale_factor,
                 "batch_num": batch_num,
-                "baseline_input": baseline_input,
                 "start_epoch_s": start_epoch,
             },
             timeout=604800,
         )
         wait_data = wait_resp.json()
+
+        if wait_resp.status_code != 200:
+            raise RuntimeError(
+                f"Feldera batch {batch_num} wait failed: {wait_data.get('error', 'unknown')}"
+            )
+
         duration = wait_data.get("duration_s", "?")
         self._emit(f"[feldera] Batch {batch_num} processing time: {duration}s")
 

@@ -255,11 +255,12 @@ def generate_chart_png(
             for b in edata.get("batches", []):
                 batch_map[b["batch_num"]] = b["duration_s"]
             total = sum(batch_map.values())
-            engine_durations.append((ename, batch_map, total))
+            compile_time = edata.get("extra", {}).get("compile_time_s")
+            engine_durations.append((ename, batch_map, total, compile_time))
         engine_durations.sort(key=lambda x: x[2])
 
         y_pos = list(range(len(engine_durations)))
-        for yi, (ename, batch_map, total) in zip(y_pos, engine_durations):
+        for yi, (ename, batch_map, total, compile_time) in zip(y_pos, engine_durations):
             left = 0
             for bn in sorted(batch_map.keys()):
                 dur = batch_map[bn]
@@ -276,9 +277,14 @@ def generate_chart_png(
                         color="white", fontweight="bold",
                     )
                 left += dur
+
+            # Total duration label
+            total_label = f"Total: {_format_duration(total)}"
+            if compile_time:
+                total_label += f"  \u2699 Compile: {_format_duration(compile_time)}"
             ax_bar.text(
                 left + total * 0.02, yi,
-                f"Total: {_format_duration(total)}",
+                total_label,
                 ha="left", va="center", fontsize=9, fontweight="bold",
                 color="black",
             )
@@ -295,7 +301,7 @@ def generate_chart_png(
         handles, labels = ax_bar.get_legend_handles_labels()
         by_label = dict(zip(labels, handles))
         ax_bar.legend(by_label.values(), by_label.keys(),
-                      loc="lower right", fontsize=9)
+                      loc="upper right", fontsize=9)
         ax_bar.grid(axis="x", alpha=0.3)
 
     # ===== Section: Delta-Stats (Source Data) =====
