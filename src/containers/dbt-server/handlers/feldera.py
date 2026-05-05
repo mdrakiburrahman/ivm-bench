@@ -1,4 +1,4 @@
-"""Feldera-specific handler — stats and wait endpoints."""
+"""Feldera-specific handler — pause/resume control and stats-based timing."""
 
 import json
 import os
@@ -10,12 +10,10 @@ from flask import Blueprint, Flask, jsonify, request
 from handlers.base import BaseHandler
 from services.db import STATE_DIR
 from services.feldera_client import (
-    adjust_duration,
-    get_gold_table_names,
     get_stats,
-    poll_until_idle,
-    wait_for_commit_done,
-    wait_for_delta_settle,
+    pause_pipeline,
+    poll_output_completion,
+    resume_pipeline,
 )
 
 bp = Blueprint("feldera", __name__)
@@ -36,71 +34,97 @@ def stats_feldera():
     })
 
 
+@bp.route("/pause/feldera", methods=["POST"])
+def pause_feldera():
+    """Pause the Feldera pipeline so it stops ingesting data."""
+    success = pause_pipeline()
+    if not success:
+        return jsonify({"error": "Failed to pause Feldera pipeline"}), 504
+    return jsonify({"status": "paused"})
+
+
+@bp.route("/resume/feldera", methods=["POST"])
+def resume_feldera():
+    """Resume the Feldera pipeline so it begins ingesting data."""
+    success = resume_pipeline()
+    if not success:
+        return jsonify({"error": "Failed to resume Feldera pipeline"}), 504
+    return jsonify({"status": "resumed", "resumed_at_epoch_s": time.time()})
+
+
+@bp.route("/compile-time/feldera")
+def compile_time_feldera():
+    """Return the Feldera pipeline compile time written by the dbt adapter."""
+    compile_path = os.environ.get(
+        "FELDERA_COMPILE_TIME_PATH", "/tmp/feldera_compile_time.json"
+    )
+    if not os.path.exists(compile_path):
+        return jsonify({"compile_time_s": None})
+    try:
+        with open(compile_path) as f:
+            data = json.load(f)
+        # Return compile time for the default pipeline (tpcdi)
+        pipeline_name = os.environ.get("FELDERA_PIPELINE_NAME", "tpcdi")
+        compile_time = data.get(pipeline_name)
+        return jsonify({"compile_time_s": compile_time})
+    except Exception:
+        return jsonify({"compile_time_s": None})
+
+
 @bp.route("/wait/feldera", methods=["POST"])
 def wait_feldera():
     """
-    Wait for Feldera pipeline to finish processing incremental data (batches 2/3).
+    Wait for Feldera pipeline to finish processing all data.
+
+    Polls the /stats endpoint to track per-output-table completion using
+    total_processed_steps vs total_initiated_steps. Returns accurate
+    per-table timing and overall batch duration.
     """
     body = request.get_json(force=True, silent=True) or {}
     scale_factor = body.get("scale_factor", 3)
-    batch_num = body.get("batch_num", 2)
-    baseline_input = body.get("baseline_input", 0)
+    batch_num = body.get("batch_num", 1)
     start_epoch_s = body.get("start_epoch_s", time.time())
+    compile_time_s = body.get("compile_time_s")
 
-    success, final_stats = poll_until_idle(baseline_input=baseline_input)
+    success, total_duration, per_table_times = poll_output_completion()
 
     if not success:
         return jsonify({
-            "error": "Feldera pipeline did not reach idle state within timeout",
-            "pipeline_stats": final_stats,
+            "error": "Feldera pipeline did not complete within timeout",
+            "duration_s": total_duration,
+            "per_table_times": per_table_times,
         }), 504
 
-    if not wait_for_commit_done():
-        return jsonify({
-            "error": "Feldera commit did not complete within timeout",
-            "pipeline_stats": final_stats,
-        }), 504
-
-    success, _ = wait_for_delta_settle(start_epoch_s)
-    if not success:
-        return jsonify({
-            "error": "Feldera Delta output did not flush within timeout",
-            "pipeline_stats": final_stats,
-        }), 504
-
-    adjusted_duration, per_table_times = adjust_duration(start_epoch_s)
-    wall_duration = round(time.time() - start_epoch_s, 2)
-    final_duration = adjusted_duration if adjusted_duration and adjusted_duration > 0 else wall_duration
-
-    all_gold_tables = get_gold_table_names()
+    # Build per-table nodes for chart compatibility (only include tracked outputs)
     nodes = []
-    for table_name in sorted(all_gold_tables):
-        table_duration = per_table_times.get(table_name, 0.0)
-        if table_duration > 0:
-            nodes.append({
-                "run_id": None,
-                "unique_id": f"model.tpcdi.{table_name}",
-                "name": table_name,
-                "resource_type": "model",
-                "execution_time_s": table_duration,
-                "status": "success",
-                "compiled_sql": "",
-                "depends_on": [],
-                "rows_affected": None,
-            })
+    for view_name, elapsed in sorted(per_table_times.items()):
+        nodes.append({
+            "run_id": None,
+            "unique_id": f"model.tpcdi.{view_name}",
+            "name": view_name,
+            "resource_type": "model",
+            "execution_time_s": elapsed,
+            "status": "success",
+            "compiled_sql": "",
+            "depends_on": [],
+            "rows_affected": None,
+        })
 
     result = {
         "engine": "feldera",
         "scale_factor": scale_factor,
-        "full_refresh": False,
+        "full_refresh": batch_num == 1,
         "status": "completed",
         "created_at": datetime.fromtimestamp(start_epoch_s, tz=timezone.utc).isoformat(),
         "completed_at": datetime.now(timezone.utc).isoformat(),
-        "duration_s": final_duration,
+        "duration_s": total_duration,
         "nodes": nodes,
         "edges": [],
-        "pipeline_stats": final_stats.get("global_metrics", {}) if final_stats else {},
+        "pipeline_stats": (get_stats() or {}).get("global_metrics", {}),
     }
+
+    if compile_time_s is not None:
+        result["compile_time_s"] = compile_time_s
 
     result_path = os.path.join(STATE_DIR, f"run-feldera-batch{batch_num}.json")
     os.makedirs(STATE_DIR, exist_ok=True)

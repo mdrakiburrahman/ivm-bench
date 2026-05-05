@@ -8,12 +8,6 @@ import time
 from datetime import datetime, timezone
 
 from services.db import DB_LOCK, get_db
-from services.feldera_client import (
-    adjust_duration,
-    poll_until_idle,
-    wait_for_all_delta_commits,
-    wait_for_commit_done,
-)
 from services.progress import cleanup_progress, init_progress, parse_log_line
 
 PROJECTS_DIR = "/app/dbt-projects"
@@ -91,45 +85,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
 
         _parse_results(run_id, project_dir)
 
-        if engine == "feldera":
-            conn = get_db()
-            row = conn.execute("SELECT started_at FROM runs WHERE run_id=?", (run_id,)).fetchone()
-            conn.close()
-            run_started_at = datetime.fromisoformat(row["started_at"])
-            start_epoch_s = run_started_at.timestamp()
-
-            success, _ = poll_until_idle(baseline_input=0)
-            if not success:
-                _fail_run(run_id, "Feldera pipeline did not reach idle state within timeout", time.monotonic() - start_ts)
-                cleanup_progress(run_id)
-                return
-
-            if not wait_for_commit_done():
-                _fail_run(run_id, "Feldera commit did not complete within timeout", time.monotonic() - start_ts)
-                cleanup_progress(run_id)
-                return
-
-            success, _ = wait_for_all_delta_commits(start_epoch_s)
-            if not success:
-                _fail_run(run_id, "Feldera Delta output did not flush within timeout", time.monotonic() - start_ts)
-                cleanup_progress(run_id)
-                return
-
-            adjusted_duration, per_table_times = adjust_duration(start_epoch_s)
-            final_duration = adjusted_duration if adjusted_duration and adjusted_duration > 0 else round(elapsed, 2)
-
-            if per_table_times:
-                with DB_LOCK:
-                    conn = get_db()
-                    for table_name, table_duration in per_table_times.items():
-                        conn.execute(
-                            "UPDATE run_nodes SET execution_time_s=? WHERE run_id=? AND name=?",
-                            (table_duration, run_id, table_name),
-                        )
-                    conn.commit()
-                    conn.close()
-        else:
-            final_duration = round(elapsed, 2)
+        final_duration = round(elapsed, 2)
 
         completed_at = datetime.now(timezone.utc).isoformat()
         with DB_LOCK:

@@ -20,6 +20,7 @@ class EngineResult:
     batches: List[BatchResult] = field(default_factory=list)
     status: str = "pending"  # pending, running, completed, failed
     error: Optional[str] = None
+    extra: Dict[str, any] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.batches:
@@ -30,7 +31,7 @@ class EngineResult:
         return sum(b.duration_s for b in self.batches)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "engine": self.engine,
             "status": self.status,
             "error": self.error,
@@ -45,6 +46,9 @@ class EngineResult:
                 for b in self.batches
             ],
         }
+        if self.extra:
+            d["extra"] = self.extra
+        return d
 
 
 @dataclass
