@@ -1,7 +1,7 @@
 FROM ubuntu:24.04 AS builder
 
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=110025c572dcc51752ee8bd0d214249ab08b4ecb
+ARG OPENIVM_COMMIT=aef59650be8a06f4dd1ec7e79c4fc9ef305c443f
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git ca-certificates python3 \

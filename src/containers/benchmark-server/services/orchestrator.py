@@ -121,6 +121,7 @@ class Orchestrator:
             self._pre_create_dirs()
             self._phase1_prep()
             self._phase2_benchmark()
+            self._save_benchmark_results()
             self._phase3_chart()
 
             self._result.status = "completed"
@@ -438,6 +439,7 @@ class Orchestrator:
                 shutil.rmtree(dst)
             self.emit(f"  [staging] Copying staging → {ec.staging_dir}")
             shutil.copytree(staging_src, dst)
+            os.system(f"docker run --rm -v {dst}:/data alpine chmod -R 777 /data")
             self.emit(f"  [staging] {ec.staging_dir} ready")
 
         self.emit("  [staging] All per-engine staging dirs initialized")

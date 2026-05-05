@@ -280,7 +280,7 @@ def generate_chart_png(
                 left + total * 0.02, yi,
                 f"Total: {_format_duration(total)}",
                 ha="left", va="center", fontsize=9, fontweight="bold",
-                color=_get_engine_color(ename),
+                color="black",
             )
 
         ax_bar.set_yticks(y_pos)
