@@ -43,8 +43,8 @@ class EngineConfig:
         }
         # MSSQL for Spark
         if self.name == "spark":
-            env["MSSQL_CPUS"] = "2"
-            env["MSSQL_MEM"] = "4g"
+            env["MSSQL_CPUS"] = "4"
+            env["MSSQL_MEM"] = "8g"
         # Feldera: cap pipeline RSS at 95 % of its container memory.
         # The dbt-feldera adapter reads FELDERA_MAX_RSS_MB via env_var()
         # in profiles.yml and forwards it to runtime_config.max_rss_mb.

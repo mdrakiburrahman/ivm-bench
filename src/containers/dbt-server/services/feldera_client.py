@@ -182,24 +182,44 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
 
         completion_reason: str | None = None
 
-        if pipeline_complete:
+        # Feldera holds an open DBSP transaction across all snapshot input
+        # while ``transaction_mode: always`` is set. Even after every record
+        # has flowed through the circuit, the transaction must walk every
+        # operator (~47k for our SQL) and persist its state to storage.
+        # This commit phase is reflected in ``transaction_status`` and
+        # ``commit_progress``. We block any "done" decision while a commit
+        # is in flight, otherwise the outstanding commit work bleeds into
+        # the next batch and inflates batch-2 timings — see
+        # support-bundle inspection for SF=100 PARALLEL=1 batch 2 where
+        # ``transaction_status: CommitInProgress`` was active for ~80
+        # minutes after our quiescence detector originally fired.
+        tx_status = gm.get("transaction_status", "NoTransaction")
+        commit_progress = gm.get("commit_progress")
+        tx_in_flight = (
+            tx_status not in ("NoTransaction", None)
+            or commit_progress is not None
+        )
+
+        if pipeline_complete and not tx_in_flight:
             completion_reason = "pipeline_complete=true"
         elif (
             target_steps > baseline_steps
             and gm.get("total_completed_steps", 0) >= target_steps
             and gm.get("buffered_input_records", 0) == 0
+            and not tx_in_flight
         ):
             completion_reason = "total_completed_steps>=initiated"
         else:
             # Quiescence check. Compose a signature that captures real
-            # data progress (records flowing through the circuit and out
-            # to sinks). We deliberately omit ``total_initiated_steps``
-            # because ``mode: snapshot_and_follow`` inputs keep polling
-            # for new Delta commits even after the snapshot is exhausted,
-            # incrementing the step counter forever without any new data.
-            # If the signature stays unchanged for FELDERA_QUIESCENCE_S
-            # seconds AND the circuit has fully drunk all input, treat
-            # as done.
+            # data progress (records flowing through the circuit, out to
+            # sinks, and through the transaction-commit phase). We
+            # deliberately omit ``total_initiated_steps`` because
+            # ``mode: snapshot_and_follow`` inputs keep polling for new
+            # Delta commits even after the snapshot is exhausted,
+            # incrementing the step counter forever without any new
+            # data.  We DO include the transaction-commit progress
+            # counters: while a commit walks operators, those tick up
+            # every ~10s, which prevents premature quiescence.
             total_input = gm.get("total_input_records", 0)
             total_processed = gm.get("total_processed_records", 0)
             buffered_in = gm.get("buffered_input_records", 0)
@@ -214,11 +234,23 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
                 )
                 for o in outputs_list
             )
+            commit_signature: tuple
+            if isinstance(commit_progress, dict):
+                commit_signature = (
+                    tx_status,
+                    commit_progress.get("completed", 0),
+                    commit_progress.get("in_progress", 0),
+                    commit_progress.get("remaining", 0),
+                    commit_progress.get("in_progress_processed_records", 0),
+                )
+            else:
+                commit_signature = (tx_status, None)
             signature = (
                 total_input,
                 total_processed,
                 buffered_in,
                 transmitted,
+                commit_signature,
             )
             now = time.monotonic()
             if signature != last_signature:
@@ -228,11 +260,13 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
                 total_input > 0
                 and total_processed >= total_input
                 and buffered_in == 0
+                and not tx_in_flight
                 and (now - last_change_t) >= FELDERA_QUIESCENCE_S
             ):
                 completion_reason = (
                     f"quiescence({FELDERA_QUIESCENCE_S:.0f}s,"
-                    f"processed={total_processed}/{total_input})"
+                    f"processed={total_processed}/{total_input},"
+                    f"tx_status={tx_status})"
                 )
 
         if completion_reason is not None:
