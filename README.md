@@ -98,6 +98,11 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ![Results](imgs/scale-factor-3-1-0_001-0_002.png)
 
+### Scale Factor: 100 (100%, 1%, 1%)
+
+![Results](imgs/scale-factor-100-100-1-1.png)
+
+
 ---
 
 ## Disclaimer
