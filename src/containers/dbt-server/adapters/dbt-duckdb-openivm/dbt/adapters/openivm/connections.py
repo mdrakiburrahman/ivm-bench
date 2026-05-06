@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 OPENIVM_BIN = os.environ.get("DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duckdb")
 WORK_DIR = os.environ.get("DUCKDB_OPENIVM_WORK_DIR", "/data/processed/duckdb-openivm")
 
+# Per-CLI-session memory cap and spill directory. Defaults are sized for
+# the serial-mode single-engine container (124 GB host, ~100 GB peak
+# observed at SF=100). When running in parallel mode, the orchestrator
+# overrides DUCKDB_OPENIVM_MEM_LIMIT to a fraction of the per-engine
+# container so the four engines don't collectively oversubscribe RAM.
+MEM_LIMIT = os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB")
+TEMP_DIR = os.environ.get(
+    "DUCKDB_OPENIVM_TEMP_DIR",
+    os.path.join(WORK_DIR, "_tmp"),
+)
+THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
+
 
 MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
 RETRY_BACKOFF = float(os.environ.get("OPENIVM_RETRY_BACKOFF", "3.0"))
@@ -27,17 +39,25 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     db_file = os.path.join(WORK_DIR, "openivm.duckdb")
     meta_path = os.path.join(WORK_DIR, "openivm.ducklake")
     data_path = os.path.join(WORK_DIR, "data")
+    os.makedirs(TEMP_DIR, exist_ok=True)
 
-    preamble = (
-        ".bail on\n"
-        ".timer off\n"
-        "LOAD openivm;\n"
-        "SET ivm_cascade_refresh='off';\n"
-        "INSTALL icu; LOAD icu;\n"
-        "INSTALL ducklake; LOAD ducklake;\n"
+    preamble_lines = [
+        ".bail on",
+        ".timer off",
+        f"SET memory_limit='{MEM_LIMIT}';",
+        f"SET temp_directory='{TEMP_DIR}';",
+    ]
+    if THREADS:
+        preamble_lines.append(f"SET threads={int(THREADS)};")
+    preamble_lines.extend([
+        "LOAD openivm;",
+        "SET ivm_cascade_refresh='off';",
+        "INSTALL icu; LOAD icu;",
+        "INSTALL ducklake; LOAD ducklake;",
         f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "
-        f"(DATA_PATH '{data_path}', data_inlining_row_limit 0);\n"
-    )
+        f"(DATA_PATH '{data_path}', data_inlining_row_limit 0);",
+    ])
+    preamble = "\n".join(preamble_lines) + "\n"
 
     last_error = None
     for attempt in range(MAX_RETRIES + 1):

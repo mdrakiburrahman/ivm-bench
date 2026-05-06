@@ -45,8 +45,26 @@ class EngineConfig:
         if self.name == "spark":
             env["MSSQL_CPUS"] = "2"
             env["MSSQL_MEM"] = "4g"
+        # Feldera: cap pipeline RSS at 95 % of its container memory.
+        # The dbt-feldera adapter reads FELDERA_MAX_RSS_MB via env_var()
+        # in profiles.yml and forwards it to runtime_config.max_rss_mb.
         if self.name == "feldera":
             env["FELDERA_MAX_RSS_MB"] = str(int(self.main_resources.memory_gb * 1024 * 0.95))
+        # DuckDB / DuckDB-OpenIVM run in-process inside the dbt-server
+        # container, so size their memory_limit and threads from the
+        # engine's resource budget. Leave 10 % headroom for the Python
+        # process, dbt, and connector overhead so the container itself
+        # doesn't OOM. In parallel mode this scales the in-process
+        # engines down to their per-engine slice instead of the host's
+        # full memory.
+        if self.name == "duckdb":
+            mem_gb = max(1, int(self.main_resources.memory_gb * 0.9))
+            env["DUCKDB_MEM_LIMIT"] = f"{mem_gb}GB"
+            env["DUCKDB_THREADS"] = str(self.main_resources.cpus)
+        if self.name == "duckdb-openivm":
+            mem_gb = max(1, int(self.main_resources.memory_gb * 0.9))
+            env["DUCKDB_OPENIVM_MEM_LIMIT"] = f"{mem_gb}GB"
+            env["DUCKDB_OPENIVM_THREADS"] = str(self.main_resources.cpus)
         return env
 
 
