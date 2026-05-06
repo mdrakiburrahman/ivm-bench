@@ -42,8 +42,7 @@ export BATCH_2_PCT=0.001                            # 0.001% of DIGen batch 2 da
 export BATCH_3_PCT=0.002                            # 0.002% of DIGen batch 3 data
 export PARALLEL=1                                   # 0, 1
 export ENGINES=spark,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
-export PRESERVE_RAW=0                               # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs
-                                                    # (skips multi-hour Phase 1 datagen on iteration)
+export PRESERVE_RAW=0                               # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
 
 bash src/.scripts/benchmark.sh
 ```
