@@ -45,6 +45,8 @@ class EngineConfig:
         if self.name == "spark":
             env["MSSQL_CPUS"] = "2"
             env["MSSQL_MEM"] = "4g"
+        if self.name == "feldera":
+            env["FELDERA_MAX_RSS_MB"] = str(int(self.main_resources.memory_gb * 1024 * 0.95))
         return env
 
 

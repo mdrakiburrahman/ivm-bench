@@ -10,3 +10,4 @@ tpcdi:
       workers: 16
       timeout: 1200
       threads: 1
+      max_rss_mb: "{{ env_var('FELDERA_MAX_RSS_MB', '0') | int }}"

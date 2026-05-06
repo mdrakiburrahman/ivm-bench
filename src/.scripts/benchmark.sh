@@ -29,6 +29,7 @@ export PARALLEL="${PARALLEL:-0}"
 export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
+export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export REPO_HOST_PATH="$(pwd)"
 
 COMPOSE_FILE="docker/docker-compose.benchmark-server.yml"
