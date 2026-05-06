@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import queue
+import re
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -340,7 +342,30 @@ class Orchestrator:
             project_name="duckdb-openivm-build",
             cwd=repo,
         )
-        mgr.build()
+        dockerfile = os.path.join(repo, "src/containers/duckdb-openivm/Dockerfile")
+        pinned_commit = None
+        with open(dockerfile, "r", encoding="utf-8") as f:
+            # The OpenIVM binary is expensive to rebuild. The Dockerfile records
+            # the pinned OpenIVM commit as both a build ARG and an image label, so
+            # we can reuse the existing builder image when its label still matches
+            # the current pin and rebuild only when the pin changes.
+            match = re.search(r"^ARG OPENIVM_COMMIT=([0-9a-f]+)$", f.read(), re.MULTILINE)
+            if match:
+                pinned_commit = match.group(1)
+        image_commit = subprocess.run(
+            [
+                "docker", "image", "inspect",
+                "duckdb-openivm-build-duckdb-openivm-builder:latest",
+                "--format", "{{ index .Config.Labels \"org.openivm.commit\" }}",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=repo,
+        )
+        if not pinned_commit or image_commit.returncode != 0 or image_commit.stdout.strip() != pinned_commit:
+            mgr.build()
+        else:
+            self.emit(f"  [duckdb-openivm-build] Reusing image for OpenIVM {pinned_commit[:7]}")
         mgr.up(
             services=["duckdb-openivm-builder"],
             detach=False,
