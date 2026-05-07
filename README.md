@@ -102,7 +102,6 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ![Results](imgs/scale-factor-100-100-1-1.png)
 
-
 ---
 
 ## Disclaimer

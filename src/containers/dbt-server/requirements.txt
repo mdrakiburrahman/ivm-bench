@@ -6,5 +6,5 @@ https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-n
 dbt-duckdb>=1.9
 duckdb>=1.5.2
 deltalake>=0.18
-dbt-feldera @ git+https://github.com/mdrakiburrahman/feldera.git@95cb4d2aea0e61a673ed022b83e79da4a54445a2#subdirectory=python/dbt-feldera
+dbt-feldera @ git+https://github.com/mdrakiburrahman/feldera.git@41548878813d750a25f531280517b96ede7b56a1#subdirectory=python/dbt-feldera
 sqlglot>=26.0
