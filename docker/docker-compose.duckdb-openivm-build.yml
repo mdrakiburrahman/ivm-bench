@@ -2,6 +2,8 @@ services:
   duckdb-openivm-builder:
     build:
       context: ../src/containers/duckdb-openivm
+      args:
+        UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
     volumes:
       - ../mount/bin/duckdb-openivm:/output
     environment:

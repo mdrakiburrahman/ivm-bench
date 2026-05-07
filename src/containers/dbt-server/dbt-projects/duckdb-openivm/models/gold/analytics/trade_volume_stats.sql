@@ -1,4 +1,3 @@
--- TODO: OpenIVM change needed from @ila to incrementalize this query and store as materialized_view
 WITH security_stats AS (
     SELECT
         s.symbol,

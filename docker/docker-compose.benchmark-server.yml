@@ -22,6 +22,7 @@ services:
       HOST_CORES: "${HOST_CORES:-}"
       HOST_MEMORY: "${HOST_MEMORY:-}"
       PRESERVE_RAW: "${PRESERVE_RAW:-0}"
+      OPENIVM_UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-}"
     healthcheck:
       test: curl -sf http://localhost:9000/health || exit 1
       interval: 5s

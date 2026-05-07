@@ -15,6 +15,7 @@
 #   PRESERVE_RAW   — 0 = clean mount/ at start (default), 1 = keep mount/raw/
 #                    and mount/bin/ across runs so multi-hour Phase-1
 #                    datagen + duckdb-openivm builds are reused
+#   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -34,6 +35,26 @@ export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export REPO_HOST_PATH="$(pwd)"
+
+detect_ec2_ubuntu_mirror() {
+  local token region
+  token="$(curl -fsS -m 1 -X PUT \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+    "http://169.254.169.254/latest/api/token" 2>/dev/null || true)"
+  [[ -n "$token" ]] || return 1
+
+  region="$(curl -fsS -m 1 \
+    -H "X-aws-ec2-metadata-token: $token" \
+    "http://169.254.169.254/latest/meta-data/placement/region" 2>/dev/null || true)"
+  [[ -n "$region" ]] || return 1
+
+  printf 'http://%s.ec2.archive.ubuntu.com/ubuntu\n' "$region"
+}
+
+if [[ -z "${OPENIVM_UBUNTU_MIRROR:-}" ]]; then
+  OPENIVM_UBUNTU_MIRROR="$(detect_ec2_ubuntu_mirror || true)"
+fi
+export OPENIVM_UBUNTU_MIRROR
 
 COMPOSE_FILE="docker/docker-compose.benchmark-server.yml"
 HEALTH_RETRIES=60
