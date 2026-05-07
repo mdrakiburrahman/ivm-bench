@@ -42,6 +42,7 @@ export BATCH_2_PCT=0.001                            # 0.001% of DIGen batch 2 da
 export BATCH_3_PCT=0.002                            # 0.002% of DIGen batch 3 data
 export PARALLEL=1                                   # 0, 1
 export ENGINES=spark,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
+export PRESERVE_RAW=0                               # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
 
 bash src/.scripts/benchmark.sh
 ```
@@ -87,6 +88,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 - The Feldera initial run compiles a Rust Binary for all SQL in a pipeline - [see here](https://github.com/mdrakiburrahman/feldera/blob/dev/mdrrahman/research/.research/demo/docs/00-end-to-end.md#2-sql-submission-to-running-pipeline), which takes a long time for the pipeline start in batch 1
 - Since duckdb runs in proc in the `dbt-server`, 2 additional cores are allocated for the server vs. other engines which run dedicated
+- Feldera takes ALL queries in the model and compiles it into a single binary that represents a circuit. So when `dbt` runs, it's not query-by-query, but rather the circuit flushes as it proceeds. As a result, all "tables" finish around the same time roughly.
 
 ### Benchmark Heuristics
 
@@ -95,6 +97,10 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 ### Scale Factor: 3 (1%, 0.001%, 0.002%)
 
 ![Results](imgs/scale-factor-3-1-0_001-0_002.png)
+
+### Scale Factor: 100 (100%, 1%, 1%)
+
+![Results](imgs/scale-factor-100-100-1-1.png)
 
 ---
 

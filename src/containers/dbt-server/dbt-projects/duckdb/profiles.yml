@@ -10,8 +10,9 @@ tpcdi:
         allow_unsigned_extensions: true
       settings:
         preserve_insertion_order: false
-        memory_limit: '115GB'
-        threads: 32
+        memory_limit: "{{ env_var('DUCKDB_MEM_LIMIT', '115GB') }}"
+        threads: "{{ env_var('DUCKDB_THREADS', '32') | int }}"
+        temp_directory: "{{ env_var('DUCKDB_TEMP_DIR', '/data/processed/duckdb/_tmp') }}"
       extensions:
         - parquet
         - sqlite

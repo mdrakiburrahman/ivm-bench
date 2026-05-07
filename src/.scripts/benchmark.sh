@@ -12,6 +12,9 @@
 #   ENGINES        — comma-separated engine list (default: spark,duckdb,duckdb-openivm,feldera)
 #   HOST_CORES     — override auto-detected CPU count
 #   HOST_MEMORY    — override auto-detected memory in GB
+#   PRESERVE_RAW   — 0 = clean mount/ at start (default), 1 = keep mount/raw/
+#                    and mount/bin/ across runs so multi-hour Phase-1
+#                    datagen + duckdb-openivm builds are reused
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -29,6 +32,7 @@ export PARALLEL="${PARALLEL:-0}"
 export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
+export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export REPO_HOST_PATH="$(pwd)"
 
 COMPOSE_FILE="docker/docker-compose.benchmark-server.yml"

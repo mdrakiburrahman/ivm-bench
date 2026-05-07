@@ -5,6 +5,10 @@ services:
       service: dbt-server-base
     cpus: ${DUCKDB_CPUS:-32}
     mem_limit: ${DUCKDB_MEM:-120g}
+    environment:
+      DUCKDB_MEM_LIMIT: "${DUCKDB_MEM_LIMIT:-115GB}"
+      DUCKDB_THREADS: "${DUCKDB_THREADS:-32}"
+      DUCKDB_TEMP_DIR: "${DUCKDB_TEMP_DIR:-/data/processed/duckdb/_tmp}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/duckdb:/data/processed/duckdb

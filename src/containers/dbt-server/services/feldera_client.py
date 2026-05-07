@@ -13,6 +13,12 @@ FELDERA_PIPELINE_NAME = os.environ.get("FELDERA_PIPELINE_NAME", "tpcdi")
 FELDERA_GOLD_DIR = os.environ.get("FELDERA_GOLD_DIR", "/data/processed/feldera/gold")
 FELDERA_POLL_INTERVAL_S = float(os.environ.get("FELDERA_POLL_INTERVAL_S", "0.1"))
 FELDERA_POLL_TIMEOUT_S = int(os.environ.get("FELDERA_POLL_TIMEOUT_S", "6000"))
+# How long the pipeline must remain unchanged (no new initiated steps,
+# no new transmitted records on any output, no new processed input
+# records) before we declare it quiesced. Used as a fall-back completion
+# signal when ``pipeline_complete`` never trips because
+# ``mode: snapshot_and_follow`` inputs cannot reach EOI.
+FELDERA_QUIESCENCE_S = float(os.environ.get("FELDERA_QUIESCENCE_S", "120"))
 
 
 # ─── Low-level REST helpers ───────────────────────────────────────────────────
@@ -94,6 +100,23 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
     and requires that ``total_initiated_steps`` advances beyond the baseline
     before declaring any output complete.
 
+    Recognises three "done" signals (in order of preference):
+
+    1. ``pipeline_complete = true`` from Feldera (strict — requires all
+       inputs at EOI, which never happens for ``mode: snapshot_and_follow``
+       inputs).
+    2. ``total_completed_steps >= total_initiated_steps`` and no buffered
+       input records (the original heuristic).
+    3. **Quiescence:** all input that has been received has also been
+       processed AND nothing has changed in
+       ``total_initiated_steps`` / ``total_processed_records`` /
+       per-output ``transmitted_records`` for ``FELDERA_QUIESCENCE_S``
+       consecutive seconds. This catches the case where DBSP has settled
+       on the result but Feldera never increments
+       ``total_completed_steps`` past the snapshot transaction (common
+       at large SF when ``transaction_mode: always`` plus a single
+       snapshot transaction means steps stay "open" forever).
+
     Returns:
         (success, total_duration_s, per_table_times)
         where per_table_times = {view_name: seconds_from_start}
@@ -112,9 +135,17 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
         )
 
     logger.info(
-        "Polling Feldera stats for output completion (interval=%.2fs, baseline_steps=%d)",
-        interval, baseline_steps,
+        "Polling Feldera stats for output completion "
+        "(interval=%.2fs, baseline_steps=%d, quiescence_s=%.1f)",
+        interval, baseline_steps, FELDERA_QUIESCENCE_S,
     )
+
+    # Quiescence tracking: snapshot of (initiated_steps, processed_records,
+    # tuple of per-output transmitted_records). When this snapshot stays
+    # unchanged for ``FELDERA_QUIESCENCE_S`` seconds AND total_processed
+    # >= total_input, we declare the pipeline done.
+    last_signature: tuple | None = None
+    last_change_t = time.monotonic()
 
     while time.monotonic() < deadline:
         stats = get_stats()
@@ -131,8 +162,10 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
             time.sleep(interval)
             continue
 
+        outputs_list = stats.get("outputs", [])
+
         # Track per-output connector completion
-        for output in stats.get("outputs", []):
+        for output in outputs_list:
             config = output.get("config", {})
             view_name = config.get("stream", "")
             if not view_name or view_name in per_table_times:
@@ -147,21 +180,106 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
                     view_name, elapsed, processed_steps, target_steps,
                 )
 
-        if pipeline_complete or (
+        completion_reason: str | None = None
+
+        # Feldera holds an open DBSP transaction across all snapshot input
+        # while ``transaction_mode: always`` is set. Even after every record
+        # has flowed through the circuit, the transaction must walk every
+        # operator (~47k for our SQL) and persist its state to storage.
+        # This commit phase is reflected in ``transaction_status`` and
+        # ``commit_progress``. We block any "done" decision while a commit
+        # is in flight, otherwise the outstanding commit work bleeds into
+        # the next batch and inflates batch-2 timings — see
+        # support-bundle inspection for SF=100 PARALLEL=1 batch 2 where
+        # ``transaction_status: CommitInProgress`` was active for ~80
+        # minutes after our quiescence detector originally fired.
+        tx_status = gm.get("transaction_status", "NoTransaction")
+        commit_progress = gm.get("commit_progress")
+        tx_in_flight = (
+            tx_status not in ("NoTransaction", None)
+            or commit_progress is not None
+        )
+
+        if pipeline_complete and not tx_in_flight:
+            completion_reason = "pipeline_complete=true"
+        elif (
             target_steps > baseline_steps
             and gm.get("total_completed_steps", 0) >= target_steps
             and gm.get("buffered_input_records", 0) == 0
+            and not tx_in_flight
         ):
+            completion_reason = "total_completed_steps>=initiated"
+        else:
+            # Quiescence check. Compose a signature that captures real
+            # data progress (records flowing through the circuit, out to
+            # sinks, and through the transaction-commit phase). We
+            # deliberately omit ``total_initiated_steps`` because
+            # ``mode: snapshot_and_follow`` inputs keep polling for new
+            # Delta commits even after the snapshot is exhausted,
+            # incrementing the step counter forever without any new
+            # data.  We DO include the transaction-commit progress
+            # counters: while a commit walks operators, those tick up
+            # every ~10s, which prevents premature quiescence.
+            total_input = gm.get("total_input_records", 0)
+            total_processed = gm.get("total_processed_records", 0)
+            buffered_in = gm.get("buffered_input_records", 0)
+            transmitted = tuple(
+                (
+                    o.get("config", {}).get("stream", ""),
+                    o.get("metrics", {}).get("transmitted_records", 0),
+                    o.get("metrics", {}).get("queued_records", 0),
+                    o.get("metrics", {}).get("queued_batches", 0),
+                    o.get("metrics", {}).get("buffered_records", 0),
+                    o.get("metrics", {}).get("batch_records_written", 0),
+                )
+                for o in outputs_list
+            )
+            commit_signature: tuple
+            if isinstance(commit_progress, dict):
+                commit_signature = (
+                    tx_status,
+                    commit_progress.get("completed", 0),
+                    commit_progress.get("in_progress", 0),
+                    commit_progress.get("remaining", 0),
+                    commit_progress.get("in_progress_processed_records", 0),
+                )
+            else:
+                commit_signature = (tx_status, None)
+            signature = (
+                total_input,
+                total_processed,
+                buffered_in,
+                transmitted,
+                commit_signature,
+            )
+            now = time.monotonic()
+            if signature != last_signature:
+                last_signature = signature
+                last_change_t = now
+            elif (
+                total_input > 0
+                and total_processed >= total_input
+                and buffered_in == 0
+                and not tx_in_flight
+                and (now - last_change_t) >= FELDERA_QUIESCENCE_S
+            ):
+                completion_reason = (
+                    f"quiescence({FELDERA_QUIESCENCE_S:.0f}s,"
+                    f"processed={total_processed}/{total_input},"
+                    f"tx_status={tx_status})"
+                )
+
+        if completion_reason is not None:
             total_duration = time.monotonic() - start_wall
             # Mark any remaining outputs as completed now
-            for output in stats.get("outputs", []):
+            for output in outputs_list:
                 config = output.get("config", {})
                 view_name = config.get("stream", "")
                 if view_name and view_name not in per_table_times:
                     per_table_times[view_name] = round(total_duration, 3)
             logger.info(
-                "Pipeline complete in %.2fs (%d output tables tracked, pipeline_complete=%s)",
-                total_duration, len(per_table_times), pipeline_complete,
+                "Pipeline complete in %.2fs (%d output tables tracked, reason=%s)",
+                total_duration, len(per_table_times), completion_reason,
             )
             return True, round(total_duration, 3), per_table_times
 

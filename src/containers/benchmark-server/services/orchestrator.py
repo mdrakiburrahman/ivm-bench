@@ -222,6 +222,9 @@ class Orchestrator:
         """Remove the mount/ directory to start with clean state.
 
         Preserves mount/benchmark-state/ (benchmark-server's own SQLite).
+        When PRESERVE_RAW=1 is set, also preserves mount/raw/ and
+        mount/bin/ (idempotent datagen + duckdb-openivm build outputs)
+        so multi-hour Phase 1 work can be re-used across triage runs.
         """
         mount_dir = os.path.join(self._config.repo_dir, "mount")
         real_mount = os.path.realpath(mount_dir)
@@ -231,17 +234,22 @@ class Orchestrator:
                 f"Refusing to delete {real_mount} — not under repo {real_repo}"
             )
         if os.path.exists(mount_dir):
-            self.emit("=== Cleaning mount/ directory (preserving benchmark-state/) ===")
-            preserve = "benchmark-state"
+            preserve_raw = os.environ.get("PRESERVE_RAW", "0") == "1"
+            preserve = {"benchmark-state"}
+            if preserve_raw:
+                preserve.update({"raw", "bin"})
+                self.emit("=== Cleaning mount/ (preserving benchmark-state/, raw/, bin/) ===")
+            else:
+                self.emit("=== Cleaning mount/ directory (preserving benchmark-state/) ===")
             for entry in os.listdir(mount_dir):
-                if entry == preserve:
+                if entry in preserve:
                     continue
                 entry_path = os.path.join(mount_dir, entry)
                 if os.path.isdir(entry_path):
                     shutil.rmtree(entry_path)
                 else:
                     os.remove(entry_path)
-            self.emit("  mount/ cleaned (benchmark-state preserved)")
+            self.emit("  mount/ cleaned")
         else:
             self.emit("=== mount/ does not exist — nothing to clean ===")
 

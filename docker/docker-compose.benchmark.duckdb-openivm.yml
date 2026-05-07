@@ -9,6 +9,9 @@ services:
       DUCKDB_OPENIVM_BIN: /data/bin/duckdb-openivm/duckdb
       RAW_DELTA_DIR: /data/raw/delta
       DUCKDB_OPENIVM_WORK_DIR: /data/processed/duckdb-openivm
+      DUCKDB_OPENIVM_MEM_LIMIT: "${DUCKDB_OPENIVM_MEM_LIMIT:-115GB}"
+      DUCKDB_OPENIVM_TEMP_DIR: "${DUCKDB_OPENIVM_TEMP_DIR:-/data/processed/duckdb-openivm/_tmp}"
+      DUCKDB_OPENIVM_THREADS: "${DUCKDB_OPENIVM_THREADS:-}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/duckdb-openivm:/data/processed/duckdb-openivm

@@ -1,17 +1,25 @@
 services:
   mssql-metastore:
     image: mcr.microsoft.com/mssql/server:2025-latest
+    restart: on-failure:3
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "Hive@Pass123"
-    cpus: ${MSSQL_CPUS:-2}
-    mem_limit: ${MSSQL_MEM:-4g}
+      # Cap SQL Server's internal memory at ~70% of mem_limit to leave
+      # headroom for the OS / page cache. Under heavy sustained load
+      # at SF=100 PARALLEL=1 the default unconfigured server has been
+      # observed to crash with a fatal error (core-dumped) after ~15
+      # minutes. Hard-capping max server memory keeps SQL Server inside
+      # its cgroup limit instead of getting OOM-killed.
+      MSSQL_MEMORY_LIMIT_MB: "5500"
+    cpus: ${MSSQL_CPUS:-4}
+    mem_limit: ${MSSQL_MEM:-8g}
     healthcheck:
       test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Hive@Pass123" -C -Q "SELECT 1" -b
       interval: 10s
       timeout: 5s
-      retries: 20
-      start_period: 30s
+      retries: 30
+      start_period: 120s
 
   spark:
     build:
