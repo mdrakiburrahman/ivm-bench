@@ -28,7 +28,6 @@ services:
       FELDERA_URL: "http://pipeline-manager:8080"
       FELDERA_MAX_RSS_MB: "${FELDERA_MAX_RSS_MB:-0}"
       FELDERA_POLL_TIMEOUT_S: "${FELDERA_POLL_TIMEOUT_S:-36000}"
-      FELDERA_WORKERS: "${FELDERA_WORKERS:-16}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
       - ../mount/results/${SCALE_FACTOR:-3}/feldera:/data/processed/feldera

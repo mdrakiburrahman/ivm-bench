@@ -48,12 +48,8 @@ class EngineConfig:
         # Feldera: cap pipeline RSS at 95 % of its container memory.
         # The dbt-feldera adapter reads FELDERA_MAX_RSS_MB via env_var()
         # in profiles.yml and forwards it to runtime_config.max_rss_mb.
-        # Workers are sized to the engine's actual core allocation
-        # (parallel mode gives Feldera ~6 cores; 16 workers there is
-        # over-subscribed per maintainer feedback).
         if self.name == "feldera":
             env["FELDERA_MAX_RSS_MB"] = str(int(self.main_resources.memory_gb * 1024 * 0.95))
-            env["FELDERA_WORKERS"] = str(self.main_resources.cpus)
         # DuckDB / DuckDB-OpenIVM run in-process inside the dbt-server
         # container, so size their memory_limit and threads from the
         # engine's resource budget. Leave 10 % headroom for the Python
