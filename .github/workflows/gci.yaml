@@ -28,6 +28,10 @@ on:
         description: "Comma-separated engine list"
         default: "spark,duckdb,duckdb-openivm,feldera"
         type: string
+      preserve_raw:
+        description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
+        default: "0"
+        type: string
       timeout_minutes:
         description: "Job timeout in minutes"
         default: "120"
@@ -54,6 +58,7 @@ jobs:
       BATCH_3_PCT: ${{ inputs.batch_3_pct || '0.002' }}
       PARALLEL: ${{ inputs.parallel || '1' }}
       ENGINES: ${{ inputs.engines || 'spark,duckdb,duckdb-openivm,feldera' }}
+      PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
 
     steps:
       - name: "🧹 Clean Docker-owned files"
