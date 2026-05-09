@@ -28,6 +28,10 @@ on:
         description: "Comma-separated engine list"
         default: "spark,duckdb,duckdb-openivm,feldera"
         type: string
+      timeout_minutes:
+        description: "Job timeout in minutes"
+        default: "120"
+        type: string
 
 concurrency:
   group: gci-${{ github.ref }}
@@ -41,7 +45,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 120
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '120') }}
 
     env:
       SCALE_FACTOR: ${{ inputs.scale_factor || '3' }}
