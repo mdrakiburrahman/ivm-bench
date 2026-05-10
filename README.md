@@ -82,7 +82,7 @@ gh workflow run gci.yaml \
    -f engines=spark,duckdb,duckdb-openivm,feldera \
    -f preserve_raw=1 \
    -f openivm_validate=0 \
-   -f timeout_minutes=3600 \
+   -f timeout_minutes=10800 \
    -f cancel_in_progress=false
 ```
 
