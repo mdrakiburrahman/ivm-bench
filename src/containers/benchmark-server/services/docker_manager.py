@@ -125,10 +125,14 @@ class DockerManager:
 
         stdout = "\n".join(output_lines)
         if check and proc.returncode != 0:
+            # Truncate from the END so the most recent output (typically the
+            # error or stack trace that triggered the failure) is preserved
+            # instead of the JVM banner / Spark startup chatter.
+            tail = stdout[-4000:] if len(stdout) > 4000 else stdout
             raise RuntimeError(
                 f"Docker compose command failed (exit {proc.returncode}):\n"
                 f"cmd: {' '.join(cmd)}\n"
-                f"output: {stdout[:2000]}"
+                f"output (last {len(tail)} bytes of {len(stdout)}):\n{tail}"
             )
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout, "")
 

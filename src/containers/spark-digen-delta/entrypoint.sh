@@ -19,5 +19,5 @@ java \
   --add-opens=java.base/sun.security.action=ALL-UNNAMED \
   --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
   --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
-  -cp /opt/datagen.jar datagen.TpcdiToDelta 2>/dev/null \
+  -cp /opt/datagen.jar datagen.TpcdiToDelta 2>&1 \
   | grep -v "^WARNING: sun.reflect"
