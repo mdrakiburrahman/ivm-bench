@@ -591,10 +591,17 @@ class EngineRunner:
             logger.warning("SSE stream error for %s: %s", name, e)
 
     def _check_run_result(self, run_id: str, batch_num: int) -> None:
-        """Check final run result from dbt-server, polling until terminal status."""
+        """Check final run result from dbt-server, polling until terminal status.
+
+        Poll budget scales with scale_factor so high-SF runs that legitimately
+        take longer than 30 min to materialize don't get prematurely killed.
+        At 5 s/poll the budget is 1 h at SF=10, 2 h at SF=100, 8 h at SF=1000.
+        """
         name = self._engine.name
         batch = self._result.batches[batch_num - 1]
-        max_polls = 360
+        sf = self._config.scale_factor
+        # 720 polls × 5 s = 1 h floor; scale linearly above that.
+        max_polls = max(720, sf * 30)
         for _ in range(max_polls):
             try:
                 resp = requests.get(f"{self._dbt_url}/runs/{run_id}", timeout=30)

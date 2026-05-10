@@ -52,17 +52,20 @@ class EngineConfig:
             env["FELDERA_MAX_RSS_MB"] = str(int(self.main_resources.memory_gb * 1024 * 0.95))
         # DuckDB / DuckDB-OpenIVM run in-process inside the dbt-server
         # container, so size their memory_limit and threads from the
-        # engine's resource budget. Leave 20 % headroom for the Python
-        # process, dbt, and connector overhead so the container itself
-        # doesn't OOM. In parallel mode this scales the in-process
-        # engines down to their per-engine slice instead of the host's
-        # full memory.
+        # engine's resource budget. Leave 50 % headroom for the Python
+        # process, dbt, native off-heap allocs, mmap'd Parquet/Delta page
+        # cache, and DuckDB spill buffers so the container itself doesn't
+        # cgroup-OOM. SF=1000 fact_trade tripped a SIGKILL with only 20 %
+        # headroom; doubling the headroom keeps DuckDB inside its limit
+        # and forces honest spilling to temp_directory instead. In parallel
+        # mode this scales the in-process engines down to their per-engine
+        # slice instead of the host's full memory.
         if self.name == "duckdb":
-            mem_gb = max(1, int(self.main_resources.memory_gb * 0.8))
+            mem_gb = max(1, int(self.main_resources.memory_gb * 0.5))
             env["DUCKDB_MEM_LIMIT"] = f"{mem_gb}GB"
             env["DUCKDB_THREADS"] = str(self.main_resources.cpus)
         if self.name == "duckdb-openivm":
-            mem_gb = max(1, int(self.main_resources.memory_gb * 0.8))
+            mem_gb = max(1, int(self.main_resources.memory_gb * 0.5))
             env["DUCKDB_OPENIVM_MEM_LIMIT"] = f"{mem_gb}GB"
             env["DUCKDB_OPENIVM_THREADS"] = str(self.main_resources.cpus)
         return env

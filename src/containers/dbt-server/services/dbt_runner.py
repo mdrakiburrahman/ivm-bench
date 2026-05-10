@@ -1,7 +1,9 @@
 """dbt runner — executes dbt build and parses results."""
 
+import ctypes
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -11,6 +13,25 @@ from services.db import DB_LOCK, get_db
 from services.progress import cleanup_progress, init_progress, parse_log_line
 
 PROJECTS_DIR = "/app/dbt-projects"
+
+# Linux prctl(PR_SET_PDEATHSIG): when the parent process dies, send the
+# named signal to this process. Use SIGTERM so the dbt subprocess exits
+# cleanly if the gunicorn worker that spawned it is killed (e.g. by the
+# cgroup OOM-killer at high scale factors). Without this, the dbt
+# subprocess becomes orphaned, its stdout pipe fills up because the
+# reader thread died with the worker, and the dbt run hangs forever.
+_PR_SET_PDEATHSIG = 1
+
+
+def _set_pdeathsig() -> None:
+    """preexec_fn to install PR_SET_PDEATHSIG on Linux. No-op elsewhere."""
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+    except Exception:
+        # Best-effort; if prctl isn't available we still want the run to
+        # proceed (just without the parent-death guard).
+        pass
 
 
 def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
@@ -57,6 +78,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=env, bufsize=1,
+            preexec_fn=_set_pdeathsig,
         )
 
         def _drain_stderr():
