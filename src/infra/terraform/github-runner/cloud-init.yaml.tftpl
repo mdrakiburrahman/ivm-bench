@@ -1,0 +1,43 @@
+#cloud-config
+write_files:
+  - path: /opt/ivm-bench/runner.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      GH_REPO=${github_repo}
+      GH_RUNNER_TOKEN=${github_runner_token}
+      RUNNER_LABELS=${runner_labels}
+      RUNNER_VERSION=${runner_version}
+      RUNNER_USER=${runner_user}
+  - path: /opt/ivm-bench/bootstrap-github-runner.sh
+    permissions: "0755"
+    owner: root:root
+    encoding: b64
+    content: ${bootstrap_script_b64}
+  - path: /etc/systemd/system/ivm-bench-runner-bootstrap.service
+    permissions: "0644"
+    owner: root:root
+    content: |
+      [Unit]
+      Description=ivm-bench GitHub runner bootstrap (oneshot)
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=!/var/lib/ivm-bench/.bootstrap-complete
+
+      [Service]
+      Type=oneshot
+      ExecStartPre=/usr/bin/install -d -m 0755 /var/lib/ivm-bench
+      ExecStart=/opt/ivm-bench/bootstrap-github-runner.sh
+      ExecStartPost=/usr/bin/touch /var/lib/ivm-bench/.bootstrap-complete
+      RemainAfterExit=yes
+      StandardOutput=journal
+      StandardError=journal
+      TimeoutStartSec=30min
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, ivm-bench-runner-bootstrap.service]
+  - [systemctl, start, "--no-block", ivm-bench-runner-bootstrap.service]
