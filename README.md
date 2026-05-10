@@ -34,6 +34,8 @@ See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows
 
 ### Benchmark
 
+#### Locally
+
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
 export SCALE_FACTOR=3                               # 3 - 2147483647
@@ -63,6 +65,25 @@ Spark:           00:03:32 -> 00:02:16 -> 00:02:14
 ```
 
 Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
+
+#### GitHub CI
+
+Fire remotely:
+
+```bash
+gh workflow run gci.yaml \
+   --repo mdrakiburrahman/ivm-bench \
+   --ref dev/mdrrahman/sf-1000 \
+   -f scale_factor=1000 \
+   -f batch_1_pct=100 \
+   -f batch_2_pct=1 \
+   -f batch_3_pct=1 \
+   -f parallel=0 \
+   -f engines=spark,duckdb,duckdb-openivm,feldera \
+   -f preserve_raw=1 \
+   -f openivm_validate=0 \
+   -f timeout_minutes=3600
+```
 
 ### Engines
 
