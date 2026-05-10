@@ -232,6 +232,7 @@ class EngineRunner:
 
             t0 = time.time()
 
+            run_id = None
             if name == "feldera":
                 if batch_num == 1:
                     self._run_feldera_batch1()
@@ -240,11 +241,19 @@ class EngineRunner:
             elif name == "duckdb":
                 self._run_duckdb_ducklake(batch_num)
             elif name == "duckdb-openivm":
-                self._run_duckdb_openivm(batch_num)
+                run_id = self._run_duckdb_openivm(batch_num)
             else:
                 self._run_dbt(batch_num)
 
             batch.duration_s = time.time() - t0
+
+            if (
+                name == "duckdb-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_VALIDATE", "1") != "0"
+            ):
+                self._validate_duckdb_openivm(run_id, batch_num)
 
             # Check status from the stream_progress result
             if batch.status != "failed":
@@ -424,7 +433,7 @@ class EngineRunner:
 
             time.sleep(1)
 
-    def _run_duckdb_openivm(self, batch_num: int) -> None:
+    def _run_duckdb_openivm(self, batch_num: int) -> str:
         """Run DuckDB-OpenIVM: init/append sources, then standard dbt build."""
         full_refresh = batch_num == 1
 
@@ -471,6 +480,41 @@ class EngineRunner:
         self._stream_dbt_progress(run_id, batch_num)
         self._check_run_result(run_id, batch_num)
         self._save_run_result(run_id, batch_num)
+        return run_id
+
+    def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
+        """Run default OpenIVM correctness validation outside the benchmark timer."""
+        self._emit(f"[duckdb-openivm] Validating batch {batch_num} with EXCEPT ALL")
+        resp = requests.post(
+            f"{self._dbt_url}/validate/duckdb-openivm/{run_id}",
+            timeout=604800,
+        )
+        data = resp.json()
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        with open(
+            os.path.join(results_dir, f"validation-duckdb-openivm-batch{batch_num}.json"),
+            "w",
+        ) as f:
+            json.dump(data, f, indent=2)
+
+        if resp.status_code != 200 or data.get("status") != "passed":
+            failures = data.get("failures") or []
+            detail = ", ".join(
+                f"{f.get('name')} diff={f.get('diff_count')}" for f in failures[:5]
+            )
+            raise RuntimeError(
+                f"OpenIVM validation failed for batch {batch_num}"
+                + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
+            )
+        self._emit(
+            f"[duckdb-openivm] Validation passed for batch {batch_num}: "
+            f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
+        )
 
     def _run_feldera_wait(self, batch_num: int) -> None:
         """Feldera batches 2/3: pause → append → resume → poll stats.

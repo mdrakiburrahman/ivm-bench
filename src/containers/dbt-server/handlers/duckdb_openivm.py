@@ -10,7 +10,7 @@ import logging
 from flask import Blueprint, Flask, jsonify
 
 from handlers.base import BaseHandler
-from services import duckdb_openivm_sources, duckdb_sources
+from services import duckdb_openivm_sources, duckdb_sources, openivm_validation
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,18 @@ def openivm_sources_append(batch_num):
         return jsonify(result), 200
     except Exception as e:
         logger.exception("[duckdb-openivm] Source append batch %d failed", batch_num)
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/validate/duckdb-openivm/<run_id>", methods=["POST"])
+def openivm_validate_run(run_id):
+    """Validate OpenIVM materialized views against compiled dbt SQL."""
+    try:
+        result = openivm_validation.validate_run(run_id)
+        status_code = 200 if result["status"] == "passed" else 500
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("[duckdb-openivm] Validation failed")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 

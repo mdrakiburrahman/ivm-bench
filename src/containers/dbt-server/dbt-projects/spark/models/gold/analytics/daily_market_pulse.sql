@@ -5,7 +5,7 @@ WITH daily_stats AS (
         COUNT(DISTINCT dm.dm_s_symb) AS active_symbols,
         SUM(CAST(dm.dm_vol AS BIGINT)) AS total_volume,
         AVG(dm.dm_close) AS avg_close_price,
-        STDDEV(CAST(dm.dm_close AS DOUBLE)) AS close_dispersion,
+        ROUND(STDDEV(CAST(dm.dm_close AS DOUBLE)), 6) AS close_dispersion,
         MIN(dm.dm_low) AS market_low,
         MAX(dm.dm_high) AS market_high,
         AVG(CAST(dm.dm_high - dm.dm_low AS DOUBLE)) AS avg_intraday_spread,

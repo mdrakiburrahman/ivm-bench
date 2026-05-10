@@ -15,6 +15,8 @@
 #   PRESERVE_RAW   — 0 = clean mount/ at start (default), 1 = keep mount/raw/
 #                    and mount/bin/ across runs so multi-hour Phase-1
 #                    datagen + duckdb-openivm builds are reused
+#   OPENIVM_VALIDATE — 1 = validate OpenIVM views with EXCEPT ALL after each
+#                    timed batch (default), 0 = skip post-timer validation
 #   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -34,6 +36,7 @@ export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"
+export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-1}"
 export REPO_HOST_PATH="$(pwd)"
 
 detect_ec2_ubuntu_mirror() {
