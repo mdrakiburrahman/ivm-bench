@@ -46,7 +46,7 @@ on:
         type: boolean
 
 concurrency:
-  group: gci-${{ github.ref }}
+  group: gci-${{ github.ref }}-${{ inputs.cancel_in_progress == false && github.run_id || 'shared' }}
   cancel-in-progress: ${{ inputs.cancel_in_progress != false }}
 
 permissions:
