@@ -439,9 +439,10 @@ class Orchestrator:
         repo = self._config.repo_dir
         sf = str(self._config.scale_factor)
 
-        # Determine which engines need staging (DuckDB-OpenIVM handles its own batches)
+        # Determine which engines need Delta staging. DuckDB and DuckDB-OpenIVM
+        # both load DuckLake sources directly inside their measured batch path.
         engines_needing_staging = [
-            e for e in self._config.engines if e != "duckdb-openivm"
+            e for e in self._config.engines if e not in ("duckdb", "duckdb-openivm")
         ]
         if not engines_needing_staging:
             return

@@ -83,7 +83,7 @@ def compute_engine_configs(config: BenchmarkConfig) -> Dict[str, EngineConfig]:
             dbt_mem = per_engine_mem
 
         staging = "staging"
-        if config.parallel and engine != "duckdb-openivm":
+        if config.parallel and engine not in ("duckdb", "duckdb-openivm"):
             staging = f"staging-{engine}"
 
         result[engine] = EngineConfig(

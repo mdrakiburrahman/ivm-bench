@@ -26,7 +26,7 @@ RUN cd /app/dbt-projects/feldera && dbt deps --profiles-dir . 2>/dev/null || tru
 RUN cd /app/dbt-projects/duckdb-openivm && dbt deps --profiles-dir . 2>/dev/null || true
 
 # Preinstall DuckDB extensions to avoid runtime download
-RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL delta; INSTALL ducklake; INSTALL sqlite; INSTALL delta_export FROM community'); c.close()"
+RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL ducklake; INSTALL sqlite'); c.close()"
 
 EXPOSE 5000
 

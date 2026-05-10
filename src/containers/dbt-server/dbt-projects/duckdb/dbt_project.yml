@@ -20,17 +20,8 @@ dispatch:
     search_order: ["tpcdi", "dbt_utils"]
 
 on-run-start:
-  - "{{ register_tpcdi_sources() }}"
   - "CALL ducklake.set_option('rewrite_delete_threshold', 0)"
   - "CALL ducklake.set_option('target_file_size', '128MB')"
-
-# WARNING: This is a giant hack, the Delta Lake checkpoint is gone, I have no
-# idea if this is even semantically correct. But who cares, DuckDB is fast.
-on-run-end:
-  - "CALL ducklake_rewrite_data_files('ducklake')"
-  - "CALL ducklake_merge_adjacent_files('ducklake')"
-  - "CALL ducklake_cleanup_old_files('ducklake', cleanup_all => true)"
-  - "CALL delta_export()"
 
 models:
   tpcdi:
