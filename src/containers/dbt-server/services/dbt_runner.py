@@ -83,7 +83,19 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
             cleanup_progress(run_id)
             return
 
-        _parse_results(run_id, project_dir)
+        parsed = _parse_results(run_id, project_dir)
+        if proc.returncode == 2 and (
+            parsed["nodes"] == 0 or parsed["errors"] > 0
+        ):
+            stderr_tail = "".join(stderr_buf[-50:])
+            _fail_run(
+                run_id,
+                f"dbt exited 2 with {parsed['errors']} node errors "
+                f"and {parsed['nodes']} parsed nodes:\n{stderr_tail[-2000:]}",
+                elapsed,
+            )
+            cleanup_progress(run_id)
+            return
 
         final_duration = round(elapsed, 2)
 
@@ -120,7 +132,7 @@ def _fail_run(run_id: str, error: str, duration_s: float = None):
         conn.close()
 
 
-def _parse_results(run_id: str, project_dir: str):
+def _parse_results(run_id: str, project_dir: str) -> dict[str, int]:
     """Parse manifest.json + run_results.json for per-node timing & compiled SQL."""
     target_dir = os.path.join(project_dir, "target")
     manifest_path = os.path.join(target_dir, "manifest.json")
@@ -138,22 +150,26 @@ def _parse_results(run_id: str, project_dir: str):
             }
 
     if not os.path.exists(results_path):
-        return
+        return {"nodes": 0, "errors": 0}
 
     with open(results_path) as f:
         run_results = json.load(f)
 
     rows = []
+    error_count = 0
     for r in run_results.get("results", []):
         uid = r.get("unique_id", "")
         mdata = manifest_nodes.get(uid, {})
+        status = r.get("status", "")
+        if status in ("error", "fail"):
+            error_count += 1
         rows.append((
             run_id,
             uid,
             uid.split(".")[-1] if "." in uid else uid,
             mdata.get("resource_type", ""),
             r.get("execution_time"),
-            r.get("status", ""),
+            status,
             mdata.get("compiled_sql", ""),
             mdata.get("depends_on", "[]"),
             r.get("adapter_response", {}).get("rows_affected"),
@@ -170,3 +186,5 @@ def _parse_results(run_id: str, project_dir: str):
             )
             conn.commit()
             conn.close()
+
+    return {"nodes": len(rows), "errors": error_count}

@@ -27,7 +27,7 @@ class EngineRunner:
 
     Handles engine-specific differences:
     - Spark: batch_loader init/append, full_refresh=true always
-    - DuckDB: batch_loader init/append, full_refresh=true always
+    - DuckDB: DuckLake source init/append, full_refresh=true always
     - DuckDB-OpenIVM: no batch_loader, batch_num param, full_refresh only batch 1
     - Feldera: batch_loader init/append, streaming wait for batches 2/3
     """
@@ -160,8 +160,8 @@ class EngineRunner:
         try:
             self._emit(f"[{name}] Starting benchmark")
 
-            # Initialize staging (serial mode only — parallel mode uses orchestrator init)
-            if name != "duckdb-openivm" and not self._parallel:
+            # Initialize Delta staging for engines that still consume Delta directly.
+            if name not in ("duckdb", "duckdb-openivm") and not self._parallel:
                 self._batch_loader_init()
 
             # Start engine stack
@@ -223,25 +223,37 @@ class EngineRunner:
         self._persist_batch_result(batch_num, batch)
 
         try:
-            # Append data for batches 2/3 (except DuckDB-OpenIVM which handles internally,
-            # and Feldera batches 2/3 which handle append inside _run_feldera_wait)
-            if batch_num > 1 and name != "duckdb-openivm" and not (name == "feldera" and batch_num > 1):
+            # Append data for batches 2/3. DuckDB and DuckDB-OpenIVM manage
+            # DuckLake source appends inside their measured batch path; Feldera
+            # batches 2/3 append while the pipeline is paused inside _run_feldera_wait.
+            if batch_num > 1 and name not in ("duckdb", "duckdb-openivm") and not (name == "feldera" and batch_num > 1):
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
 
             t0 = time.time()
 
+            run_id = None
             if name == "feldera":
                 if batch_num == 1:
                     self._run_feldera_batch1()
                 else:
                     self._run_feldera_wait(batch_num)
+            elif name == "duckdb":
+                self._run_duckdb_ducklake(batch_num)
             elif name == "duckdb-openivm":
-                self._run_duckdb_openivm(batch_num)
+                run_id = self._run_duckdb_openivm(batch_num)
             else:
                 self._run_dbt(batch_num)
 
             batch.duration_s = time.time() - t0
+
+            if (
+                name == "duckdb-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_VALIDATE", "1") != "0"
+            ):
+                self._validate_duckdb_openivm(run_id, batch_num)
 
             # Check status from the stream_progress result
             if batch.status != "failed":
@@ -272,6 +284,26 @@ class EngineRunner:
         self._stream_dbt_progress(run_id, batch_num)
         self._check_run_result(run_id, batch_num)
         self._save_run_result(run_id, batch_num)
+
+    def _run_duckdb_ducklake(self, batch_num: int) -> None:
+        """Run DuckDB full refresh against DuckLake-backed source tables."""
+        if batch_num == 1:
+            self._emit("[duckdb] Initialising DuckLake sources")
+            resp = requests.post(f"{self._dbt_url}/sources/duckdb/init", timeout=600)
+            resp.raise_for_status()
+            src_result = resp.json()
+            self._emit(f"[duckdb] Sources initialised: {src_result.get('tables_created', '?')} tables")
+        else:
+            self._emit(f"[duckdb] Appending batch {batch_num} sources")
+            resp = requests.post(f"{self._dbt_url}/sources/duckdb/append/{batch_num}", timeout=600)
+            resp.raise_for_status()
+            src_result = resp.json()
+            self._emit(
+                f"[duckdb] Batch {batch_num} appended: "
+                f"{src_result.get('tables_appended', '?')} tables"
+            )
+
+        self._run_dbt(batch_num)
 
     def _run_feldera_batch1(self) -> None:
         """Feldera batch 1: compile pipeline (paused), resume, then poll for processing.
@@ -401,7 +433,7 @@ class EngineRunner:
 
             time.sleep(1)
 
-    def _run_duckdb_openivm(self, batch_num: int) -> None:
+    def _run_duckdb_openivm(self, batch_num: int) -> str:
         """Run DuckDB-OpenIVM: init/append sources, then standard dbt build."""
         full_refresh = batch_num == 1
 
@@ -448,6 +480,41 @@ class EngineRunner:
         self._stream_dbt_progress(run_id, batch_num)
         self._check_run_result(run_id, batch_num)
         self._save_run_result(run_id, batch_num)
+        return run_id
+
+    def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
+        """Run default OpenIVM correctness validation outside the benchmark timer."""
+        self._emit(f"[duckdb-openivm] Validating batch {batch_num} with EXCEPT ALL")
+        resp = requests.post(
+            f"{self._dbt_url}/validate/duckdb-openivm/{run_id}",
+            timeout=604800,
+        )
+        data = resp.json()
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        with open(
+            os.path.join(results_dir, f"validation-duckdb-openivm-batch{batch_num}.json"),
+            "w",
+        ) as f:
+            json.dump(data, f, indent=2)
+
+        if resp.status_code != 200 or data.get("status") != "passed":
+            failures = data.get("failures") or []
+            detail = ", ".join(
+                f"{f.get('name')} diff={f.get('diff_count')}" for f in failures[:5]
+            )
+            raise RuntimeError(
+                f"OpenIVM validation failed for batch {batch_num}"
+                + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
+            )
+        self._emit(
+            f"[duckdb-openivm] Validation passed for batch {batch_num}: "
+            f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
+        )
 
     def _run_feldera_wait(self, batch_num: int) -> None:
         """Feldera batches 2/3: pause → append → resume → poll stats.
@@ -524,11 +591,7 @@ class EngineRunner:
             logger.warning("SSE stream error for %s: %s", name, e)
 
     def _check_run_result(self, run_id: str, batch_num: int) -> None:
-        """Check final run result from dbt-server, polling until terminal status.
-
-        Exit code 2 (dbt "warn") is treated as success — covers known benign
-        warnings like DuckDB delta_export and Feldera version mismatch.
-        """
+        """Check final run result from dbt-server, polling until terminal status."""
         name = self._engine.name
         batch = self._result.batches[batch_num - 1]
         max_polls = 360
@@ -542,12 +605,8 @@ class EngineRunner:
 
                 if status in ("completed", "failed"):
                     if status == "failed":
-                        if "dbt exited 2" in (error or ""):
-                            logger.info("[%s] dbt exited 2 (warn) — treating as success", name)
-                            self._emit(f"[{name}] dbt completed with warnings (exit code 2)")
-                        else:
-                            batch.status = "failed"
-                            batch.error = error or "dbt run failed"
+                        batch.status = "failed"
+                        batch.error = error or "dbt run failed"
                     return
 
                 # Still running — wait and poll again

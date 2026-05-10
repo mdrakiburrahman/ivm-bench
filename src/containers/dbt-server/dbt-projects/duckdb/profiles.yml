@@ -16,13 +16,10 @@ tpcdi:
       extensions:
         - parquet
         - sqlite
-        - delta
         - ducklake
-        - name: delta_export
-          repo: community
       attach:
         - path: "ducklake:sqlite:/data/processed/duckdb/metadata.db"
           alias: ducklake
           options:
-            data_path: /data/processed/duckdb
+            data_path: /data/processed/duckdb/data
             data_inlining_row_limit: 0
