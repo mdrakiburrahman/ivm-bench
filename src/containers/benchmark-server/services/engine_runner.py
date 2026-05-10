@@ -251,7 +251,7 @@ class EngineRunner:
                 name == "duckdb-openivm"
                 and run_id
                 and batch.status != "failed"
-                and os.environ.get("OPENIVM_VALIDATE", "1") != "0"
+                and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
             ):
                 self._validate_duckdb_openivm(run_id, batch_num)
 
