@@ -524,11 +524,7 @@ class EngineRunner:
             logger.warning("SSE stream error for %s: %s", name, e)
 
     def _check_run_result(self, run_id: str, batch_num: int) -> None:
-        """Check final run result from dbt-server, polling until terminal status.
-
-        Exit code 2 (dbt "warn") is treated as success — covers known benign
-        warnings like DuckDB delta_export and Feldera version mismatch.
-        """
+        """Check final run result from dbt-server, polling until terminal status."""
         name = self._engine.name
         batch = self._result.batches[batch_num - 1]
         max_polls = 360
@@ -542,12 +538,8 @@ class EngineRunner:
 
                 if status in ("completed", "failed"):
                     if status == "failed":
-                        if "dbt exited 2" in (error or ""):
-                            logger.info("[%s] dbt exited 2 (warn) — treating as success", name)
-                            self._emit(f"[{name}] dbt completed with warnings (exit code 2)")
-                        else:
-                            batch.status = "failed"
-                            batch.error = error or "dbt run failed"
+                        batch.status = "failed"
+                        batch.error = error or "dbt run failed"
                     return
 
                 # Still running — wait and poll again
