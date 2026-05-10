@@ -32,6 +32,10 @@ on:
         description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
         default: "0"
         type: string
+      openivm_validate:
+        description: "Validate OpenIVM views with EXCEPT ALL after each timed batch (0 or 1)"
+        default: "1"
+        type: string
       timeout_minutes:
         description: "Job timeout in minutes"
         default: "120"
@@ -59,6 +63,7 @@ jobs:
       PARALLEL: ${{ inputs.parallel || '1' }}
       ENGINES: ${{ inputs.engines || 'spark,duckdb,duckdb-openivm,feldera' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
+      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
 
     steps:
       - name: "🧹 Clean Docker-owned files"
