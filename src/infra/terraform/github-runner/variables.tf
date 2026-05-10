@@ -11,7 +11,7 @@ variable "resource_group_name" {
 variable "location" {
   type        = string
   description = "Azure region"
-  default     = "eastus2"
+  default     = "canadacentral"
 }
 
 variable "github_repo" {
