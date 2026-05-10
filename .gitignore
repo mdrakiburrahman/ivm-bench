@@ -3,3 +3,4 @@
 .logs/
 !results/.gitkeep
 mount/*
+__pycache__/

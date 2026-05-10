@@ -19,7 +19,11 @@ from models.result import BenchmarkResult, EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner
-from services.resource_calc import compute_engine_configs
+from services.resource_calc import (
+    compute_engine_configs,
+    detect_host_cores,
+    detect_host_memory_gb,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -300,18 +304,46 @@ class Orchestrator:
         """Run TPC-DI data generation (idempotent)."""
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
+
+        # Give PDGF and the Spark→Delta writer the host's full CPU/memory
+        # budget so high scale factors don't cgroup-OOM or starve. Leave
+        # ~10 % headroom for native, off-heap, and OS overhead so the JVM
+        # heap doesn't push past the cgroup limit.
+        host_cores = self._config.host_cores or detect_host_cores()
+        host_mem_gb = self._config.host_memory_gb or detect_host_memory_gb()
+        spark_heap_gb = max(4, int(host_mem_gb * 0.9))
+
+        env = self._config.base_env()
+        env.update({
+            "DATAGEN_CPUS": str(host_cores),
+            "DATAGEN_MEM": f"{host_mem_gb}g",
+            "SPARK_JVM_HEAP_GB": str(spark_heap_gb),
+        })
+
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.datagen.yml"),
             project_name="datagen",
-            env=self._config.base_env(),
+            env=env,
             cwd=repo,
         )
         mgr.build(["tpc-di-gen", "spark-digen-delta"])
 
-        self.emit("  [datagen] Running tpc-di-gen → spark-digen-delta")
+        self.emit(
+            f"  [datagen] Running tpc-di-gen → spark-digen-delta "
+            f"({host_cores} cores / {host_mem_gb} GB cgroup / {spark_heap_gb} GB JVM heap)"
+        )
+        # Datagen at high scale factors is bounded by PDGF + Spark→Delta,
+        # both of which scale roughly linearly with SF. The previous 600 s
+        # default in DockerManager.up() was hit at SF=1000 (PDGF alone took
+        # ~10 min, leaving Spark no time before SIGKILL). Use a generous
+        # SF-aware timeout so the workflow-level timeout is what bounds
+        # the run instead.
+        sf = self._config.scale_factor
+        datagen_timeout = max(1800, 60 * sf)
         mgr.up(
             services=["spark-digen-delta"],
             detach=False,
+            timeout=datagen_timeout,
             stream_callback=lambda line: logger.debug("[datagen] %s", line),
         )
 
@@ -329,8 +361,8 @@ class Orchestrator:
         self.emit("  [datagen] Complete")
 
         # Fix permissions
-        sf = str(self._config.scale_factor)
-        delta_dir = os.path.join(repo, "mount", "raw", sf, "delta")
+        sf_str = str(self._config.scale_factor)
+        delta_dir = os.path.join(repo, "mount", "raw", sf_str, "delta")
         os.system(f"docker run --rm -v {delta_dir}:/data alpine chmod -R 777 /data")
 
     def _run_duckdb_openivm_build(self) -> None:
