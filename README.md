@@ -43,6 +43,7 @@ export BATCH_3_PCT=0.002                            # 0.002% of DIGen batch 3 da
 export PARALLEL=1                                   # 0, 1
 export ENGINES=spark,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
 export PRESERVE_RAW=0                               # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
+export OPENIVM_VALIDATE=1                           # 0, 1 — validates OpenIVM views with EXCEPT ALL after timed batches
 
 bash src/.scripts/benchmark.sh
 ```
@@ -68,8 +69,8 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | Engine         | Compose file                                         | Mode                 | Notes                                                                                                                                                                                         |
 | -------------- | ---------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Spark          | `docker/docker-compose.benchmark.spark.yml`          | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
-| DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, reads Delta via `delta` extension, writes via a hack with [this community extension](https://github.com/djouallah/delta_export) that blows up the Delta transaction log each time |
-| DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL`     |
+| DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, initializes DuckLake source tables from generated Parquet files, then full-refreshes the dbt model DAG on each batch                                                   |
+| DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1` |
 | Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
 
 ## Mount layout
@@ -78,7 +79,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | ---------------------------------------------------------- | ------------------------------------------------ |
 | `mount/raw/<SF>/delta/batch{1,2,3}/`                       | Source Delta tables per batch                    |
 | `mount/raw/<SF>/delta/staging/`                            | Unified staging (grows via `spark-batch-loader`) |
-| `mount/results/<SF>/<engine>/`                             | Engine output (Delta tables from dbt)            |
+| `mount/results/<SF>/<engine>/`                             | Engine output and engine-local state             |
 | `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json` | Per-batch benchmark results                      |
 | `mount/bin/duckdb-openivm/duckdb`                          | DuckDB-OpenIVM binary (built by container)       |
 
