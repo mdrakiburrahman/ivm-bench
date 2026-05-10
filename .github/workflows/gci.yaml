@@ -69,9 +69,6 @@ jobs:
         with:
           clean: true
 
-      - name: "🔧 Bootstrap dev environment"
-        run: bash contrib/bootstrap-dev-env.sh
-
       - name: "🏁 Run benchmark"
         run: bash src/.scripts/benchmark.sh
 

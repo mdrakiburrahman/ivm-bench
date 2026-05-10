@@ -72,5 +72,28 @@ else
   echo "terraform is already installed."
 fi
 
+if ! [ -x "$(command -v gh)" ]; then
+  (type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+    && sudo mkdir -p -m 755 /etc/apt/keyrings \
+    && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+    && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && sudo apt update \
+    && sudo apt install gh -y
+else
+  echo "GitHub CLI is already installed."
+fi
+
+if ! gh auth status >/dev/null 2>&1; then
+    echo "gh is not logged in, running 'gh auth login'..."
+    gh auth login
+else
+    echo "GitHub CLI is already logged in as: $(gh api user --jq .login 2>/dev/null || echo unknown)"
+fi
+
 echo "Docker: $(docker --version)"
 echo "Terraform: $(terraform -version | head -1)"
+echo "GitHub CLI: $(gh --version | head -1)"
+echo "Azure CLI: $(az --version | head -1)"

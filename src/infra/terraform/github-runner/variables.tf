@@ -40,7 +40,7 @@ variable "runner_labels" {
 variable "instance_count" {
   type        = number
   description = "Number of VMSS instances (manual scale-out supported)"
-  default     = 1
+  default     = 2
 }
 
 variable "instance_sku" {

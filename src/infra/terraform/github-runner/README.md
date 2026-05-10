@@ -4,7 +4,8 @@ Single-instance Linux VMSS (`Standard_E32as_v4`) behind Azure Bastion.
 
 ## Apply / destroy / loop
 
-Refresh `GH_RUNNER_TOKEN` in `.env` (1-hour expiry), then:
+Make sure `gh auth status` is logged in — the deploy script mints a fresh
+runner registration token on every `apply` via `gh api`. Then:
 
 ```bash
 src/.scripts/deploy-gh-runner.sh apply     # default

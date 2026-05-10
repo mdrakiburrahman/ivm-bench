@@ -4,10 +4,13 @@
 # Azure self-hosted runner stack at src/infra/terraform/github-runner/.
 #
 # Reads /home/mdrrahman/ivm-bench/.env (or repo-root .env) for:
-#   GH_REPO, GH_RUNNER_TOKEN
+#   GH_REPO
 #   TF_RESOURCE_GROUP, TF_SUBSCRIPTION_ID
 #   TF_STATE_STORAGE_ACCOUNT_NAME, TF_STATE_STORAGE_ACCOUNT_CONTAINER,
 #   TF_STATE_STORAGE_ACCOUNT_KEY
+#
+# The runner registration token is auto-minted on each `apply` from the
+# already-authenticated `gh` CLI session — no need to copy from the GitHub UI.
 #
 # Usage:
 #   src/.scripts/deploy-gh-runner.sh                # apply (default)
@@ -48,9 +51,6 @@ require_env TF_SUBSCRIPTION_ID
 require_env TF_STATE_STORAGE_ACCOUNT_NAME
 require_env TF_STATE_STORAGE_ACCOUNT_CONTAINER
 require_env TF_STATE_STORAGE_ACCOUNT_KEY
-if [[ "$ACTION" == "apply" ]]; then
-  require_env GH_RUNNER_TOKEN
-fi
 
 if ! command -v terraform >/dev/null 2>&1; then
   echo "ERROR: terraform not found. Run contrib/bootstrap-dev-env.sh first." >&2
@@ -62,6 +62,21 @@ if ! command -v az >/dev/null 2>&1; then
   exit 1
 fi
 
+# `gh` is required only for `apply` (to mint a fresh runner registration token).
+# Fail fast before any cloud calls so we don't waste init/plan time.
+if [[ "$ACTION" == "apply" ]]; then
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "ERROR: gh CLI not found." >&2
+    echo "Install it: https://github.com/cli/cli/blob/trunk/docs/install_linux.md" >&2
+    exit 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "ERROR: gh is not authenticated. Run:" >&2
+    echo "    gh auth login" >&2
+    exit 1
+  fi
+fi
+
 if ! az account show >/dev/null 2>&1; then
   echo "az is not logged in, running az login..."
   az login >/dev/null
@@ -69,6 +84,18 @@ fi
 
 az account set --subscription "$TF_SUBSCRIPTION_ID" >/dev/null
 echo "Active subscription: $(az account show --query name -o tsv) ($TF_SUBSCRIPTION_ID)"
+
+# --- gh CLI: mint a fresh registration token for `apply` ---------------------
+mint_runner_token() {
+  local repo_path="${GH_REPO#http://}"
+  repo_path="${repo_path#https://}"
+  repo_path="${repo_path#github.com/}"
+  repo_path="${repo_path%/}"
+  repo_path="${repo_path%.git}"
+
+  echo "Minting fresh runner registration token via gh api for ${repo_path}..." >&2
+  gh api -X POST "/repos/${repo_path}/actions/runners/registration-token" --jq .token
+}
 
 SSH_KEY_PATH="${HOME}/.ssh/id_ed25519"
 SSH_PUB_PATH="${SSH_KEY_PATH}.pub"
@@ -88,11 +115,18 @@ terraform -chdir="$TF_DIR" init -reconfigure \
   -backend-config="key=${STATE_KEY}" \
   -backend-config="access_key=${TF_STATE_STORAGE_ACCOUNT_KEY}"
 
+# Mint a fresh token only for `apply` (destroy/plan don't need to talk to GitHub,
+# but Terraform still requires the variable to be set — pass a placeholder).
+RUNNER_TOKEN="unused"
+if [[ "$ACTION" == "apply" ]]; then
+  RUNNER_TOKEN="$(mint_runner_token)"
+fi
+
 TF_VARS=(
   -var "subscription_id=${TF_SUBSCRIPTION_ID}"
   -var "resource_group_name=${TF_RESOURCE_GROUP}"
   -var "github_repo=${GH_REPO}"
-  -var "github_runner_token=${GH_RUNNER_TOKEN:-unused}"
+  -var "github_runner_token=${RUNNER_TOKEN}"
   -var "ssh_public_key=${SSH_PUBLIC_KEY}"
 )
 
