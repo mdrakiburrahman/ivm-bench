@@ -40,10 +40,14 @@ on:
         description: "Job timeout in minutes"
         default: "120"
         type: string
+      cancel_in_progress:
+        description: "Cancel in-progress runs on the same ref"
+        default: true
+        type: boolean
 
 concurrency:
   group: gci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ inputs.cancel_in_progress != false }}
 
 permissions:
   pull-requests: write
