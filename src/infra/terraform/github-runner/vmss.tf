@@ -6,7 +6,6 @@ locals {
     github_repo          = var.github_repo
     github_runner_token  = var.github_runner_token
     runner_labels        = join(",", var.runner_labels)
-    runner_name          = "ivm-bench-runner-${local.name_suffix}"
     runner_version       = local.runner_version
     runner_user          = var.admin_username
     bootstrap_script_b64 = base64encode(local.bootstrap_script)
@@ -22,11 +21,22 @@ resource "azurerm_linux_virtual_machine_scale_set" "this" {
   admin_username      = var.admin_username
   tags                = var.tags
 
-  upgrade_mode                    = "Manual"
+  # Automatic: when `terraform apply` changes the model (e.g. new custom_data
+  # because gh api minted a fresh registration token), Azure rolls the model
+  # out to all instances. For Linux VMSS this re-runs cloud-init via reimage,
+  # so the bootstrap re-registers the runner with the latest token.
+  upgrade_mode                    = "Automatic"
   single_placement_group          = true
   platform_fault_domain_count     = 1
   disable_password_authentication = true
   overprovision                   = false
+
+  rolling_upgrade_policy {
+    max_batch_instance_percent              = 50
+    max_unhealthy_instance_percent          = 50
+    max_unhealthy_upgraded_instance_percent = 50
+    pause_time_between_batches              = "PT2M"
+  }
 
   custom_data = base64encode(local.cloud_init_rendered)
 
@@ -65,14 +75,6 @@ resource "azurerm_linux_virtual_machine_scale_set" "this" {
 
   boot_diagnostics {
     storage_account_uri = null
-  }
-
-  lifecycle {
-    ignore_changes = [
-      # custom_data carries a 1-hour token; ignore drift between applies so
-      # routine re-applies don't trigger needless re-imaging.
-      custom_data,
-    ]
   }
 
   depends_on = [

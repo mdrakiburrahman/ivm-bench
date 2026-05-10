@@ -34,7 +34,7 @@ set +a
 : "${GH_REPO:?GH_REPO not set}"
 : "${GH_RUNNER_TOKEN:?GH_RUNNER_TOKEN not set}"
 RUNNER_LABELS="${RUNNER_LABELS:-ivm-bench-azure}"
-RUNNER_NAME="${RUNNER_NAME:-ivm-bench-runner-$(hostname)}"
+RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.331.0}"
 RUNNER_USER="${RUNNER_USER:-azureuser}"
 DOCKER_VERSION="${DOCKER_VERSION:-5:27.5.1-1~ubuntu.24.04~noble}"
