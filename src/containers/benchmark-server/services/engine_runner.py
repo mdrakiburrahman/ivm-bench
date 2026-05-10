@@ -205,6 +205,7 @@ class EngineRunner:
             self._capture_logs()
             self._engine_mgr.down()
             self._cleanup_staging()
+            self._cleanup_engine_output()
             # Clean up temp override files
             for f in (self._override_file, self._batch_override_file):
                 if f and os.path.exists(f):
@@ -665,6 +666,36 @@ class EngineRunner:
         if os.path.exists(staging_path):
             shutil.rmtree(staging_path, ignore_errors=True)
             self._emit(f"[{self._engine.name}] Cleaned up staging: {self._engine.staging_dir}")
+
+    def _cleanup_engine_output(self) -> None:
+        """Delete the engine's bulk output dir to free disk for the next engine.
+
+        Removes ``mount/results/<SF>/<engine>/`` which holds the engine's
+        Delta tables / DuckDB database / spill files — the engine's working
+        product, not a benchmark artifact. Benchmark telemetry (run JSON,
+        delta-stats, lineage, sql-analysis, stats, logs) lives outside this
+        directory and is preserved. At SF=1000 each engine's output is
+        100+ GB; without this, sequential runs exhaust runner disk.
+
+        Skipped when ``PRESERVE_ENGINE_RESULTS=1`` (default: 0).
+        """
+        if os.environ.get("PRESERVE_ENGINE_RESULTS", "0") == "1":
+            return
+        name = self._engine.name
+        sf = self._config.scale_factor
+        results_path = os.path.join(
+            self._config.repo_dir, "mount", "results", str(sf), name,
+        )
+        if not os.path.exists(results_path):
+            return
+        try:
+            shutil.rmtree(results_path, ignore_errors=True)
+            # Recreate the empty dir so the next benchmark run (or chart
+            # generation) sees the expected directory structure.
+            os.makedirs(results_path, exist_ok=True)
+            self._emit(f"[{name}] Cleaned up engine output: mount/results/{sf}/{name}/")
+        except Exception as e:
+            logger.warning("[%s] Failed to clean engine output: %s", name, e)
 
     def _fix_delta_permissions(self) -> None:
         """Fix Delta directory permissions after Spark writes."""
