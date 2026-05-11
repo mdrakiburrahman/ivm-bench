@@ -11,7 +11,18 @@ tpcdi:
       connect_timeout: 10
       lakehouse: tpcdi
       schema: tpcdi
-      threads: 30
+      # Keep threads low: in local[*] Livy mode the underlying Spark
+      # cluster is a single JVM whose Task scheduler serializes work
+      # anyway, so high thread counts give no real parallelism — only
+      # cross-thread Hive-metastore catalog races. Run 25650972119
+      # (SF=1000 batch 3) failed at exactly the moment a parent table
+      # was created in one Livy connection (fact_cash_transactions /
+      # fact_trade) and the child query, planning on a different
+      # connection in the same millisecond, saw an unrefreshed catalog
+      # cache: "TABLE_OR_VIEW_NOT_FOUND". 4 threads keeps useful pipeline
+      # parallelism without overwhelming the single-JVM scheduler or the
+      # mssql Hive metastore.
+      threads: 4
       retry_all: true
       spark_config:
         name: dbt-tpcdi-benchmark
