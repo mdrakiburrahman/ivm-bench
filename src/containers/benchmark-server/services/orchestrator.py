@@ -20,6 +20,10 @@ from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner
 from services.resource_calc import (
+    HOST_RESERVED_CORES,
+    HOST_RESERVED_MEM_GB,
+    MIN_DBT_SERVER_CPUS,
+    MIN_DBT_SERVER_MEM_GB,
     compute_engine_configs,
     detect_host_cores,
     detect_host_memory_gb,
@@ -305,12 +309,22 @@ class Orchestrator:
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
 
-        # Give PDGF and the Spark→Delta writer the host's full CPU/memory
-        # budget so high scale factors don't cgroup-OOM or starve. Leave
-        # ~10 % headroom for native, off-heap, and OS overhead so the JVM
-        # heap doesn't push past the cgroup limit.
-        host_cores = self._config.host_cores or detect_host_cores()
-        host_mem_gb = self._config.host_memory_gb or detect_host_memory_gb()
+        # Size the datagen container to (host - reserved headroom). The
+        # reservation keeps the OS, Docker daemon, and self-hosted GitHub
+        # Actions runner agent alive — run 25650103013 starved the runner
+        # heartbeat after the engine container claimed all 251 GB.
+        raw_cores = self._config.host_cores or detect_host_cores()
+        raw_mem_gb = self._config.host_memory_gb or detect_host_memory_gb()
+        if self._config.host_cores is None:
+            host_cores = max(MIN_DBT_SERVER_CPUS + 1, raw_cores - HOST_RESERVED_CORES)
+        else:
+            host_cores = raw_cores
+        if self._config.host_memory_gb is None:
+            host_mem_gb = max(MIN_DBT_SERVER_MEM_GB + 1, raw_mem_gb - HOST_RESERVED_MEM_GB)
+        else:
+            host_mem_gb = raw_mem_gb
+        # Spark heap fills 90 % of the cgroup; remaining 10 % is for the
+        # JVM's native off-heap allocations and Hadoop/Delta scan buffers.
         spark_heap_gb = max(4, int(host_mem_gb * 0.9))
 
         env = self._config.base_env()
