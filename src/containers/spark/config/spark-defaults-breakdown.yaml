@@ -1,9 +1,17 @@
+# Resource percentages applied against the container's cgroup memory
+# (not the host). In Spark's local[*] + client mode the driver JVM is
+# the *only* JVM — spark.executor.memory is advisory and unused for
+# heap sizing, so spark.driver.memory must be sized to fit the entire
+# workload. At 10% the driver had only 25 GB at SF=1000 and the Livy
+# session OOM-died ~2 h into batch 3 (run 25641266425); 70% gives a
+# ~147 GB heap on the 210 GB SF=1000 container with ~30% headroom for
+# the JVM Metaspace / native off-heap allocations / Livy server.
 driver:
-    pct_ram: 10
+    pct_ram: 70
     pct_cores: 10
 
 executor:
-    pct_ram: 80
+    pct_ram: 70
     pct_cores: 90
 
 resource_allocation:

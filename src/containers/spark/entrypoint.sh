@@ -28,7 +28,34 @@ process_template() {
   envsubst < "$src" > "$dst"
 }
 
-TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+# Detect cgroup memory limit — Docker's mem_limit, not the host's RAM.
+# `free -g` reads /proc/meminfo MemTotal which ignores the container's
+# cgroup, so the previous logic overcommitted at SF=1000 (computed 251 GB
+# while the cgroup only allows 210 GB). Spark then sized its JVM as if it
+# had the whole host, blew past the cgroup limit, and got SIGKILLed by
+# the OOM-killer mid-batch (e.g. session '0' vanished partway through
+# gold.broker_performance and gold.fact_watches in run 25641266425).
+detect_cgroup_mem_gb() {
+  local raw=""
+  # cgroup v2
+  if [[ -r /sys/fs/cgroup/memory.max ]]; then
+    raw=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)
+  fi
+  # cgroup v1 fallback
+  if [[ -z "$raw" || "$raw" == "max" ]] && [[ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]]; then
+    raw=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || true)
+  fi
+  # Sanity check: limit_in_bytes returns a very large number (~2^63) when
+  # the container has no limit; treat that as "unlimited" and fall back.
+  if [[ -z "$raw" || "$raw" == "max" || ${#raw} -ge 19 ]]; then
+    free -g | awk '/^Mem:/{print $2}'
+    return
+  fi
+  # Round down to whole GB.
+  echo $(( raw / (1024 * 1024 * 1024) ))
+}
+
+TOTAL_RAM_GB=$(detect_cgroup_mem_gb)
 TOTAL_CORES=$(nproc)
 
 BREAKDOWN="$CONFIG_DIR/spark-defaults-breakdown.yaml"
