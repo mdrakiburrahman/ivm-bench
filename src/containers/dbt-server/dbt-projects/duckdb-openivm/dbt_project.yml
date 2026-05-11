@@ -34,7 +34,18 @@ models:
       +schema: gold
       +materialized: materialized_view
       analytics:
-        +materialized: materialized_view
+        # OpenIVM's CREATE MATERIALIZED VIEW deadlocks on complex
+        # analytics SQL (multi-CTE, window functions, CROSS JOIN,
+        # STDDEV, etc) with "Failed to commit DuckLake transaction:
+        # database is locked". The adapter retries up to 11 times with
+        # exponential backoff, each model burning ~1 h before giving
+        # up — run 25665737677 burned ~5 h 35 min at SF=1000 only to
+        # fail with all 5 analytics models locked out. The DuckLake
+        # catalog mutex is taken by the still-running IVM bookkeeping
+        # for the upstream gold materialized views, so the analytics
+        # MV's COMMIT can never acquire it. Render these as plain
+        # views; they recompute on read but never deadlock.
+        +materialized: view
     work:
       +schema: work
       +materialized: ephemeral
