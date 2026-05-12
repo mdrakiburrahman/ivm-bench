@@ -51,7 +51,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         ".timer off",
         f"SET memory_limit='{MEM_LIMIT}';",
         f"SET temp_directory='{TEMP_DIR}';",
-        # DuckDB defaults temp_directory_max_size to 90 % of free disk
+        # DuckDB defaults max_temp_directory_size to 90 % of free disk
         # at session start, which on a multi-engine 1 TB runner can
         # cap spill at ~470 GiB and trip an "Out of Memory Error:
         # failed to offload data block" mid-IVM-refresh of
@@ -59,7 +59,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         # cap explicitly to a much larger value so DuckDB will keep
         # spilling until the actual disk runs out, not a self-imposed
         # 90 % heuristic computed at the wrong moment.
-        f"SET temp_directory_max_size='{TEMP_DIR_MAX_SIZE}';",
+        f"SET max_temp_directory_size='{TEMP_DIR_MAX_SIZE}';",
     ]
     if THREADS:
         preamble_lines.append(f"SET threads={int(THREADS)};")
