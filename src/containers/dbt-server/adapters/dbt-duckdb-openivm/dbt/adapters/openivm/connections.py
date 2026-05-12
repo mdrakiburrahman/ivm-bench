@@ -27,6 +27,11 @@ TEMP_DIR = os.environ.get(
     "DUCKDB_OPENIVM_TEMP_DIR",
     os.path.join(WORK_DIR, "_tmp"),
 )
+# Override the spill cap that DuckDB infers from free disk at session
+# start. The Azure VMSS runner used for SF=1000 has a 1 TB premium SSD
+# and the IVM refresh of fact_market_history at SF=1000 batch 2 spills
+# more than DuckDB's default 90 %-of-free heuristic permits.
+TEMP_DIR_MAX_SIZE = os.environ.get("DUCKDB_OPENIVM_TEMP_DIR_MAX_SIZE", "800GB")
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 
 
@@ -46,6 +51,15 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         ".timer off",
         f"SET memory_limit='{MEM_LIMIT}';",
         f"SET temp_directory='{TEMP_DIR}';",
+        # DuckDB defaults temp_directory_max_size to 90 % of free disk
+        # at session start, which on a multi-engine 1 TB runner can
+        # cap spill at ~470 GiB and trip an "Out of Memory Error:
+        # failed to offload data block" mid-IVM-refresh of
+        # fact_market_history at SF=1000 (run 25703070711). Set the
+        # cap explicitly to a much larger value so DuckDB will keep
+        # spilling until the actual disk runs out, not a self-imposed
+        # 90 % heuristic computed at the wrong moment.
+        f"SET temp_directory_max_size='{TEMP_DIR_MAX_SIZE}';",
     ]
     if THREADS:
         preamble_lines.append(f"SET threads={int(THREADS)};")
