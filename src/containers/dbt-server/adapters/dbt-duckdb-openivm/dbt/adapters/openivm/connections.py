@@ -60,6 +60,14 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         # spilling until the actual disk runs out, not a self-imposed
         # 90 % heuristic computed at the wrong moment.
         f"SET max_temp_directory_size='{TEMP_DIR_MAX_SIZE}';",
+        # Disable preserving the original row order through operators
+        # like GROUP BY / ORDER BY. DuckDB's own memory-management docs
+        # call this out as the first knob to turn when an operator hits
+        # the temp-directory limit. fact_market_history's IVM refresh
+        # at SF=1000 builds a huge intermediate that doesn't need its
+        # insertion order preserved — the downstream materialized view
+        # is unordered.
+        "SET preserve_insertion_order=false;",
     ]
     if THREADS:
         preamble_lines.append(f"SET threads={int(THREADS)};")
