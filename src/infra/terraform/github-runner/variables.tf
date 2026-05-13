@@ -52,7 +52,18 @@ variable "instance_sku" {
 variable "os_disk_size_gb" {
   type        = number
   description = "OS disk size in GB"
-  default     = 1024
+  # At SF=1000 the ivm-bench workload coexists across one disk:
+  #   ~300 GB digen flat files
+  #   ~200 GB Delta staging tables
+  #   ~300 GB DuckDB-OpenIVM DuckLake data after batch 1
+  #   ~800 GB peak DuckDB spill (max_temp_directory_size) during the
+  #          fact_market_history IVM refresh in batch 2
+  # That sums to ~1.6 TB so 1 TB was not enough — run 25745170653
+  # failed batch 2 with "No space left on device" while DuckDB was
+  # writing duckdb_temp_storage_DEFAULT-8.tmp. 2 TB leaves ~1.2 TB of
+  # headroom after the resident working set, which fits the observed
+  # peak spill with margin.
+  default     = 2048
 }
 
 variable "vm_image" {
