@@ -38,12 +38,69 @@ RUNNER_NAME="${RUNNER_NAME:-$(hostname)}"
 RUNNER_VERSION="${RUNNER_VERSION:-2.331.0}"
 RUNNER_USER="${RUNNER_USER:-azureuser}"
 DOCKER_VERSION="${DOCKER_VERSION:-5:27.5.1-1~ubuntu.24.04~noble}"
+SWAP_SIZE_GB="${SWAP_SIZE_GB:-64}"
 
 # ----- Base packages ---------------------------------------------------------
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg lsb-release jq sudo tar
+  ca-certificates curl gnupg lsb-release jq sudo tar cron logrotate
+
+# ----- Swap file -------------------------------------------------------------
+# DuckDB / Spark can briefly spike past RAM during shuffle/spill flushes; the
+# GitHub Actions runner agent has been observed losing communication with the
+# server when the kernel OOM-kills random processes under memory pressure.
+# A generous swap file on the 2 TB OS disk absorbs those spikes.
+SWAP_FILE="/var/swap"
+if ! swapon --show=NAME --noheadings | grep -q "^${SWAP_FILE}$"; then
+  echo "Creating ${SWAP_SIZE_GB} GB swap file at ${SWAP_FILE}..."
+  fallocate -l "${SWAP_SIZE_GB}G" "$SWAP_FILE" || \
+    dd if=/dev/zero of="$SWAP_FILE" bs=1M count=$((SWAP_SIZE_GB * 1024)) status=progress
+  chmod 600 "$SWAP_FILE"
+  mkswap "$SWAP_FILE"
+  swapon "$SWAP_FILE"
+  if ! grep -q "^${SWAP_FILE} " /etc/fstab; then
+    echo "${SWAP_FILE} none swap sw 0 0" >> /etc/fstab
+  fi
+else
+  echo "Swap already enabled at ${SWAP_FILE}"
+fi
+
+# ----- Sysctls (DuckDB / Spark / runner agent friendly) ----------------------
+cat > /etc/sysctl.d/99-ivm-bench.conf <<'EOF'
+# Let processes overcommit. DuckDB's documentation explicitly recommends this
+# under memory pressure; Spark also benefits during shuffle.
+vm.overcommit_memory = 1
+# Use swap, but only when truly under memory pressure (we have lots of RAM).
+vm.swappiness = 10
+# Larger virtual memory area limit (Java/Spark needs this for many regions).
+vm.max_map_count = 262144
+# More file descriptors / socket backlog so dbt + duckdb + docker can scale.
+fs.file-max = 2097152
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 8192
+net.core.somaxconn = 4096
+net.ipv4.tcp_max_syn_backlog = 4096
+EOF
+sysctl --system >/dev/null
+
+# ----- ulimits ---------------------------------------------------------------
+cat > /etc/security/limits.d/99-ivm-bench.conf <<'EOF'
+*               soft    nofile          1048576
+*               hard    nofile          1048576
+*               soft    nproc           unlimited
+*               hard    nproc           unlimited
+root            soft    nofile          1048576
+root            hard    nofile          1048576
+EOF
+# Make sure systemd-spawned services see the new limits too.
+mkdir -p /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/99-ivm-bench.conf <<'EOF'
+[Manager]
+DefaultLimitNOFILE=1048576
+DefaultLimitNPROC=infinity
+EOF
+systemctl daemon-reexec || true
 
 # ----- Docker (idempotent) ---------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
@@ -66,9 +123,52 @@ else
 fi
 
 mkdir -p /etc/docker
-echo '{"max-concurrent-downloads": 32}' > /etc/docker/daemon.json
+cat > /etc/docker/daemon.json <<'EOF'
+{
+  "max-concurrent-downloads": 32,
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m",
+    "max-file": "5"
+  },
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 1048576,
+      "Soft": 1048576
+    }
+  },
+  "storage-driver": "overlay2"
+}
+EOF
 systemctl enable --now docker
 systemctl restart docker
+
+# ----- Daily docker prune cron ----------------------------------------------
+# Even with the per-job prune, image layers from interrupted runs and stale
+# build caches accumulate. A daily prune keeps the disk from creeping up
+# across the 5 sequential SF=1000 benchmark runs.
+cat > /etc/cron.daily/ivm-bench-docker-prune <<'EOF'
+#!/bin/bash
+# Prune anything not used in the last 24h. -af includes images + build cache.
+# --volumes catches anonymous compose volumes from crashed runs.
+/usr/bin/docker system prune -af --volumes --filter "until=24h" \
+  >> /var/log/ivm-bench-docker-prune.log 2>&1 || true
+EOF
+chmod 0755 /etc/cron.daily/ivm-bench-docker-prune
+systemctl enable --now cron || systemctl enable --now cronie || true
+
+# ----- Log rotation for our own bootstrap + prune logs -----------------------
+cat > /etc/logrotate.d/ivm-bench <<'EOF'
+/var/log/ivm-bench-*.log {
+  weekly
+  rotate 4
+  compress
+  missingok
+  notifempty
+  copytruncate
+}
+EOF
 
 # Ensure the runner user exists and is in the docker group
 if ! id "$RUNNER_USER" >/dev/null 2>&1; then

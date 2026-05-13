@@ -70,9 +70,66 @@ jobs:
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '0' }}
 
     steps:
-      - name: "🧹 Clean Docker-owned files"
+      - name: "🧹 Fresh-host cleanup + sanity check"
         run: |
+          set -euo pipefail
+          echo "=== Host state BEFORE cleanup ==="
+          uname -a
+          echo "--- df -h ---"; df -h /
+          echo "--- free -h ---"; free -h
+          echo "--- swapon ---"; swapon --show || true
+          echo "--- docker info ---"; docker info --format \
+            'Containers: {{.Containers}}  Images: {{.Images}}  Server: {{.ServerVersion}}  StorageDriver: {{.Driver}}' || true
+
+          echo "=== Killing leftover containers ==="
+          if docker ps -aq >/dev/null 2>&1; then
+            CONTAINERS=$(docker ps -aq)
+            if [ -n "$CONTAINERS" ]; then
+              echo "$CONTAINERS" | xargs -r docker rm -f || true
+            fi
+          fi
+
+          echo "=== Bringing down all ivm-bench compose stacks (best effort) ==="
+          for f in docker/docker-compose.benchmark-server.yml \
+                   docker/docker-compose.datagen.yml \
+                   docker/docker-compose.benchmark.spark.yml \
+                   docker/docker-compose.benchmark.duckdb.yml \
+                   docker/docker-compose.benchmark.duckdb-openivm.yml \
+                   docker/docker-compose.benchmark.feldera.yml; do
+            if [ -f "$f" ]; then
+              docker compose -f "$f" down --remove-orphans -v 2>/dev/null || true
+            fi
+          done
+
+          echo "=== Pruning docker (images, build cache, volumes) ==="
+          docker system prune -af --volumes 2>/dev/null || true
+          docker builder prune -af 2>/dev/null || true
+
+          echo "=== Wiping leftover mount/ + temp dirs ==="
           sudo rm -rf mount/ 2>/dev/null || true
+          sudo rm -rf /tmp/ivm-bench-* 2>/dev/null || true
+
+          echo "=== Host state AFTER cleanup ==="
+          echo "--- df -h ---"; df -h /
+          echo "--- free -h ---"; free -h
+          echo "--- swapon ---"; swapon --show || true
+
+          # Fail fast on environments that won't survive SF=1000.
+          FREE_GB=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          FREE_MEM_GB=$(free -g | awk '/^Mem:/ {print $7}')
+          MIN_DISK_GB=1500
+          MIN_MEM_GB=180
+          echo "Free disk: ${FREE_GB} GB (min ${MIN_DISK_GB} GB)"
+          echo "Free mem (available): ${FREE_MEM_GB} GB (min ${MIN_MEM_GB} GB)"
+          if [ "${FREE_GB:-0}" -lt "$MIN_DISK_GB" ]; then
+            echo "::error::Runner has only ${FREE_GB} GB free disk; needs >= ${MIN_DISK_GB} GB. Aborting."
+            exit 1
+          fi
+          if [ "${FREE_MEM_GB:-0}" -lt "$MIN_MEM_GB" ]; then
+            echo "::error::Runner has only ${FREE_MEM_GB} GB available memory; needs >= ${MIN_MEM_GB} GB. Aborting."
+            exit 1
+          fi
+          echo "Host looks healthy. Proceeding."
 
       - uses: actions/checkout@v4
         with:
@@ -102,8 +159,47 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: "🧹 Docker cleanup"
+      - name: "🧹 Post-run aggressive cleanup"
         if: always()
         run: |
-          docker compose -f docker/docker-compose.benchmark-server.yml down --remove-orphans 2>/dev/null || true
-          docker system prune -f 2>/dev/null || true
+          set +e
+          echo "=== Host state BEFORE post-run cleanup ==="
+          df -h / || true
+          free -h || true
+
+          echo "=== Bringing down all ivm-bench compose stacks ==="
+          for f in docker/docker-compose.benchmark-server.yml \
+                   docker/docker-compose.datagen.yml \
+                   docker/docker-compose.benchmark.spark.yml \
+                   docker/docker-compose.benchmark.duckdb.yml \
+                   docker/docker-compose.benchmark.duckdb-openivm.yml \
+                   docker/docker-compose.benchmark.feldera.yml; do
+            if [ -f "$f" ]; then
+              docker compose -f "$f" down --remove-orphans -v 2>/dev/null || true
+            fi
+          done
+
+          echo "=== Killing any remaining containers ==="
+          if docker ps -aq >/dev/null 2>&1; then
+            CONTAINERS=$(docker ps -aq)
+            if [ -n "$CONTAINERS" ]; then
+              echo "$CONTAINERS" | xargs -r docker rm -f
+            fi
+          fi
+
+          echo "=== Final docker prune ==="
+          docker system prune -af --volumes 2>/dev/null || true
+          docker builder prune -af 2>/dev/null || true
+
+          echo "=== Wiping mount/ + temp dirs (mount/benchmark-state preserved) ==="
+          # Wipe everything except benchmark-state (which holds the persistent
+          # benchmark-server SQLite DB across runs).
+          if [ -d mount ]; then
+            sudo find mount -mindepth 1 -maxdepth 1 \
+                 ! -name 'benchmark-state' -exec rm -rf {} + 2>/dev/null || true
+          fi
+          sudo rm -rf /tmp/ivm-bench-* 2>/dev/null || true
+
+          echo "=== Host state AFTER post-run cleanup ==="
+          df -h / || true
+          free -h || true
