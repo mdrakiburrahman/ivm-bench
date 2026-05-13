@@ -243,7 +243,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/dim_account
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -255,7 +255,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/dim_broker
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -267,7 +267,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/dim_company
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -279,7 +279,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/dim_customer
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -291,7 +291,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/dim_date
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -303,7 +303,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/dim_security
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -315,7 +315,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/dim_trade
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -327,7 +327,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/fact_cash_balances
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -339,7 +339,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/fact_cash_transactions
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -351,7 +351,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/fact_holdings
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -373,7 +373,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/fact_trade
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -385,7 +385,7 @@ models:
               config:
                 uri: /data/processed/feldera/gold/fact_watches
                 mode: truncate
-                threads: 4
+                threads: 1
             enable_output_buffer: true
             max_output_buffer_time_millis: 1000
             max_queued_records: 1000000000
@@ -398,7 +398,7 @@ models:
                 config:
                   uri: /data/processed/feldera/gold/trade_volume_stats
                   mode: truncate
-                  threads: 4
+                  threads: 1
               enable_output_buffer: true
               max_output_buffer_time_millis: 1000
               max_queued_records: 1000000000
@@ -410,7 +410,7 @@ models:
                 config:
                   uri: /data/processed/feldera/gold/market_volatility
                   mode: truncate
-                  threads: 4
+                  threads: 1
               enable_output_buffer: true
               max_output_buffer_time_millis: 1000
               max_queued_records: 1000000000
@@ -422,7 +422,7 @@ models:
                 config:
                   uri: /data/processed/feldera/gold/customer_concentration
                   mode: truncate
-                  threads: 4
+                  threads: 1
               enable_output_buffer: true
               max_output_buffer_time_millis: 1000
               max_queued_records: 1000000000
@@ -434,7 +434,7 @@ models:
                 config:
                   uri: /data/processed/feldera/gold/broker_performance
                   mode: truncate
-                  threads: 4
+                  threads: 1
               enable_output_buffer: true
               max_output_buffer_time_millis: 1000
               max_queued_records: 1000000000
