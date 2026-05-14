@@ -44,3 +44,10 @@
    GIT_ROOT=$(git rev-parse --show-toplevel)
    chmod +x ${GIT_ROOT}/contrib/bootstrap-dev-env.sh && ${GIT_ROOT}/contrib/bootstrap-dev-env.sh
    ```
+
+1. Install recommended developer tooling (optional):
+
+  ```bash
+  curl -fsSL https://gh.io/copilot-install | bash
+  $HOME/.local/bin/copilot --yolo
+  ```
