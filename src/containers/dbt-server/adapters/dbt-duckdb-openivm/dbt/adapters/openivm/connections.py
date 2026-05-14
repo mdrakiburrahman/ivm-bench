@@ -38,6 +38,14 @@ THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
 RETRY_BACKOFF = float(os.environ.get("OPENIVM_RETRY_BACKOFF", "3.0"))
 
+# Per-subprocess wall-clock cap for an OpenIVM CLI invocation.
+# At SF=1000 the IVM refresh of fact_market_history in batch 2 is the
+# slowest single subprocess call and is highly non-deterministic: the
+# same query took 1136 s in run 25776405408 and 3610 s (timeout) in run
+# 25781854297 with identical code. 4 h headroom keeps us well above the
+# observed worst case while still failing fast on a genuine deadlock.
+CLI_TIMEOUT = int(os.environ.get("OPENIVM_CLI_TIMEOUT", "14400"))
+
 
 def _run_cli(sql: str, expect_output: bool = False) -> str:
     """Execute SQL via the OpenIVM DuckDB CLI binary, with retry on lock errors."""
@@ -89,7 +97,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=3600,
+            timeout=CLI_TIMEOUT,
         )
         if proc.returncode == 0:
             return proc.stdout
