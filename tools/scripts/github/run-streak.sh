@@ -97,6 +97,21 @@ while [ "$STREAK" -lt "$STREAK_TARGET" ]; do
   else
     echo "❌ Run $RUN_ID conclusion=$CONCL"
     echo "Streak broken. Fired so far: ${RUNS_FIRED[*]}"
+
+    # Pre-fetch diagnostics so post-mortem doesn't depend on the
+    # operator being on-line right at failure. Artifacts go to
+    # /tmp/artifacts-<RUN_ID>; failed-step log tail is appended to
+    # this script's stdout (which lives in /tmp/streak.log via the
+    # wrapper).
+    ARTIFACT_DIR="/tmp/artifacts-$RUN_ID"
+    echo "----------------------------------------------------------------"
+    echo "Downloading artifacts to $ARTIFACT_DIR ..."
+    gh run download "$RUN_ID" --repo "$REPO" -D "$ARTIFACT_DIR" 2>&1 || \
+      echo "(artifact download failed — workflow may have not uploaded any)"
+    echo "----------------------------------------------------------------"
+    echo "Failure-log tail (last 40 lines):"
+    gh run view "$RUN_ID" --repo "$REPO" --log-failed 2>&1 | tail -40 || true
+    echo "----------------------------------------------------------------"
     exit 1
   fi
 done
