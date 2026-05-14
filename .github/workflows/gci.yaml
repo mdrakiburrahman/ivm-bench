@@ -111,16 +111,23 @@ jobs:
 
           echo "=== Wiping runner-agent temp/tool dirs (survive actions/checkout clean) ==="
           # actions/checkout `clean: true` only cleans the repo, not the
-          # runner agent's _work/_temp / _work/_tool / _work/_actions
-          # dirs. Those grow across our 5-sequential-run streak and can
-          # sap headroom. We only delete siblings of the current repo
-          # workspace, never above it, and we hard-guard against an
-          # empty RUNNER_WORKSPACE which would otherwise expand to "/..".
+          # runner agent's _work/_temp / _work/_tool dirs. Those grow
+          # across our 5-sequential-run streak and can sap headroom.
+          # We only delete siblings of the current repo workspace, never
+          # above it, and we hard-guard against an empty RUNNER_WORKSPACE
+          # which would otherwise expand to "/..".
+          #
+          # WARNING: do NOT wipe _work/_actions here. The runner's
+          # "Set up job" step downloads JS action code (actions/checkout,
+          # actions/upload-artifact, etc.) into _work/_actions BEFORE
+          # this cleanup step runs. Wiping it here breaks every
+          # subsequent `uses:` step in the same job (run 25856902736
+          # failed exactly this way).
           if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "${RUNNER_WORKSPACE}" ]; then
             RUNNER_WORK_ROOT="$(dirname "$RUNNER_WORKSPACE")"
             case "$RUNNER_WORK_ROOT" in
               /home/*/actions-runner/_work)
-                for sib in _temp _tool _actions; do
+                for sib in _temp _tool; do
                   sudo rm -rf "$RUNNER_WORK_ROOT/$sib" 2>/dev/null || true
                 done
                 ;;
@@ -237,7 +244,10 @@ jobs:
             RUNNER_WORK_ROOT="$(dirname "$RUNNER_WORKSPACE")"
             case "$RUNNER_WORK_ROOT" in
               /home/*/actions-runner/_work)
-                for sib in _temp _tool _actions; do
+                # Same caveat as the pre-run step: _actions is not
+                # safe to wipe within a job, and there's no reason to
+                # wipe it across jobs either — it's small JS code.
+                for sib in _temp _tool; do
                   sudo rm -rf "$RUNNER_WORK_ROOT/$sib" 2>/dev/null || true
                 done
                 ;;
