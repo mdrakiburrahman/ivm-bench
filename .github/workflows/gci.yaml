@@ -109,6 +109,38 @@ jobs:
           sudo rm -rf mount/ 2>/dev/null || true
           sudo rm -rf /tmp/ivm-bench-* 2>/dev/null || true
 
+          echo "=== Wiping runner-agent temp/tool dirs (survive actions/checkout clean) ==="
+          # actions/checkout `clean: true` only cleans the repo, not the
+          # runner agent's _work/_temp / _work/_tool / _work/_actions
+          # dirs. Those grow across our 5-sequential-run streak and can
+          # sap headroom. We only delete siblings of the current repo
+          # workspace, never above it, and we hard-guard against an
+          # empty RUNNER_WORKSPACE which would otherwise expand to "/..".
+          if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "${RUNNER_WORKSPACE}" ]; then
+            RUNNER_WORK_ROOT="$(dirname "$RUNNER_WORKSPACE")"
+            case "$RUNNER_WORK_ROOT" in
+              /home/*/actions-runner/_work)
+                for sib in _temp _tool _actions; do
+                  sudo rm -rf "$RUNNER_WORK_ROOT/$sib" 2>/dev/null || true
+                done
+                ;;
+              *)
+                echo "WARNING: RUNNER_WORK_ROOT=$RUNNER_WORK_ROOT doesn't look like an actions-runner _work dir; skipping cleanup"
+                ;;
+            esac
+          fi
+
+          echo "=== Capping journald growth (idempotent) ==="
+          # Without bounds, /var/log/journal grows unbounded across 5
+          # multi-hour runs as Docker/cron/systemd log heavily. 1 GB is
+          # plenty for diagnostics and keeps the OS disk available for
+          # DuckDB spill.
+          sudo mkdir -p /etc/systemd/journald.conf.d
+          printf '[Journal]\nSystemMaxUse=1G\nRuntimeMaxUse=512M\nMaxRetentionSec=7day\n' \
+            | sudo tee /etc/systemd/journald.conf.d/99-ivm-bench.conf >/dev/null
+          sudo systemctl restart systemd-journald 2>/dev/null || true
+          sudo journalctl --vacuum-size=1G >/dev/null 2>&1 || true
+
           echo "=== Host state AFTER cleanup ==="
           echo "--- df -h ---"; df -h /
           echo "--- free -h ---"; free -h
@@ -199,6 +231,21 @@ jobs:
                  ! -name 'benchmark-state' -exec rm -rf {} + 2>/dev/null || true
           fi
           sudo rm -rf /tmp/ivm-bench-* 2>/dev/null || true
+
+          echo "=== Wiping runner-agent temp/tool dirs ==="
+          if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "${RUNNER_WORKSPACE}" ]; then
+            RUNNER_WORK_ROOT="$(dirname "$RUNNER_WORKSPACE")"
+            case "$RUNNER_WORK_ROOT" in
+              /home/*/actions-runner/_work)
+                for sib in _temp _tool _actions; do
+                  sudo rm -rf "$RUNNER_WORK_ROOT/$sib" 2>/dev/null || true
+                done
+                ;;
+            esac
+          fi
+
+          echo "=== Trim journald to size cap ==="
+          sudo journalctl --vacuum-size=1G >/dev/null 2>&1 || true
 
           echo "=== Host state AFTER post-run cleanup ==="
           df -h / || true

@@ -170,6 +170,21 @@ cat > /etc/logrotate.d/ivm-bench <<'EOF'
 }
 EOF
 
+# ----- Bound journald growth -------------------------------------------------
+# Without bounds, /var/log/journal grows unbounded across the
+# 5-sequential-SF=1000-run streak as Docker / cron / systemd / the
+# benchmark itself log heavily for ~50 hours. 1 GB is plenty for
+# diagnostics and keeps the OS disk free for DuckDB spill (which can
+# legitimately need 800+ GB at SF=1000 batch 2).
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/99-ivm-bench.conf <<'EOF'
+[Journal]
+SystemMaxUse=1G
+RuntimeMaxUse=512M
+MaxRetentionSec=7day
+EOF
+systemctl restart systemd-journald || true
+
 # Ensure the runner user exists and is in the docker group
 if ! id "$RUNNER_USER" >/dev/null 2>&1; then
   useradd -m -s /bin/bash "$RUNNER_USER"
