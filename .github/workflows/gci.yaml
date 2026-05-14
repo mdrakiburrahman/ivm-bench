@@ -184,6 +184,80 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: bash tools/scripts/github/post-pr-comment.sh
 
+      - name: "🔍 Collect host diagnostics"
+        if: always()
+        run: |
+          # Capture host-level state that mount/logs doesn't include
+          # (Docker daemon, kernel, runner agent, systemd). Lands in
+          # mount/debug/ which is picked up by the next step's upload.
+          # Best-effort: nothing here should fail the job.
+          set +e
+          DEBUG_DIR="mount/debug/host-${{ env.SCALE_FACTOR }}-${{ github.run_id }}"
+          sudo mkdir -p "$DEBUG_DIR" 2>/dev/null || mkdir -p "$DEBUG_DIR"
+
+          echo "--- df -h ---" > "$DEBUG_DIR/df.txt"
+          df -h >> "$DEBUG_DIR/df.txt" 2>&1
+
+          echo "--- free -h ---" > "$DEBUG_DIR/free.txt"
+          free -h >> "$DEBUG_DIR/free.txt" 2>&1
+
+          echo "--- vmstat 1 5 ---" > "$DEBUG_DIR/vmstat.txt"
+          vmstat 1 5 >> "$DEBUG_DIR/vmstat.txt" 2>&1
+
+          echo "--- uname + uptime ---" > "$DEBUG_DIR/host.txt"
+          uname -a >> "$DEBUG_DIR/host.txt" 2>&1
+          uptime >> "$DEBUG_DIR/host.txt" 2>&1
+
+          echo "--- docker info ---" > "$DEBUG_DIR/docker-info.txt"
+          docker info >> "$DEBUG_DIR/docker-info.txt" 2>&1
+
+          echo "--- docker system df ---" > "$DEBUG_DIR/docker-df.txt"
+          docker system df -v >> "$DEBUG_DIR/docker-df.txt" 2>&1
+
+          echo "--- docker ps -a ---" > "$DEBUG_DIR/docker-ps.txt"
+          docker ps -a >> "$DEBUG_DIR/docker-ps.txt" 2>&1
+
+          # Kernel ring buffer (OOM kills, hardware errors land here)
+          sudo dmesg --ctime 2>&1 | tail -500 > "$DEBUG_DIR/dmesg.txt" || true
+
+          # Tail of syslog if accessible (Docker daemon, cron, oom-killer)
+          sudo tail -n 1000 /var/log/syslog > "$DEBUG_DIR/syslog.txt" 2>&1 || true
+
+          # journald system journal (Docker / systemd / runner agent)
+          sudo journalctl --no-pager --since "8 hours ago" 2>&1 | tail -2000 \
+            > "$DEBUG_DIR/journal.txt" || true
+
+          # Per-service journals
+          for svc in docker containerd cron systemd-journald; do
+            sudo journalctl --no-pager --since "8 hours ago" -u "$svc" 2>&1 | tail -500 \
+              > "$DEBUG_DIR/journal-$svc.txt" || true
+          done
+
+          # ivm-bench bootstrap + prune logs (created by cloud-init)
+          for log in /var/log/ivm-bench-bootstrap.log /var/log/ivm-bench-docker-prune.log; do
+            if [ -f "$log" ]; then
+              base=$(basename "$log")
+              sudo tail -n 500 "$log" > "$DEBUG_DIR/$base" 2>&1 || true
+            fi
+          done
+
+          # Runner agent _diag logs (most recent only)
+          if [ -d "/home/azureuser/actions-runner/_diag" ]; then
+            sudo ls -lt /home/azureuser/actions-runner/_diag 2>&1 \
+              | head -20 > "$DEBUG_DIR/runner-diag-list.txt" || true
+            # Most recent worker log
+            LATEST=$(sudo ls -t /home/azureuser/actions-runner/_diag/Worker_*.log 2>/dev/null | head -1)
+            if [ -n "$LATEST" ]; then
+              sudo tail -n 1000 "$LATEST" > "$DEBUG_DIR/runner-worker-latest.log" 2>&1 || true
+            fi
+          fi
+
+          # Make sure azureuser can read these from the cleanup step
+          sudo chown -R "$(id -u):$(id -g)" "$DEBUG_DIR" 2>/dev/null || true
+
+          echo "Collected $(ls -1 "$DEBUG_DIR" | wc -l) diagnostic files into $DEBUG_DIR:"
+          ls -lh "$DEBUG_DIR"
+
       - name: "📦 Upload artifacts"
         if: always()
         uses: actions/upload-artifact@v4
