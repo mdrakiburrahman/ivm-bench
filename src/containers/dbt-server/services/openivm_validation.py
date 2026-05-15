@@ -42,7 +42,7 @@ def _run_scalar(sql: str, label: str) -> int:
         preamble.append(f"SET threads={int(THREADS)};")
     preamble.extend([
         "LOAD openivm;",
-        "SET ivm_cascade_refresh='off';",
+        "SET openivm_cascade_refresh='off';",
         "INSTALL icu; LOAD icu;",
         "INSTALL ducklake; LOAD ducklake;",
         f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "

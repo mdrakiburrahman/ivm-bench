@@ -12,6 +12,7 @@ services:
       DUCKDB_OPENIVM_MEM_LIMIT: "${DUCKDB_OPENIVM_MEM_LIMIT:-115GB}"
       DUCKDB_OPENIVM_TEMP_DIR: "${DUCKDB_OPENIVM_TEMP_DIR:-/data/processed/duckdb-openivm/_tmp}"
       DUCKDB_OPENIVM_THREADS: "${DUCKDB_OPENIVM_THREADS:-}"
+      OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/duckdb-openivm:/data/processed/duckdb-openivm
