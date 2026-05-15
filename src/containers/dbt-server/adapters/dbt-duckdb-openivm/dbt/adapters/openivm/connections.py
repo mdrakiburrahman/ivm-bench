@@ -28,11 +28,23 @@ TEMP_DIR = os.environ.get(
     os.path.join(WORK_DIR, "_tmp"),
 )
 # Override the spill cap that DuckDB infers from free disk at session
-# start. The Azure VMSS runner used for SF=1000 has a 1 TB premium SSD
-# and the IVM refresh of fact_market_history at SF=1000 batch 2 spills
-# more than DuckDB's default 90 %-of-free heuristic permits.
-TEMP_DIR_MAX_SIZE = os.environ.get("DUCKDB_OPENIVM_TEMP_DIR_MAX_SIZE", "800GB")
-THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
+# start. The Azure VMSS runner used for SF=1000 has a 2 TB premium SSD.
+# Run 25856992647 hit "Out of Memory Error: failed to offload data block
+# (745.0 GiB/745.0 GiB used)" during the IVM refresh of
+# fact_market_history at SF=1000 batch 2 — that's exactly the 800 GB
+# cap (800 GB = 745.058 GiB) bumping out. By that point spark + duckdb
+# results were already cleaned (orchestrator wipes per-engine output
+# after each engine), so the disk had ~1.4 TB free. Bump to 1300 GB
+# which still leaves ~700 GB host margin for raw data + delta tables +
+# Docker overlay.
+TEMP_DIR_MAX_SIZE = os.environ.get("DUCKDB_OPENIVM_TEMP_DIR_MAX_SIZE", "1300GB")
+# Default thread count for the OpenIVM CLI. At SF=1000 the IVM refresh
+# of fact_market_history is the most spill-hungry single subprocess.
+# Halving the thread count from DuckDB's default-all-cores (32 on the
+# E32as_v4 VMSS) to 16 trades a slower refresh for ~half the peak
+# concurrent temp-directory pressure — DuckDB's own OOM message
+# explicitly recommends this as the first mitigation knob.
+THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "16")
 
 
 MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
