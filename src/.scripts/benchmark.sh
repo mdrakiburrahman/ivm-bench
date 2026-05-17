@@ -17,6 +17,8 @@
 #                    datagen + duckdb-openivm builds are reused
 #   OPENIVM_VALIDATE — 1 = validate OpenIVM views with EXCEPT ALL after each
 #                    timed batch (default), 0 = skip post-timer validation
+#   OPENIVM_PROFILE_REFRESH — 1 = export OpenIVM profiling CSVs after each
+#                    timed batch (default: 0)
 #   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -37,6 +39,7 @@ export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-1}"
+export OPENIVM_PROFILE_REFRESH="${OPENIVM_PROFILE_REFRESH:-0}"
 export REPO_HOST_PATH="$(pwd)"
 
 detect_ec2_ubuntu_mirror() {
