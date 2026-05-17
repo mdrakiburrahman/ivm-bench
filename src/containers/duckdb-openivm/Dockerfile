@@ -12,7 +12,7 @@ RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::
 
 WORKDIR /src
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=cfcbfdd4f2a86ef2b8f6d440389a6f30faf8a098
+ARG OPENIVM_COMMIT=4ebe8d105d49c69a5cb72426d81ae57a9112bd45
 RUN git clone "${OPENIVM_REPO}" . && \
     git checkout "${OPENIVM_COMMIT}" && \
     git submodule update --init --recursive
@@ -21,7 +21,7 @@ RUN GEN=ninja make -j$(nproc)
 
 FROM ubuntu:24.04
 
-ARG OPENIVM_COMMIT=cfcbfdd4f2a86ef2b8f6d440389a6f30faf8a098
+ARG OPENIVM_COMMIT=4ebe8d105d49c69a5cb72426d81ae57a9112bd45
 LABEL org.openivm.commit="${OPENIVM_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
