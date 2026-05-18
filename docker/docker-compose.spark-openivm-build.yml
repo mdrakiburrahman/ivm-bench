@@ -1,0 +1,10 @@
+services:
+  spark-openivm-builder:
+    build:
+      context: ../src/containers/spark-openivm-build
+      args:
+        UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
+    volumes:
+      - ../mount/bin/spark-openivm:/output
+    environment:
+      OUTPUT_DIR: /output

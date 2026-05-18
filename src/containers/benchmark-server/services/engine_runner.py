@@ -65,7 +65,7 @@ class EngineRunner:
                 extra_compose_files=[self._override_file],
             )
             # Also create a batch-loader override so appends go to per-engine staging
-            if engine_config.name != "duckdb-openivm":
+            if engine_config.name not in ("duckdb-openivm",):
                 self._batch_override_file = self._create_batch_staging_override()
         else:
             self._engine_mgr = DockerManager(
@@ -161,6 +161,10 @@ class EngineRunner:
             self._emit(f"[{name}] Starting benchmark")
 
             # Initialize Delta staging for engines that still consume Delta directly.
+            # spark-openivm KEEPS the batch-loader flow: it relies on
+            # mount/raw/<SF>/delta/staging being shaped with the CDC columns,
+            # then issues `INSERT INTO tpcdi.<t> SELECT * FROM delta.\`...\``
+            # via Livy so IvmDmlInterceptorRule fires.
             if name not in ("duckdb", "duckdb-openivm") and not self._parallel:
                 self._batch_loader_init()
 
@@ -226,6 +230,9 @@ class EngineRunner:
             # Append data for batches 2/3. DuckDB and DuckDB-OpenIVM manage
             # DuckLake source appends inside their measured batch path; Feldera
             # batches 2/3 append while the pipeline is paused inside _run_feldera_wait.
+            # spark-openivm DOES use the batch-loader (so mount/raw/<SF>/delta/batchN
+            # gets populated with the correct CDC shape), then _run_spark_openivm
+            # additionally fires INSERT INTO via Livy AFTER the timer starts.
             if batch_num > 1 and name not in ("duckdb", "duckdb-openivm") and not (name == "feldera" and batch_num > 1):
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
@@ -242,6 +249,8 @@ class EngineRunner:
                 self._run_duckdb_ducklake(batch_num)
             elif name == "duckdb-openivm":
                 run_id = self._run_duckdb_openivm(batch_num)
+            elif name == "spark-openivm":
+                run_id = self._run_spark_openivm(batch_num)
             else:
                 self._run_dbt(batch_num)
 
@@ -490,7 +499,86 @@ class EngineRunner:
         self._save_run_result(run_id, batch_num)
         return run_id
 
-    def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
+    def _run_spark_openivm(self, batch_num: int) -> str:
+        """Run spark-openivm: source init/append via DML, then dbt build.
+
+        Flow per batch:
+          batch 1 (full refresh):
+            1. /sources/spark-openivm/init     — creates db + tracked Delta tables,
+                                                  bulk-loads batch1 data via
+                                                  INSERT INTO ... SELECT FROM delta.`...`
+            2. dbt build --full-refresh        — fabricspark issues DROP MV +
+                                                  CREATE MATERIALIZED VIEW per model.
+          batch 2/3 (incremental):
+            1. /sources/spark-openivm/append/<N> — INSERT INTO tpcdi.staging_<t>
+                                                    SELECT * FROM delta.`batchN/...`
+                                                    (IvmDmlInterceptorRule tees
+                                                    staging deltas)
+            2. dbt build                          — fabricspark issues
+                                                    REFRESH MATERIALIZED VIEW per model.
+
+        All wall-clock between the source mutation and the dbt build *is*
+        part of the measured batch latency, mirroring the duckdb-openivm
+        flow where init/append+dbt are both inside `t0..t1`.
+        """
+        full_refresh = batch_num == 1
+
+        if batch_num == 1:
+            self._emit("[spark-openivm] Initialising sources (DML via Livy)")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/spark-openivm/init",
+                timeout=3600,
+            )
+            resp.raise_for_status()
+            src_result = resp.json()
+            if src_result.get("status") != "ok":
+                raise RuntimeError(
+                    f"spark-openivm source init failed: {src_result.get('error', src_result)}"
+                )
+            self._emit(
+                f"[spark-openivm] Sources initialised: {src_result.get('tables_created', '?')} tables"
+            )
+        else:
+            self._emit(f"[spark-openivm] Appending batch {batch_num} sources (DML via Livy)")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/spark-openivm/append/{batch_num}",
+                timeout=3600,
+            )
+            resp.raise_for_status()
+            src_result = resp.json()
+            if src_result.get("status") != "ok":
+                raise RuntimeError(
+                    f"spark-openivm source append batch {batch_num} failed: "
+                    f"{src_result.get('error', src_result)}"
+                )
+            self._emit(
+                f"[spark-openivm] Batch {batch_num} appended: "
+                f"{src_result.get('tables_appended', '?')} tables"
+            )
+
+        # Standard dbt build through the fabricspark adapter — the custom
+        # materialized_view materialization (in dbt-projects/spark-openivm/
+        # macros/materializations/materialized_view.sql) dispatches to
+        # CREATE/REFRESH MV per the full_refresh flag.
+        resp = requests.post(
+            f"{self._dbt_url}/run/spark-openivm",
+            json={
+                "scale_factor": self._config.scale_factor,
+                "full_refresh": full_refresh,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        run_id = resp.json()["run_id"]
+        self._emit(
+            f"[spark-openivm] dbt run_id={run_id} "
+            f"(batch={batch_num}, full_refresh={full_refresh})"
+        )
+
+        self._stream_dbt_progress(run_id, batch_num)
+        self._check_run_result(run_id, batch_num)
+        self._save_run_result(run_id, batch_num)
+        return run_id
         """Run default OpenIVM correctness validation outside the benchmark timer."""
         self._emit(f"[duckdb-openivm] Validating batch {batch_num} with EXCEPT ALL")
         resp = requests.post(

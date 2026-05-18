@@ -9,7 +9,7 @@
 #   BATCH_2_PCT    — % of batch 2 data (required)
 #   BATCH_3_PCT    — % of batch 3 data (required)
 #   PARALLEL       — 0 = serial (default), 1 = run engines in parallel
-#   ENGINES        — comma-separated engine list (default: spark,duckdb,duckdb-openivm,feldera)
+#   ENGINES        — comma-separated engine list (default: spark,duckdb,duckdb-openivm,feldera,spark-openivm)
 #   HOST_CORES     — override auto-detected CPU count
 #   HOST_MEMORY    — override auto-detected memory in GB
 #   PRESERVE_RAW   — 0 = clean mount/ at start (default), 1 = keep mount/raw/
@@ -34,7 +34,7 @@ if [[ -z "${BATCH_1_PCT:-}" || -z "${BATCH_2_PCT:-}" || -z "${BATCH_3_PCT:-}" ]]
 fi
 export BATCH_1_PCT BATCH_2_PCT BATCH_3_PCT
 export PARALLEL="${PARALLEL:-0}"
-export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
+export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera,spark-openivm}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"

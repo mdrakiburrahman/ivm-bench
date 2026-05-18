@@ -1,0 +1,62 @@
+services:
+  mssql-metastore:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    restart: on-failure:3
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Hive@Pass123"
+      # Cap SQL Server's internal memory at ~70% of mem_limit so it stays
+      # inside its cgroup limit under heavy sustained load (same pattern
+      # as docker-compose.benchmark.spark.yml).
+      MSSQL_MEMORY_LIMIT_MB: "5500"
+    cpus: ${MSSQL_CPUS:-4}
+    mem_limit: ${MSSQL_MEM:-8g}
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Hive@Pass123" -C -Q "SELECT 1" -b
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  spark-openivm:
+    build:
+      context: ../src/containers/spark-openivm
+    depends_on:
+      mssql-metastore:
+        condition: service_healthy
+    cpus: ${SPARK_OPENIVM_CPUS:-32}
+    mem_limit: ${SPARK_OPENIVM_MEM:-120g}
+    environment:
+      METASTORE_HOST: mssql-metastore
+      METASTORE_PORT: "1433"
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm
+      # All 3 openivm runtime artifacts: assembly jar + duckdb extension + duckdb CLI.
+      # Produced by docker/docker-compose.spark-openivm-build.yml.
+      - ../mount/bin/spark-openivm:/opt/spark-openivm:ro
+    healthcheck:
+      test: |
+        curl -sf http://localhost:8998/sessions \
+          && test -f /opt/spark-openivm/openivm-extension.jar \
+          && test -f /opt/spark-openivm/openivm.duckdb_extension \
+          && test -f /opt/spark-openivm/duckdb \
+          || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    depends_on:
+      spark-openivm:
+        condition: service_healthy
+    cpus: ${DBT_SERVER_CPUS:-4}
+    mem_limit: ${DBT_SERVER_MEM:-8g}
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm
+      - ../mount/stats/${SCALE_FACTOR:-3}/spark-openivm:/data/stats

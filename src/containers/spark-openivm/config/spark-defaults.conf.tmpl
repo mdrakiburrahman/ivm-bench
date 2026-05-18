@@ -1,0 +1,50 @@
+# Catalog — Delta Lake + OpenIVM
+spark.sql.catalogImplementation=hive
+spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension,org.openivm.spark.OpenIvmSparkExtensions
+spark.sql.sources.default=delta
+
+# Activate the openivm-spark extension (defaults to false, must be enabled)
+spark.openivm.enabled=true
+
+# The openivm-spark assembly jar is symlinked into /opt/spark/jars/ by the
+# entrypoint so it's on the default Spark classpath at session start
+# (Livy's RSC overrides spark.jars=, so we cannot rely on that path here).
+# The DuckDB CLI + openivm extension are likewise symlinked at /opt/openivm/
+# (the default OpenIvmCompiler search path), so we don't depend on
+# spark.driverEnv.OPENIVM_{EXTENSION,CLI}_PATH which is silently dropped in
+# Spark's local[*] deploy mode.
+
+# Delta schema options
+spark.databricks.delta.schema.autoMerge.enabled=true
+
+# Resource allocation (computed from spark-defaults-breakdown.yaml; we
+# additionally enforce a 10g floor on the driver heap because Catalyst
+# planning, MvCatalog operations, and the OpenIvmCompiler DuckDB subprocess
+# all live on the driver).
+spark.driver.memory=${SPARK_DRIVER_MEMORY}
+spark.driver.cores=${SPARK_DRIVER_CORES}
+spark.executor.memory=${SPARK_EXECUTOR_MEMORY}
+spark.executor.cores=${SPARK_EXECUTOR_CORES}
+spark.sql.shuffle.partitions=${SPARK_SUBMIT_SHUFFLE_PARTITIONS}
+spark.default.parallelism=${SPARK_SUBMIT_DEFAULT_PARALLELISM}
+
+# JVM module-opens block required by Spark/Delta on JDK 17 plus the
+# openivm-spark extension. Must apply to driver and executors. Sourced
+# from spark-ext/README.md §90-114.
+spark.driver.extraJavaOptions=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
+spark.executor.extraJavaOptions=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
+
+# Performance — AQE and single-machine optimizations
+spark.sql.adaptive.enabled=true
+spark.sql.adaptive.coalescePartitions.enabled=true
+spark.sql.adaptive.advisoryPartitionSizeInMB=128
+spark.sql.adaptive.skewJoin.enabled=true
+spark.sql.autoBroadcastJoinThreshold=104857600
+spark.driver.maxResultSize=4g
+spark.sql.inMemoryColumnarStorage.compressed=true
+spark.locality.wait=0s
+
+# Warehouse — separate location from the plain `spark` engine so the two
+# don't trample each other when both run on the same host.
+spark.sql.warehouse.dir=/data/processed/spark-openivm

@@ -41,7 +41,7 @@ export BATCH_1_PCT=1                                # 1% of DIGen batch 1 data
 export BATCH_2_PCT=0.001                            # 0.001% of DIGen batch 2 data
 export BATCH_3_PCT=0.002                            # 0.002% of DIGen batch 3 data
 export PARALLEL=1                                   # 0, 1
-export ENGINES=spark,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
+export ENGINES=spark,duckdb,duckdb-openivm,feldera,spark-openivm  # Comma seperated engines to run
 export PRESERVE_RAW=0                               # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
 export OPENIVM_VALIDATE=0                           # 0, 1 — validates OpenIVM views with EXCEPT ALL after timed batches
 export OPENIVM_PROFILE_REFRESH=0                    # 0, 1 — exports OpenIVM profiling CSVs into mount/results/<SF>/dbt-server
@@ -73,16 +73,18 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, initializes DuckLake source tables from generated Parquet files, then full-refreshes the dbt model DAG on each batch                                                   |
 | DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA refresh`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1` |
 | Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
+| Spark-OpenIVM  | `docker/docker-compose.benchmark.spark-openivm.yml`  | Spark IVM            | Spark + MSSQL metastore + the openivm-spark SQL extension. Built from source in a container (`docker/docker-compose.spark-openivm-build.yml`) at a pinned `mdrakiburrahman/openivm-spark` commit. dbt issues `CREATE MATERIALIZED VIEW` (batch 1) / `REFRESH MATERIALIZED VIEW` (batches 2-3); base-table appends route through Spark SQL DML so `IvmDmlInterceptorRule` tees staging deltas. |
 
 ## Mount layout
 
-| Path                                                       | Description                                      |
-| ---------------------------------------------------------- | ------------------------------------------------ |
-| `mount/raw/<SF>/delta/batch{1,2,3}/`                       | Source Delta tables per batch                    |
-| `mount/raw/<SF>/delta/staging/`                            | Unified staging (grows via `spark-batch-loader`) |
-| `mount/results/<SF>/<engine>/`                             | Engine output and engine-local state             |
-| `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json` | Per-batch benchmark results                      |
-| `mount/bin/duckdb-openivm/duckdb`                          | DuckDB-OpenIVM binary (built by container)       |
+| Path                                                       | Description                                              |
+| ---------------------------------------------------------- | -------------------------------------------------------- |
+| `mount/raw/<SF>/delta/batch{1,2,3}/`                       | Source Delta tables per batch                            |
+| `mount/raw/<SF>/delta/staging/`                            | Unified staging (grows via `spark-batch-loader`)         |
+| `mount/results/<SF>/<engine>/`                             | Engine output and engine-local state                     |
+| `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json` | Per-batch benchmark results                              |
+| `mount/bin/duckdb-openivm/duckdb`                          | DuckDB-OpenIVM binary (built by container)               |
+| `mount/bin/spark-openivm/{openivm-extension.jar,openivm.duckdb_extension,duckdb}` | spark-openivm runtime artifacts (built by container) |
 
 ## Results
 

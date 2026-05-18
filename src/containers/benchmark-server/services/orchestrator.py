@@ -199,9 +199,10 @@ class Orchestrator:
             ("docker/docker-compose.datagen.yml", "datagen"),
             ("docker/docker-compose.batch-loader.yml", "batch-loader-build"),
             ("docker/docker-compose.duckdb-openivm-build.yml", "duckdb-openivm-build"),
+            ("docker/docker-compose.spark-openivm-build.yml", "spark-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:
@@ -271,6 +272,7 @@ class Orchestrator:
         dirs.extend([
             f"mount/results/{sf}/dbt-server",
             f"mount/bin/duckdb-openivm",
+            f"mount/bin/spark-openivm",
         ])
         for d in dirs:
             full = os.path.join(repo, d)
@@ -278,16 +280,19 @@ class Orchestrator:
             os.chmod(full, 0o777)
 
     def _phase1_prep(self) -> None:
-        """Phase 1: datagen + duckdb-openivm-build + batch-loader build (parallel)."""
+        """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel)."""
         self.emit("")
         self.emit("=== Phase 1: Data generation & build ===")
 
         tasks = []
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             tasks.append(pool.submit(self._run_datagen))
 
             if "duckdb-openivm" in self._config.engines:
                 tasks.append(pool.submit(self._run_duckdb_openivm_build))
+
+            if "spark-openivm" in self._config.engines:
+                tasks.append(pool.submit(self._run_spark_openivm_build))
 
             tasks.append(pool.submit(self._build_batch_loader))
 
@@ -378,6 +383,74 @@ class Orchestrator:
             raise RuntimeError("DuckDB-OpenIVM binary not found at mount/bin/duckdb-openivm/duckdb")
 
         self.emit("  [duckdb-openivm-build] Complete")
+
+    def _run_spark_openivm_build(self) -> None:
+        """Build the spark-openivm assembly jar + duckdb extension + CLI (idempotent).
+
+        Mirrors `_run_duckdb_openivm_build`: regex-parses the pinned
+        OPENIVM_SPARK_COMMIT from the Dockerfile, reuses the existing
+        builder image when its `org.openivm.spark.commit` label still
+        matches, otherwise rebuilds.
+        """
+        self.emit("  [spark-openivm-build] Building")
+        repo = self._config.repo_dir
+        mgr = DockerManager(
+            os.path.join(repo, "docker/docker-compose.spark-openivm-build.yml"),
+            project_name="spark-openivm-build",
+            cwd=repo,
+        )
+        dockerfile = os.path.join(
+            repo, "src/containers/spark-openivm-build/Dockerfile"
+        )
+        pinned_commit = None
+        with open(dockerfile, "r", encoding="utf-8") as f:
+            content = f.read()
+        # The Dockerfile declares the spark-openivm pin in two stages
+        # (spark-ext-builder and final). Either match is fine — they're
+        # identical by construction.
+        match = re.search(
+            r"^ARG OPENIVM_SPARK_COMMIT=([0-9a-f]+)$", content, re.MULTILINE
+        )
+        if match:
+            pinned_commit = match.group(1)
+        image_commit = subprocess.run(
+            [
+                "docker", "image", "inspect",
+                "spark-openivm-build-spark-openivm-builder:latest",
+                "--format", "{{ index .Config.Labels \"org.openivm.spark.commit\" }}",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=repo,
+        )
+        if (
+            not pinned_commit
+            or image_commit.returncode != 0
+            or image_commit.stdout.strip() != pinned_commit
+        ):
+            mgr.build()
+        else:
+            self.emit(
+                f"  [spark-openivm-build] Reusing image for openivm-spark {pinned_commit[:7]}"
+            )
+        mgr.up(
+            services=["spark-openivm-builder"],
+            detach=False,
+            stream_callback=lambda line: logger.debug(
+                "[spark-openivm-build] %s", line
+            ),
+        )
+        mgr.down()
+
+        bin_dir = os.path.join(repo, "mount", "bin", "spark-openivm")
+        for f in ("openivm-extension.jar", "openivm.duckdb_extension", "duckdb"):
+            path = os.path.join(bin_dir, f)
+            if not os.path.exists(path):
+                raise RuntimeError(
+                    f"spark-openivm artifact missing at {path}"
+                )
+
+        self.emit("  [spark-openivm-build] Complete")
 
     def _build_batch_loader(self) -> None:
         """Build the batch-loader image."""

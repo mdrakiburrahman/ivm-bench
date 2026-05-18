@@ -42,7 +42,7 @@ class EngineConfig:
             "DBT_SERVER_PORT": str(self.port),
         }
         # MSSQL for Spark
-        if self.name == "spark":
+        if self.name in ("spark", "spark-openivm"):
             env["MSSQL_CPUS"] = "4"
             env["MSSQL_MEM"] = "8g"
         # Feldera: cap pipeline RSS at 95 % of its container memory.
@@ -73,6 +73,7 @@ ENGINE_PORTS = {
     "duckdb": 5002,
     "duckdb-openivm": 5003,
     "feldera": 5004,
+    "spark-openivm": 5005,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -80,6 +81,7 @@ ENGINE_COMPOSE_FILES = {
     "duckdb": "docker/docker-compose.benchmark.duckdb.yml",
     "duckdb-openivm": "docker/docker-compose.benchmark.duckdb-openivm.yml",
     "feldera": "docker/docker-compose.benchmark.feldera.yml",
+    "spark-openivm": "docker/docker-compose.benchmark.spark-openivm.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine)
@@ -88,6 +90,7 @@ ENGINE_MAIN_SERVICES = {
     "duckdb": None,
     "duckdb-openivm": None,
     "feldera": "pipeline-manager",
+    "spark-openivm": "spark-openivm",
 }
 
 
@@ -99,7 +102,15 @@ class BenchmarkConfig:
     batch_2_pct: str = "0.001"
     batch_3_pct: str = "0.002"
     parallel: bool = False
-    engines: List[str] = field(default_factory=lambda: ["spark", "duckdb", "duckdb-openivm", "feldera"])
+    engines: List[str] = field(
+        default_factory=lambda: [
+            "spark",
+            "duckdb",
+            "duckdb-openivm",
+            "feldera",
+            "spark-openivm",
+        ]
+    )
     host_cores: Optional[int] = None
     host_memory_gb: Optional[int] = None
     repo_dir: str = "/repo"
