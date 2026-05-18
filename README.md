@@ -55,13 +55,13 @@ At the end, you should see the benchmark-server stream results like:
 === All benchmarks completed successfully ===
 
                  1           2           3
-Duckdb:          00:00:22 -> 00:00:26 -> 00:00:26
-Duckdb-openivm:  00:00:53 -> 00:00:33 -> 00:00:35
-Feldera:         00:11:20 -> 00:00:39 -> 00:00:37
-Spark:           00:03:32 -> 00:02:16 -> 00:02:14
-TODO:
+Duckdb:          00:00:18 -> 00:00:29 -> 00:00:20
+Duckdb-openivm:  00:01:08 -> 00:00:35 -> 00:00:33
+Feldera:         00:22:44 -> 00:01:48 -> 00:01:46
+Spark:           00:03:34 -> 00:02:42 -> 00:02:38
+Spark-openivm:   00:09:42 -> 00:12:05 -> 00:11:34
 
-====================== 00:16:51 ======================
+====================== 00:42:33 ======================
 ```
 
 Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
