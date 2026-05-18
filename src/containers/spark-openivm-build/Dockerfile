@@ -94,7 +94,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/implementations
-ARG OPENIVM_SPARK_COMMIT=47e5769874597053320ec66e9fd531c3414789d8
+ARG OPENIVM_SPARK_COMMIT=306325ae25c891273b2e90f0add07e1992ff0d2a
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,7 +139,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=47e5769874597053320ec66e9fd531c3414789d8
+ARG OPENIVM_SPARK_COMMIT=306325ae25c891273b2e90f0add07e1992ff0d2a
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
