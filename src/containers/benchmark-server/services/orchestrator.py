@@ -11,8 +11,9 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from models.config import BenchmarkConfig
 from models.result import BenchmarkResult, EngineResult
@@ -75,6 +76,33 @@ class Orchestrator:
         """Emit a log line to the SSE stream."""
         logger.info(msg)
         self._log_queue.put(msg)
+
+    @contextmanager
+    def _heartbeat(self, label: str, interval_s: float = 30.0) -> Iterator[None]:
+        """Emit a periodic '[label] still running... (Ns elapsed)' message.
+
+        Long-running Docker build / up steps stream their stdout via
+        ``subprocess.run(capture_output=True)`` so nothing reaches the SSE feed
+        until the step exits. On a cold cache the spark-openivm build alone
+        takes ~10 minutes, which is indistinguishable from a hang. The
+        heartbeat thread emits a liveness line every ``interval_s`` seconds
+        while the wrapped block runs, then stops on exit (success or failure).
+        """
+        stop = threading.Event()
+        t0 = time.time()
+
+        def _beat() -> None:
+            while not stop.wait(interval_s):
+                elapsed = int(time.time() - t0)
+                self.emit(f"  [{label}] still running... ({elapsed}s elapsed)")
+
+        thread = threading.Thread(target=_beat, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=interval_s + 1)
 
     def start(self) -> None:
         """Start the benchmark in a background thread."""
@@ -284,18 +312,17 @@ class Orchestrator:
         self.emit("")
         self.emit("=== Phase 1: Data generation & build ===")
 
-        tasks = []
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            tasks.append(pool.submit(self._run_datagen))
+        # Build the callable list first so the pool's max_workers can match
+        # the actual number of submitted tasks. Otherwise adding a 5th build
+        # in the future would silently serialize against the fixed 4-slot pool.
+        callables = [self._run_datagen, self._build_batch_loader]
+        if "duckdb-openivm" in self._config.engines:
+            callables.append(self._run_duckdb_openivm_build)
+        if "spark-openivm" in self._config.engines:
+            callables.append(self._run_spark_openivm_build)
 
-            if "duckdb-openivm" in self._config.engines:
-                tasks.append(pool.submit(self._run_duckdb_openivm_build))
-
-            if "spark-openivm" in self._config.engines:
-                tasks.append(pool.submit(self._run_spark_openivm_build))
-
-            tasks.append(pool.submit(self._build_batch_loader))
-
+        with ThreadPoolExecutor(max_workers=len(callables)) as pool:
+            tasks = [pool.submit(fn) for fn in callables]
             for future in as_completed(tasks):
                 future.result()  # Raise any exceptions
 
@@ -311,14 +338,16 @@ class Orchestrator:
             env=self._config.base_env(),
             cwd=repo,
         )
-        mgr.build(["tpc-di-gen", "spark-digen-delta"])
+        with self._heartbeat("datagen/build"):
+            mgr.build(["tpc-di-gen", "spark-digen-delta"])
 
         self.emit("  [datagen] Running tpc-di-gen → spark-digen-delta")
-        mgr.up(
-            services=["spark-digen-delta"],
-            detach=False,
-            stream_callback=lambda line: logger.debug("[datagen] %s", line),
-        )
+        with self._heartbeat("datagen/run"):
+            mgr.up(
+                services=["spark-digen-delta"],
+                detach=False,
+                stream_callback=lambda line: logger.debug("[datagen] %s", line),
+            )
 
         digen_exit = mgr.get_exit_code("tpc-di-gen")
         delta_exit = mgr.get_exit_code("spark-digen-delta")
@@ -368,14 +397,20 @@ class Orchestrator:
             cwd=repo,
         )
         if not pinned_commit or image_commit.returncode != 0 or image_commit.stdout.strip() != pinned_commit:
-            mgr.build()
+            self.emit(
+                "  [duckdb-openivm-build] Cold cache: compiling DuckDB+OpenIVM "
+                "from source (~5-10 min)"
+            )
+            with self._heartbeat("duckdb-openivm-build/build"):
+                mgr.build()
         else:
             self.emit(f"  [duckdb-openivm-build] Reusing image for OpenIVM {pinned_commit[:7]}")
-        mgr.up(
-            services=["duckdb-openivm-builder"],
-            detach=False,
-            stream_callback=lambda line: logger.debug("[duckdb-openivm-build] %s", line),
-        )
+        with self._heartbeat("duckdb-openivm-build/run"):
+            mgr.up(
+                services=["duckdb-openivm-builder"],
+                detach=False,
+                stream_callback=lambda line: logger.debug("[duckdb-openivm-build] %s", line),
+            )
         mgr.down()
 
         binary = os.path.join(repo, "mount", "bin", "duckdb-openivm", "duckdb")
@@ -428,18 +463,24 @@ class Orchestrator:
             or image_commit.returncode != 0
             or image_commit.stdout.strip() != pinned_commit
         ):
-            mgr.build()
+            self.emit(
+                "  [spark-openivm-build] Cold cache: compiling DuckDB+OpenIVM "
+                "and sbt-assembling spark extension from source (~10 min)"
+            )
+            with self._heartbeat("spark-openivm-build/build"):
+                mgr.build()
         else:
             self.emit(
                 f"  [spark-openivm-build] Reusing image for openivm-spark {pinned_commit[:7]}"
             )
-        mgr.up(
-            services=["spark-openivm-builder"],
-            detach=False,
-            stream_callback=lambda line: logger.debug(
-                "[spark-openivm-build] %s", line
-            ),
-        )
+        with self._heartbeat("spark-openivm-build/run"):
+            mgr.up(
+                services=["spark-openivm-builder"],
+                detach=False,
+                stream_callback=lambda line: logger.debug(
+                    "[spark-openivm-build] %s", line
+                ),
+            )
         mgr.down()
 
         bin_dir = os.path.join(repo, "mount", "bin", "spark-openivm")
@@ -462,7 +503,8 @@ class Orchestrator:
             env=self._config.base_env(),
             cwd=repo,
         )
-        mgr.build()
+        with self._heartbeat("batch-loader/build"):
+            mgr.build()
         self.emit("  [batch-loader] Build complete")
 
     # ----- Phase 2: Benchmarks -----

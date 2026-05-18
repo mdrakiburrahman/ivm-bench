@@ -15,7 +15,7 @@ def load_config() -> BenchmarkConfig:
         parallel=os.environ.get("PARALLEL", "0") == "1",
         engines=[
             e.strip()
-            for e in os.environ.get("ENGINES", "spark,duckdb,duckdb-openivm,feldera").split(",")
+            for e in os.environ.get("ENGINES", "spark,spark-openivm,duckdb,duckdb-openivm,feldera").split(",")
             if e.strip()
         ],
         host_cores=int(os.environ["HOST_CORES"]) if os.environ.get("HOST_CORES") else None,

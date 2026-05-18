@@ -18,7 +18,7 @@ services:
       BATCH_2_PCT: "${BATCH_2_PCT}"
       BATCH_3_PCT: "${BATCH_3_PCT}"
       PARALLEL: "${PARALLEL:-0}"
-      ENGINES: "${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
+      ENGINES: "${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
       HOST_CORES: "${HOST_CORES:-}"
       HOST_MEMORY: "${HOST_MEMORY:-}"
       PRESERVE_RAW: "${PRESERVE_RAW:-0}"

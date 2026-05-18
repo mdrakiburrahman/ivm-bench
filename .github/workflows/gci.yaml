@@ -26,7 +26,7 @@ on:
         type: string
       engines:
         description: "Comma-separated engine list"
-        default: "spark,duckdb,duckdb-openivm,feldera"
+        default: "spark,spark-openivm,duckdb,duckdb-openivm,feldera"
         type: string
       preserve_raw:
         description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
@@ -65,7 +65,7 @@ jobs:
       BATCH_2_PCT: ${{ inputs.batch_2_pct || '0.001' }}
       BATCH_3_PCT: ${{ inputs.batch_3_pct || '0.002' }}
       PARALLEL: ${{ inputs.parallel || '1' }}
-      ENGINES: ${{ inputs.engines || 'spark,duckdb,duckdb-openivm,feldera' }}
+      ENGINES: ${{ inputs.engines || 'spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '0' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '0' }}
