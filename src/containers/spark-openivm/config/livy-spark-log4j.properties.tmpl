@@ -21,3 +21,11 @@ logger.jetty.name = org.sparkproject.jetty
 logger.jetty.level = warn
 logger.hadoop.name = org.apache.hadoop
 logger.hadoop.level = warn
+
+# openivm-spark extension's structured per-MV telemetry
+# (compiled_refresh_type / effective_refresh_type / reason / stmt[i]= ...).
+# Promoted to INFO so the `kept` decisions are visible alongside the ERROR
+# demotions, mirroring what the openivm-spark README documents as the
+# investigation surface.
+logger.openivm.name = org.openivm
+logger.openivm.level = info

@@ -35,6 +35,11 @@ services:
       # All 3 openivm runtime artifacts: assembly jar + duckdb extension + duckdb CLI.
       # Produced by docker/docker-compose.spark-openivm-build.yml.
       - ../mount/bin/spark-openivm:/opt/spark-openivm:ro
+      # Surface Livy spark-session log4j output (where openivm-spark's
+      # [openivm-mv] telemetry lands at logInfo/logError) onto the host so
+      # post-mortem analysis can grep per-MV `compiled_refresh_type=` and
+      # `reason='...'` tokens after teardown.
+      - ../mount/logs/${SCALE_FACTOR:-3}/spark-openivm/livy-logs:/tmp/livy-logs
     healthcheck:
       test: |
         curl -sf http://localhost:8998/sessions \
