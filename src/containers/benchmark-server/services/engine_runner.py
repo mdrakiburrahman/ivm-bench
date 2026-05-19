@@ -579,6 +579,8 @@ class EngineRunner:
         self._check_run_result(run_id, batch_num)
         self._save_run_result(run_id, batch_num)
         return run_id
+
+    def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
         """Run default OpenIVM correctness validation outside the benchmark timer."""
         self._emit(f"[duckdb-openivm] Validating batch {batch_num} with EXCEPT ALL")
         resp = requests.post(
