@@ -518,9 +518,14 @@ class Orchestrator:
         self._engine_configs = engine_configs
         engines = self._config.engines
 
-        if self._config.parallel and len(engines) > 1:
-            # Hard barrier: init staging once, copy to per-engine dirs BEFORE any engine starts
+        # When parallel flag is set, resource_calc assigns per-engine staging
+        # dirs (e.g. staging-spark-openivm) regardless of engine count.
+        # Init staging before any engine starts so the host directories and
+        # container mountpoints exist for the compose override mounts.
+        if self._config.parallel:
             self._init_parallel_staging(engine_configs)
+
+        if self._config.parallel and len(engines) > 1:
             self.emit(f"  Running {len(engines)} engines in PARALLEL")
             self._run_engines_parallel(engine_configs)
         else:
