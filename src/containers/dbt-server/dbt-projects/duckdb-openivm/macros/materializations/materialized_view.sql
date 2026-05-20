@@ -5,7 +5,7 @@
   dbt handles DAG ordering, progress tracking, and per-model timing.
 
   - full_refresh (batch 1): CREATE MATERIALIZED VIEW ... AS (model_sql)
-  - incremental  (batch 2/3): PRAGMA ivm_options('ducklake', schema, name)
+  - incremental  (batch 2/3): PRAGMA refresh_options('ducklake', schema, name)
 
   We use flags.FULL_REFRESH as the sole branch condition because the
   adapter cannot introspect materialized views created via CLI subprocess.
@@ -31,7 +31,7 @@
     {% set view_name = target_relation.identifier %}
 
     {% call statement('main') %}
-      PRAGMA ivm_options('ducklake', '{{ schema_name }}', '{{ view_name }}')
+      PRAGMA refresh_options('ducklake', '{{ schema_name }}', '{{ view_name }}')
     {% endcall %}
 
   {% endif %}

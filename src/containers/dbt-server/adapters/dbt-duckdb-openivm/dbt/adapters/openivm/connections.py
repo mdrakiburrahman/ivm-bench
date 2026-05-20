@@ -51,7 +51,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         preamble_lines.append(f"SET threads={int(THREADS)};")
     preamble_lines.extend([
         "LOAD openivm;",
-        "SET ivm_cascade_refresh='off';",
+        "SET openivm_cascade_refresh='off';",
         "INSTALL icu; LOAD icu;",
         "INSTALL ducklake; LOAD ducklake;",
         f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "
