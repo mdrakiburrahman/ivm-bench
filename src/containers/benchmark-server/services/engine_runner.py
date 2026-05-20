@@ -255,6 +255,14 @@ class EngineRunner:
             ):
                 self._validate_duckdb_openivm(run_id, batch_num)
 
+            if (
+                name == "duckdb-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
+            ):
+                self._export_duckdb_openivm_profile(run_id, batch_num)
+
             # Check status from the stream_progress result
             if batch.status != "failed":
                 batch.status = "completed"
@@ -514,6 +522,49 @@ class EngineRunner:
         self._emit(
             f"[duckdb-openivm] Validation passed for batch {batch_num}: "
             f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
+        )
+
+    def _export_duckdb_openivm_profile(self, run_id: str, batch_num: int) -> None:
+        """Export OpenIVM profiling CSVs outside the benchmark timer."""
+        self._emit(f"[duckdb-openivm] Exporting OpenIVM profile after batch {batch_num}")
+        resp = requests.post(
+            f"{self._dbt_url}/profile/duckdb-openivm/{run_id}/{batch_num}",
+            timeout=7200,
+        )
+        data = resp.json()
+        if resp.status_code != 200 or data.get("status") != "ok":
+            raise RuntimeError(
+                f"OpenIVM profile export failed for batch {batch_num}: "
+                f"{data.get('error', 'unknown error')}"
+            )
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+
+        csv_payloads = data.get("csv") or {}
+        file_map = {
+            "profile": f"openivm-profile-batch{batch_num}.csv",
+            "by_step": f"openivm-profile-by-step-batch{batch_num}.csv",
+            "by_view_step": f"openivm-profile-by-view-step-batch{batch_num}.csv",
+        }
+        for key, filename in file_map.items():
+            with open(os.path.join(results_dir, filename), "w", encoding="utf-8") as f:
+                f.write(csv_payloads.get(key, ""))
+
+        metadata = {k: v for k, v in data.items() if k != "csv"}
+        with open(
+            os.path.join(results_dir, f"openivm-profile-export-batch{batch_num}.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(metadata, f, indent=2)
+
+        self._emit(
+            f"[duckdb-openivm] OpenIVM profile exported after batch {batch_num}: "
+            f"{data.get('row_count', 0)} rows across {data.get('view_count', 0)} views"
         )
 
     def _run_feldera_wait(self, batch_num: int) -> None:

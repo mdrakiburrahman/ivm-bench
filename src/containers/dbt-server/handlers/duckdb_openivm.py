@@ -10,7 +10,7 @@ import logging
 from flask import Blueprint, Flask, jsonify
 
 from handlers.base import BaseHandler
-from services import duckdb_openivm_sources, duckdb_sources, openivm_validation
+from services import duckdb_openivm_sources, duckdb_sources, openivm_profile, openivm_validation
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,17 @@ def openivm_validate_run(run_id):
         return jsonify(result), status_code
     except Exception as e:
         logger.exception("[duckdb-openivm] Validation failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/profile/duckdb-openivm/<run_id>/<int:batch_num>", methods=["POST"])
+def openivm_export_profile(run_id, batch_num):
+    """Export OpenIVM profile rows and summaries as CSV payloads."""
+    try:
+        result = openivm_profile.export_profile(run_id, batch_num)
+        return jsonify(result), 200
+    except Exception as e:
+        logger.exception("[duckdb-openivm] Profile export failed")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
