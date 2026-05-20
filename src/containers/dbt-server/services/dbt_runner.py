@@ -45,11 +45,18 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
         "--log-path", log_path,
     ]
     if full_refresh:
-        cmd.append("--full-refresh")
+        cmd.extend([
+            "--full-refresh",
+            "--threads",
+            "1",
+        ])
 
     env = os.environ.copy()
     env["DBT_PROFILES_DIR"] = project_dir
     env["SCALE_FACTOR"] = str(scale_factor)
+    env["PYTHONPATH"] = (
+        f"/app:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else "/app"
+    )
 
     start_ts = time.monotonic()
     stderr_buf = []
