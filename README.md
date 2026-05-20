@@ -44,6 +44,7 @@ export PARALLEL=1                                   # 0, 1
 export ENGINES=spark,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
 export PRESERVE_RAW=0                               # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
 export OPENIVM_VALIDATE=0                           # 0, 1 — validates OpenIVM views with EXCEPT ALL after timed batches
+export OPENIVM_PROFILE_REFRESH=0                    # 0, 1 — exports OpenIVM profiling CSVs into mount/results/<SF>/dbt-server
 
 bash src/.scripts/benchmark.sh
 ```
@@ -70,7 +71,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 | -------------- | ---------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Spark          | `docker/docker-compose.benchmark.spark.yml`          | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                       |
 | DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, initializes DuckLake source tables from generated Parquet files, then full-refreshes the dbt model DAG on each batch                                                   |
-| DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA ivm`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1` |
+| DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA refresh`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1` |
 | Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                   |
 
 ## Mount layout

@@ -53,9 +53,9 @@ scored AS (
         uc.num_accounts,
         uc.num_securities,
         uc.total_trades,
-        uc.total_portfolio_value,
-        uc.total_costs,
-        uc.largest_position,
+        ROUND(uc.total_portfolio_value, 6) AS total_portfolio_value,
+        ROUND(uc.total_costs, 6) AS total_costs,
+        ROUND(uc.largest_position, 6) AS largest_position,
         ROUND(
             uc.largest_position * 100.0 / NULLIF(uc.total_portfolio_value, 0),
             4

@@ -28,7 +28,7 @@ def _run_openivm_sql(sql: str, label: str) -> str:
     prefix = ".bail on\n.timer off\n"
     attach = (
         f"LOAD openivm;\n"
-        f"SET ivm_cascade_refresh='off';\n"
+        f"SET openivm_cascade_refresh='off';\n"
         f"INSTALL icu; LOAD icu;\n"
         f"INSTALL ducklake; LOAD ducklake;\n"
         f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "

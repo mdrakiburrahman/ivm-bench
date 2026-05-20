@@ -60,13 +60,13 @@ scored AS (
     SELECT
         sv.dm_s_symb,
         sv.trading_days,
-        sv.avg_daily_return,
-        sv.return_volatility,
-        sv.avg_intraday_range,
+        ROUND(sv.avg_daily_return, 4) AS avg_daily_return,
+        ROUND(sv.return_volatility, 4) AS return_volatility,
+        ROUND(sv.avg_intraday_range, 4) AS avg_intraday_range,
         sv.max_intraday_range,
         sv.total_volume,
-        sv.avg_volume,
-        sv.volume_volatility,
+        ROUND(sv.avg_volume, 4) AS avg_volume,
+        ROUND(sv.volume_volatility, 4) AS volume_volatility,
         sv.unique_trading_dates,
         ROUND(
             (sv.return_volatility - gm.mkt_avg_volatility) / NULLIF(gm.mkt_std_volatility, 0),
