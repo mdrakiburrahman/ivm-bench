@@ -5,7 +5,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-ENV PYTHONPATH=/app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -18,7 +17,6 @@ COPY dbt-projects/ /app/dbt-projects/
 COPY handlers/ /app/handlers/
 COPY services/ /app/services/
 COPY models/ /app/models/
-COPY sitecustomize.py /app/sitecustomize.py
 COPY app.py /app/app.py
 
 # Install dbt deps for each project at build time

@@ -7,15 +7,14 @@ spark.sql.sources.default=delta
 # Activate the openivm-spark extension (defaults to false, must be enabled)
 spark.openivm.enabled=true
 
-# Multi-process RocksDB catalog mode: dbt-spark-livy creates one Livy
-# session per dbt thread (8 by default), each backed by a separate
-# spark-submit child JVM. All of those JVMs share /data/processed/spark-openivm
-# and would otherwise contend on RocksDB's single-writer LOCK file. The
-# multiProcess flag wraps every catalog operation in a POSIX file lock at
-# `<dbPath>/openivm-jvm.lock`, opens RocksDB per-op, runs the op, then
-# closes RocksDB (releasing the inner LOCK) before releasing the file lock.
-spark.openivm.rocksdb.multiProcess=true
-spark.openivm.rocksdb.lockTimeout=120s
+# RocksDB multi-process mode: kept off because dbt-spark-livy shares a
+# single global Livy session (i.e. one Spark driver JVM) across all dbt
+# threads in `livy_mode: local`. With one writer per warehouse the
+# default single-process registry-cached handles are fine and avoid the
+# per-op file-lock + open + close tax that multi-process mode imposes.
+# Set to true only if you genuinely run multiple Spark driver JVMs
+# against the same `<warehouse>/_openivm/` tree concurrently.
+# spark.openivm.rocksdb.multiProcess=true
 
 # The openivm-spark assembly jar is symlinked into /opt/spark/jars/ by the
 # entrypoint so it's on the default Spark classpath at session start
