@@ -55,26 +55,26 @@ At the end, you should see the benchmark-server stream results like:
 === All benchmarks completed successfully ===
 
                  1           2           3
-Duckdb:          00:00:18 -> 00:00:29 -> 00:00:20
-Duckdb-openivm:  00:01:08 -> 00:00:35 -> 00:00:33
-Feldera:         00:22:44 -> 00:01:48 -> 00:01:46
-Spark:           00:03:34 -> 00:02:42 -> 00:02:38
-Spark-openivm:   00:09:42 -> 00:12:05 -> 00:11:34
+Duckdb:          00:00:14 -> 00:00:15 -> 00:00:15
+Duckdb-openivm:  00:00:40 -> 00:00:23 -> 00:00:23
+Feldera:         00:19:12 -> 00:01:35 -> 00:01:41
+Spark:           00:03:10 -> 00:02:14 -> 00:02:04
+Spark-openivm:   00:05:34 -> 00:01:11 -> 00:01:06
 
-====================== 00:42:33 ======================
+====================== 00:36:23 ======================
 ```
 
 Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
 
 ### Engines
 
-| Engine         | Compose file                                         | Mode                 | Notes                                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------- | ---------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Spark          | `docker/docker-compose.benchmark.spark.yml`          | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                                                                                                                                                                                                                       |
-| DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, initializes DuckLake source tables from generated Parquet files, then full-refreshes the dbt model DAG on each batch                                                                                                                                                                                                                                                              |
-| DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA refresh`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1`                                                                                                                                                          |
-| Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                                                                                                                                                                                                                   |
-| Spark-OpenIVM  | `docker/docker-compose.benchmark.spark-openivm.yml`  | Spark IVM            | Spark + MSSQL metastore + the openivm-spark SQL extension. Built from source in a container (`docker/docker-compose.spark-openivm-build.yml`) at a pinned `mdrakiburrahman/openivm-spark` commit. dbt issues `CREATE MATERIALIZED VIEW` (batch 1) / `REFRESH MATERIALIZED VIEW` (batches 2-3); base-table appends route through Spark SQL DML so `IvmDmlInterceptorRule` tees staging deltas. |
+| Engine         | Compose file                                         | Mode                 | Notes                                                                                                                                                                                                                                                                                         |
+| -------------- | ---------------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spark          | `docker/docker-compose.benchmark.spark.yml`          | Batch SQL            | Spark + MSSQL metastore                                                                                                                                                                                                                                                                       |
+| DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, initializes DuckLake source tables from generated Parquet files, then full-refreshes the dbt model DAG on each batch                                                                                                                                                              |
+| DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA refresh`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1`                                                          |
+| Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                                                                                                                   |
+| Spark-OpenIVM  | `docker/docker-compose.benchmark.spark-openivm.yml`  | Spark IVM            | Spark + MSSQL metastore + the openivm-spark SQL extension. Built from source in a container (`docker/docker-compose.spark-openivm-build.yml`) at a pinned `mdrakiburrahman/openivm-spark` commit. dbt issues `CREATE MATERIALIZED VIEW` (batch 1) / `REFRESH MATERIALIZED VIEW` (batches 2-3) |
 
 ## Mount layout
 
@@ -95,6 +95,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 - Since duckdb runs in proc in the `dbt-server`, 2 additional cores are allocated for the server vs. other engines which run dedicated
 - Feldera takes ALL queries in the model and compiles it into a single binary that represents a circuit. So when `dbt` runs, it's not query-by-query, but rather the circuit flushes as it proceeds. As a result, all "tables" finish around the same time roughly.
 - All results below were generated on an `E32AS_v4` Azure VM. Do **not** commit results from your local machine as the hardware may vary.
+- Docker is NOT very good at resource isolation, the screenshots below must be generated with `PARALLEL=0`
 
 ### Benchmark Heuristics
 
