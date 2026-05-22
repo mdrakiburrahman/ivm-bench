@@ -28,7 +28,7 @@ Benchmarks Incremental View Maintenance capabilities on various Open Source engi
 
 The only requirement is Docker.
 
-See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows machine.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) on how to bootstrap a fresh Windows machine.
 
 ## Quickstart
 
