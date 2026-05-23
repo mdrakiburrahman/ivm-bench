@@ -21,13 +21,16 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
 
 LIVY_URL = os.environ.get("SPARK_OPENIVM_LIVY_URL", "http://spark-openivm:8998")
+SESSION_ID_FILE = os.environ.get(
+    "SPARK_OPENIVM_LIVY_SESSION_ID_FILE", "/tmp/spark-openivm-livy.session-id"
+)
 RAW_DELTA_DIR = os.environ.get("RAW_DELTA_DIR", "/data/raw/delta")
 WORK_DIR = os.environ.get(
     "SPARK_OPENIVM_WORK_DIR", "/data/processed/spark-openivm"
@@ -90,42 +93,101 @@ def _all_tables() -> List[tuple[str, str, str]]:
 class LivyClient:
     """Tiny synchronous Livy SQL client.
 
-    Opens a `sql` kind session, runs statements one-by-one (so multi-statement
-    parsing isn't an issue and each `INSERT INTO` is its own AppendData plan
-    for `IvmDmlInterceptorRule`), then closes the session.
+    Attaches to dbt-fabricspark's long-lived Livy session via the
+    session_id_file pinned in profiles.yml. This keeps all openivm RocksDB
+    catalog access on ONE driver JVM, which is correctness-critical when
+    `spark.openivm.rocksdb.multiProcess=false` (the fast path).
+
+    Runs statements one-by-one so multi-statement parsing isn't an issue and
+    each `INSERT INTO` is its own AppendData plan for `IvmDmlInterceptorRule`.
     """
 
     def __init__(self, base_url: str = LIVY_URL, timeout_s: float = 60.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
-        self.session_id: int | None = None
+        self.session_id: str | None = None
+        self._owned: bool = False
 
     # ----- session lifecycle -----
 
     def open(self) -> None:
-        body = {"kind": "sql", "name": "spark-openivm-sources"}
+        existing_id = self._read_session_id()
+        if existing_id is not None and self._try_attach(existing_id):
+            self.session_id = existing_id
+            self._owned = False
+            logger.info(
+                "[spark-openivm] attached to existing Livy session %s", existing_id
+            )
+            return
+
+        body = {"kind": "sql", "name": "spark-openivm"}
         resp = requests.post(
             f"{self.base_url}/sessions",
             json=body,
             timeout=self.timeout_s,
         )
         resp.raise_for_status()
-        self.session_id = resp.json()["id"]
-        logger.info("[spark-openivm] opened Livy SQL session %d", self.session_id)
+        self.session_id = str(resp.json()["id"])
+        self._owned = True
         self._wait_for_state({"idle"}, kind="session")
+        self._write_session_id(self.session_id)
+        logger.info("[spark-openivm] created Livy session %s (owned)", self.session_id)
 
     def close(self) -> None:
         if self.session_id is None:
+            return
+        if not self._owned:
+            logger.info(
+                "[spark-openivm] leaving attached Livy session %s alive", self.session_id
+            )
+            self.session_id = None
             return
         try:
             requests.delete(
                 f"{self.base_url}/sessions/{self.session_id}",
                 timeout=self.timeout_s,
             )
-            logger.info("[spark-openivm] closed Livy SQL session %d", self.session_id)
+            try:
+                os.unlink(SESSION_ID_FILE)
+            except FileNotFoundError:
+                pass
         except Exception:
-            logger.exception("[spark-openivm] failed to close Livy session")
+            logger.exception("[spark-openivm] failed to close owned Livy session")
         self.session_id = None
+        self._owned = False
+
+    def _read_session_id(self) -> Optional[str]:
+        try:
+            with open(SESSION_ID_FILE, "r", encoding="utf-8") as fh:
+                session_id = fh.read().strip()
+        except OSError:
+            return None
+        return session_id or None
+
+    def _try_attach(self, session_id: str) -> bool:
+        try:
+            resp = requests.get(
+                f"{self.base_url}/sessions/{session_id}",
+                timeout=min(self.timeout_s, 10.0),
+            )
+        except requests.RequestException:
+            return False
+        if resp.status_code != 200:
+            return False
+        try:
+            state = resp.json().get("state")
+        except ValueError:
+            return False
+        return state in {"idle", "busy", "starting"}
+
+    def _write_session_id(self, session_id: str) -> None:
+        tmp_path = f"{SESSION_ID_FILE}.tmp"
+        parent = os.path.dirname(SESSION_ID_FILE)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write(session_id)
+        os.replace(tmp_path, SESSION_ID_FILE)
 
     # ----- statement execution -----
 
