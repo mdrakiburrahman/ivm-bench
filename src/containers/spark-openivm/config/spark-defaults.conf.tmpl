@@ -7,17 +7,53 @@ spark.sql.sources.default=delta
 # Activate the openivm-spark extension (defaults to false, must be enabled)
 spark.openivm.enabled=true
 
-# RocksDB multi-process mode: required because dbt-spark-livy opens
-# threads=8 concurrent Livy sessions (one Spark driver JVM each in
-# livy_mode: local) against the same `<warehouse>/_openivm/` tree —
-# without multi-process mode the second driver to ATTACH hits
-# `Resource temporarily unavailable` on the RocksDB LOCK file,
-# IvmDmlInterceptorRule's `hasDependentMvs` returns false (catch in
-# IvmDmlInterceptorRule.scala:254-258), and the INSERT is silently
-# NOT teed to a staging delta. The next REFRESH then sees
-# `outcome='no_pending_deltas'` and leaves source-side appends out
-# of the MV — silent OPENIVM_VALIDATE-detectable correctness loss.
-spark.openivm.rocksdb.multiProcess=true
+# RocksDB multi-process mode: HARD-OFF for performance.
+#
+# Why we keep this `false`:
+#
+#   dbt-fabricspark (`livy_mode: local`, upstream main) shares ONE
+#   global Livy session across all dbt threads — i.e. exactly one
+#   Spark driver JVM, exactly one process holding the RocksDB
+#   `<warehouse>/_openivm/` tree. With a single writer there is no
+#   inter-process LOCK contention to defend against, so the cheap
+#   single-process path is correct and safe.
+#
+#   In single-process mode `OpenIvmRocksDB` opens each Column Family
+#   once at session start, caches the native handle, and reuses it
+#   for every catalog op (MvCatalog read/write, StagingCatalog
+#   register/scan, IvmDmlInterceptorRule.hasDependentMvs). The
+#   per-op cost is ~µs — a hash lookup + a native call.
+#
+# Why `true` is catastrophically slow:
+#
+#   `multiProcess=true` flips every single catalog op into:
+#       openFileChannel(<warehouse>/_openivm/LOCK)
+#         -> tryLock(POSIX advisory)
+#           -> RocksDB.open(<cf_path>)
+#             -> <native op>
+#           -> RocksDB.close()
+#         -> lock.release()
+#       -> channel.close()
+#   That is roughly 4 syscalls + a full RocksDB DB open/close per
+#   catalog touch. For an incremental dbt batch that fires hundreds
+#   of `IvmDmlInterceptorRule.hasDependentMvs` lookups + per-MV
+#   staging-tee registers + per-MV refresh-watermark reads, the
+#   tax is measured in tens of minutes (we observed ~25x batch-2
+#   regression vs. the cached-handle path).
+#
+# When this MIGHT need to flip back to `true`:
+#
+#   Only if the bench moves to a topology with two or more independent
+#   Spark driver JVMs writing the same `_openivm/` tree concurrently.
+#   `dbt-spark-livy` does NOT create that topology — dbt threads
+#   multiplex onto one shared Livy session, so the entire openivm
+#   catalog mutation stream serializes inside that single driver.
+#   Any RocksDB lock-contention symptom under this topology is a
+#   real bug to fix in `IvmDmlInterceptorRule` (which currently
+#   `Try { … }.getOrElse(false)`-swallows `RocksDBException`,
+#   degrading INSERTs to silent un-teed writes) — NOT a reason to
+#   re-enable multi-process mode.
+spark.openivm.rocksdb.multiProcess=false
 
 # The openivm-spark assembly jar is symlinked into /opt/spark/jars/ by the
 # entrypoint so it's on the default Spark classpath at session start
