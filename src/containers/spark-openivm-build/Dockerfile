@@ -39,8 +39,8 @@ ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
 ARG OPENIVM_BRANCH=openivm-spark
 ARG OPENIVM_COMMIT=2b712a0a34afa0a97c9730aacef74eafd9a8096a
 ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
-ARG LPTS_BRANCH=openivm-spark-glibc-2.35
-ARG LPTS_COMMIT=2b2ff6307eb439dde6074b6de002d3ac2512a363
+ARG LPTS_BRANCH=openivm-spark
+ARG LPTS_COMMIT=21e7e313e52f0e98fe961533e06bffc368878ec6
 
 ENV DEBIAN_FRONTEND=noninteractive
 
