@@ -265,6 +265,14 @@ class EngineRunner:
                 self._validate_duckdb_openivm(run_id, batch_num)
 
             if (
+                name == "spark-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
+            ):
+                self._validate_spark_openivm(run_id, batch_num)
+
+            if (
                 name == "duckdb-openivm"
                 and run_id
                 and batch.status != "failed"
@@ -611,6 +619,44 @@ class EngineRunner:
             )
         self._emit(
             f"[duckdb-openivm] Validation passed for batch {batch_num}: "
+            f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
+        )
+
+    def _validate_spark_openivm(self, run_id: str, batch_num: int) -> None:
+        """Run OpenIVM correctness validation against the spark-openivm
+        materialized views over Livy. Mirrors `_validate_duckdb_openivm`
+        — keeps the per-batch hook + result-JSON shape engine-agnostic so
+        the existing chart/aggregate pipeline can consume both."""
+        self._emit(f"[spark-openivm] Validating batch {batch_num} with EXCEPT ALL")
+        resp = requests.post(
+            f"{self._dbt_url}/validate/spark-openivm/{run_id}",
+            timeout=604800,
+        )
+        data = resp.json()
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        with open(
+            os.path.join(results_dir, f"validation-spark-openivm-batch{batch_num}.json"),
+            "w",
+        ) as f:
+            json.dump(data, f, indent=2)
+
+        if resp.status_code != 200 or data.get("status") != "passed":
+            failures = data.get("failures") or []
+            detail = ", ".join(
+                f"{f.get('schema')}.{f.get('name')} diff={f.get('diff_count')}"
+                for f in failures[:5]
+            )
+            raise RuntimeError(
+                f"OpenIVM validation failed for batch {batch_num}"
+                + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
+            )
+        self._emit(
+            f"[spark-openivm] Validation passed for batch {batch_num}: "
             f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
         )
 

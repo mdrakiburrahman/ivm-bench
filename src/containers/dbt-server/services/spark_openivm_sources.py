@@ -195,13 +195,16 @@ class LivyClient:
             if state in ("available", "completed"):
                 output = data.get("output") or {}
                 if output.get("status") == "error":
-                    err = (
-                        f"{output.get('ename', 'Error')}: "
-                        f"{output.get('evalue', '')}\n"
-                        f"{''.join(output.get('traceback') or [])}"
-                    )
+                    ename = output.get("ename", "Error")
+                    evalue = output.get("evalue", "")
+                    traceback = "".join(output.get("traceback") or [])
+                    # Keep the head of the error (the actual exception
+                    # message lives there). Trim the JVM traceback tail.
+                    head = f"{ename}: {evalue}"
+                    if len(traceback) > 1500:
+                        traceback = traceback[:1500] + "...<traceback truncated>"
                     raise RuntimeError(
-                        f"Livy statement failed.\nSQL: {sql[:500]}\n{err[-3000:]}"
+                        f"Livy statement failed.\nSQL: {sql[:2000]}\n{head}\n{traceback}"
                     )
                 return data
             if state in ("cancelled", "cancelling"):

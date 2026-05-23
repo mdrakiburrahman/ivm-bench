@@ -37,10 +37,10 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
 ARG OPENIVM_BRANCH=openivm-spark
-ARG OPENIVM_COMMIT=9543f5673b304e310fc5d1d0cf9d3fc898c13c9c
+ARG OPENIVM_COMMIT=2b712a0a34afa0a97c9730aacef74eafd9a8096a
 ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
-ARG LPTS_BRANCH=openivm-spark
-ARG LPTS_COMMIT=6de6f67ddf403e3109d4520dc26d005cfeefef33
+ARG LPTS_BRANCH=openivm-spark-glibc-2.35
+ARG LPTS_COMMIT=2b2ff6307eb439dde6074b6de002d3ac2512a363
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -94,7 +94,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/implementations
-ARG OPENIVM_SPARK_COMMIT=4accd69021562769547c3d75241d8f6d4f95dc0f
+ARG OPENIVM_SPARK_COMMIT=c921784
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,7 +139,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=4accd69021562769547c3d75241d8f6d4f95dc0f
+ARG OPENIVM_SPARK_COMMIT=c921784
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu

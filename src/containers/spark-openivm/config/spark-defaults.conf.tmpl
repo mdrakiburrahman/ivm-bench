@@ -7,14 +7,17 @@ spark.sql.sources.default=delta
 # Activate the openivm-spark extension (defaults to false, must be enabled)
 spark.openivm.enabled=true
 
-# RocksDB multi-process mode: kept off because dbt-spark-livy shares a
-# single global Livy session (i.e. one Spark driver JVM) across all dbt
-# threads in `livy_mode: local`. With one writer per warehouse the
-# default single-process registry-cached handles are fine and avoid the
-# per-op file-lock + open + close tax that multi-process mode imposes.
-# Set to true only if you genuinely run multiple Spark driver JVMs
-# against the same `<warehouse>/_openivm/` tree concurrently.
-# spark.openivm.rocksdb.multiProcess=true
+# RocksDB multi-process mode: required because dbt-spark-livy opens
+# threads=8 concurrent Livy sessions (one Spark driver JVM each in
+# livy_mode: local) against the same `<warehouse>/_openivm/` tree —
+# without multi-process mode the second driver to ATTACH hits
+# `Resource temporarily unavailable` on the RocksDB LOCK file,
+# IvmDmlInterceptorRule's `hasDependentMvs` returns false (catch in
+# IvmDmlInterceptorRule.scala:254-258), and the INSERT is silently
+# NOT teed to a staging delta. The next REFRESH then sees
+# `outcome='no_pending_deltas'` and leaves source-side appends out
+# of the MV — silent OPENIVM_VALIDATE-detectable correctness loss.
+spark.openivm.rocksdb.multiProcess=true
 
 # The openivm-spark assembly jar is symlinked into /opt/spark/jars/ by the
 # entrypoint so it's on the default Spark classpath at session start
