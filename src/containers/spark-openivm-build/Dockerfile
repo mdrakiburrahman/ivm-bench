@@ -37,7 +37,7 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
 ARG OPENIVM_BRANCH=openivm-spark
-ARG OPENIVM_COMMIT=35eaed00cc847385f0d2ee6f450a4335c6a3f2b7
+ARG OPENIVM_COMMIT=465b29917a857fbac3445934fbac50cac1aff99b
 ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
 ARG LPTS_BRANCH=openivm-spark
 ARG LPTS_COMMIT=21e7e313e52f0e98fe961533e06bffc368878ec6
