@@ -76,8 +76,8 @@ scored AS (
             sv.total_volume * 100.0 / NULLIF(gm.mkt_total_volume, 0),
             4
         ) AS pct_market_volume,
-        RANK() OVER (ORDER BY sv.return_volatility DESC) AS rank_by_volatility,
-        RANK() OVER (ORDER BY sv.total_volume DESC) AS rank_by_volume
+        RANK() OVER (ORDER BY sv.return_volatility DESC, sv.dm_s_symb) AS rank_by_volatility,
+        RANK() OVER (ORDER BY sv.total_volume DESC, sv.dm_s_symb) AS rank_by_volume
     FROM symbol_volatility sv
     CROSS JOIN global_market gm
 )

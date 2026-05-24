@@ -73,8 +73,8 @@ scored AS (
             wl.total_volume * 100.0 / NULLIF(gd.grand_total_volume, 0),
             4
         ) AS pct_of_total_volume,
-        RANK() OVER (ORDER BY wl.total_volume DESC) AS rank_by_volume,
-        RANK() OVER (ORDER BY wl.close_dispersion DESC) AS rank_by_dispersion
+        RANK() OVER (ORDER BY wl.total_volume DESC, wl.dm_date) AS rank_by_volume,
+        RANK() OVER (ORDER BY wl.close_dispersion DESC, wl.dm_date) AS rank_by_dispersion
     FROM with_lags wl
     CROSS JOIN global_daily gd
 )

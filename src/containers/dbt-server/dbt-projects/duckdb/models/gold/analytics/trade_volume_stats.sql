@@ -65,8 +65,8 @@ scored AS (
         ROUND(us.total_notional * 100.0 / NULLIF(gs.global_total_notional, 0), 4) AS pct_of_notional,
         ROUND((us.trade_count - gs.avg_trade_count) / NULLIF(gs.std_trade_count, 0), 4) AS volume_z_score,
         ROUND((us.total_notional - gs.avg_notional) / NULLIF(gs.std_notional, 0), 4) AS notional_z_score,
-        RANK() OVER (ORDER BY us.total_notional DESC) AS rank_by_notional,
-        RANK() OVER (ORDER BY us.trade_count DESC) AS rank_by_volume,
+        RANK() OVER (ORDER BY us.total_notional DESC, us.sk_security_id) AS rank_by_notional,
+        RANK() OVER (ORDER BY us.trade_count DESC, us.sk_security_id) AS rank_by_volume,
         DENSE_RANK() OVER (ORDER BY us.unique_accounts DESC) AS rank_by_diversity
     FROM unwatched_stats us
     CROSS JOIN global_stats gs
