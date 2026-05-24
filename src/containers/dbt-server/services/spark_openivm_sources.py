@@ -37,6 +37,18 @@ WORK_DIR = os.environ.get(
 )
 SOURCES_DIR = os.path.join(WORK_DIR, "sources")
 
+# Per-statement / per-state polling intervals. Defaults are tuned for the
+# concurrent-validation path: 0.1s makes the per-statement floor cheap enough
+# that 5 sequential statements/model (CREATE TEMP VIEW, DESCRIBE×2,
+# COUNT-EXCEPT, DROP) is not dominated by polling sleeps. Overridable so we
+# can dial up if Livy ever rate-limits the HTTP GETs.
+LIVY_STMT_POLL_INTERVAL_S = float(
+    os.environ.get("SPARK_OPENIVM_LIVY_POLL_INTERVAL", "0.1")
+)
+LIVY_STATE_POLL_INTERVAL_S = float(
+    os.environ.get("SPARK_OPENIVM_LIVY_STATE_POLL_INTERVAL", "0.25")
+)
+
 # Tracked base tables in three categories:
 #
 #  1. batch1_*           — reference tables, populated once from batch1/* and
@@ -100,6 +112,15 @@ class LivyClient:
 
     Runs statements one-by-one so multi-statement parsing isn't an issue and
     each `INSERT INTO` is its own AppendData plan for `IvmDmlInterceptorRule`.
+
+    Thread-safety: after `open()` completes, `execute()` is safe to call
+    concurrently from multiple threads against a single client instance.
+    `session_id`, `base_url`, and `timeout_s` are read-only once `open()`
+    returns; `requests` is thread-safe per call. The validation path uses
+    this to fan out per-model statements via a `ThreadPoolExecutor` while
+    every call still terminates on the SAME Livy session (and therefore the
+    same Spark driver / RocksDB catalog). Do NOT call `close()` while
+    workers are in flight — `executor.shutdown(wait=True)` first.
     """
 
     def __init__(self, base_url: str = LIVY_URL, timeout_s: float = 60.0) -> None:
@@ -238,7 +259,7 @@ class LivyClient:
                 raise RuntimeError(
                     f"Livy {kind} {self.session_id} entered terminal state '{state}'"
                 )
-            time.sleep(1)
+            time.sleep(LIVY_STATE_POLL_INTERVAL_S)
         raise TimeoutError(
             f"Livy {kind} {self.session_id} did not reach {target_states} within {timeout_s}s"
         )
@@ -273,7 +294,7 @@ class LivyClient:
                 raise RuntimeError(
                     f"Livy statement cancelled.\nSQL: {sql[:500]}"
                 )
-            time.sleep(1)
+            time.sleep(LIVY_STMT_POLL_INTERVAL_S)
 
     def __enter__(self) -> "LivyClient":
         self.open()
