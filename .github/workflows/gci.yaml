@@ -10,15 +10,15 @@ on:
         type: string
       batch_1_pct:
         description: "% of batch 1 data"
-        default: "1"
+        default: "100"
         type: string
       batch_2_pct:
         description: "% of batch 2 data"
-        default: "0.001"
+        default: "1"
         type: string
       batch_3_pct:
         description: "% of batch 3 data"
-        default: "0.002"
+        default: "2"
         type: string
       parallel:
         description: "Run engines in parallel (0 or 1)"
@@ -61,9 +61,9 @@ jobs:
 
     env:
       SCALE_FACTOR: ${{ inputs.scale_factor || '3' }}
-      BATCH_1_PCT: ${{ inputs.batch_1_pct || '1' }}
-      BATCH_2_PCT: ${{ inputs.batch_2_pct || '0.001' }}
-      BATCH_3_PCT: ${{ inputs.batch_3_pct || '0.002' }}
+      BATCH_1_PCT: ${{ inputs.batch_1_pct || '100' }}
+      BATCH_2_PCT: ${{ inputs.batch_2_pct || '1' }}
+      BATCH_3_PCT: ${{ inputs.batch_3_pct || '2' }}
       PARALLEL: ${{ inputs.parallel || '1' }}
       ENGINES: ${{ inputs.engines || 'spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}

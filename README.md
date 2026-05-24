@@ -37,11 +37,11 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) on how to bootstrap a fresh Windows mac
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
 export SCALE_FACTOR=3                                             # 3 - 2147483647
-export BATCH_1_PCT=1                                              # 1% of DIGen batch 1 data
-export BATCH_2_PCT=0.001                                          # 0.001% of DIGen batch 2 data
-export BATCH_3_PCT=0.002                                          # 0.002% of DIGen batch 3 data
+export BATCH_1_PCT=100                                            # 100% of DIGen batch 1 data
+export BATCH_2_PCT=1                                              # 1% of DIGen batch 2 data
+export BATCH_3_PCT=2                                              # 2% of DIGen batch 3 data
 export PARALLEL=1                                                 # 0, 1
-export ENGINES=spark,spark-openivm,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
+export ENGINES=spark,spark-openivm,duckdb,duckdb-openivm,feldera  # Comma separated engines to run
 export PRESERVE_RAW=0                                             # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
 export OPENIVM_VALIDATE=1                                         # 0, 1 — validates OpenIVM views with EXCEPT ALL after timed batches
 export OPENIVM_PROFILE_REFRESH=0                                  # 0, 1 — exports OpenIVM profiling CSVs into mount/results/<SF>/dbt-server
