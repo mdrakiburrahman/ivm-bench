@@ -43,7 +43,7 @@ export BATCH_3_PCT=0.002                                          # 0.002% of DI
 export PARALLEL=1                                                 # 0, 1
 export ENGINES=spark,spark-openivm,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
 export PRESERVE_RAW=0                                             # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
-export OPENIVM_VALIDATE=0                                         # 0, 1 — validates OpenIVM views with EXCEPT ALL after timed batches
+export OPENIVM_VALIDATE=1                                         # 0, 1 — validates OpenIVM views with EXCEPT ALL after timed batches
 export OPENIVM_PROFILE_REFRESH=0                                  # 0, 1 — exports OpenIVM profiling CSVs into mount/results/<SF>/dbt-server
 
 bash src/.scripts/benchmark.sh
