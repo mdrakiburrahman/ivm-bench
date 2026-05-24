@@ -34,7 +34,7 @@ on:
         type: string
       openivm_validate:
         description: "Validate OpenIVM views with EXCEPT ALL after each timed batch (0 or 1)"
-        default: "0"
+        default: "1"
         type: string
       openivm_profile_refresh:
         description: "Export OpenIVM refresh profiling CSVs after each batch (0 or 1)"
@@ -67,7 +67,7 @@ jobs:
       PARALLEL: ${{ inputs.parallel || '1' }}
       ENGINES: ${{ inputs.engines || 'spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
-      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '0' }}
+      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '0' }}
 
     steps:
