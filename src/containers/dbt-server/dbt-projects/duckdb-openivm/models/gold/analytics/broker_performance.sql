@@ -10,12 +10,12 @@ WITH broker_trades AS (
         COUNT(DISTINCT ft.sk_account_id) AS unique_accounts,
         COUNT(DISTINCT CAST(ft.create_timestamp AS DATE)) AS active_days,
         SUM(CAST(ft.quantity AS BIGINT)) AS total_volume,
-        SUM(CAST(ft.trade_price AS DOUBLE) * CAST(ft.quantity AS DOUBLE)) AS total_notional,
-        AVG(ft.trade_price) AS avg_trade_price,
-        SUM(ft.commission) AS total_commission,
-        SUM(ft.fee) AS total_fees,
-        AVG(ft.commission) AS avg_commission,
-        AVG(ft.fee) AS avg_fee
+        ROUND(SUM(CAST(ft.trade_price AS DOUBLE) * CAST(ft.quantity AS DOUBLE)), 6) AS total_notional,
+        ROUND(AVG(CAST(ft.trade_price AS DOUBLE)), 6) AS avg_trade_price,
+        ROUND(SUM(CAST(ft.commission AS DOUBLE)), 6) AS total_commission,
+        ROUND(SUM(CAST(ft.fee AS DOUBLE)), 6) AS total_fees,
+        ROUND(AVG(CAST(ft.commission AS DOUBLE)), 6) AS avg_commission,
+        ROUND(AVG(CAST(ft.fee AS DOUBLE)), 6) AS avg_fee
     FROM {{ ref('fact_trade') }} ft
     JOIN {{ ref('dim_broker') }} b
         ON ft.sk_broker_id = b.sk_broker_id
