@@ -1,6 +1,3 @@
-{# Workaround for openivm-spark fact_watches refresh bug: see .logs/OPENIVM-BUG-REPORT.md #}
-{{ config(materialized='view') }}
-
 select
     sk_customer_id,
     sk_security_id,
