@@ -59,11 +59,13 @@ logger = logging.getLogger(__name__)
 
 LAKEHOUSE = os.environ.get("SPARK_OPENIVM_LAKEHOUSE", "tpcdi")
 # Worker count for the per-model validation thread pool. The single Livy SQL
-# session already handles up to dbt-fabricspark's `threads: 8` of concurrent
-# statement submission during the timed dbt run, so 8 is the documented safe
-# default. Set to 1 to fall back to strictly serial validation against the
-# same single Livy session (still benefits from the lower polling interval).
-VALIDATE_THREADS = max(1, int(os.environ.get("SPARK_OPENIVM_VALIDATE_THREADS", "8")))
+# session already handles up to dbt-fabricspark's `threads: 30` of concurrent
+# statement submission during the timed dbt run, so 30 is the documented safe
+# default (kept in step with profiles.yml so post-batch validation drives the
+# session at the same concurrency as the timed dbt run). Set to 1 to fall
+# back to strictly serial validation against the same single Livy session
+# (still benefits from the lower polling interval).
+VALIDATE_THREADS = max(1, int(os.environ.get("SPARK_OPENIVM_VALIDATE_THREADS", "30")))
 
 
 def _quote_ident(value: str) -> str:
@@ -363,9 +365,9 @@ def validate_run(run_id: str) -> dict:
     consumer code (`_validate_*_openivm`) can stay engine-agnostic.
 
     Models are validated concurrently via a `ThreadPoolExecutor` (default
-    8 workers, override with `SPARK_OPENIVM_VALIDATE_THREADS`). Every worker
+    30 workers, override with `SPARK_OPENIVM_VALIDATE_THREADS`). Every worker
     submits its statements to the SAME single Livy `kind: sql` session —
-    matching how dbt-fabricspark drives the session at `threads: 8` during
+    matching how dbt-fabricspark drives the session at `threads: 30` during
     the timed dbt run. The result list is returned in input (rowid) order
     so the per-batch JSON layout is stable across runs.
     """

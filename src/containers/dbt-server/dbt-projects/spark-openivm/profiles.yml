@@ -12,9 +12,15 @@ tpcdi:
       connect_timeout: 10
       lakehouse: tpcdi
       schema: tpcdi
-      # 30 concurrent threads would fan out 30 OpenIvmCompiler subprocesses
-      # on the driver. Throttle to 8 for stability.
-      threads: 8
+      # Aligned with the `spark` profile (threads: 30) so the two engines
+      # use an identical dbt configuration; the resulting bench numbers are
+      # directly comparable. Note: dbt-fabricspark + `livy_mode: local`
+      # multiplexes ALL dbt threads onto a single shared Livy session whose
+      # statement-executor pool serializes statements, so the effective
+      # in-Spark concurrency is 1 regardless of this value (see
+      # dbt/adapters/fabricspark/livysession.py LivySessionManager —
+      # `livy_global_session` is a class-level singleton).
+      threads: 30
       retry_all: true
       spark_config:
         name: dbt-tpcdi-spark-openivm
