@@ -22,7 +22,7 @@ on:
         type: string
       parallel:
         description: "Run engines in parallel (0 or 1)"
-        default: "1"
+        default: "0"
         type: string
       engines:
         description: "Comma-separated engine list"
@@ -64,7 +64,7 @@ jobs:
       BATCH_1_PCT: ${{ inputs.batch_1_pct || '100' }}
       BATCH_2_PCT: ${{ inputs.batch_2_pct || '1' }}
       BATCH_3_PCT: ${{ inputs.batch_3_pct || '2' }}
-      PARALLEL: ${{ inputs.parallel || '1' }}
+      PARALLEL: ${{ inputs.parallel || '0' }}
       ENGINES: ${{ inputs.engines || 'spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
