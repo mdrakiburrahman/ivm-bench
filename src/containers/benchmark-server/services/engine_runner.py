@@ -452,25 +452,49 @@ class EngineRunner:
             json.dump(wait_data, f, indent=2)
 
     def _poll_feldera_compilation(self, run_id: str) -> None:
-        """Poll dbt-server progress endpoint until all Feldera models are compiled."""
+        """Poll dbt-server progress endpoint until all Feldera models are compiled.
+
+        The poll loop is resilient to transient HTTP errors. Under heavy host
+        load (e.g. Feldera Rust compilation pegging all cores), the cross-
+        container HTTP call from benchmark-server → dbt-server via
+        host.docker.internal can hit a transient stall and raise
+        ``requests.Timeout`` / ``requests.ConnectionError`` / JSON decode
+        errors. These are non-fatal: the dbt run and the Feldera compilation
+        keep progressing independently, so we just retry the next poll.
+
+        Stale detection uses wall-clock time (``time.monotonic()``) rather
+        than iteration counting so that retried timeouts cannot artificially
+        blow out the 30-minute compilation guard.
+        """
         cursor = 0
-        stale_count = 0
-        max_stale = 1800  # 30 min — Feldera pipeline compilation can take 5+ min
+        max_stale_s = 1800  # 30 min wall-clock without progress
+        now = time.monotonic
+        last_progress_at = now()
+        last_status_emit_at = now()
+        consecutive_errors = 0
+        last_warn_at = 0.0
 
         while True:
             try:
                 resp = requests.get(
                     f"{self._dbt_url}/runs/{run_id}/progress",
                     params={"since": cursor},
-                    timeout=30,
+                    timeout=(5, 30),
                 )
                 data = resp.json()
                 events = data.get("events", [])
                 total = data.get("total", 0)
                 status = data.get("run_status", "running")
 
+                if consecutive_errors > 0:
+                    self._emit(
+                        f"[feldera] Polling recovered after "
+                        f"{consecutive_errors} transient error(s)"
+                    )
+                    consecutive_errors = 0
+
                 if events:
-                    stale_count = 0
+                    last_progress_at = now()
                     for i, e in enumerate(events):
                         st = e.get("status", "")
                         name = e.get("name", "")
@@ -484,25 +508,57 @@ class EngineRunner:
                         elif st == "error":
                             self._emit(f"[feldera]   {idx:>3} of {total}  ERROR model {name}")
                     cursor = data.get("next_cursor", cursor + len(events))
-                else:
-                    stale_count += 1
-                    # Emit periodic status when waiting for Feldera pipeline compilation
-                    if cursor >= total > 0 and stale_count % 30 == 0:
-                        self._emit(f"[feldera] Waiting for pipeline compilation... ({stale_count}s)")
+
+                stale_s = now() - last_progress_at
+                # Emit periodic status every ~30s while waiting for Feldera
+                # pipeline compilation (after all models are compiled by dbt
+                # but before the on-run-end hook finishes).
+                if (
+                    cursor >= total > 0
+                    and not events
+                    and now() - last_status_emit_at >= 30
+                ):
+                    self._emit(
+                        f"[feldera] Waiting for pipeline compilation... "
+                        f"({stale_s:.0f}s)"
+                    )
+                    last_status_emit_at = now()
 
                 # Wait for the dbt run to fully complete (including on-run-end
-                # hook which compiles the Feldera pipeline binary and starts it paused).
-                # Just having all model events isn't enough — the on-run-end hook
-                # triggers the actual Feldera compilation which can take minutes.
+                # hook which compiles the Feldera pipeline binary and starts
+                # it paused). Just having all model events isn't enough — the
+                # on-run-end hook triggers the actual Feldera compilation
+                # which can take minutes.
                 if status == "completed":
                     return
                 if status == "failed":
                     raise RuntimeError("Feldera dbt run failed during compilation")
-                if stale_count > max_stale:
-                    raise TimeoutError("Feldera compilation stalled")
+                if stale_s > max_stale_s:
+                    raise TimeoutError(
+                        f"Feldera compilation stalled for {stale_s:.0f}s"
+                    )
 
-            except requests.ConnectionError:
-                pass
+            except (
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.exceptions.JSONDecodeError,
+            ) as e:
+                consecutive_errors += 1
+                # Throttle warnings: first failure, then at most every ~30s.
+                t = now()
+                if t - last_warn_at >= 30:
+                    self._emit(
+                        f"[feldera] Transient poll error #{consecutive_errors} "
+                        f"({type(e).__name__}: {e}) — retrying"
+                    )
+                    last_warn_at = t
+                # Wall-clock stale check still applies during error storms so
+                # a genuinely dead dbt-server eventually trips max_stale_s.
+                if now() - last_progress_at > max_stale_s:
+                    raise TimeoutError(
+                        f"Feldera compilation polling stalled for "
+                        f"{max_stale_s}s ({consecutive_errors} consecutive errors)"
+                    )
 
             time.sleep(1)
 
@@ -1083,7 +1139,9 @@ class EngineRunner:
                 if resp.ok:
                     self._emit(f"[{self._engine.name}] dbt-server is healthy")
                     return
-            except requests.ConnectionError:
+            except (requests.ConnectionError, requests.Timeout):
+                # Container still warming up, or a transient cross-container
+                # network stall under host load — retry next interval.
                 pass
             self._emit(
                 f"[{self._engine.name}] Waiting for dbt-server... "
