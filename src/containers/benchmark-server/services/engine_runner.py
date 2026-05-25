@@ -6,8 +6,7 @@ import os
 import shutil
 import tempfile
 import time
-from datetime import datetime, timezone
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Optional
 
 import requests
 
@@ -50,8 +49,6 @@ class EngineRunner:
         self._override_file: Optional[str] = None
         self._batch_override_file: Optional[str] = None
         self._parallel = config.parallel
-        self._spark_log_window: Dict[int, Tuple[int, int]] = {}
-        self._spark_log_time_window: Dict[int, Tuple[datetime, datetime]] = {}
 
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
@@ -253,17 +250,7 @@ class EngineRunner:
             elif name == "duckdb-openivm":
                 run_id = self._run_duckdb_openivm(batch_num)
             elif name == "spark-openivm":
-                start_offset = self._spark_livy_log_size()
-                start_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-                try:
-                    run_id = self._run_spark_openivm(batch_num)
-                finally:
-                    end_ts = datetime.now(timezone.utc).replace(tzinfo=None)
-                    self._spark_log_window[batch_num] = (
-                        start_offset,
-                        self._spark_livy_log_size(),
-                    )
-                    self._spark_log_time_window[batch_num] = (start_ts, end_ts)
+                run_id = self._run_spark_openivm(batch_num)
             else:
                 self._run_dbt(batch_num)
 
@@ -293,6 +280,14 @@ class EngineRunner:
             ):
                 self._export_duckdb_openivm_profile(run_id, batch_num)
 
+            if (
+                name == "spark-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
+            ):
+                self._export_spark_openivm_profile(run_id, batch_num)
+
             # Check status from the stream_progress result
             if batch.status != "failed":
                 self._save_openivm_ops_chart(name, batch_num)
@@ -308,19 +303,6 @@ class EngineRunner:
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
 
-    def _spark_livy_log_size(self) -> int:
-        path = os.path.join(
-            os.environ.get("REPO_DIR", "/repo"),
-            "mount", "logs", str(self._config.scale_factor), "spark-openivm", "livy-logs", "livy-server.log",
-        )
-        try:
-            return os.path.getsize(path)
-        except FileNotFoundError:
-            return 0
-        except OSError as e:
-            self._emit(f"[spark-openivm] Livy log size unavailable: {e}")
-            return 0
-
     def _save_openivm_ops_chart(self, name: str, batch_num: int) -> None:
         if name not in ("spark-openivm", "duckdb-openivm"):
             return
@@ -332,8 +314,6 @@ class EngineRunner:
                 engine=name,
                 batch=batch_num,
                 repo_dir=os.environ.get("REPO_DIR", "/repo"),
-                log_byte_window=self._spark_log_window.get(batch_num) if name == "spark-openivm" else None,
-                log_time_window=self._spark_log_time_window.get(batch_num) if name == "spark-openivm" else None,
             )
             if out:
                 self._emit(f"[{name}] op-chart saved: {out}")
@@ -804,6 +784,53 @@ class EngineRunner:
 
         self._emit(
             f"[duckdb-openivm] OpenIVM profile exported after batch {batch_num}: "
+            f"{data.get('row_count', 0)} rows across {data.get('view_count', 0)} views"
+        )
+
+    def _export_spark_openivm_profile(self, run_id: str, batch_num: int) -> None:
+        """Export spark-openivm refresh-profile CSVs outside the benchmark timer.
+
+        Mirrors `_export_duckdb_openivm_profile`. The dbt-server route issues
+        `SHOW OPENIVM REFRESH PROFILE` against the live Livy SQL session.
+        """
+        self._emit(f"[spark-openivm] Exporting OpenIVM profile after batch {batch_num}")
+        resp = requests.post(
+            f"{self._dbt_url}/profile/spark-openivm/{run_id}/{batch_num}",
+            timeout=7200,
+        )
+        data = resp.json()
+        if resp.status_code != 200 or data.get("status") != "ok":
+            raise RuntimeError(
+                f"spark-openivm profile export failed for batch {batch_num}: "
+                f"{data.get('error', 'unknown error')}"
+            )
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+
+        csv_payloads = data.get("csv") or {}
+        file_map = {
+            "profile": f"spark-openivm-profile-batch{batch_num}.csv",
+            "by_step": f"spark-openivm-profile-by-step-batch{batch_num}.csv",
+            "by_view_step": f"spark-openivm-profile-by-view-step-batch{batch_num}.csv",
+        }
+        for key, filename in file_map.items():
+            with open(os.path.join(results_dir, filename), "w", encoding="utf-8") as f:
+                f.write(csv_payloads.get(key, ""))
+
+        metadata = {k: v for k, v in data.items() if k != "csv"}
+        with open(
+            os.path.join(results_dir, f"spark-openivm-profile-export-batch{batch_num}.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(metadata, f, indent=2)
+
+        self._emit(
+            f"[spark-openivm] OpenIVM profile exported after batch {batch_num}: "
             f"{data.get('row_count', 0)} rows across {data.get('view_count', 0)} views"
         )
 

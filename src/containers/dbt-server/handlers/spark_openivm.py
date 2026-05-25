@@ -16,7 +16,7 @@ import logging
 from flask import Blueprint, Flask, jsonify
 
 from handlers.base import BaseHandler
-from services import spark_openivm_sources, spark_openivm_validation
+from services import spark_openivm_profile, spark_openivm_sources, spark_openivm_validation
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,23 @@ def spark_openivm_validate_run(run_id):
         return jsonify(result), status_code
     except Exception as e:
         logger.exception("[spark-openivm] Validation failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/profile/spark-openivm/<run_id>/<int:batch_num>", methods=["POST"])
+def spark_openivm_export_profile(run_id, batch_num):
+    """Export spark-openivm refresh profile rows + summaries as CSV payloads.
+
+    Mirrors /profile/duckdb-openivm/<run_id>/<batch_num>. Issues a single
+    `SHOW OPENIVM REFRESH PROFILE` against the live Livy SQL session, collects
+    every row of the RocksDB-backed refresh profile catalog, and returns three
+    CSV payloads (profile / by_step / by_view_step) tagged with the batch.
+    """
+    try:
+        result = spark_openivm_profile.export_profile(run_id, batch_num)
+        return jsonify(result), 200
+    except Exception as e:
+        logger.exception("[spark-openivm] Profile export failed")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 

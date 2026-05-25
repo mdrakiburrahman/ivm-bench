@@ -29,6 +29,7 @@ services:
     environment:
       METASTORE_HOST: mssql-metastore
       METASTORE_PORT: "1433"
+      OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm

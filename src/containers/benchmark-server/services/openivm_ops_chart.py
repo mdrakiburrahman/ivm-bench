@@ -1,29 +1,25 @@
-"""Render OpenIVM per-operation refresh breakdown charts."""
+"""Render OpenIVM per-operation refresh breakdown charts.
+
+Reads per-step refresh-profile CSVs written by the dbt-server profile export
+routes (see services/openivm_profile.py for duckdb-openivm and
+services/spark_openivm_profile.py for spark-openivm).  Both engines share the
+same step-name vocabulary (see openivm-spark/.research/PROFILING.md §3),
+so a single classifier and a single duckdb-style parser handle both.
+
+No log scraping. The Livy text log is *not* consulted; the only inputs are
+the CSV files in `mount/results/<sf>/dbt-server/`.
+"""
 
 import csv
-import glob
 import io
 import logging
 import os
-import re
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_SPARK_LINE_RE = re.compile(r"\[openivm-perf\]\s+(?P<body>.*)$")
-# Livy outer prefix: "26/05/25 16:00:48 INFO LineBufferedStream: ..." → captures
-# (yy, mm, dd, HH, MM, SS).  We synthesise UTC datetimes assuming logs run UTC,
-# which matches Livy's `--user-class-path-first` JVM clock.
-_LIVY_TS_RE = re.compile(r"^(\d{2})/(\d{2})/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\b")
-_KV_RE = re.compile(r"(\w+)=('([^']*)'|([^\s]+))")
-_FULL_OUTCOMES = {
-    "simple_projection_full_refresh",
-    "simple_projection_full_refresh_fallback",
-    "metadata_full_refresh",
-    "full_refresh",
-}
 _REFRESH_STEPS = {
     "acquire_locks",
     "metadata_pre_sql",
@@ -45,7 +41,6 @@ _RESERVED_SEGMENT_COLORS = {
     "other_elapsed": "#bdbdbd",
     "unattributed": "#bdbdbd",
 }
-_TOP_N = 20
 
 
 def render_batch_png(
@@ -53,56 +48,12 @@ def render_batch_png(
     engine: str,
     batch: int,
     repo_dir: str,
-    log_byte_window: Optional[Tuple[int, int]] = None,
-    log_time_window: Optional[Tuple[datetime, datetime]] = None,
 ) -> Optional[bytes]:
-    if engine == "spark-openivm" and log_time_window is None and log_byte_window is None:
-        log_time_window = _derive_time_window_from_run_json(repo_dir, sf, batch)
-    refreshes = _load_refreshes(sf, engine, batch, repo_dir, log_byte_window, log_time_window)
+    refreshes = _load_refreshes(sf, engine, batch, repo_dir)
     refreshes = _select_latest_by_view(refreshes)
     if not refreshes:
         return None
     return _render_png(refreshes, engine=engine, batch=batch, sf=sf)
-
-
-def _derive_time_window_from_run_json(
-    repo_dir: str, sf: str, batch: int
-) -> Optional[Tuple[datetime, datetime]]:
-    """Read mount/results/<sf>/dbt-server/run-spark-openivm-batch<N>.json
-    and convert started_at/completed_at to a naive-UTC datetime window."""
-    path = os.path.join(
-        repo_dir,
-        "mount",
-        "results",
-        str(sf),
-        "dbt-server",
-        f"run-spark-openivm-batch{batch}.json",
-    )
-    if not os.path.exists(path):
-        return None
-    try:
-        import json as _json
-
-        with open(path, "r", encoding="utf-8") as f:
-            data = _json.load(f)
-        start_iso = data.get("started_at")
-        end_iso = data.get("completed_at")
-        if not start_iso or not end_iso:
-            return None
-        # Strip timezone — livy log prefixes are naive yy/MM/dd HH:mm:ss UTC
-        s = datetime.fromisoformat(start_iso)
-        e = datetime.fromisoformat(end_iso)
-        if s.tzinfo is not None:
-            s = s.astimezone(timezone.utc).replace(tzinfo=None)
-        if e.tzinfo is not None:
-            e = e.astimezone(timezone.utc).replace(tzinfo=None)
-        # Pad by 30s on each side to capture trailing flushes
-        from datetime import timedelta
-
-        return (s - timedelta(seconds=30), e + timedelta(seconds=30))
-    except Exception as exc:
-        logger.warning("Unable to derive time window from %s: %s", path, exc)
-        return None
 
 
 def save_batch_png(
@@ -110,11 +61,9 @@ def save_batch_png(
     engine: str,
     batch: int,
     repo_dir: str,
-    log_byte_window: Optional[Tuple[int, int]] = None,
-    log_time_window: Optional[Tuple[datetime, datetime]] = None,
 ) -> Optional[str]:
     """Write PNG to <repo_dir>/mount/imgs/<sf>/openivm-ops-<engine>-batch<batch>.png. Return path or None."""
-    png = render_batch_png(sf, engine, batch, repo_dir, log_byte_window, log_time_window)
+    png = render_batch_png(sf, engine, batch, repo_dir)
     if not png:
         return None
 
@@ -134,11 +83,16 @@ def render_compare_png(
     before_repo_dir: str,
 ) -> Optional[bytes]:
     """Side-by-side comparison: BEFORE state on left, AFTER on right, same MVs aligned, same scale."""
-    before = _select_latest_by_view(_load_refreshes(sf, engine, batch, before_repo_dir, None))
-    after = _select_latest_by_view(_load_refreshes(sf, engine, batch, after_repo_dir, None))
+    before = _select_latest_by_view(_load_refreshes(sf, engine, batch, before_repo_dir))
+    after = _select_latest_by_view(_load_refreshes(sf, engine, batch, after_repo_dir))
     if not before or not after:
         return None
     return _render_compare_png(before, after, engine=engine, batch=batch, sf=sf)
+
+
+# ---------------------------------------------------------------------------
+# CSV ingestion
+# ---------------------------------------------------------------------------
 
 
 def _load_refreshes(
@@ -146,126 +100,34 @@ def _load_refreshes(
     engine: str,
     batch: int,
     repo_dir: str,
-    log_byte_window: Optional[Tuple[int, int]],
-    log_time_window: Optional[Tuple[datetime, datetime]] = None,
 ) -> List[dict]:
     if engine == "spark-openivm":
-        return _parse_spark_openivm_perf(repo_dir, sf, log_byte_window, log_time_window)
+        return _parse_openivm_profile(
+            repo_dir, sf, batch, engine="spark-openivm",
+            filename=f"spark-openivm-profile-batch{batch}.csv",
+        )
     if engine == "duckdb-openivm":
-        return _parse_duckdb_openivm_perf(repo_dir, sf, batch)
+        return _parse_openivm_profile(
+            repo_dir, sf, batch, engine="duckdb-openivm",
+            filename=f"openivm-profile-batch{batch}.csv",
+        )
     return []
 
 
-def _parse_spark_openivm_perf(
+def _parse_openivm_profile(
     repo_dir: str,
     sf: str,
-    log_byte_window: Optional[Tuple[int, int]],
-    log_time_window: Optional[Tuple[datetime, datetime]] = None,
+    batch: int,
+    engine: str,
+    filename: str,
 ) -> List[dict]:
-    log_dir = os.path.join(repo_dir, "mount", "logs", str(sf), "spark-openivm", "livy-logs")
-    live_log = os.path.join(log_dir, "livy-server.log")
-    if log_time_window is not None:
-        lines = _read_all_livy_logs(log_dir)
-        lines = _filter_by_time_window(lines, log_time_window)
-    elif log_byte_window is not None:
-        lines = _read_log_window(live_log, log_byte_window)
-        # If the byte window yielded nothing (e.g. log rotated mid-batch), fall back
-        # to reading all rotated files and keep everything.  Better than empty PNG.
-        if not lines:
-            lines = _read_all_livy_logs(log_dir)
-    else:
-        lines = _read_all_livy_logs(log_dir)
+    """Read a duckdb-style refresh-profile CSV and group rows by (view, refresh_id).
 
-    groups: Dict[str, dict] = {}
-    order = 0
-    for line in lines:
-        order += 1
-        match = _SPARK_LINE_RE.search(line)
-        if not match:
-            continue
-        try:
-            attrs = _parse_kv(match.group("body"))
-            refresh_id = attrs.get("refresh_id")
-            if not refresh_id:
-                continue
-            group = groups.setdefault(
-                refresh_id,
-                {
-                    "engine": "spark-openivm",
-                    "refresh_id": refresh_id,
-                    "view": attrs.get("view", "unknown"),
-                    "refresh_type": None,
-                    "outcome": None,
-                    "total_ms": None,
-                    "pending_deltas": None,
-                    "stmts": [],
-                    "phase_times": defaultdict(float),
-                    "segments": defaultdict(float),
-                    "order": order,
-                    "last_order": order,
-                },
-            )
-            group["last_order"] = order
-            if attrs.get("view"):
-                group["view"] = attrs["view"]
-            if attrs.get("refresh_type"):
-                group["refresh_type"] = attrs["refresh_type"]
-            if attrs.get("pending_deltas") is not None:
-                group["pending_deltas"] = _safe_int(attrs.get("pending_deltas"))
-
-            phase = attrs.get("phase")
-            elapsed_ms = _safe_float(attrs.get("elapsed_ms"))
-            if phase == "stmt":
-                stmt = {
-                    "stmt_idx": _safe_int(attrs.get("stmt_idx")),
-                    "stmt_kind": attrs.get("stmt_kind", "other"),
-                    "elapsed_ms": elapsed_ms or 0.0,
-                }
-                group["stmts"].append(stmt)
-                group["segments"][stmt["stmt_kind"]] += stmt["elapsed_ms"]
-            elif phase == "end":
-                group["total_ms"] = _safe_float(attrs.get("total_ms"))
-                group["outcome"] = attrs.get("outcome")
-            elif phase and elapsed_ms is not None:
-                group["phase_times"][phase] += elapsed_ms
-                group["segments"][phase] += elapsed_ms
-        except Exception as exc:  # pragma: no cover - defensive row skip
-            logger.warning("Skipping malformed spark-openivm perf line: %s", exc)
-
-    refreshes: List[dict] = []
-    for group in groups.values():
-        try:
-            phase_times = dict(group.get("phase_times") or {})
-            segments = dict(group.get("segments") or {})
-            stmt_sum = sum(float(s.get("elapsed_ms") or 0.0) for s in group.get("stmts") or [])
-            known_total = stmt_sum + sum(float(v or 0.0) for v in phase_times.values())
-            if group.get("total_ms") is None:
-                group["total_ms"] = known_total
-                group["classification"] = "INCOMPLETE"
-            else:
-                group["classification"] = _classify_spark(group)
-                remainder = float(group["total_ms"] or 0.0) - sum(segments.values())
-                if remainder > 0.5:
-                    segments["other_elapsed"] = segments.get("other_elapsed", 0.0) + remainder
-            group["view"] = _normalize_view(group.get("view"))
-            group["phase_times"] = phase_times
-            group["segments"] = segments
-            group["event_kind"] = "refresh"
-            group["is_create"] = False
-            refreshes.append(group)
-        except Exception as exc:  # pragma: no cover - defensive group skip
-            logger.warning("Skipping malformed spark-openivm refresh group: %s", exc)
-    return refreshes
-
-
-def _parse_duckdb_openivm_perf(repo_dir: str, sf: str, batch: int) -> List[dict]:
+    Shared parser for spark-openivm and duckdb-openivm — both emit the same
+    step-name vocabulary so the same grouping / classification logic applies.
+    """
     csv_path = os.path.join(
-        repo_dir,
-        "mount",
-        "results",
-        str(sf),
-        "dbt-server",
-        f"openivm-profile-batch{batch}.csv",
+        repo_dir, "mount", "results", str(sf), "dbt-server", filename,
     )
     if not os.path.exists(csv_path):
         return []
@@ -280,98 +142,134 @@ def _parse_duckdb_openivm_perf(repo_dir: str, sf: str, batch: int) -> List[dict]
                     refresh_id = row.get("refresh_id") or f"{view}-unknown"
                     groups[(view, refresh_id)].append(row)
                 except Exception as exc:  # pragma: no cover - defensive row skip
-                    logger.warning("Skipping malformed duckdb-openivm profile row: %s", exc)
+                    logger.warning("Skipping malformed %s profile row: %s", engine, exc)
     except Exception as exc:
-        logger.warning("Unable to read duckdb-openivm profile CSV %s: %s", csv_path, exc)
+        logger.warning("Unable to read %s profile CSV %s: %s", engine, csv_path, exc)
         return []
 
     refreshes: List[dict] = []
     for (view, refresh_id), rows in groups.items():
         try:
-            step_times: Dict[str, float] = defaultdict(float)
-            step_names = set()
-            dispatch_refresh_type = None
-            create_refresh_type = None
-            first_ts = None
-            last_ts = None
-            max_step_order = -1
-
-            for row in rows:
-                step_name = row.get("step_name") or "unknown"
-                duration_ms = _safe_float(row.get("duration_ms")) or 0.0
-                detail = _parse_detail(row.get("detail") or "")
-                step_times[step_name] += duration_ms
-                step_names.add(step_name)
-                max_step_order = max(max_step_order, _safe_int(row.get("step_order")) or 0)
-                ts = _parse_timestamp(row.get("profile_timestamp"))
-                if ts is not None:
-                    first_ts = ts if first_ts is None or ts < first_ts else first_ts
-                    last_ts = ts if last_ts is None or ts > last_ts else last_ts
-                if step_name == "generate_refresh_sql.dispatch" and detail.get("refresh_type"):
-                    dispatch_refresh_type = detail["refresh_type"]
-                if step_name == "create_compile_classification" and detail.get("refresh_type"):
-                    create_refresh_type = detail["refresh_type"]
-
-            is_create = "_create_mv_" in refresh_id or (step_names and all(s.startswith("create_") for s in step_names))
-            is_refresh = any(s in _REFRESH_STEPS or s.startswith("generate_refresh_sql") for s in step_names)
-            if is_create and not is_refresh:
-                segments = _duckdb_create_segments(step_times)
-                total_ms = step_times.get("create_mv_total") or sum(segments.values())
-                total_ms = _align_total_with_segments(total_ms, segments)
-                classification = "FULL"
-                refresh_type = "CREATE"
-                event_kind = "create"
-            elif is_refresh:
-                segments = _duckdb_refresh_segments(step_times)
-                total_ms = step_times.get("total_refresh") or sum(segments.values())
-                total_ms = _align_total_with_segments(total_ms, segments)
-                refresh_type = dispatch_refresh_type
-                classification = _classify_duckdb(dispatch_refresh_type, total_ms, segments)
-                event_kind = "refresh"
-            else:
-                total_ms = sum(step_times.values())
-                segments = {k: v for k, v in step_times.items() if v > 0}
-                refresh_type = create_refresh_type or dispatch_refresh_type
-                classification = "UNKNOWN"
-                event_kind = "unknown"
-
-            refreshes.append(
-                {
-                    "engine": "duckdb-openivm",
-                    "refresh_id": refresh_id,
-                    "view": _normalize_view(view),
-                    "refresh_type": refresh_type,
-                    "outcome": None,
-                    "total_ms": total_ms,
-                    "pending_deltas": None,
-                    "stmts": [],
-                    "phase_times": dict(step_times),
-                    "segments": segments,
-                    "classification": classification,
-                    "event_kind": event_kind,
-                    "is_create": event_kind == "create",
-                    "first_ts": first_ts,
-                    "last_ts": last_ts,
-                    "last_order": int(last_ts.timestamp() * 1000) if last_ts else max_step_order,
-                }
-            )
+            refreshes.append(_summarise_group(view, refresh_id, rows, engine=engine))
         except Exception as exc:  # pragma: no cover - defensive group skip
-            logger.warning("Skipping malformed duckdb-openivm profile group %s/%s: %s", view, refresh_id, exc)
+            logger.warning(
+                "Skipping malformed %s profile group %s/%s: %s",
+                engine, view, refresh_id, exc,
+            )
     return refreshes
+
+
+def _summarise_group(view: str, refresh_id: str, rows: List[dict], engine: str) -> dict:
+    step_times: Dict[str, float] = defaultdict(float)
+    step_names: set = set()
+    dispatch_refresh_type: Optional[str] = None
+    create_refresh_type: Optional[str] = None
+    first_ts: Optional[datetime] = None
+    last_ts: Optional[datetime] = None
+    max_step_order = -1
+
+    for row in rows:
+        step_name = row.get("step_name") or "unknown"
+        duration_ms = _safe_float(row.get("duration_ms")) or 0.0
+        detail = _parse_detail(row.get("detail") or "")
+        step_times[step_name] += duration_ms
+        step_names.add(step_name)
+        max_step_order = max(max_step_order, _safe_int(row.get("step_order")) or 0)
+        ts = _parse_timestamp(row.get("profile_timestamp"))
+        if ts is not None:
+            first_ts = ts if first_ts is None or ts < first_ts else first_ts
+            last_ts = ts if last_ts is None or ts > last_ts else last_ts
+        if step_name == "generate_refresh_sql.dispatch" and detail.get("refresh_type"):
+            dispatch_refresh_type = detail["refresh_type"]
+        if step_name == "create_compile_classification" and detail.get("refresh_type"):
+            create_refresh_type = detail["refresh_type"]
+
+    # CREATE vs REFRESH detection.
+    # The strongest signal is the presence of `create_mv_total` (only emitted
+    # by the CREATE MV path in both duckdb-openivm and openivm-spark) vs
+    # `total_refresh` (only emitted by the REFRESH path). Falls back to the
+    # `<view>_create_mv_<nanos>` refresh_id convention when neither marker is
+    # present (e.g., partial / interrupted profile rows).
+    #
+    # Note: Spark legitimately reuses `acquire_locks`/`metadata_pre_sql`/
+    # `metadata_post_sql` during CREATE because those acquire-and-resolve
+    # phases run for both CREATE and REFRESH, so we cannot use those step
+    # names to discriminate.
+    has_create_total = "create_mv_total" in step_names
+    has_refresh_total = "total_refresh" in step_names
+    is_create = has_create_total or (
+        "_create_mv_" in refresh_id and not has_refresh_total
+    ) or (step_names and all(s.startswith("create_") for s in step_names))
+    is_refresh = has_refresh_total or any(
+        s.startswith("generate_refresh_sql") for s in step_names
+    ) or (not is_create and any(s in _REFRESH_STEPS for s in step_names))
+
+    if is_create:
+        segments = _create_segments(step_times)
+        total_ms = step_times.get("create_mv_total") or sum(segments.values())
+        total_ms = _align_total_with_segments(total_ms, segments)
+        classification = "FULL"
+        refresh_type = "CREATE"
+        event_kind = "create"
+    elif is_refresh:
+        segments = _refresh_segments(step_times)
+        total_ms = step_times.get("total_refresh") or sum(segments.values())
+        total_ms = _align_total_with_segments(total_ms, segments)
+        refresh_type = dispatch_refresh_type
+        classification = _classify(dispatch_refresh_type, total_ms, segments)
+        event_kind = "refresh"
+    else:
+        total_ms = sum(step_times.values())
+        segments = {k: v for k, v in step_times.items() if v > 0}
+        refresh_type = create_refresh_type or dispatch_refresh_type
+        classification = "UNKNOWN"
+        event_kind = "unknown"
+
+    return {
+        "engine": engine,
+        "refresh_id": refresh_id,
+        "view": _normalize_view(view),
+        "refresh_type": refresh_type,
+        "outcome": None,
+        "total_ms": total_ms,
+        "pending_deltas": None,
+        "stmts": [],
+        "phase_times": dict(step_times),
+        "segments": segments,
+        "classification": classification,
+        "event_kind": event_kind,
+        "is_create": event_kind == "create",
+        "first_ts": first_ts,
+        "last_ts": last_ts,
+        "last_order": int(last_ts.timestamp() * 1000) if last_ts else max_step_order,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
 
 
 def _render_png(refreshes_classified: List[dict], engine: str, batch: int, sf: str = "?") -> bytes:
     plt, Patch = _matplotlib()
-    rows = _collapse_rows(sorted(refreshes_classified, key=lambda r: float(r.get("total_ms") or 0.0), reverse=True))
+    # One bar per MV — no TOP_N collapse.
+    rows = sorted(
+        refreshes_classified,
+        key=lambda r: float(r.get("total_ms") or 0.0),
+        reverse=True,
+    )
     segment_keys = _segment_keys(rows)
     colors = _segment_color_map(segment_keys, plt)
 
-    height = max(7.0, 0.42 * len(rows) + 4.2)
+    # Figure height auto-scales with row count so 49+ MVs render without
+    # label clipping; the summary panel stays a fixed slice of the figure.
+    bar_panel_height = max(3.0, 0.34 * len(rows))
+    fig_height = max(7.0, bar_panel_height + 4.2)
     fig, (ax_top, ax_summary) = plt.subplots(
         2,
         1,
-        figsize=(14, height),
-        gridspec_kw={"height_ratios": [max(3.0, 0.38 * len(rows)), 1.35]},
+        figsize=(14, fig_height),
+        gridspec_kw={"height_ratios": [bar_panel_height, 1.35]},
     )
 
     _draw_stacked_bar_panel(ax_top, rows, colors, show_xlabel=True)
@@ -387,7 +285,10 @@ def _render_png(refreshes_classified: List[dict], engine: str, batch: int, sf: s
         )
 
     _draw_summary_panel(ax_summary, refreshes_classified, engine, batch)
-    fig.suptitle(f"OpenIVM op breakdown — SF{sf} batch{batch} — {engine}", fontsize=16, fontweight="bold", y=0.995)
+    fig.suptitle(
+        f"OpenIVM op breakdown — SF{sf} batch{batch} — {engine}",
+        fontsize=16, fontweight="bold", y=0.995,
+    )
     fig.subplots_adjust(hspace=0.72, top=0.93, bottom=0.08)
 
     buf = io.BytesIO()
@@ -399,21 +300,21 @@ def _render_png(refreshes_classified: List[dict], engine: str, batch: int, sf: s
 
 def _render_compare_png(before: List[dict], after: List[dict], engine: str, batch: int, sf: str = "?") -> bytes:
     plt, Patch = _matplotlib()
-    after_rows = _collapse_rows(sorted(after, key=lambda r: float(r.get("total_ms") or 0.0), reverse=True))
+    after_rows = sorted(after, key=lambda r: float(r.get("total_ms") or 0.0), reverse=True)
     before_by_view = {r.get("view"): r for r in before}
-    after_views = {r.get("view") for r in after_rows if not r.get("is_other")}
-    before_other = _make_other_row([r for r in before if r.get("view") not in after_views])
 
-    before_rows = []
-    for row in after_rows:
-        if row.get("is_other"):
-            before_rows.append(before_other or _empty_like(row))
-        else:
-            before_rows.append(before_by_view.get(row.get("view")) or _empty_like(row))
+    # Render one row per AFTER MV, pulling the matching BEFORE row by view name.
+    # Views that only exist in BEFORE are dropped — the chart is keyed on the
+    # AFTER state by design.
+    before_rows = [
+        before_by_view.get(row.get("view")) or _empty_like(row) for row in after_rows
+    ]
 
     segment_keys = _segment_keys(before_rows + after_rows)
     colors = _segment_color_map(segment_keys, plt)
-    max_total = max([float(r.get("total_ms") or 0.0) for r in before_rows + after_rows] + [1.0])
+    max_total = max(
+        [float(r.get("total_ms") or 0.0) for r in before_rows + after_rows] + [1.0]
+    )
 
     height = max(7.0, 0.42 * len(after_rows) + 2.8)
     fig, (ax_before, ax_after) = plt.subplots(1, 2, figsize=(18, height), sharey=True)
@@ -430,7 +331,10 @@ def _render_compare_png(before: List[dict], after: List[dict], engine: str, batc
             fontsize=8,
             frameon=False,
         )
-    fig.suptitle(f"OpenIVM op breakdown compare — SF{sf} batch{batch} — {engine}", fontsize=16, fontweight="bold")
+    fig.suptitle(
+        f"OpenIVM op breakdown compare — SF{sf} batch{batch} — {engine}",
+        fontsize=16, fontweight="bold",
+    )
     fig.subplots_adjust(wspace=0.08, top=0.92, bottom=0.14)
 
     buf = io.BytesIO()
@@ -440,7 +344,14 @@ def _render_compare_png(before: List[dict], after: List[dict], engine: str, batc
     return buf.getvalue()
 
 
-def _draw_stacked_bar_panel(ax, rows: List[dict], colors: Dict[str, str], xlim: Optional[float] = None, title: Optional[str] = None, show_xlabel: bool = False) -> None:
+def _draw_stacked_bar_panel(
+    ax,
+    rows: List[dict],
+    colors: Dict[str, str],
+    xlim: Optional[float] = None,
+    title: Optional[str] = None,
+    show_xlabel: bool = False,
+) -> None:
     y_positions = list(range(len(rows)))
     segment_keys = _segment_keys(rows)
     for y, row in zip(y_positions, rows):
@@ -454,7 +365,10 @@ def _draw_stacked_bar_panel(ax, rows: List[dict], colors: Dict[str, str], xlim: 
             left += value
         total_ms = float(row.get("total_ms") or 0.0)
         if total_ms > 0:
-            ax.text(total_ms, y, f"  {_format_ms(total_ms)}", va="center", ha="left", fontsize=8, color="#444444")
+            ax.text(
+                total_ms, y, f"  {_format_ms(total_ms)}",
+                va="center", ha="left", fontsize=8, color="#444444",
+            )
 
     labels = [_row_label(r) for r in rows]
     ax.set_yticks(y_positions)
@@ -488,7 +402,10 @@ def _draw_summary_panel(ax, refreshes: List[dict], engine: str, batch: int) -> N
     for y, value in zip(y_positions, values):
         ax.text(value, y, f" {value}", va="center", ha="left", fontweight="bold")
     ax.set_xlabel("MV count")
-    ax.set_title(f"Refresh classification — batch {batch} — {engine} — total {len(refreshes)} MVs", fontsize=11)
+    ax.set_title(
+        f"Refresh classification — batch {batch} — {engine} — total {len(refreshes)} MVs",
+        fontsize=11,
+    )
     ax.grid(axis="x", linestyle=":", alpha=0.3)
     ax.set_axisbelow(True)
 
@@ -507,83 +424,15 @@ def _annotate_deltas(ax, before_rows: List[dict], after_rows: List[dict], max_to
         else:
             text = f"Δ +{_format_ms(delta)}"
             color = "#b00020"
-        ax.text(max(after_ms, 0.0) + max_total * 0.02, y, text, va="center", ha="left", fontsize=8, color=color)
+        ax.text(
+            max(after_ms, 0.0) + max_total * 0.02, y, text,
+            va="center", ha="left", fontsize=8, color=color,
+        )
 
 
-def _read_log_window(path: str, log_byte_window: Tuple[int, int]) -> List[str]:
-    if not os.path.exists(path):
-        return []
-    start, end = log_byte_window
-    start = max(0, int(start or 0))
-    end = max(start, int(end or 0))
-    try:
-        with open(path, "rb") as f:
-            f.seek(start)
-            data = f.read(max(0, end - start))
-        return data.decode("utf-8", errors="replace").splitlines()
-    except Exception as exc:
-        logger.warning("Unable to read spark-openivm log window %s: %s", path, exc)
-        return []
-
-
-def _filter_by_time_window(
-    lines: Iterable[str], window: Tuple[datetime, datetime]
-) -> List[str]:
-    """Filter livy log lines by their leading `yy/MM/dd HH:mm:ss` prefix.
-
-    Lines without a parseable prefix are kept (we don't know which batch they
-    belong to, but they're rare and usually multi-line java tracebacks).  The
-    window is compared in naive UTC; livy logs are emitted in container UTC.
-    """
-    start_ts, end_ts = window
-    if start_ts.tzinfo is not None:
-        start_ts = start_ts.replace(tzinfo=None)
-    if end_ts.tzinfo is not None:
-        end_ts = end_ts.replace(tzinfo=None)
-    out: List[str] = []
-    for line in lines:
-        m = _LIVY_TS_RE.match(line)
-        if not m:
-            out.append(line)
-            continue
-        try:
-            yy, mm, dd, HH, MM, SS = (int(g) for g in m.groups())
-            ts = datetime(2000 + yy, mm, dd, HH, MM, SS)
-        except (TypeError, ValueError):
-            out.append(line)
-            continue
-        if start_ts <= ts <= end_ts:
-            out.append(line)
-    return out
-
-
-def _read_all_livy_logs(log_dir: str) -> List[str]:
-    files = sorted(glob.glob(os.path.join(log_dir, "livy-server.log*")), key=_livy_log_sort_key)
-    lines: List[str] = []
-    for path in files:
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines.extend(f.read().splitlines())
-        except Exception as exc:
-            logger.warning("Unable to read spark-openivm log %s: %s", path, exc)
-    return lines
-
-
-def _livy_log_sort_key(path: str) -> Tuple[int, int]:
-    name = os.path.basename(path)
-    if name == "livy-server.log":
-        return (1, 0)
-    match = re.match(r"livy-server\.log\.(\d+)$", name)
-    if match:
-        return (0, -int(match.group(1)))
-    return (0, 0)
-
-
-def _parse_kv(body: str) -> Dict[str, str]:
-    attrs: Dict[str, str] = {}
-    for match in _KV_RE.finditer(body):
-        attrs[match.group(1)] = match.group(3) if match.group(3) is not None else match.group(4)
-    return attrs
+# ---------------------------------------------------------------------------
+# Segment building / classification — shared between spark-openivm and duckdb-openivm
+# ---------------------------------------------------------------------------
 
 
 def _parse_detail(detail: str) -> Dict[str, str]:
@@ -596,24 +445,28 @@ def _parse_detail(detail: str) -> Dict[str, str]:
     return attrs
 
 
-def _duckdb_create_segments(step_times: Dict[str, float]) -> Dict[str, float]:
+def _create_segments(step_times: Dict[str, float]) -> Dict[str, float]:
     return {k: v for k, v in step_times.items() if k != "create_mv_total" and v > 0}
 
 
-def _duckdb_refresh_segments(step_times: Dict[str, float]) -> Dict[str, float]:
+def _refresh_segments(step_times: Dict[str, float]) -> Dict[str, float]:
     segments: Dict[str, float] = {}
     for key in ("acquire_locks", "metadata_pre_sql", "metadata_post_sql"):
         if step_times.get(key, 0.0) > 0:
             segments[key] = step_times[key]
 
     generate_parent = step_times.get("generate_refresh_sql", 0.0)
-    generate_children = sum(v for k, v in step_times.items() if k.startswith("generate_refresh_sql.") and v > 0)
+    generate_children = sum(
+        v for k, v in step_times.items() if k.startswith("generate_refresh_sql.") and v > 0
+    )
     generate_total = generate_parent or generate_children
     if generate_total > 0:
         segments["generate_refresh_sql"] = generate_total
 
     execute_parent = step_times.get("execute_refresh_sql", 0.0)
-    execute_children = sum(v for k, v in step_times.items() if k == "execute_refresh_sql_stmt" and v > 0)
+    execute_children = sum(
+        v for k, v in step_times.items() if k == "execute_refresh_sql_stmt" and v > 0
+    )
     execute_total = execute_parent or execute_children
     if execute_total > 0:
         segments["execute_refresh_sql"] = execute_total
@@ -640,24 +493,15 @@ def _align_total_with_segments(total_ms: float, segments: Dict[str, float]) -> f
     return total_ms
 
 
-def _classify_spark(group: dict) -> str:
-    refresh_type = group.get("refresh_type")
-    outcome = group.get("outcome")
-    if outcome == "no_pending_deltas":
-        return "NOOP"
-    if outcome in _FULL_OUTCOMES or refresh_type == "FULL_REFRESH":
-        return "FULL"
-    if outcome == "incremental_executed":
-        return "INCR"
-    return "UNKNOWN"
-
-
-def _classify_duckdb(refresh_type: Optional[str], total_ms: float, segments: Dict[str, float]) -> str:
+def _classify(refresh_type: Optional[str], total_ms: float, segments: Dict[str, float]) -> str:
     if refresh_type == "FULL_REFRESH":
         return "FULL"
     if refresh_type and total_ms > 0:
         return "INCR"
-    if not refresh_type and not any(k.startswith("execute_refresh_sql") or k.startswith("generate_refresh_sql") for k in segments):
+    if not refresh_type and not any(
+        k.startswith("execute_refresh_sql") or k.startswith("generate_refresh_sql")
+        for k in segments
+    ):
         return "NOOP"
     if total_ms <= 0:
         return "NOOP"
@@ -673,36 +517,15 @@ def _select_latest_by_view(refreshes: Iterable[dict]) -> List[dict]:
     for rows in by_view.values():
         non_create = [r for r in rows if r.get("event_kind") != "create"]
         candidates = non_create or rows
-        selected.append(max(candidates, key=lambda r: int(r.get("last_order") or r.get("order") or 0)))
+        selected.append(
+            max(candidates, key=lambda r: int(r.get("last_order") or r.get("order") or 0))
+        )
     return selected
 
 
-def _collapse_rows(rows: List[dict], top_n: int = _TOP_N) -> List[dict]:
-    if len(rows) <= top_n:
-        return rows
-    top = rows[:top_n]
-    other = _make_other_row(rows[top_n:])
-    return top + ([other] if other else [])
-
-
-def _make_other_row(rows: List[dict]) -> Optional[dict]:
-    if not rows:
-        return None
-    segments: Dict[str, float] = defaultdict(float)
-    total_ms = 0.0
-    for row in rows:
-        total_ms += float(row.get("total_ms") or 0.0)
-        for key, value in (row.get("segments") or {}).items():
-            segments[key] += float(value or 0.0)
-    return {
-        "view": f"(other {len(rows)} MVs)",
-        "refresh_type": None,
-        "classification": "MIXED",
-        "total_ms": total_ms,
-        "segments": dict(segments),
-        "is_other": True,
-        "event_kind": "other",
-    }
+# ---------------------------------------------------------------------------
+# Plot helpers
+# ---------------------------------------------------------------------------
 
 
 def _empty_like(row: dict) -> dict:
@@ -713,7 +536,6 @@ def _empty_like(row: dict) -> dict:
         "total_ms": 0.0,
         "segments": {},
         "event_kind": "missing",
-        "is_other": row.get("is_other", False),
     }
 
 
@@ -744,9 +566,7 @@ def _segment_color_map(segment_keys: List[str], plt) -> Dict[str, str]:
 def _row_label(row: dict) -> str:
     classification = row.get("classification") or "UNKNOWN"
     refresh_type = row.get("refresh_type")
-    if row.get("is_other"):
-        badge = "[MIXED]"
-    elif row.get("is_create"):
+    if row.get("is_create"):
         badge = "[FULL CREATE]"
     elif classification == "NOOP":
         badge = "[NOOP]"

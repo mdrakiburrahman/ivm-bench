@@ -7,6 +7,13 @@ spark.sql.sources.default=delta
 # Activate the openivm-spark extension (defaults to false, must be enabled)
 spark.openivm.enabled=true
 
+# Refresh profile telemetry — when enabled, every CREATE/REFRESH MATERIALIZED
+# VIEW writes per-step rows into the RocksDB `refresh_profile` column family
+# (see RefreshProfileCatalog), readable via `SHOW OPENIVM REFRESH PROFILE`.
+# The flag is parameterized off OPENIVM_PROFILE_REFRESH (set in benchmark.sh
+# / gci.yaml; translated to a boolean by entrypoint.sh).
+spark.openivm.profile.refresh=${OPENIVM_PROFILE_REFRESH_BOOL}
+
 # RocksDB multi-process mode: HARD-OFF for performance.
 #
 # Why we keep this `false`:

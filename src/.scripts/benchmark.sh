@@ -17,8 +17,10 @@
 #                    datagen + duckdb-openivm builds are reused
 #   OPENIVM_VALIDATE — 1 = validate OpenIVM views with EXCEPT ALL after each
 #                    timed batch (default), 0 = skip post-timer validation
-#   OPENIVM_PROFILE_REFRESH — 1 = export OpenIVM profiling CSVs after each
-#                    timed batch (default: 0)
+#   OPENIVM_PROFILE_REFRESH — 1 = export OpenIVM refresh-profile CSVs after
+#                    each timed batch (both duckdb-openivm and spark-openivm).
+#                    Default: 0. When enabled, both engines emit a per-step
+#                    profile under mount/results/<sf>/dbt-server/.
 #   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
