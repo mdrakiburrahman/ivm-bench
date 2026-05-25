@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 import requests
 
@@ -49,6 +49,7 @@ class EngineRunner:
         self._override_file: Optional[str] = None
         self._batch_override_file: Optional[str] = None
         self._parallel = config.parallel
+        self._spark_log_window: Dict[int, Tuple[int, int]] = {}
 
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
@@ -250,7 +251,14 @@ class EngineRunner:
             elif name == "duckdb-openivm":
                 run_id = self._run_duckdb_openivm(batch_num)
             elif name == "spark-openivm":
-                run_id = self._run_spark_openivm(batch_num)
+                start_offset = self._spark_livy_log_size()
+                try:
+                    run_id = self._run_spark_openivm(batch_num)
+                finally:
+                    self._spark_log_window[batch_num] = (
+                        start_offset,
+                        self._spark_livy_log_size(),
+                    )
             else:
                 self._run_dbt(batch_num)
 
@@ -282,6 +290,7 @@ class EngineRunner:
 
             # Check status from the stream_progress result
             if batch.status != "failed":
+                self._save_openivm_ops_chart(name, batch_num)
                 batch.status = "completed"
                 self._emit(
                     f"[{name}] Batch {batch_num} completed in {batch.duration_s:.1f}s"
@@ -293,6 +302,39 @@ class EngineRunner:
         finally:
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
+
+    def _spark_livy_log_size(self) -> int:
+        path = os.path.join(
+            os.environ.get("REPO_DIR", "/repo"),
+            "mount", "logs", str(self._config.scale_factor), "spark-openivm", "livy-logs", "livy-server.log",
+        )
+        try:
+            return os.path.getsize(path)
+        except FileNotFoundError:
+            return 0
+        except OSError as e:
+            self._emit(f"[spark-openivm] Livy log size unavailable: {e}")
+            return 0
+
+    def _save_openivm_ops_chart(self, name: str, batch_num: int) -> None:
+        if name not in ("spark-openivm", "duckdb-openivm"):
+            return
+        try:
+            from .openivm_ops_chart import save_batch_png
+
+            out = save_batch_png(
+                sf=str(self._config.scale_factor),
+                engine=name,
+                batch=batch_num,
+                repo_dir=os.environ.get("REPO_DIR", "/repo"),
+                log_byte_window=self._spark_log_window.get(batch_num) if name == "spark-openivm" else None,
+            )
+            if out:
+                self._emit(f"[{name}] op-chart saved: {out}")
+            else:
+                self._emit(f"[{name}] op-chart render skipped: no telemetry found")
+        except Exception as e:
+            self._emit(f"[{name}] op-chart render skipped: {e}")
 
     def _run_dbt(self, batch_num: int) -> None:
         """Trigger a dbt run via the dbt-server REST API."""

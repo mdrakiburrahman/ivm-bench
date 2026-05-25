@@ -848,6 +848,51 @@ def chart_heuristics():
     return Response(png_data, mimetype="image/png")
 
 
+@bp.route("/chart/openivm-ops")
+def chart_openivm_ops():
+    sf = request.args.get("sf", os.environ.get("SCALE_FACTOR", "3"))
+    engine = request.args.get("engine", "spark-openivm")
+    try:
+        batch = int(request.args.get("batch", "1"))
+    except ValueError:
+        return jsonify({"error": "invalid batch"}), 400
+    if batch < 1 or batch > 3:
+        return jsonify({"error": "batch must be between 1 and 3"}), 400
+    if engine not in ("spark-openivm", "duckdb-openivm"):
+        return jsonify({"error": "engine must be spark-openivm or duckdb-openivm"}), 400
+    repo_dir = os.environ.get("REPO_DIR", "/repo")
+    from services.openivm_ops_chart import render_batch_png
+
+    png = render_batch_png(sf=str(sf), engine=engine, batch=batch, repo_dir=repo_dir)
+    if not png:
+        return jsonify({"error": "no openivm telemetry found for this engine/batch"}), 404
+    return Response(png, mimetype="image/png")
+
+
+@bp.route("/chart/openivm-ops/compare")
+def chart_openivm_ops_compare():
+    sf = request.args.get("sf", os.environ.get("SCALE_FACTOR", "3"))
+    engine = request.args.get("engine", "spark-openivm")
+    try:
+        batch = int(request.args.get("batch", "1"))
+    except ValueError:
+        return jsonify({"error": "invalid batch"}), 400
+    if batch < 1 or batch > 3:
+        return jsonify({"error": "batch must be between 1 and 3"}), 400
+    if engine not in ("spark-openivm", "duckdb-openivm"):
+        return jsonify({"error": "engine must be spark-openivm or duckdb-openivm"}), 400
+    before_dir = request.args.get("before_dir") or os.environ.get("OPENIVM_BEFORE_DIR")
+    after_dir = request.args.get("after_dir") or os.environ.get("OPENIVM_AFTER_DIR") or os.environ.get("REPO_DIR", "/repo")
+    if not before_dir:
+        return jsonify({"error": "before_dir query arg or OPENIVM_BEFORE_DIR env var required"}), 400
+    from services.openivm_ops_chart import render_compare_png
+
+    png = render_compare_png(sf=str(sf), engine=engine, batch=batch, after_repo_dir=after_dir, before_repo_dir=before_dir)
+    if not png:
+        return jsonify({"error": "no openivm telemetry found in one of the dirs"}), 404
+    return Response(png, mimetype="image/png")
+
+
 class ChartHandler(BaseHandler):
     def register(self, app: Flask) -> None:
         app.register_blueprint(bp)
