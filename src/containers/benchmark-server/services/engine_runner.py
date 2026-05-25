@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import time
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional, Tuple
 
 import requests
@@ -50,6 +51,7 @@ class EngineRunner:
         self._batch_override_file: Optional[str] = None
         self._parallel = config.parallel
         self._spark_log_window: Dict[int, Tuple[int, int]] = {}
+        self._spark_log_time_window: Dict[int, Tuple[datetime, datetime]] = {}
 
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
@@ -252,13 +254,16 @@ class EngineRunner:
                 run_id = self._run_duckdb_openivm(batch_num)
             elif name == "spark-openivm":
                 start_offset = self._spark_livy_log_size()
+                start_ts = datetime.now(timezone.utc).replace(tzinfo=None)
                 try:
                     run_id = self._run_spark_openivm(batch_num)
                 finally:
+                    end_ts = datetime.now(timezone.utc).replace(tzinfo=None)
                     self._spark_log_window[batch_num] = (
                         start_offset,
                         self._spark_livy_log_size(),
                     )
+                    self._spark_log_time_window[batch_num] = (start_ts, end_ts)
             else:
                 self._run_dbt(batch_num)
 
@@ -328,6 +333,7 @@ class EngineRunner:
                 batch=batch_num,
                 repo_dir=os.environ.get("REPO_DIR", "/repo"),
                 log_byte_window=self._spark_log_window.get(batch_num) if name == "spark-openivm" else None,
+                log_time_window=self._spark_log_time_window.get(batch_num) if name == "spark-openivm" else None,
             )
             if out:
                 self._emit(f"[{name}] op-chart saved: {out}")

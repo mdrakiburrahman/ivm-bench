@@ -7,12 +7,16 @@ import logging
 import os
 import re
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _SPARK_LINE_RE = re.compile(r"\[openivm-perf\]\s+(?P<body>.*)$")
+# Livy outer prefix: "26/05/25 16:00:48 INFO LineBufferedStream: ..." → captures
+# (yy, mm, dd, HH, MM, SS).  We synthesise UTC datetimes assuming logs run UTC,
+# which matches Livy's `--user-class-path-first` JVM clock.
+_LIVY_TS_RE = re.compile(r"^(\d{2})/(\d{2})/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\b")
 _KV_RE = re.compile(r"(\w+)=('([^']*)'|([^\s]+))")
 _FULL_OUTCOMES = {
     "simple_projection_full_refresh",
@@ -50,12 +54,55 @@ def render_batch_png(
     batch: int,
     repo_dir: str,
     log_byte_window: Optional[Tuple[int, int]] = None,
+    log_time_window: Optional[Tuple[datetime, datetime]] = None,
 ) -> Optional[bytes]:
-    refreshes = _load_refreshes(sf, engine, batch, repo_dir, log_byte_window)
+    if engine == "spark-openivm" and log_time_window is None and log_byte_window is None:
+        log_time_window = _derive_time_window_from_run_json(repo_dir, sf, batch)
+    refreshes = _load_refreshes(sf, engine, batch, repo_dir, log_byte_window, log_time_window)
     refreshes = _select_latest_by_view(refreshes)
     if not refreshes:
         return None
     return _render_png(refreshes, engine=engine, batch=batch, sf=sf)
+
+
+def _derive_time_window_from_run_json(
+    repo_dir: str, sf: str, batch: int
+) -> Optional[Tuple[datetime, datetime]]:
+    """Read mount/results/<sf>/dbt-server/run-spark-openivm-batch<N>.json
+    and convert started_at/completed_at to a naive-UTC datetime window."""
+    path = os.path.join(
+        repo_dir,
+        "mount",
+        "results",
+        str(sf),
+        "dbt-server",
+        f"run-spark-openivm-batch{batch}.json",
+    )
+    if not os.path.exists(path):
+        return None
+    try:
+        import json as _json
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        start_iso = data.get("started_at")
+        end_iso = data.get("completed_at")
+        if not start_iso or not end_iso:
+            return None
+        # Strip timezone — livy log prefixes are naive yy/MM/dd HH:mm:ss UTC
+        s = datetime.fromisoformat(start_iso)
+        e = datetime.fromisoformat(end_iso)
+        if s.tzinfo is not None:
+            s = s.astimezone(timezone.utc).replace(tzinfo=None)
+        if e.tzinfo is not None:
+            e = e.astimezone(timezone.utc).replace(tzinfo=None)
+        # Pad by 30s on each side to capture trailing flushes
+        from datetime import timedelta
+
+        return (s - timedelta(seconds=30), e + timedelta(seconds=30))
+    except Exception as exc:
+        logger.warning("Unable to derive time window from %s: %s", path, exc)
+        return None
 
 
 def save_batch_png(
@@ -64,9 +111,10 @@ def save_batch_png(
     batch: int,
     repo_dir: str,
     log_byte_window: Optional[Tuple[int, int]] = None,
+    log_time_window: Optional[Tuple[datetime, datetime]] = None,
 ) -> Optional[str]:
     """Write PNG to <repo_dir>/mount/imgs/<sf>/openivm-ops-<engine>-batch<batch>.png. Return path or None."""
-    png = render_batch_png(sf, engine, batch, repo_dir, log_byte_window)
+    png = render_batch_png(sf, engine, batch, repo_dir, log_byte_window, log_time_window)
     if not png:
         return None
 
@@ -99,9 +147,10 @@ def _load_refreshes(
     batch: int,
     repo_dir: str,
     log_byte_window: Optional[Tuple[int, int]],
+    log_time_window: Optional[Tuple[datetime, datetime]] = None,
 ) -> List[dict]:
     if engine == "spark-openivm":
-        return _parse_spark_openivm_perf(repo_dir, sf, log_byte_window)
+        return _parse_spark_openivm_perf(repo_dir, sf, log_byte_window, log_time_window)
     if engine == "duckdb-openivm":
         return _parse_duckdb_openivm_perf(repo_dir, sf, batch)
     return []
@@ -111,11 +160,19 @@ def _parse_spark_openivm_perf(
     repo_dir: str,
     sf: str,
     log_byte_window: Optional[Tuple[int, int]],
+    log_time_window: Optional[Tuple[datetime, datetime]] = None,
 ) -> List[dict]:
     log_dir = os.path.join(repo_dir, "mount", "logs", str(sf), "spark-openivm", "livy-logs")
     live_log = os.path.join(log_dir, "livy-server.log")
-    if log_byte_window is not None:
+    if log_time_window is not None:
+        lines = _read_all_livy_logs(log_dir)
+        lines = _filter_by_time_window(lines, log_time_window)
+    elif log_byte_window is not None:
         lines = _read_log_window(live_log, log_byte_window)
+        # If the byte window yielded nothing (e.g. log rotated mid-batch), fall back
+        # to reading all rotated files and keep everything.  Better than empty PNG.
+        if not lines:
+            lines = _read_all_livy_logs(log_dir)
     else:
         lines = _read_all_livy_logs(log_dir)
 
@@ -467,6 +524,37 @@ def _read_log_window(path: str, log_byte_window: Tuple[int, int]) -> List[str]:
     except Exception as exc:
         logger.warning("Unable to read spark-openivm log window %s: %s", path, exc)
         return []
+
+
+def _filter_by_time_window(
+    lines: Iterable[str], window: Tuple[datetime, datetime]
+) -> List[str]:
+    """Filter livy log lines by their leading `yy/MM/dd HH:mm:ss` prefix.
+
+    Lines without a parseable prefix are kept (we don't know which batch they
+    belong to, but they're rare and usually multi-line java tracebacks).  The
+    window is compared in naive UTC; livy logs are emitted in container UTC.
+    """
+    start_ts, end_ts = window
+    if start_ts.tzinfo is not None:
+        start_ts = start_ts.replace(tzinfo=None)
+    if end_ts.tzinfo is not None:
+        end_ts = end_ts.replace(tzinfo=None)
+    out: List[str] = []
+    for line in lines:
+        m = _LIVY_TS_RE.match(line)
+        if not m:
+            out.append(line)
+            continue
+        try:
+            yy, mm, dd, HH, MM, SS = (int(g) for g in m.groups())
+            ts = datetime(2000 + yy, mm, dd, HH, MM, SS)
+        except (TypeError, ValueError):
+            out.append(line)
+            continue
+        if start_ts <= ts <= end_ts:
+            out.append(line)
+    return out
 
 
 def _read_all_livy_logs(log_dir: str) -> List[str]:
