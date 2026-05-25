@@ -30,7 +30,7 @@ on:
         type: string
       preserve_raw:
         description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
-        default: "0"
+        default: "1"
         type: string
       openivm_validate:
         description: "Validate OpenIVM views with EXCEPT ALL after each timed batch (0 or 1)"
@@ -38,7 +38,7 @@ on:
         type: string
       openivm_profile_refresh:
         description: "Export OpenIVM refresh profiling CSVs after each batch (0 or 1)"
-        default: "0"
+        default: "1"
         type: string
       timeout_minutes:
         description: "Job timeout in minutes"
@@ -66,9 +66,9 @@ jobs:
       BATCH_3_PCT: ${{ inputs.batch_3_pct || '2' }}
       PARALLEL: ${{ inputs.parallel || '0' }}
       ENGINES: ${{ inputs.engines || 'spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
-      PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
+      PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
-      OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '0' }}
+      OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
 
     steps:
       - name: "🧹 Clean Docker-owned files"
