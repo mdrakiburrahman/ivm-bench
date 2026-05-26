@@ -1,14 +1,16 @@
 """ExperimentInputs — every knob that varies per-experiment in an OAT sweep.
 
 The OAT (one-at-a-time) harness lets benchmark.sh hand the server a JSON file
-listing N partial-override experiments to run serially. The single-experiment
-path stays env-driven (back-compat with the original benchmark.sh).
+listing N partial-override experiments to run serially. This is the ONLY
+benchmark entrypoint; there is no env-var single-experiment fallback.
 
 Knob groups:
   * scale_factor / batch_*_pct / engines / parallel — what the existing
     BenchmarkConfig already understands
   * feature_flags — OPENIVM_VALIDATE, OPENIVM_PROFILE_REFRESH, OPENIVM_QUERY_LOG,
-    PRESERVE_RAW (no-op inside OAT, but still wired for single-experiment use)
+    PRESERVE_RAW (PRESERVE_RAW only governs whether ``mount/bin/`` survives
+    across sweeps — per-SF ``mount/raw/<sf>/`` is always wiped between
+    experiments by the disk-aware cleanup)
   * spark_tunables — driver_pct_ram, executor_pct_ram, shuffle_partitions,
     default_parallelism. Applied to BOTH spark and spark-openivm engines via the
     SPARK_*_RAM / SPARK_SUBMIT_* env vars that the entrypoints read first.
@@ -239,44 +241,6 @@ def parse_experiments_json(text: str) -> List[ExperimentInputs]:
     baseline = ExperimentInputs.from_dict(baseline_d) if baseline_d else ExperimentInputs()
 
     return [ExperimentInputs.from_dict(e, baseline=baseline) for e in raw_exps]
-
-
-def from_env() -> ExperimentInputs:
-    """Synthesise a single ExperimentInputs from the classic benchmark.sh env vars.
-
-    This is the back-compat path: when benchmark.sh runs without
-    BENCHMARK_EXPERIMENTS_FILE, the orchestrator dispatches a 1-experiment
-    OAT run with this row.
-    """
-    engines = [
-        e.strip()
-        for e in os.environ.get(
-            "ENGINES",
-            "spark,spark-openivm,duckdb,duckdb-openivm,feldera",
-        ).split(",")
-        if e.strip()
-    ]
-    return ExperimentInputs(
-        scale_factor=int(os.environ.get("SCALE_FACTOR", "3")),
-        batch_1_pct=os.environ.get("BATCH_1_PCT", "1"),
-        batch_2_pct=os.environ.get("BATCH_2_PCT", "0.001"),
-        batch_3_pct=os.environ.get("BATCH_3_PCT", "0.002"),
-        engines=engines,
-        parallel=os.environ.get("PARALLEL", "0") == "1",
-        feature_flags=FeatureFlags(
-            openivm_validate=os.environ.get("OPENIVM_VALIDATE", "1") == "1",
-            openivm_profile_refresh=os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1",
-            openivm_query_log=os.environ.get("OPENIVM_QUERY_LOG", "1") == "1",
-            preserve_raw=os.environ.get("PRESERVE_RAW", "0") == "1",
-        ),
-        spark_tunables=SparkTunables(
-            driver_pct_ram=_opt_int("SPARK_DRIVER_PCT_RAM"),
-            executor_pct_ram=_opt_int("SPARK_EXECUTOR_PCT_RAM"),
-            shuffle_partitions=_opt_int("SPARK_SUBMIT_SHUFFLE_PARTITIONS"),
-            default_parallelism=_opt_int("SPARK_SUBMIT_DEFAULT_PARALLELISM"),
-        ),
-        label="env-single",
-    )
 
 
 def _opt_int(key: str) -> Optional[int]:

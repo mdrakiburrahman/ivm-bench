@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional
 
 from models.config import BenchmarkConfig
-from models.experiments import ExperimentInputs, from_env as experiments_from_env, parse_experiments_json
+from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BenchmarkResult, EngineResult
 from services import oat_runner
 from services.db import DB_LOCK, get_db
@@ -44,7 +44,8 @@ class Orchestrator:
         self._thread: Optional[threading.Thread] = None
         self._benchmark_id: Optional[str] = None
 
-        # OAT (one-at-a-time) sweep state. None / empty for single-experiment runs.
+        # OAT (one-at-a-time) sweep state. Populated on every run because
+        # OAT is the only entrypoint.
         self._experiments_file: Optional[str] = None
         self._experiments: List[ExperimentInputs] = []
         self._oat_run_id: Optional[str] = None
@@ -54,14 +55,6 @@ class Orchestrator:
     @property
     def config(self) -> BenchmarkConfig:
         return self._config
-
-    def update_config(self, **overrides) -> None:
-        """Update config fields. Only allowed when not running."""
-        if self._running:
-            raise RuntimeError("Cannot update config while running")
-        for key, value in overrides.items():
-            if hasattr(self._config, key):
-                setattr(self._config, key, value)
 
     @property
     def result(self) -> BenchmarkResult:
@@ -113,22 +106,18 @@ class Orchestrator:
             stop.set()
             thread.join(timeout=interval_s + 1)
 
-    def start(self, experiments_file: Optional[str] = None) -> None:
-        """Start the benchmark in a background thread.
+    def start(self, experiments_file: str) -> None:
+        """Start an OAT sweep in a background thread.
 
-        Modes:
-          * single-experiment (back-compat): ``experiments_file`` is None — the
-            orchestrator reads classic env vars (SCALE_FACTOR, BATCH_*, ENGINES,
-            …), inserts ONE benchmark_runs row up-front, and runs the pipeline
-            exactly as it did pre-OAT.
-          * OAT sweep: ``experiments_file`` is a path to a JSON file describing
-            N experiments. We parse it now to fail fast, create the parent
-            ``oat_runs`` record, then iterate inside ``_run_oat`` — one fresh
-            ``benchmark_runs`` row per experiment.
+        ``experiments_file`` is REQUIRED — must be the absolute in-container
+        path of an experiments JSON. The harness is OAT-only; legacy
+        single-experiment env-var mode was removed.
         """
         with self._lock:
             if self._running:
                 raise RuntimeError("Benchmark already running")
+            if not experiments_file:
+                raise ValueError("experiments_file is required (OAT-only mode)")
             self._running = True
             self._result = BenchmarkResult(status="running")
             self._experiments_file = experiments_file
@@ -137,29 +126,24 @@ class Orchestrator:
             self._oat_per_exp_dicts = []
             self._benchmark_id = None
 
-            if experiments_file:
-                if not os.path.exists(experiments_file):
-                    self._running = False
-                    raise FileNotFoundError(experiments_file)
-                with open(experiments_file) as f:
-                    self._experiments = parse_experiments_json(f.read())
-                if not self._experiments:
-                    self._running = False
-                    raise ValueError("experiments JSON has no experiments")
-                self._oat_run_id = str(uuid.uuid4())
-                self._oat_started_at = oat_runner.iso_now()
-                with DB_LOCK:
-                    conn = get_db()
-                    conn.execute(
-                        "INSERT INTO oat_runs (id, status, started_at, experiments_file) VALUES (?,?,?,?)",
-                        (self._oat_run_id, "running", self._oat_started_at, experiments_file),
-                    )
-                    conn.commit()
-                    conn.close()
-            else:
-                # Single-experiment mode: insert benchmark_runs eagerly so
-                # /benchmark/status returns useful info immediately after start.
-                self._init_benchmark_run_record_from_config()
+            if not os.path.exists(experiments_file):
+                self._running = False
+                raise FileNotFoundError(experiments_file)
+            with open(experiments_file) as f:
+                self._experiments = parse_experiments_json(f.read())
+            if not self._experiments:
+                self._running = False
+                raise ValueError("experiments JSON has no experiments")
+            self._oat_run_id = str(uuid.uuid4())
+            self._oat_started_at = oat_runner.iso_now()
+            with DB_LOCK:
+                conn = get_db()
+                conn.execute(
+                    "INSERT INTO oat_runs (id, status, started_at, experiments_file) VALUES (?,?,?,?)",
+                    (self._oat_run_id, "running", self._oat_started_at, experiments_file),
+                )
+                conn.commit()
+                conn.close()
 
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
@@ -167,8 +151,8 @@ class Orchestrator:
     def _init_benchmark_run_record_from_config(self) -> None:
         """Create a fresh benchmark_runs row + engine_batches rows from ``self._config``.
 
-        Sets ``self._benchmark_id`` to the new UUID. Called once per experiment
-        (once total in single mode, once per OAT iteration in OAT mode).
+        Sets ``self._benchmark_id`` to the new UUID. Called once per OAT
+        iteration so each experiment owns a distinct benchmark_runs row.
         """
         self._benchmark_id = str(uuid.uuid4())
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -197,46 +181,12 @@ class Orchestrator:
             conn.close()
 
     def _run(self) -> None:
-        """Dispatcher — single experiment vs OAT sweep."""
+        """Entry point for the OAT sweep thread."""
         try:
-            if self._oat_run_id is not None:
-                self._run_oat()
-            else:
-                self._run_single_legacy()
+            self._run_oat()
         finally:
             self._running = False
             self._log_queue.put("__DONE__")
-
-    def _run_single_legacy(self) -> None:
-        """Single-experiment run (back-compat with pre-OAT benchmark.sh)."""
-        t0 = time.time()
-        try:
-            self._teardown_existing()
-            self._clean_mount()
-            self._pre_create_dirs()
-            self._phase1_prep()
-            self._phase2_benchmark()
-            self._save_benchmark_results()
-            self._phase3_chart()
-
-            self._result.status = "completed"
-            self._result.total_duration_s = time.time() - t0
-            self.emit(self._result.summary_table())
-            self.emit(f"\nTotal wall-clock time: {self._result.total_duration_s:.1f}s")
-
-            self._update_benchmark_run("completed", self._result.total_duration_s)
-
-        except Exception as e:
-            self._result.status = "failed"
-            self._result.error = str(e)
-            self._result.total_duration_s = time.time() - t0
-            self.emit(f"BENCHMARK FAILED: {e}")
-            logger.exception("Benchmark failed")
-            self._update_benchmark_run("failed", self._result.total_duration_s, str(e))
-
-        finally:
-            self._save_benchmark_results()
-            self._dump_server_log()
 
     def _update_benchmark_run(self, status: str, duration_s: float = None, error: str = None) -> None:
         """Persist benchmark run status to SQLite."""
@@ -723,77 +673,6 @@ class Orchestrator:
                     er = EngineResult(engine=name, status="failed", error=str(e))
                     self._result.engines[name] = er
                     self.emit(f"[{name}] FAILED: {e}")
-
-    # ----- Phase 3: Chart -----
-
-    def _phase3_chart(self) -> None:
-        """Phase 3: Generate results charts directly (no Docker container needed)."""
-        self.emit("")
-        self.emit("=== Phase 3: Generating results charts ===")
-
-        repo = self._config.repo_dir
-        sf = self._config.scale_factor
-        b1 = self._config.batch_1_pct
-        b2 = self._config.batch_2_pct
-        b3 = self._config.batch_3_pct
-        results_dir = os.path.join(repo, "mount", "results", str(sf), "dbt-server")
-        stats_dir = os.path.join(repo, "mount", "stats", str(sf))
-
-        engine_resources = {}
-        if hasattr(self, "_engine_configs") and self._engine_configs:
-            for name, ecfg in self._engine_configs.items():
-                engine_resources[name] = {
-                    "cpus": ecfg.main_resources.cpus,
-                    "memory_gb": ecfg.main_resources.memory_gb,
-                }
-
-        # --- Scale-factor chart ---
-        try:
-            from handlers.chart import generate_chart_png
-
-            png_data = generate_chart_png(
-                state_dir=results_dir,
-                sf=str(sf),
-                b1pct=b1,
-                b2pct=b2,
-                b3pct=b3,
-                engine_resources=engine_resources,
-                stats_dir=stats_dir,
-            )
-            if png_data:
-                b1_slug = b1.replace(".", "_")
-                b2_slug = b2.replace(".", "_")
-                b3_slug = b3.replace(".", "_")
-                chart_file = f"scale-factor-{sf}-{b1_slug}-{b2_slug}-{b3_slug}.png"
-                imgs_dir = os.path.join(repo, "imgs")
-                os.makedirs(imgs_dir, exist_ok=True)
-                chart_path = os.path.join(imgs_dir, chart_file)
-                with open(chart_path, "wb") as f:
-                    f.write(png_data)
-                self.emit(f"  Scale-factor chart saved to imgs/{chart_file}")
-            else:
-                self.emit("  WARNING: No data available for scale-factor chart")
-        except Exception as e:
-            self.emit(f"  WARNING: Scale-factor chart generation failed: {e}")
-            logger.warning("Scale-factor chart generation failed: %s", e)
-
-        # --- Heuristics chart ---
-        try:
-            from handlers.chart import generate_heuristics_png
-
-            heuristics_data = generate_heuristics_png(state_dir=results_dir)
-            if heuristics_data:
-                imgs_dir = os.path.join(repo, "imgs")
-                os.makedirs(imgs_dir, exist_ok=True)
-                heuristics_path = os.path.join(imgs_dir, "benchmark-heuristics.png")
-                with open(heuristics_path, "wb") as f:
-                    f.write(heuristics_data)
-                self.emit("  Heuristics chart saved to imgs/benchmark-heuristics.png")
-            else:
-                self.emit("  WARNING: No data available for heuristics chart")
-        except Exception as e:
-            self.emit(f"  WARNING: Heuristics chart generation failed: {e}")
-            logger.warning("Heuristics chart generation failed: %s", e)
 
     # ----- OAT (one-at-a-time) sweep -----
 

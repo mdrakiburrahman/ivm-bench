@@ -1,4 +1,4 @@
-"""Benchmark handler — start, stream, and status endpoints."""
+"""Benchmark handler — start, stream, and status endpoints (OAT-only)."""
 
 import logging
 import os
@@ -14,13 +14,12 @@ bp = Blueprint("benchmark", __name__)
 
 
 def _resolve_experiments_file(body: dict) -> str:
-    """Return an experiments-file path or '' for the back-compat (env-only) path.
+    """Return an experiments-file path. Empty string means 'no file provided'.
 
     Priority:
       1. POST body field ``experiments_file``
       2. ``BENCHMARK_EXPERIMENTS_FILE`` env var (set by benchmark.sh /
-         docker-compose.benchmark-server.yml when running an OAT sweep)
-      3. None — use the classic env-var path (SCALE_FACTOR + BATCH_*)
+         docker-compose.benchmark-server.yml)
     """
     if body and body.get("experiments_file"):
         return body["experiments_file"]
@@ -29,13 +28,12 @@ def _resolve_experiments_file(body: dict) -> str:
 
 @bp.route("/benchmark", methods=["POST"])
 def start_benchmark():
-    """Start a benchmark run.
+    """Start an OAT sweep.
 
     Body fields (all optional):
       * ``experiments_file``  — absolute path inside the benchmark-server
-                                container of an OAT experiments JSON.
-      * ``parallel`` / ``engines`` — legacy single-experiment overrides
-                                (ignored when ``experiments_file`` is set).
+                                container of an experiments JSON. Falls
+                                back to ``BENCHMARK_EXPERIMENTS_FILE``.
     """
     orch = get_orchestrator()
     if orch.is_running:
@@ -46,20 +44,19 @@ def start_benchmark():
         logger.info("POST /benchmark body=%s", body)
 
     experiments_file = _resolve_experiments_file(body)
-    if experiments_file and not os.path.exists(experiments_file):
+    if not experiments_file:
+        return jsonify({
+            "error": "experiments_file is required — pass it in the POST body "
+                     "or set the BENCHMARK_EXPERIMENTS_FILE env var",
+        }), 400
+    if not os.path.exists(experiments_file):
         return jsonify({
             "error": f"experiments_file not found at {experiments_file} "
                      f"(in benchmark-server container)",
         }), 404
 
-    # Legacy overrides only meaningful for single-experiment mode.
-    if not experiments_file and body:
-        orch.update_config(**{
-            k: v for k, v in body.items() if k in ("parallel", "engines")
-        })
-
     try:
-        orch.start(experiments_file=experiments_file or None)
+        orch.start(experiments_file=experiments_file)
     except FileNotFoundError as e:
         return jsonify({"error": f"experiments_file not found: {e}"}), 404
     except ValueError as e:
@@ -67,28 +64,27 @@ def start_benchmark():
 
     return jsonify({
         "status": "started",
-        "mode": "oat" if experiments_file else "single",
-        "experiments_file": experiments_file or None,
+        "experiments_file": experiments_file,
         "oat_run_id": orch._oat_run_id,
-        "config": _config_summary(orch),
     }), 202
 
 
 @bp.route("/benchmark/stream", methods=["GET"])
 def stream_benchmark():
-    """SSE endpoint that streams benchmark progress."""
+    """SSE endpoint that streams OAT progress."""
     orch = get_orchestrator()
 
-    # Auto-start if not running yet. Picks up BENCHMARK_EXPERIMENTS_FILE if set.
+    # Auto-start if not running yet. Picks up BENCHMARK_EXPERIMENTS_FILE.
     if not orch.is_running and orch.result.status == "pending":
         experiments_file = _resolve_experiments_file({})
-        logger.info(
-            "GET /benchmark/stream — auto-starting (mode=%s, file=%r)",
-            "oat" if experiments_file else "single",
-            experiments_file or None,
-        )
+        if not experiments_file:
+            return jsonify({
+                "error": "experiments_file is required — set BENCHMARK_EXPERIMENTS_FILE "
+                         "before hitting /benchmark/stream",
+            }), 400
+        logger.info("GET /benchmark/stream — auto-starting OAT (file=%r)", experiments_file)
         try:
-            orch.start(experiments_file=experiments_file or None)
+            orch.start(experiments_file=experiments_file)
         except (FileNotFoundError, ValueError, RuntimeError) as e:
             return jsonify({"error": str(e)}), 400
 
@@ -119,25 +115,14 @@ def stream_benchmark():
 
 @bp.route("/benchmark/status", methods=["GET"])
 def benchmark_status():
-    """Get current benchmark status and results."""
+    """Get current OAT status and results."""
     orch = get_orchestrator()
     result = orch.result.to_dict()
-    # In OAT mode add a top-level pointer so callers can find the artifact dir.
     if orch._oat_run_id:
         result["oat_run_id"] = orch._oat_run_id
         result["experiments_file"] = orch._experiments_file
     logger.info("GET /benchmark/status → status=%s", result.get("status"))
     return jsonify(result)
-
-
-def _config_summary(orch) -> dict:
-    """Return a safe summary of the current config for API responses."""
-    cfg = orch.config
-    return {
-        "scale_factor": cfg.scale_factor,
-        "engines": cfg.engines,
-        "parallel": cfg.parallel,
-    }
 
 
 class BenchmarkHandler(BaseHandler):

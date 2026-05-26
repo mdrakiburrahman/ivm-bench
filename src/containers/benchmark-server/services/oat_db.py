@@ -9,11 +9,7 @@ Two new tables, both keyed by the OAT run id (separate from
 
 Each individual experiment still writes a ``benchmark_runs`` row + per-engine
 ``engine_batches`` rows via the existing schema. ``oat_experiments`` just
-adds parent + linkage metadata on top, so:
-
-  * single-experiment runs continue to work unchanged (no oat_runs row written)
-  * OAT runs get the parent in ``oat_runs`` plus N child rows in
-    ``oat_experiments``, each pointing at its own ``benchmark_runs`` row
+adds parent + linkage metadata on top.
 
 ``init_db()`` here is called from ``services/db.init_db()`` at server start,
 so the tables exist with no separate migration step.

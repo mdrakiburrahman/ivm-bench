@@ -111,15 +111,14 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ### OAT sweeps (one-at-a-time)
 
-For multi-knob sweeps (Scale Factor break-even studies, batch-percentage
-ladders, Spark-tunable explorations, etc.) `benchmark.sh` accepts an
-experiments JSON file via the `BENCHMARK_EXPERIMENTS_FILE` env var. The
-server runs each experiment serially with **disk-aware cleanup** — between
-experiments it wipes `mount/raw/<SF>/` and the per-engine results / logs
-dirs while preserving the dbt-server JSON, container stats, and `mount/bin/`.
-When free disk on the WSL ext4 filesystem drops below `OAT_MIN_FREE_PCT`
-(default `10`), the remaining experiments are skipped (the host never
-crashes).
+`benchmark.sh` is OAT-only. Every run takes an experiments JSON file passed
+via `BENCHMARK_EXPERIMENTS_FILE` (single-experiment sweeps are just a 1-row
+JSON). The server runs each experiment serially with **disk-aware cleanup** —
+between experiments it wipes `mount/raw/<SF>/` and the per-engine results /
+logs dirs while preserving the dbt-server JSON, container stats, and
+`mount/bin/`. When free disk on the WSL ext4 filesystem drops below
+`OAT_MIN_FREE_PCT` (default `10`), the remaining experiments are skipped (the
+host never crashes).
 
 ```bash
 # Run the built-in Scale-Factor sweep (12 SFs × spark + spark-openivm)
