@@ -110,8 +110,8 @@ class Orchestrator:
         """Start an OAT sweep in a background thread.
 
         ``experiments_file`` is REQUIRED — must be the absolute in-container
-        path of an experiments JSON. The harness is OAT-only; legacy
-        single-experiment env-var mode was removed.
+        path of an experiments JSON. A 1-row JSON is a minimal "single
+        experiment"; an N-row JSON is a sweep.
         """
         with self._lock:
             if self._running:

@@ -34,37 +34,44 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) on how to bootstrap a fresh Windows mac
 
 ### Benchmark
 
+The benchmark harness is OAT (one-at-a-time): every run takes a JSON experiments
+file via `BENCHMARK_EXPERIMENTS_FILE`. A 1-row JSON is a "single experiment";
+an N-row JSON is a sweep. Built-in files live under
+`src/containers/benchmark-server/experiments/`.
+
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
-export SCALE_FACTOR=3                                             # 3 - 2147483647
-export BATCH_1_PCT=100                                            # 100% of DIGen batch 1 data
-export BATCH_2_PCT=1                                              # 1% of DIGen batch 2 data
-export BATCH_3_PCT=2                                              # 2% of DIGen batch 3 data
-export PARALLEL=0                                                 # 0, 1
-export ENGINES=spark,spark-openivm,duckdb,duckdb-openivm,feldera  # Comma separated engines to run
-export PRESERVE_RAW=1                                             # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
-export OPENIVM_VALIDATE=1                                         # 0, 1 — validates OpenIVM views with EXCEPT ALL after timed batches
-export OPENIVM_PROFILE_REFRESH=1                                  # 0, 1 — exports OpenIVM profiling CSVs into mount/results/<SF>/dbt-server
+
+# Smoke run (SF=3, spark + spark-openivm, cheap batches — ~30 min).
+export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/experiments/smoke.json"
+
+# Or the full Scale-Factor break-even sweep (12 SFs × spark vs spark-openivm).
+# export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/experiments/sf-sweep.json"
+
+# Optional global knobs (apply to the OAT loop itself):
+export OAT_MIN_FREE_PCT=10   # skip remaining experiments when free disk < 10%
+export PRESERVE_RAW=1        # keep mount/bin/ across sweeps (raw/<SF>/ is always wiped between experiments)
 
 bash src/.scripts/benchmark.sh
 ```
 
-At the end, you should see the benchmark-server stream results like:
+Per-experiment knobs (scale factor, batch percentages, engines, parallel mode,
+OpenIVM feature flags, Spark tunables) live INSIDE the experiments JSON — each
+row inherits from a `baseline` block and overrides only what varies. See
+`smoke.json` for the schema and the
+[OAT sweeps](#oat-sweeps-one-at-a-time) section below for artifact layout.
+
+At the end, `benchmark.sh` cats `mount/oat-state/latest/RESULTS.md`:
 
 ```text
-=== All benchmarks completed successfully ===
+=== OAT sweep — status: completed ===
 
-                 1           2           3
-Duckdb:          00:00:14 -> 00:00:15 -> 00:00:15
-Duckdb-openivm:  00:00:40 -> 00:00:23 -> 00:00:23
-Feldera:         00:19:12 -> 00:01:35 -> 00:01:41
-Spark:           00:03:10 -> 00:02:14 -> 00:02:04
-Spark-openivm:   00:05:34 -> 00:01:11 -> 00:01:06
-
-====================== 00:36:23 ======================
+| # | label     | sf | b1   | b2     | b3     | engines              | parallel | wall   | status    |
+|---|-----------|----|------|--------|--------|----------------------|----------|--------|-----------|
+| 1 | smoke-sf3 | 3  | 1    | 0.001  | 0.002  | spark, spark-openivm | false    | 30m12s | completed |
 ```
 
-Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
+Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, RESULTS.md, outputs.json}`
 
 ### Engines
 
@@ -96,6 +103,7 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 - Feldera takes ALL queries in the model and compiles it into a single binary that represents a circuit. So when `dbt` runs, it's not query-by-query, but rather the circuit flushes as it proceeds. As a result, all "tables" finish around the same time roughly.
 - All results below were generated on an `E32AS_v4` Azure VM. Do **not** commit results from your local machine as the hardware may vary.
 - Docker is NOT very good at resource isolation, the screenshots below must be generated with `PARALLEL=0`
+- The PNGs below are illustrative snapshots from prior runs. Current OAT runs emit `chart-oat.png` + `chart-per-model.png` into `mount/oat-state/<run_id>/` instead.
 
 ### Benchmark Heuristics
 
@@ -112,13 +120,13 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 ### OAT sweeps (one-at-a-time)
 
 `benchmark.sh` is OAT-only. Every run takes an experiments JSON file passed
-via `BENCHMARK_EXPERIMENTS_FILE` (single-experiment sweeps are just a 1-row
-JSON). The server runs each experiment serially with **disk-aware cleanup** —
-between experiments it wipes `mount/raw/<SF>/` and the per-engine results /
-logs dirs while preserving the dbt-server JSON, container stats, and
-`mount/bin/`. When free disk on the WSL ext4 filesystem drops below
-`OAT_MIN_FREE_PCT` (default `10`), the remaining experiments are skipped (the
-host never crashes).
+via `BENCHMARK_EXPERIMENTS_FILE` — a 1-row JSON is a minimal "single
+experiment", an N-row JSON is a sweep. The server runs each experiment
+serially with **disk-aware cleanup** — between experiments it wipes
+`mount/raw/<SF>/` and the per-engine results / logs dirs while preserving
+the dbt-server JSON, container stats, and `mount/bin/`. When free disk on
+the WSL ext4 filesystem drops below `OAT_MIN_FREE_PCT` (default `10`), the
+remaining experiments are skipped (the host never crashes).
 
 ```bash
 # Run the built-in Scale-Factor sweep (12 SFs × spark + spark-openivm)
