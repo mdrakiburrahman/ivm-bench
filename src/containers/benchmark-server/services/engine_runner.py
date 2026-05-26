@@ -171,7 +171,7 @@ class EngineRunner:
             # Start engine stack
             self._emit(f"[{name}] Building and starting compose stack")
             self._engine_mgr.build()
-            self._engine_mgr.up(detach=True)
+            self._up_with_retry()
 
             # Wait for dbt-server health
             self._emit(f"[{name}] Waiting for dbt-server health")
@@ -215,6 +215,54 @@ class EngineRunner:
                     os.unlink(f)
 
         return self._result
+
+    def _up_with_retry(self, max_attempts: int = 3, backoff_s: int = 30) -> None:
+        """Start the compose stack, retrying on transient mssql startup crashes.
+
+        SQL Server 2025 occasionally hits the sqlpal NtumWaiter ASSERT on
+        first boot under heavy host CPU load.  The container's own
+        ``restart: on-failure:3`` policy then brings it back up within
+        ~10-30s, but docker-compose's ``up -d`` has already exited with
+        ``dependency mssql-metastore failed to start ... is unhealthy`` and
+        will not retry on its own.  This wrapper re-issues the ``up`` after
+        a short backoff so the second invocation can pick up the already-
+        restarted mssql container and proceed.
+
+        Any non-transient failure (compose build error, image-not-found,
+        port conflict) re-raises immediately on the first attempt because
+        the substring matchers below are narrow.
+        """
+        name = self._engine.name
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._engine_mgr.up(detach=True)
+                return
+            except RuntimeError as exc:
+                msg = str(exc)
+                transient = (
+                    "dependency mssql-metastore failed to start" in msg
+                    or "is unhealthy" in msg
+                )
+                if not transient or attempt == max_attempts:
+                    raise
+                last_exc = exc
+                self._emit(
+                    f"[{name}] up attempt {attempt}/{max_attempts} hit transient "
+                    f"mssql startup crash — sleeping {backoff_s}s then retrying"
+                )
+                logger.warning(
+                    "Transient mssql failure on attempt %d; retrying after %ds",
+                    attempt,
+                    backoff_s,
+                )
+                try:
+                    self._engine_mgr.down()
+                except Exception:
+                    logger.exception("Cleanup down() failed between up retries")
+                time.sleep(backoff_s)
+        if last_exc is not None:
+            raise last_exc
 
     # ----- Batch execution -----
 
