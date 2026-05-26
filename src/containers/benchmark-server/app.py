@@ -17,6 +17,7 @@ from flask import Flask, g, request
 from handlers.health import HealthHandler
 from handlers.benchmark import BenchmarkHandler
 from handlers.chart import ChartHandler
+from handlers.oat_chart import OatChartHandler
 from services.db import init_db
 
 LOG_FILE = "/tmp/benchmark-server.log"
@@ -68,6 +69,7 @@ def register_handlers(flask_app: Flask) -> None:
         HealthHandler(),
         BenchmarkHandler(),
         ChartHandler(),
+        OatChartHandler(),
     ]
     for handler in handlers:
         handler.register(flask_app)

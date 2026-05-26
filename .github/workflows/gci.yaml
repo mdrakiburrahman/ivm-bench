@@ -107,6 +107,7 @@ jobs:
             mount/stats/
             mount/debug/
             mount/imgs/
+            mount/oat-state/
             imgs/*.png
           if-no-files-found: warn
           retention-days: 30

@@ -109,6 +109,46 @@ Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `bat
 
 ![Results](imgs/scale-factor-100-100-1-1.png)
 
+### OAT sweeps (one-at-a-time)
+
+For multi-knob sweeps (Scale Factor break-even studies, batch-percentage
+ladders, Spark-tunable explorations, etc.) `benchmark.sh` accepts an
+experiments JSON file via the `BENCHMARK_EXPERIMENTS_FILE` env var. The
+server runs each experiment serially with **disk-aware cleanup** — between
+experiments it wipes `mount/raw/<SF>/` and the per-engine results / logs
+dirs while preserving the dbt-server JSON, container stats, and `mount/bin/`.
+When free disk on the WSL ext4 filesystem drops below `OAT_MIN_FREE_PCT`
+(default `10`), the remaining experiments are skipped (the host never
+crashes).
+
+```bash
+# Run the built-in Scale-Factor sweep (12 SFs × spark + spark-openivm)
+export BENCHMARK_EXPERIMENTS_FILE="$(git rev-parse --show-toplevel)/src/containers/benchmark-server/experiments/sf-sweep.json"
+bash src/.scripts/benchmark.sh
+
+# Or just smoke-test on SF=3 with the cheapest batch percentages
+export BENCHMARK_EXPERIMENTS_FILE="$(git rev-parse --show-toplevel)/src/containers/benchmark-server/experiments/smoke.json"
+bash src/.scripts/benchmark.sh
+```
+
+Per-OAT artifacts land under `mount/oat-state/<oat_run_id>/` with a
+`mount/oat-state/latest` symlink:
+
+| File                       | Description                                                              |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `inputs.json`              | The experiments JSON as-loaded (provenance)                              |
+| `outputs.json`             | Per-experiment aggregated outputs (status, walls, per-batch durations…)  |
+| `chart-oat.png`            | Aggregate heatmap (rows = experiments, columns = batch × engine)         |
+| `chart-per-model.png`      | Per-dbt-model heatmap with log₂(openivm / spark) per batch               |
+| `RESULTS.md`               | Markdown overview + per-input/output tables + per-model break-even table |
+| `benchmark-server.log`     | Copy of the orchestrator log for that run                                |
+| `exp-<NNN>/outputs.json`   | One per experiment — same shape as a per-experiment entry in master      |
+
+To write your own sweep, copy `experiments/smoke.json` as a starting point
+and override `scale_factor` / `batch_*_pct` / `engines` / `parallel` /
+the OpenIVM feature flags / Spark tunables on each row. Anything you don't
+set inherits from the file's `baseline` block.
+
 ---
 
 ## Disclaimer

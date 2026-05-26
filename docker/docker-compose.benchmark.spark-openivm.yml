@@ -31,6 +31,10 @@ services:
       METASTORE_PORT: "1433"
       OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
       OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
+      SPARK_DRIVER_PCT_RAM: "${SPARK_DRIVER_PCT_RAM:-}"
+      SPARK_EXECUTOR_PCT_RAM: "${SPARK_EXECUTOR_PCT_RAM:-}"
+      SPARK_SUBMIT_SHUFFLE_PARTITIONS: "${SPARK_SUBMIT_SHUFFLE_PARTITIONS:-}"
+      SPARK_SUBMIT_DEFAULT_PARALLELISM: "${SPARK_SUBMIT_DEFAULT_PARALLELISM:-}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm

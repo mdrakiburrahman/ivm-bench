@@ -32,6 +32,10 @@ services:
     environment:
       METASTORE_HOST: mssql-metastore
       METASTORE_PORT: "1433"
+      SPARK_DRIVER_PCT_RAM: "${SPARK_DRIVER_PCT_RAM:-}"
+      SPARK_EXECUTOR_PCT_RAM: "${SPARK_EXECUTOR_PCT_RAM:-}"
+      SPARK_SUBMIT_SHUFFLE_PARTITIONS: "${SPARK_SUBMIT_SHUFFLE_PARTITIONS:-}"
+      SPARK_SUBMIT_DEFAULT_PARALLELISM: "${SPARK_SUBMIT_DEFAULT_PARALLELISM:-}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark

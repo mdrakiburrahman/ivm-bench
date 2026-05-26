@@ -49,3 +49,8 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+
+    # OAT harness tables: oat_runs + oat_experiments. Kept in a separate
+    # module so the OAT schema stays cleanly removable / iterable.
+    from services import oat_db
+    oat_db.init_db()

@@ -3,11 +3,37 @@
 # benchmark.sh — thin client that launches the benchmark-server and streams
 # progress via Server-Sent Events.
 #
+# Two modes:
+#
+#   1. SINGLE EXPERIMENT (back-compat, default)
+#      Drive one benchmark via the classic env vars below. Result PNG lands at
+#      imgs/scale-factor-<SF>-<B1>-<B2>-<B3>.png and benchmark-results.json at
+#      mount/results/<SF>/dbt-server/.
+#
+#   2. OAT SWEEP (new)
+#      Set BENCHMARK_EXPERIMENTS_FILE=<absolute path under repo root> to an
+#      experiments JSON file. The server runs the experiments serially with
+#      disk-aware cleanup; aggregate artifacts (chart-oat.png,
+#      chart-per-model.png, RESULTS.md, outputs.json) land at
+#      mount/oat-state/<oat_run_id>/ (and mount/oat-state/latest →).
+#
+#      Built-in example sweeps:
+#        src/containers/benchmark-server/experiments/sf-sweep.json   # full SF sweep
+#        src/containers/benchmark-server/experiments/smoke.json      # SF=3 smoke
+#
 # Environment variables:
-#   SCALE_FACTOR   — TPC-DI scale factor (default: 3)
-#   BATCH_1_PCT    — % of batch 1 data (required)
-#   BATCH_2_PCT    — % of batch 2 data (required)
-#   BATCH_3_PCT    — % of batch 3 data (required)
+#   BENCHMARK_EXPERIMENTS_FILE — absolute path of OAT experiments JSON.
+#                    MUST live under repo root so the existing bind-mount
+#                    makes it visible inside the benchmark-server container
+#                    at the same path. When set, batch/engine env vars are
+#                    ignored (each experiment owns its own knobs).
+#   OAT_MIN_FREE_PCT — minimum % free disk under repo root to keep running.
+#                    Default 10. The sweep SKIPS remaining experiments below
+#                    this threshold (no host crash on WSL).
+#   SCALE_FACTOR   — TPC-DI scale factor (default: 3) [single mode]
+#   BATCH_1_PCT    — % of batch 1 data (required in single mode)
+#   BATCH_2_PCT    — % of batch 2 data (required in single mode)
+#   BATCH_3_PCT    — % of batch 3 data (required in single mode)
 #   PARALLEL       — 0 = serial (default), 1 = run engines in parallel
 #   ENGINES        — comma-separated engine list (default: spark,spark-openivm,duckdb,duckdb-openivm,feldera,spark-openivm)
 #   HOST_CORES     — override auto-detected CPU count
@@ -31,15 +57,45 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(pwd)"
 
-export SCALE_FACTOR="${SCALE_FACTOR:-3}"
+export BENCHMARK_EXPERIMENTS_FILE="${BENCHMARK_EXPERIMENTS_FILE:-}"
+export OAT_MIN_FREE_PCT="${OAT_MIN_FREE_PCT:-10}"
 
-if [[ -z "${BATCH_1_PCT:-}" || -z "${BATCH_2_PCT:-}" || -z "${BATCH_3_PCT:-}" ]]; then
-  echo "ERROR: BATCH_1_PCT, BATCH_2_PCT, and BATCH_3_PCT must all be set."
-  echo "  Example: export BATCH_1_PCT=1 BATCH_2_PCT=0.001 BATCH_3_PCT=0.002"
-  exit 1
+if [[ -n "$BENCHMARK_EXPERIMENTS_FILE" ]]; then
+  # OAT mode: resolve to absolute, validate under repo root.
+  if [[ "$BENCHMARK_EXPERIMENTS_FILE" != /* ]]; then
+    BENCHMARK_EXPERIMENTS_FILE="$REPO_ROOT/$BENCHMARK_EXPERIMENTS_FILE"
+  fi
+  if [[ ! -f "$BENCHMARK_EXPERIMENTS_FILE" ]]; then
+    echo "ERROR: BENCHMARK_EXPERIMENTS_FILE=$BENCHMARK_EXPERIMENTS_FILE does not exist"
+    exit 1
+  fi
+  case "$BENCHMARK_EXPERIMENTS_FILE" in
+    "$REPO_ROOT"/*) ;;
+    *)
+      echo "ERROR: BENCHMARK_EXPERIMENTS_FILE must live under the repo root ($REPO_ROOT)"
+      echo "       so the benchmark-server container can see it via the bind-mount."
+      echo "       Move the file under the repo or symlink it in."
+      exit 1
+      ;;
+  esac
+  echo "=== OAT mode — experiments file: $BENCHMARK_EXPERIMENTS_FILE ==="
+  # Provide harmless defaults so docker-compose interpolation never fails.
+  export SCALE_FACTOR="${SCALE_FACTOR:-3}"
+  export BATCH_1_PCT="${BATCH_1_PCT:-1}"
+  export BATCH_2_PCT="${BATCH_2_PCT:-0.001}"
+  export BATCH_3_PCT="${BATCH_3_PCT:-0.002}"
+else
+  export SCALE_FACTOR="${SCALE_FACTOR:-3}"
+  if [[ -z "${BATCH_1_PCT:-}" || -z "${BATCH_2_PCT:-}" || -z "${BATCH_3_PCT:-}" ]]; then
+    echo "ERROR: BATCH_1_PCT, BATCH_2_PCT, and BATCH_3_PCT must all be set."
+    echo "  Example: export BATCH_1_PCT=1 BATCH_2_PCT=0.001 BATCH_3_PCT=0.002"
+    exit 1
+  fi
+  export BATCH_1_PCT BATCH_2_PCT BATCH_3_PCT
 fi
-export BATCH_1_PCT BATCH_2_PCT BATCH_3_PCT
+
 export PARALLEL="${PARALLEL:-0}"
 export ENGINES="${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera,spark-openivm}"
 export HOST_CORES="${HOST_CORES:-}"
@@ -176,7 +232,23 @@ done < <(curl -sfN "http://localhost:9000/benchmark/stream" 2>/dev/null)
 echo ""
 
 RESULTS_JSON=$(curl -sf "http://localhost:9000/benchmark/status")
-print_results "$RESULTS_JSON"
+
+if [[ -n "$BENCHMARK_EXPERIMENTS_FILE" ]]; then
+  # OAT mode — single-engine print_results is misleading because the last
+  # experiment is just one snapshot. Dump the per-sweep RESULTS.md instead.
+  echo "=== OAT sweep finished — status: ${FINAL_STATUS} ==="
+  echo ""
+  OAT_RESULTS_MD="mount/oat-state/latest/RESULTS.md"
+  if [[ -f "$OAT_RESULTS_MD" ]]; then
+    cat "$OAT_RESULTS_MD"
+    echo ""
+    echo "Artifacts: mount/oat-state/latest/"
+  else
+    echo "(no RESULTS.md found at $OAT_RESULTS_MD — check mount/oat-state/ for partial output)"
+  fi
+else
+  print_results "$RESULTS_JSON"
+fi
 
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 

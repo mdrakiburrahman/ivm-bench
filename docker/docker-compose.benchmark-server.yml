@@ -14,9 +14,9 @@ services:
       REPO_DIR: "${REPO_HOST_PATH:-.}"
       DOCKER_HOST_ADDRESS: "host.docker.internal"
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
-      BATCH_1_PCT: "${BATCH_1_PCT}"
-      BATCH_2_PCT: "${BATCH_2_PCT}"
-      BATCH_3_PCT: "${BATCH_3_PCT}"
+      BATCH_1_PCT: "${BATCH_1_PCT:-1}"
+      BATCH_2_PCT: "${BATCH_2_PCT:-0.001}"
+      BATCH_3_PCT: "${BATCH_3_PCT:-0.002}"
       PARALLEL: "${PARALLEL:-0}"
       ENGINES: "${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
       HOST_CORES: "${HOST_CORES:-}"
@@ -26,6 +26,12 @@ services:
       OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
       OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
       OPENIVM_UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-}"
+      # OAT harness: experiments JSON file path + headroom config.
+      # BENCHMARK_EXPERIMENTS_FILE is the in-container path of the JSON
+      # file that POST /benchmark expects; benchmark.sh resolves the host
+      # path and uses the existing repo bind-mount to make it visible.
+      BENCHMARK_EXPERIMENTS_FILE: "${BENCHMARK_EXPERIMENTS_FILE:-}"
+      OAT_MIN_FREE_PCT: "${OAT_MIN_FREE_PCT:-10}"
     healthcheck:
       test: curl -sf http://localhost:9000/health || exit 1
       interval: 5s

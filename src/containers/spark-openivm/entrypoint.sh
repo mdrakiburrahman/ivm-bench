@@ -41,13 +41,18 @@ TOTAL_RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
 TOTAL_CORES=$(nproc)
 
 BREAKDOWN="$CONFIG_DIR/spark-defaults-breakdown.yaml"
-DRIVER_PCT_RAM=$(yq eval '.driver.pct_ram' "$BREAKDOWN")
+# Tunables (driver.pct_ram, executor.pct_ram, shuffle_partitions,
+# default_parallelism) can be overridden by env vars from the OAT harness.
+# When a SPARK_*_PCT_RAM / SPARK_SUBMIT_* env var is set we honour it;
+# otherwise we fall back to the per-engine YAML baseline. This is what
+# lets ExperimentInputs.spark_tunables.to_compose_env() flow through.
+DRIVER_PCT_RAM="${SPARK_DRIVER_PCT_RAM:-$(yq eval '.driver.pct_ram' "$BREAKDOWN")}"
 DRIVER_PCT_CORES=$(yq eval '.driver.pct_cores' "$BREAKDOWN")
-EXECUTOR_PCT_RAM=$(yq eval '.executor.pct_ram' "$BREAKDOWN")
+EXECUTOR_PCT_RAM="${SPARK_EXECUTOR_PCT_RAM:-$(yq eval '.executor.pct_ram' "$BREAKDOWN")}"
 EXECUTOR_PCT_CORES=$(yq eval '.executor.pct_cores' "$BREAKDOWN")
 MIN_CORES=$(yq eval '.resource_allocation.min_cores' "$BREAKDOWN")
-SHUFFLE_PARTITIONS=$(yq eval '.parallelism.shuffle_partitions' "$BREAKDOWN")
-DEFAULT_PARALLELISM=$(yq eval '.parallelism.default_parallelism' "$BREAKDOWN")
+SHUFFLE_PARTITIONS="${SPARK_SUBMIT_SHUFFLE_PARTITIONS:-$(yq eval '.parallelism.shuffle_partitions' "$BREAKDOWN")}"
+DEFAULT_PARALLELISM="${SPARK_SUBMIT_DEFAULT_PARALLELISM:-$(yq eval '.parallelism.default_parallelism' "$BREAKDOWN")}"
 
 export SPARK_DRIVER_MEMORY="$(calc_ram_min "$DRIVER_PCT_RAM" "$TOTAL_RAM_GB" 10)g"
 export SPARK_DRIVER_CORES=$(calc_cores_clamped "$DRIVER_PCT_CORES" "$TOTAL_CORES" "$MIN_CORES")

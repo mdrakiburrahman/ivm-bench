@@ -16,7 +16,9 @@ from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional
 
 from models.config import BenchmarkConfig
+from models.experiments import ExperimentInputs, from_env as experiments_from_env, parse_experiments_json
 from models.result import BenchmarkResult, EngineResult
+from services import oat_runner
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner
@@ -41,6 +43,13 @@ class Orchestrator:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._benchmark_id: Optional[str] = None
+
+        # OAT (one-at-a-time) sweep state. None / empty for single-experiment runs.
+        self._experiments_file: Optional[str] = None
+        self._experiments: List[ExperimentInputs] = []
+        self._oat_run_id: Optional[str] = None
+        self._oat_started_at: Optional[str] = None
+        self._oat_per_exp_dicts: List[dict] = []
 
     @property
     def config(self) -> BenchmarkConfig:
@@ -104,46 +113,102 @@ class Orchestrator:
             stop.set()
             thread.join(timeout=interval_s + 1)
 
-    def start(self) -> None:
-        """Start the benchmark in a background thread."""
+    def start(self, experiments_file: Optional[str] = None) -> None:
+        """Start the benchmark in a background thread.
+
+        Modes:
+          * single-experiment (back-compat): ``experiments_file`` is None — the
+            orchestrator reads classic env vars (SCALE_FACTOR, BATCH_*, ENGINES,
+            …), inserts ONE benchmark_runs row up-front, and runs the pipeline
+            exactly as it did pre-OAT.
+          * OAT sweep: ``experiments_file`` is a path to a JSON file describing
+            N experiments. We parse it now to fail fast, create the parent
+            ``oat_runs`` record, then iterate inside ``_run_oat`` — one fresh
+            ``benchmark_runs`` row per experiment.
+        """
         with self._lock:
             if self._running:
                 raise RuntimeError("Benchmark already running")
             self._running = True
             self._result = BenchmarkResult(status="running")
+            self._experiments_file = experiments_file
+            self._experiments = []
+            self._oat_run_id = None
+            self._oat_per_exp_dicts = []
+            self._benchmark_id = None
 
-            # Create a persistent benchmark run record
-            self._benchmark_id = str(uuid.uuid4())
-            now_iso = datetime.now(timezone.utc).isoformat()
-            config_json = json.dumps({
-                "scale_factor": self._config.scale_factor,
-                "engines": self._config.engines,
-                "parallel": self._config.parallel,
-                "batch_1_pct": self._config.batch_1_pct,
-                "batch_2_pct": self._config.batch_2_pct,
-                "batch_3_pct": self._config.batch_3_pct,
-            })
-            with DB_LOCK:
-                conn = get_db()
-                conn.execute(
-                    "INSERT INTO benchmark_runs (id, status, started_at, config_json) VALUES (?,?,?,?)",
-                    (self._benchmark_id, "running", now_iso, config_json),
-                )
-                # Pre-create engine_batch records
-                for engine in self._config.engines:
-                    for batch_num in range(1, 4):
-                        conn.execute(
-                            "INSERT INTO engine_batches (benchmark_id, engine, batch_num, status) VALUES (?,?,?,?)",
-                            (self._benchmark_id, engine, batch_num, "pending"),
-                        )
-                conn.commit()
-                conn.close()
+            if experiments_file:
+                if not os.path.exists(experiments_file):
+                    self._running = False
+                    raise FileNotFoundError(experiments_file)
+                with open(experiments_file) as f:
+                    self._experiments = parse_experiments_json(f.read())
+                if not self._experiments:
+                    self._running = False
+                    raise ValueError("experiments JSON has no experiments")
+                self._oat_run_id = str(uuid.uuid4())
+                self._oat_started_at = oat_runner.iso_now()
+                with DB_LOCK:
+                    conn = get_db()
+                    conn.execute(
+                        "INSERT INTO oat_runs (id, status, started_at, experiments_file) VALUES (?,?,?,?)",
+                        (self._oat_run_id, "running", self._oat_started_at, experiments_file),
+                    )
+                    conn.commit()
+                    conn.close()
+            else:
+                # Single-experiment mode: insert benchmark_runs eagerly so
+                # /benchmark/status returns useful info immediately after start.
+                self._init_benchmark_run_record_from_config()
 
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
 
+    def _init_benchmark_run_record_from_config(self) -> None:
+        """Create a fresh benchmark_runs row + engine_batches rows from ``self._config``.
+
+        Sets ``self._benchmark_id`` to the new UUID. Called once per experiment
+        (once total in single mode, once per OAT iteration in OAT mode).
+        """
+        self._benchmark_id = str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        config_json = json.dumps({
+            "scale_factor": self._config.scale_factor,
+            "engines": self._config.engines,
+            "parallel": self._config.parallel,
+            "batch_1_pct": self._config.batch_1_pct,
+            "batch_2_pct": self._config.batch_2_pct,
+            "batch_3_pct": self._config.batch_3_pct,
+            "oat_run_id": self._oat_run_id,
+        })
+        with DB_LOCK:
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO benchmark_runs (id, status, started_at, config_json) VALUES (?,?,?,?)",
+                (self._benchmark_id, "running", now_iso, config_json),
+            )
+            for engine in self._config.engines:
+                for batch_num in range(1, 4):
+                    conn.execute(
+                        "INSERT INTO engine_batches (benchmark_id, engine, batch_num, status) VALUES (?,?,?,?)",
+                        (self._benchmark_id, engine, batch_num, "pending"),
+                    )
+            conn.commit()
+            conn.close()
+
     def _run(self) -> None:
-        """Main benchmark execution."""
+        """Dispatcher — single experiment vs OAT sweep."""
+        try:
+            if self._oat_run_id is not None:
+                self._run_oat()
+            else:
+                self._run_single_legacy()
+        finally:
+            self._running = False
+            self._log_queue.put("__DONE__")
+
+    def _run_single_legacy(self) -> None:
+        """Single-experiment run (back-compat with pre-OAT benchmark.sh)."""
         t0 = time.time()
         try:
             self._teardown_existing()
@@ -172,8 +237,6 @@ class Orchestrator:
         finally:
             self._save_benchmark_results()
             self._dump_server_log()
-            self._running = False
-            self._log_queue.put("__DONE__")
 
     def _update_benchmark_run(self, status: str, duration_s: float = None, error: str = None) -> None:
         """Persist benchmark run status to SQLite."""
@@ -249,13 +312,20 @@ class Orchestrator:
                 except Exception:
                     pass
 
-    def _clean_mount(self) -> None:
+    def _clean_mount(self, force_clean_raw: bool = False) -> None:
         """Remove the mount/ directory to start with clean state.
 
-        Preserves mount/benchmark-state/ (benchmark-server's own SQLite).
-        When PRESERVE_RAW=1 is set, also preserves mount/raw/ and
-        mount/bin/ (idempotent datagen + duckdb-openivm build outputs)
-        so multi-hour Phase 1 work can be re-used across triage runs.
+        Preserves mount/benchmark-state/ (benchmark-server's own SQLite) and
+        mount/oat-state/ (OAT artifacts written eagerly before this method
+        runs). When PRESERVE_RAW=1 is set AND ``force_clean_raw=False``,
+        ALSO preserves mount/raw/ and mount/bin/ (idempotent datagen +
+        duckdb-openivm build outputs).
+
+        OAT phase 0 sets ``force_clean_raw=True`` so a stale per-SF Delta
+        tree from a previous host run cannot leak into the first OAT
+        experiment (datagen short-circuits when raw/<sf>/delta/ already
+        exists; with stale data the experiment would silently run with the
+        wrong batch percentages).
         """
         mount_dir = os.path.join(self._config.repo_dir, "mount")
         real_mount = os.path.realpath(mount_dir)
@@ -265,13 +335,20 @@ class Orchestrator:
                 f"Refusing to delete {real_mount} — not under repo {real_repo}"
             )
         if os.path.exists(mount_dir):
-            preserve_raw = os.environ.get("PRESERVE_RAW", "0") == "1"
-            preserve = {"benchmark-state"}
+            preserve_raw = (
+                os.environ.get("PRESERVE_RAW", "0") == "1" and not force_clean_raw
+            )
+            # Always preserve oat-state/ — the OAT runner writes artifacts there
+            # BEFORE this method runs (we create the directory + inputs.json
+            # eagerly so even a crash leaves a trace).
+            preserve = {"benchmark-state", "oat-state"}
             if preserve_raw:
                 preserve.update({"raw", "bin"})
-                self.emit("=== Cleaning mount/ (preserving benchmark-state/, raw/, bin/) ===")
+                self.emit("=== Cleaning mount/ (preserving benchmark-state/, oat-state/, raw/, bin/) ===")
+            elif force_clean_raw:
+                self.emit("=== Cleaning mount/ — OAT mode, FORCING raw/ wipe (preserving benchmark-state/, oat-state/) ===")
             else:
-                self.emit("=== Cleaning mount/ directory (preserving benchmark-state/) ===")
+                self.emit("=== Cleaning mount/ directory (preserving benchmark-state/, oat-state/) ===")
             for entry in os.listdir(mount_dir):
                 if entry in preserve:
                     continue
@@ -307,15 +384,23 @@ class Orchestrator:
             os.makedirs(full, exist_ok=True)
             os.chmod(full, 0o777)
 
-    def _phase1_prep(self) -> None:
-        """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel)."""
+    def _phase1_prep(self, include_datagen: bool = True) -> None:
+        """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
+
+        ``include_datagen=False`` runs ONLY the build steps. The OAT runner
+        uses that during ``_phase0_one_time_prep`` so builds happen once
+        per sweep while datagen runs once per experiment (different SF).
+        """
         self.emit("")
         self.emit("=== Phase 1: Data generation & build ===")
 
         # Build the callable list first so the pool's max_workers can match
         # the actual number of submitted tasks. Otherwise adding a 5th build
         # in the future would silently serialize against the fixed 4-slot pool.
-        callables = [self._run_datagen, self._build_batch_loader]
+        callables = []
+        if include_datagen:
+            callables.append(self._run_datagen)
+        callables.append(self._build_batch_loader)
         if "duckdb-openivm" in self._config.engines:
             callables.append(self._run_duckdb_openivm_build)
         if "spark-openivm" in self._config.engines:
@@ -709,6 +794,401 @@ class Orchestrator:
         except Exception as e:
             self.emit(f"  WARNING: Heuristics chart generation failed: {e}")
             logger.warning("Heuristics chart generation failed: %s", e)
+
+    # ----- OAT (one-at-a-time) sweep -----
+
+    def _run_oat(self) -> None:
+        """Drive an OAT sweep — run each experiment serially with disk-aware cleanup.
+
+        Lifecycle per OAT run::
+
+            phase 0  one-time prep: clean mount/, run builds for the UNION of
+                     engines across all experiments. NOT datagen — that runs
+                     per-experiment because SF varies.
+            loop     for each experiment:
+                       * disk pre-flight (skip if < OAT_MIN_FREE_PCT)
+                       * apply knobs (mutate self._config + os.environ)
+                       * teardown prev engine stacks
+                       * pre-create per-SF dirs
+                       * datagen for this SF (idempotent)
+                       * phase 2 engine benchmark
+                       * write per-experiment outputs.json + master outputs.json
+                       * disk-cleanup: wipe raw/<sf>, results/<sf>/<engine>,
+                         logs/<sf>/<engine>. Preserve dbt-server/, stats/, bin/.
+            phase 3  OAT chart + RESULTS.md generation; copy server log.
+        """
+        oat_t0 = time.time()
+        repo = self._config.repo_dir
+
+        oat_runner.write_inputs(repo, self._oat_run_id, self._experiments,
+                                self._experiments_file or "<n/a>")
+        oat_runner.maintain_latest_symlink(repo, self._oat_run_id)
+        oat_runner.write_master_outputs(
+            repo_dir=repo, oat_run_id=self._oat_run_id,
+            experiments_file=self._experiments_file or "<n/a>",
+            status="running", started_at=self._oat_started_at,
+            completed_at=None, total_duration_s=0.0,
+            per_experiment_dicts=[],
+        )
+
+        self.emit("")
+        self.emit(f"=== OAT sweep {self._oat_run_id[:8]} — {len(self._experiments)} experiment(s) ===")
+        self.emit(f"  experiments file: {self._experiments_file}")
+        min_free_pct = float(os.environ.get("OAT_MIN_FREE_PCT", "10"))
+        self.emit(f"  disk-guard threshold: {min_free_pct:.1f}% free")
+
+        # Phase 0 — one-time prep (clean mount once, run builds for the union of engines).
+        # Pre-flight disk check: refuse to start if already below threshold.
+        ok_pre, pct_pre = oat_runner.disk_check_ok(repo, min_free_pct)
+        if not ok_pre:
+            err = (
+                f"disk_free {pct_pre:.1f}% < {min_free_pct:.1f}% before any work — "
+                f"refusing to start OAT sweep"
+            )
+            self.emit(f"=== OAT pre-flight FAILED: {err} ===")
+            self._finalize_oat("failed", oat_t0, error=err)
+            return
+
+        try:
+            self._phase0_one_time_prep(self._experiments)
+        except Exception as e:
+            self.emit(f"OAT phase-0 prep FAILED: {e}")
+            logger.exception("OAT phase-0 prep failed")
+            self._finalize_oat("failed", oat_t0, error=str(e))
+            return
+
+        # Post-phase-0 disk check: builds can be large (multi-GB images).
+        ok_post0, pct_post0 = oat_runner.disk_check_ok(repo, min_free_pct)
+        if not ok_post0:
+            err = (
+                f"disk_free {pct_post0:.1f}% < {min_free_pct:.1f}% after phase-0 builds — "
+                f"refusing to run experiments"
+            )
+            self.emit(f"=== OAT post-phase-0 FAILED: {err} ===")
+            self._finalize_oat("failed", oat_t0, error=err)
+            return
+
+        try:
+            for idx, inputs in enumerate(self._experiments):
+                self._run_one_oat_experiment(idx, inputs, min_free_pct)
+                # Persist master after EVERY experiment so a mid-sweep crash
+                # still leaves a valid, partial outputs.json + chart input.
+                oat_runner.write_master_outputs(
+                    repo_dir=repo, oat_run_id=self._oat_run_id,
+                    experiments_file=self._experiments_file or "<n/a>",
+                    status="running", started_at=self._oat_started_at,
+                    completed_at=None,
+                    total_duration_s=time.time() - oat_t0,
+                    per_experiment_dicts=self._oat_per_exp_dicts,
+                )
+
+            # Propagate any per-experiment failure into the final sweep status.
+            # Skipped experiments (disk-guard) don't downgrade — they're a
+            # documented graceful outcome — but a real engine failure does.
+            failed_count = sum(
+                1 for d in self._oat_per_exp_dicts if d.get("status") == "failed"
+            )
+            final_status = "failed" if failed_count > 0 else "completed"
+            final_error = (
+                f"{failed_count}/{len(self._experiments)} experiment(s) failed"
+                if failed_count else None
+            )
+            self._finalize_oat(final_status, oat_t0, error=final_error)
+        except Exception as e:
+            self.emit(f"OAT sweep FAILED: {e}")
+            logger.exception("OAT sweep failed")
+            self._finalize_oat("failed", oat_t0, error=str(e))
+
+    def _phase0_one_time_prep(self, experiments: List[ExperimentInputs]) -> None:
+        """Run teardown, mount-clean, dir pre-create, and BUILDS once per OAT sweep.
+
+        Builds run for the union of engines across all experiments so we
+        never have to rebuild mid-sweep.
+        """
+        # Compute union of engines so phase1 includes all relevant builds.
+        union_engines: List[str] = []
+        for inp in experiments:
+            for e in inp.engines:
+                if e not in union_engines:
+                    union_engines.append(e)
+        # Stash original config + temporarily widen engines for the build phase.
+        # We restore the per-experiment config inside the loop via _apply_experiment.
+        original_engines = list(self._config.engines)
+        self._config.engines = union_engines
+        try:
+            self._teardown_existing()
+            # In OAT mode, FORCE raw/ wipe regardless of PRESERVE_RAW — stale
+            # mount/raw/<sf>/ from a previous host run would otherwise leak
+            # into the first OAT experiment (datagen short-circuits when the
+            # output dir already exists, silently using wrong batch %).
+            self._clean_mount(force_clean_raw=True)
+            # SF for pre-create dirs at phase 0: use the FIRST experiment's SF.
+            # The loop re-creates per-SF dirs inside _run_one_oat_experiment.
+            first = experiments[0]
+            self._config.scale_factor = first.scale_factor
+            self._pre_create_dirs()
+            # Builds only — no datagen here. Each experiment runs its own datagen.
+            self._phase1_prep(include_datagen=False)
+        finally:
+            self._config.engines = original_engines
+
+    def _run_one_oat_experiment(
+        self, exp_idx: int, inputs: ExperimentInputs, min_free_pct: float
+    ) -> None:
+        """Execute (or skip) a single experiment inside the OAT loop.
+
+        Cleanup of the SF-specific raw / engine results / logs is run in a
+        ``finally`` so even an ENOSPC mid-experiment frees space before the
+        next iteration begins. We also re-check disk after datagen — a
+        large SF can blow the threshold during data generation alone, in
+        which case we abort the experiment cleanly (cleanup still runs).
+        """
+        repo = self._config.repo_dir
+        exp_t0 = time.time()
+        started_at = oat_runner.iso_now()
+
+        self.emit("")
+        label = inputs.label or f"exp-{exp_idx}"
+        self.emit(f"=== OAT experiment [{exp_idx + 1}/{len(self._experiments)}] {label} (SF={inputs.scale_factor}) ===")
+
+        ok, pct_free = oat_runner.disk_check_ok(repo, min_free_pct)
+        if not ok:
+            self.emit(f"  [oat-disk-guard] only {pct_free:.1f}% free (need ≥{min_free_pct:.1f}%) — SKIPPING")
+            exp_dict = oat_runner.build_per_experiment_dict(
+                exp_idx=exp_idx, inputs=inputs, result=None,
+                status="skipped", started_at=started_at,
+                ended_at=oat_runner.iso_now(), wall_clock_s=0.0,
+                disk_free_pct=pct_free, error=None,
+                skip_reason=f"disk_free {pct_free:.1f}% < {min_free_pct:.1f}%",
+                repo_dir=repo, benchmark_id=None,
+            )
+            self._oat_per_exp_dicts.append(exp_dict)
+            oat_runner.write_per_experiment_outputs(repo, self._oat_run_id, exp_idx, exp_dict)
+            self._persist_oat_experiment_row(exp_idx, inputs, exp_dict)
+            return
+
+        status = "completed"
+        error: Optional[str] = None
+        ran_cleanup = False
+        try:
+            self._apply_experiment(inputs)
+            self._init_benchmark_run_record_from_config()
+            self._result = BenchmarkResult(status="running")
+
+            # Per-experiment teardown + dir pre-create. We do NOT call
+            # _clean_mount here — phase 0 already cleaned, and the per-experiment
+            # disk_cleanup_after_experiment surgically wipes per-SF state at
+            # the END of the iteration.
+            self._teardown_existing()
+            self._pre_create_dirs()
+
+            # Datagen for THIS SF. Idempotent — but raw/<sf>/ is usually
+            # empty because the previous experiment cleanup wiped it.
+            self._run_datagen()
+
+            # Re-check disk AFTER datagen. SF=1000 may blow the threshold
+            # during datagen alone; bailing here is much cheaper than
+            # running the full engine bench and THEN cleaning up.
+            ok_post, post_dg_pct = oat_runner.disk_check_ok(repo, min_free_pct)
+            if not ok_post:
+                raise RuntimeError(
+                    f"disk_free {post_dg_pct:.1f}% < {min_free_pct:.1f}% after datagen — "
+                    f"aborting experiment to keep host alive"
+                )
+
+            self._phase2_benchmark()
+            self._save_benchmark_results()
+
+        except Exception as e:
+            status = "failed"
+            error = str(e)
+            self.emit(f"  [oat] experiment FAILED: {e}")
+            logger.exception("OAT experiment %d failed", exp_idx)
+        finally:
+            # ALWAYS reclaim disk space before any artifact write. The
+            # cleanup wipes mount/raw/<sf>/ + mount/results/<sf>/<engine>/
+            # (preserves dbt-server/, stats/, bin/), so an ENOSPC mid-run
+            # cannot prevent the next experiment from starting.
+            try:
+                oat_runner.disk_cleanup_after_experiment(
+                    repo_dir=repo, scale_factor=inputs.scale_factor,
+                    engines=inputs.engines, emit=self.emit,
+                )
+                ran_cleanup = True
+            except Exception as ce:
+                self.emit(f"  [oat-cleanup] WARN: {ce}")
+                logger.exception("OAT cleanup failed for exp %d", exp_idx)
+
+        ended_at = oat_runner.iso_now()
+        wall_s = time.time() - exp_t0
+        post_pct_free = oat_runner.disk_check_pct_free(repo)
+
+        # Build + persist per-experiment artifacts. AFTER cleanup so tiny
+        # outputs.json/db writes don't ENOSPC themselves.
+        exp_dict = oat_runner.build_per_experiment_dict(
+            exp_idx=exp_idx, inputs=inputs, result=self._result,
+            status=status, started_at=started_at, ended_at=ended_at,
+            wall_clock_s=wall_s, disk_free_pct=post_pct_free,
+            error=error, skip_reason=None,
+            repo_dir=repo, benchmark_id=self._benchmark_id,
+        )
+        self._oat_per_exp_dicts.append(exp_dict)
+        try:
+            oat_runner.write_per_experiment_outputs(repo, self._oat_run_id, exp_idx, exp_dict)
+        except Exception as we:
+            self.emit(f"  [oat-output] WARN: per-experiment write failed: {we}")
+            logger.exception("OAT per-experiment write failed for exp %d", exp_idx)
+        self._persist_oat_experiment_row(exp_idx, inputs, exp_dict)
+        if self._benchmark_id:
+            self._update_benchmark_run(status, wall_s, error)
+
+        self.emit(
+            f"=== OAT experiment [{exp_idx + 1}/{len(self._experiments)}] done — "
+            f"status={status} wall={wall_s:.1f}s disk_free={post_pct_free:.1f}% "
+            f"cleanup={'ok' if ran_cleanup else 'FAILED'} ==="
+        )
+
+    def _apply_experiment(self, inputs: ExperimentInputs) -> None:
+        """Mutate ``self._config`` + ``os.environ`` to match this experiment's knobs."""
+        self._config.scale_factor = inputs.scale_factor
+        self._config.batch_1_pct = inputs.batch_1_pct
+        self._config.batch_2_pct = inputs.batch_2_pct
+        self._config.batch_3_pct = inputs.batch_3_pct
+        self._config.engines = list(inputs.engines)
+        self._config.parallel = inputs.parallel
+        oat_runner.apply_experiment_env(inputs)
+        self.emit(
+            f"  [oat-apply] SF={inputs.scale_factor} batches={inputs.batch_1_pct}/"
+            f"{inputs.batch_2_pct}/{inputs.batch_3_pct} engines={','.join(inputs.engines)} "
+            f"parallel={inputs.parallel}"
+        )
+
+    def _persist_oat_experiment_row(
+        self, exp_idx: int, inputs: ExperimentInputs, exp_dict: dict,
+    ) -> None:
+        """UPSERT one row into ``oat_experiments``."""
+        with DB_LOCK:
+            conn = get_db()
+            conn.execute(
+                "INSERT OR REPLACE INTO oat_experiments "
+                "(oat_run_id, exp_idx, benchmark_id, label, status, "
+                " started_at, ended_at, wall_clock_s, disk_free_pct, "
+                " inputs_json, outputs_json, error) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self._oat_run_id,
+                    exp_idx,
+                    exp_dict.get("benchmark_id"),
+                    exp_dict.get("label"),
+                    exp_dict.get("status"),
+                    exp_dict.get("started_at"),
+                    exp_dict.get("ended_at"),
+                    exp_dict.get("wall_clock_s"),
+                    exp_dict.get("disk_free_pct"),
+                    json.dumps(inputs.to_dict()),
+                    json.dumps(exp_dict),
+                    exp_dict.get("error"),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+    def _finalize_oat(
+        self, status: str, oat_t0: float, error: Optional[str] = None,
+    ) -> None:
+        """Write final outputs.json, run chart pass, copy server log, update DB."""
+        repo = self._config.repo_dir
+        completed_at = oat_runner.iso_now()
+        total = time.time() - oat_t0
+
+        oat_runner.write_master_outputs(
+            repo_dir=repo, oat_run_id=self._oat_run_id,
+            experiments_file=self._experiments_file or "<n/a>",
+            status=status, started_at=self._oat_started_at,
+            completed_at=completed_at, total_duration_s=total,
+            per_experiment_dicts=self._oat_per_exp_dicts,
+            error=error,
+        )
+
+        with DB_LOCK:
+            conn = get_db()
+            conn.execute(
+                "UPDATE oat_runs SET status=?, completed_at=?, total_duration_s=?, error=? WHERE id=?",
+                (status, completed_at, total, error, self._oat_run_id),
+            )
+            conn.commit()
+            conn.close()
+
+        # Chart + RESULTS.md generation (best-effort — never fail the run).
+        self._phase3_oat_chart()
+        self._dump_server_log_into_oat_state()
+
+        completed_n = sum(1 for d in self._oat_per_exp_dicts if d.get("status") == "completed")
+        skipped_n = sum(1 for d in self._oat_per_exp_dicts if d.get("status") == "skipped")
+        failed_n = sum(1 for d in self._oat_per_exp_dicts if d.get("status") == "failed")
+        self.emit("")
+        self.emit(
+            f"=== OAT sweep {self._oat_run_id[:8]} {status} in {total:.1f}s — "
+            f"{completed_n} completed, {skipped_n} skipped, {failed_n} failed ==="
+        )
+        self.emit(f"  artifacts: mount/oat-state/{self._oat_run_id}/")
+
+        # Mirror to BenchmarkResult for /benchmark/status compatibility.
+        self._result.status = status
+        self._result.total_duration_s = total
+        if error:
+            self._result.error = error
+
+    def _phase3_oat_chart(self) -> None:
+        """Generate OAT aggregate PNG + per-model PNG + RESULTS.md."""
+        repo = self._config.repo_dir
+        state_dir = oat_runner.state_dir_for(repo, self._oat_run_id)
+        try:
+            from handlers import oat_chart  # lazy — keeps module import fast
+        except Exception as e:
+            self.emit(f"  [oat-chart] WARN: oat_chart handler not importable: {e}")
+            return
+
+        targets = (
+            ("aggregate", "chart-oat.png", oat_chart.generate_oat_aggregate_png),
+            ("per-model", "chart-per-model.png", oat_chart.generate_oat_per_model_png),
+        )
+        for kind, fname, fn in targets:
+            try:
+                data = fn(self._oat_run_id, state_dir=os.path.dirname(state_dir))
+                if data:
+                    out = os.path.join(state_dir, fname)
+                    with open(out, "wb") as f:
+                        f.write(data)
+                    self.emit(f"  [oat-chart] wrote {os.path.relpath(out, repo)}")
+            except Exception as e:
+                self.emit(f"  [oat-chart] WARN: {kind} render failed: {e}")
+                logger.warning("OAT chart %s render failed: %s", kind, e)
+
+        try:
+            from handlers import oat_chart
+            md = oat_chart.generate_oat_results_md(self._oat_run_id, state_dir=os.path.dirname(state_dir))
+            if md:
+                out = os.path.join(state_dir, "RESULTS.md")
+                with open(out, "w") as f:
+                    f.write(md)
+                self.emit(f"  [oat-chart] wrote {os.path.relpath(out, repo)}")
+        except Exception as e:
+            self.emit(f"  [oat-chart] WARN: RESULTS.md render failed: {e}")
+            logger.warning("OAT RESULTS.md render failed: %s", e)
+
+    def _dump_server_log_into_oat_state(self) -> None:
+        """Copy /tmp/benchmark-server.log into the OAT state dir."""
+        try:
+            src = "/tmp/benchmark-server.log"
+            dst = os.path.join(
+                oat_runner.state_dir_for(self._config.repo_dir, self._oat_run_id),
+                "benchmark-server.log",
+            )
+            shutil.copy2(src, dst)
+            logger.info("OAT server log written to %s", dst)
+        except Exception as e:
+            logger.warning("Failed to copy OAT server log: %s", e)
 
 
 # ---------------------------------------------------------------------------
