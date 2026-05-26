@@ -881,6 +881,15 @@ class Orchestrator:
                     total_duration_s=time.time() - oat_t0,
                     per_experiment_dicts=self._oat_per_exp_dicts,
                 )
+                # Regenerate the OAT charts + RESULTS.md after every
+                # experiment so an external observer (`watch eog ...`, a
+                # file-watcher dashboard, `cat .../RESULTS.md`) can see the
+                # sweep evolve in real time. Atomic writes inside
+                # _phase3_oat_chart guarantee readers never see a half-
+                # written PNG/MD. ``silent=True`` keeps the SSE stream
+                # quiet — the chart pass logs to /tmp/benchmark-server.log
+                # at WARN level on failure regardless.
+                self._phase3_oat_chart(silent=True)
 
             # Propagate any per-experiment failure into the final sweep status.
             # Skipped experiments (disk-guard) don't downgrade — they're a
@@ -1139,8 +1148,15 @@ class Orchestrator:
         if error:
             self._result.error = error
 
-    def _phase3_oat_chart(self) -> None:
-        """Generate OAT aggregate PNG + per-model PNG + RESULTS.md."""
+    def _phase3_oat_chart(self, *, silent: bool = False) -> None:
+        """Generate OAT aggregate PNG + per-model PNG + RESULTS.md.
+
+        Writes are atomic (``.tmp`` + ``os.replace``) so a `watch`-style
+        external observer always sees a coherent file. Best-effort: failures
+        never abort the sweep. Pass ``silent=True`` to suppress emit() noise
+        when called per-iteration (the chart is regenerated after every
+        experiment, so verbose logs would clutter the SSE stream).
+        """
         repo = self._config.repo_dir
         state_dir = oat_runner.state_dir_for(repo, self._oat_run_id)
         try:
@@ -1148,6 +1164,12 @@ class Orchestrator:
         except Exception as e:
             self.emit(f"  [oat-chart] WARN: oat_chart handler not importable: {e}")
             return
+
+        def _atomic_write(out_path: str, payload, mode: str) -> None:
+            tmp = out_path + ".tmp"
+            with open(tmp, mode) as f:
+                f.write(payload)
+            os.replace(tmp, out_path)
 
         targets = (
             ("aggregate", "chart-oat.png", oat_chart.generate_oat_aggregate_png),
@@ -1158,23 +1180,26 @@ class Orchestrator:
                 data = fn(self._oat_run_id, state_dir=os.path.dirname(state_dir))
                 if data:
                     out = os.path.join(state_dir, fname)
-                    with open(out, "wb") as f:
-                        f.write(data)
-                    self.emit(f"  [oat-chart] wrote {os.path.relpath(out, repo)}")
+                    _atomic_write(out, data, "wb")
+                    if not silent:
+                        self.emit(f"  [oat-chart] wrote {os.path.relpath(out, repo)}")
             except Exception as e:
-                self.emit(f"  [oat-chart] WARN: {kind} render failed: {e}")
+                if not silent:
+                    self.emit(f"  [oat-chart] WARN: {kind} render failed: {e}")
                 logger.warning("OAT chart %s render failed: %s", kind, e)
 
         try:
-            from handlers import oat_chart
-            md = oat_chart.generate_oat_results_md(self._oat_run_id, state_dir=os.path.dirname(state_dir))
+            md = oat_chart.generate_oat_results_md(
+                self._oat_run_id, state_dir=os.path.dirname(state_dir)
+            )
             if md:
                 out = os.path.join(state_dir, "RESULTS.md")
-                with open(out, "w") as f:
-                    f.write(md)
-                self.emit(f"  [oat-chart] wrote {os.path.relpath(out, repo)}")
+                _atomic_write(out, md, "w")
+                if not silent:
+                    self.emit(f"  [oat-chart] wrote {os.path.relpath(out, repo)}")
         except Exception as e:
-            self.emit(f"  [oat-chart] WARN: RESULTS.md render failed: {e}")
+            if not silent:
+                self.emit(f"  [oat-chart] WARN: RESULTS.md render failed: {e}")
             logger.warning("OAT RESULTS.md render failed: %s", e)
 
     def _dump_server_log_into_oat_state(self) -> None:
