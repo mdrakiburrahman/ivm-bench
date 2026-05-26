@@ -21,6 +21,11 @@
 #                    each timed batch (both duckdb-openivm and spark-openivm).
 #                    Default: 0. When enabled, both engines emit a per-step
 #                    profile under mount/results/<sf>/dbt-server/.
+#   OPENIVM_QUERY_LOG — 1 = export the full SQL trace OpenIVM ran for every
+#                    CREATE/REFRESH MV (spark-openivm only). Default: 1.
+#                    Writes a per-MV per-refresh directory tree of `.sql`
+#                    files (sqlglot-formatted) under
+#                    mount/results/<sf>/spark-openivm/query-log/.
 #   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -42,6 +47,7 @@ export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-1}"
 export OPENIVM_PROFILE_REFRESH="${OPENIVM_PROFILE_REFRESH:-0}"
+export OPENIVM_QUERY_LOG="${OPENIVM_QUERY_LOG:-1}"
 export REPO_HOST_PATH="$(pwd)"
 
 detect_ec2_ubuntu_mirror() {

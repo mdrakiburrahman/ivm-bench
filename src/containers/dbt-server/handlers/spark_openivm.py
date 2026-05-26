@@ -16,7 +16,12 @@ import logging
 from flask import Blueprint, Flask, jsonify
 
 from handlers.base import BaseHandler
-from services import spark_openivm_profile, spark_openivm_sources, spark_openivm_validation
+from services import (
+    spark_openivm_profile,
+    spark_openivm_query_log,
+    spark_openivm_sources,
+    spark_openivm_validation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +80,23 @@ def spark_openivm_export_profile(run_id, batch_num):
         return jsonify(result), 200
     except Exception as e:
         logger.exception("[spark-openivm] Profile export failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/query-log/spark-openivm/<run_id>/<int:batch_num>", methods=["POST"])
+def spark_openivm_export_query_log(run_id, batch_num):
+    """Export spark-openivm refresh SQL trace as structured JSON.
+
+    Issues a single `SHOW OPENIVM QUERY LOG` against the live Livy SQL
+    session and returns every row of the RocksDB-backed query-log catalog.
+    The benchmark-server is responsible for sqlglot-formatting each row's
+    `sql_text` and writing the per-MV per-refresh `.sql` directory tree.
+    """
+    try:
+        result = spark_openivm_query_log.export_query_log(run_id, batch_num)
+        return jsonify(result), 200
+    except Exception as e:
+        logger.exception("[spark-openivm] Query-log export failed")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 

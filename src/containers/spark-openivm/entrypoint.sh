@@ -63,6 +63,13 @@ case "${OPENIVM_PROFILE_REFRESH:-0}" in
   *) export OPENIVM_PROFILE_REFRESH_BOOL=false ;;
 esac
 
+# Translate OPENIVM_QUERY_LOG (`0`/`1` or unset) the same way. Default OFF
+# when unset; the bench script flips this ON by default.
+case "${OPENIVM_QUERY_LOG:-0}" in
+  1|true|TRUE|True) export OPENIVM_QUERY_LOG_BOOL=true ;;
+  *) export OPENIVM_QUERY_LOG_BOOL=false ;;
+esac
+
 mkdir -p /opt/spark/conf
 process_template "$CONFIG_DIR/spark-defaults.conf.tmpl" "/opt/spark/conf/spark-defaults.conf"
 process_template "$CONFIG_DIR/hive-site.xml.tmpl" "/opt/spark/conf/hive-site.xml"

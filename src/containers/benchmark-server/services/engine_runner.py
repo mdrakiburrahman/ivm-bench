@@ -288,6 +288,14 @@ class EngineRunner:
             ):
                 self._export_spark_openivm_profile(run_id, batch_num)
 
+            if (
+                name == "spark-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_QUERY_LOG", "0") == "1"
+            ):
+                self._export_spark_openivm_query_log(run_id, batch_num)
+
             # Check status from the stream_progress result
             if batch.status != "failed":
                 self._save_openivm_ops_chart(name, batch_num)
@@ -833,6 +841,226 @@ class EngineRunner:
             f"[spark-openivm] OpenIVM profile exported after batch {batch_num}: "
             f"{data.get('row_count', 0)} rows across {data.get('view_count', 0)} views"
         )
+
+    def _export_spark_openivm_query_log(self, run_id: str, batch_num: int) -> None:
+        """Export the per-MV per-refresh SQL trace OpenIVM ran on Spark.
+
+        Runs outside the benchmark timer (called from `run_batch` *after*
+        `stream_progress` has stopped the per-batch wall clock — see lines
+        267-289 above). For each row of `SHOW OPENIVM QUERY LOG` we:
+
+          1. Group by `(view_name, refresh_id)`.
+          2. For each group, write a manifest.json plus one .sql file per
+             statement under
+             `mount/results/<sf>/spark-openivm/query-log/<view>/<refresh_dir>/`.
+          3. Each .sql file is sqlglot-formatted (Spark dialect, pretty=True);
+             parse failures fall back to the raw OpenIVM-emitted SQL with a
+             `formatted: false` marker in the manifest entry.
+
+        Idempotent: the per-refresh directory is `rmtree`d before being
+        re-written so the on-disk state always equals the catalog state.
+        """
+        self._emit(
+            f"[spark-openivm] Exporting OpenIVM query-log after batch {batch_num}"
+        )
+        resp = requests.post(
+            f"{self._dbt_url}/query-log/spark-openivm/{run_id}/{batch_num}",
+            timeout=7200,
+        )
+        data = resp.json()
+        if resp.status_code != 200 or data.get("status") != "ok":
+            raise RuntimeError(
+                f"spark-openivm query-log export failed for batch {batch_num}: "
+                f"{data.get('error', 'unknown error')}"
+            )
+
+        rows = data.get("rows") or []
+        base_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "spark-openivm",
+            "query-log",
+        )
+        os.makedirs(base_dir, exist_ok=True)
+
+        files_written = self._write_query_log_tree(
+            base_dir=base_dir,
+            rows=rows,
+            run_id=run_id,
+            batch_num=batch_num,
+        )
+
+        self._emit(
+            f"[spark-openivm] OpenIVM query-log exported after batch {batch_num}: "
+            f"{data.get('row_count', 0)} statements across "
+            f"{data.get('refresh_count', 0)} refreshes / "
+            f"{data.get('view_count', 0)} MVs "
+            f"({files_written} .sql files)"
+        )
+
+    def _write_query_log_tree(
+        self,
+        base_dir: str,
+        rows: list,
+        run_id: str,
+        batch_num: int,
+    ) -> int:
+        """Render the JSON rows from /query-log/spark-openivm as a directory
+        tree of `.sql` files + manifest.json files.
+
+        Returns the number of .sql files written.
+
+        Layout:
+
+            <base_dir>/<view_name>/<refresh_dir>/
+                manifest.json
+                000__<category>[__attempt<N>].sql
+                001__<category>[__attempt<N>].sql
+                ...
+
+        `<refresh_dir>` is `create_mv_<nanos>` or `refresh_<nanos>` derived
+        from the OpenIVM-minted `refresh_id`.
+        """
+        # `sqlglot` is added in benchmark-server/requirements.txt. We import
+        # it lazily so the rest of engine_runner stays importable even if the
+        # image is briefly out of sync.
+        try:
+            import sqlglot  # type: ignore
+            import sqlglot.errors  # type: ignore
+        except Exception:  # pragma: no cover — only on missing pip dep
+            logger.warning(
+                "[spark-openivm] sqlglot not installed — falling back to "
+                "raw (unformatted) SQL for the query-log export"
+            )
+            sqlglot = None  # type: ignore
+
+        def _format_sql(raw: str) -> tuple[str, bool]:
+            """Return (formatted_sql, was_formatted_flag).
+
+            Falls back to raw SQL on any parse error so the on-disk artifact
+            always contains the actual SQL OpenIVM emitted.
+            """
+            if not raw or sqlglot is None:
+                return (raw or "", False)
+            try:
+                out = sqlglot.transpile(
+                    raw, read="spark", write="spark", pretty=True
+                )
+                if out:
+                    return (out[0], True)
+                return (raw, False)
+            except Exception:  # noqa: BLE001 — parse errors are expected
+                return (raw, False)
+
+        # Group rows by (view_name, refresh_id) preserving stmt_order.
+        from collections import OrderedDict
+
+        groups: "OrderedDict[tuple[str, str], list]" = OrderedDict()
+        for row in rows:
+            view = str(row.get("view_name") or "").strip() or "_unknown_view"
+            rid = str(row.get("refresh_id") or "").strip() or "_unknown_refresh"
+            groups.setdefault((view, rid), []).append(row)
+
+        # Track which refresh directories we touched so prior runs of the
+        # same refresh_id are fully replaced. We rmtree per refresh-id-dir
+        # only (not per view dir) so distinct refreshes accumulate across
+        # batches as expected.
+        files_written = 0
+        for (view, rid), stmts in groups.items():
+            view_dir = os.path.join(base_dir, view)
+            os.makedirs(view_dir, exist_ok=True)
+
+            # Pick the `create_mv_<nanos>` / `refresh_<nanos>` form by
+            # stripping the leading `<db>.<view>_` prefix from the refresh_id.
+            # Fall back to the raw refresh_id if the prefix doesn't match.
+            refresh_dir_name = rid
+            if rid.startswith(view + "_"):
+                refresh_dir_name = rid[len(view) + 1:]
+            refresh_dir = os.path.join(view_dir, refresh_dir_name)
+            # Idempotent overwrite: remove + recreate.
+            if os.path.isdir(refresh_dir):
+                shutil.rmtree(refresh_dir, ignore_errors=True)
+            os.makedirs(refresh_dir, exist_ok=True)
+
+            mode = "create"
+            total_ms = 0
+            manifest_stmts = []
+            # Sort by (stmt_order, attempt_idx) for stable filenames.
+            stmts_sorted = sorted(
+                stmts,
+                key=lambda r: (
+                    self._safe_int(r.get("stmt_order"), 0),
+                    self._safe_int(r.get("attempt_idx"), 0),
+                ),
+            )
+            for row in stmts_sorted:
+                stmt_order = self._safe_int(row.get("stmt_order"), 0)
+                attempt_idx = self._safe_int(row.get("attempt_idx"), 0)
+                duration_ms = self._safe_int(row.get("duration_ms"), 0)
+                category = str(row.get("category") or "stmt")
+                stmt_kind = str(row.get("stmt_kind") or "other")
+                mode = str(row.get("mode") or mode)
+                sql_text = str(row.get("sql_text") or "")
+                profile_ts = str(row.get("profile_timestamp") or "")
+
+                formatted_sql, was_formatted = _format_sql(sql_text)
+
+                # stmt_order may be -1 for `original_query`; clamp to 0 for
+                # the filename prefix but keep the actual value in the
+                # manifest so the reader can spot the synthetic event.
+                file_order = max(stmt_order, 0)
+                attempt_suffix = (
+                    f"__attempt{attempt_idx}" if attempt_idx > 0 else ""
+                )
+                # Defensive: never let a `/` in category create a subdir.
+                safe_category = category.replace("/", "_")
+                filename = f"{file_order:03d}__{safe_category}{attempt_suffix}.sql"
+                with open(
+                    os.path.join(refresh_dir, filename), "w", encoding="utf-8"
+                ) as f:
+                    f.write(formatted_sql)
+                    if not formatted_sql.endswith("\n"):
+                        f.write("\n")
+                files_written += 1
+
+                if duration_ms > 0:
+                    total_ms += duration_ms
+                manifest_stmts.append({
+                    "stmt_order": stmt_order,
+                    "attempt_idx": attempt_idx,
+                    "category": category,
+                    "stmt_kind": stmt_kind,
+                    "duration_ms": duration_ms,
+                    "sql_file": filename,
+                    "profile_timestamp": profile_ts,
+                    "formatted": was_formatted,
+                })
+
+            manifest = {
+                "refresh_id": rid,
+                "view_name": view,
+                "mode": mode,
+                "exported_after_batch": batch_num,
+                "exported_after_run_id": run_id,
+                "total_duration_ms": total_ms,
+                "statements": manifest_stmts,
+            }
+            with open(
+                os.path.join(refresh_dir, "manifest.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(manifest, f, indent=2)
+
+        return files_written
+
+    @staticmethod
+    def _safe_int(value, default: int) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _run_feldera_wait(self, batch_num: int) -> None:
         """Feldera batches 2/3: pause → append → resume → poll stats.

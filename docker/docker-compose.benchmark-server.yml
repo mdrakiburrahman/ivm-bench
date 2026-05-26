@@ -24,6 +24,7 @@ services:
       PRESERVE_RAW: "${PRESERVE_RAW:-0}"
       OPENIVM_VALIDATE: "${OPENIVM_VALIDATE:-1}"
       OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
+      OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
       OPENIVM_UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-}"
     healthcheck:
       test: curl -sf http://localhost:9000/health || exit 1

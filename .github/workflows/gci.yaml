@@ -40,6 +40,10 @@ on:
         description: "Export OpenIVM refresh profiling CSVs after each batch (0 or 1)"
         default: "1"
         type: string
+      openivm_query_log:
+        description: "Export per-MV per-refresh SQL trace (spark-openivm only; 0 or 1)"
+        default: "1"
+        type: string
       timeout_minutes:
         description: "Job timeout in minutes"
         default: "120"
@@ -69,6 +73,7 @@ jobs:
       PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
+      OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
 
     steps:
       - name: "🧹 Clean Docker-owned files"
