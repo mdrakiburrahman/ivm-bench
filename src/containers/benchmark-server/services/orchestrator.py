@@ -970,10 +970,15 @@ class Orchestrator:
         status = "completed"
         error: Optional[str] = None
         ran_cleanup = False
+        # Initialise the per-experiment result holder BEFORE any operation
+        # that can raise — otherwise a failure in `_apply_experiment` /
+        # `_init_benchmark_run_record_from_config` would leave the previous
+        # experiment's `self._result` in place and the post-finally save
+        # below would write stale data.
+        self._result = BenchmarkResult(status="running")
         try:
             self._apply_experiment(inputs)
             self._init_benchmark_run_record_from_config()
-            self._result = BenchmarkResult(status="running")
 
             # Per-experiment teardown + dir pre-create. We do NOT call
             # _clean_mount here — phase 0 already cleaned, and the per-experiment
@@ -997,7 +1002,6 @@ class Orchestrator:
                 )
 
             self._phase2_benchmark()
-            self._save_benchmark_results()
 
         except OpenIvmValidationError as e:
             # FAIL-FAST: a correctness diff means the MV definition or refresh
@@ -1033,6 +1037,23 @@ class Orchestrator:
         ended_at = oat_runner.iso_now()
         wall_s = time.time() - exp_t0
         post_pct_free = oat_runner.disk_check_pct_free(repo)
+
+        # Reflect per-experiment outcome on self._result BEFORE writing the
+        # mount/results/<SF>/dbt-server/benchmark-results.json artifact.
+        # Without this, the file would carry the "running"/0.0 placeholder
+        # values from the BenchmarkResult init at the top of this method,
+        # which breaks GCI PR comments + any other downstream that reads
+        # the top-level status/total_duration_s. We save AFTER the cleanup
+        # finally so a small-artifact write can't ENOSPC itself, mirroring
+        # the per-experiment outputs.json placement just below. Use the same
+        # wall_s as the OAT per-experiment artifacts + SQLite for a single
+        # consistent duration value across all sinks.
+        self._result.status = status
+        self._result.total_duration_s = wall_s
+        if error:
+            self._result.error = error
+        # _save_benchmark_results() catches+logs internally; no extra wrap.
+        self._save_benchmark_results()
 
         # Build + persist per-experiment artifacts. AFTER cleanup so tiny
         # outputs.json/db writes don't ENOSPC themselves.
