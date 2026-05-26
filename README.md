@@ -41,16 +41,14 @@ an N-row JSON is a sweep. Built-in files live under
 
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
-
-# Smoke run (SF=3, spark + spark-openivm, cheap batches — ~30 min).
 export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/experiments/smoke.json"
-
-# Or the full Scale-Factor break-even sweep (12 SFs × spark vs spark-openivm).
-# export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/experiments/sf-sweep.json"
 
 # Optional global knobs (apply to the OAT loop itself):
 export OAT_MIN_FREE_PCT=10   # skip remaining experiments when free disk < 10%
 export PRESERVE_RAW=1        # keep mount/bin/ across sweeps (raw/<SF>/ is always wiped between experiments)
+
+sudo rm -rf ${GIT_ROOT}/mount
+docker kill $(docker ps -q)
 
 bash src/.scripts/benchmark.sh
 ```
