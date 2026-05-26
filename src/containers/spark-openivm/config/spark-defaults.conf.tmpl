@@ -115,7 +115,16 @@ spark.sql.adaptive.enabled=true
 spark.sql.adaptive.coalescePartitions.enabled=true
 spark.sql.adaptive.advisoryPartitionSizeInMB=128
 spark.sql.adaptive.skewJoin.enabled=true
-spark.sql.autoBroadcastJoinThreshold=104857600
+# Disable auto-broadcast joins: Delta's MERGE "materialized source"
+# optimization can re-plan a 10+ GiB intermediate as a broadcast and hit
+# Spark's hardcoded 8 GiB BroadcastExchangeExec cap, surfacing as
+# `Cannot broadcast the table that is larger than 8.0 GiB: <N> GiB`.
+# Force sort-merge join across the board; AQE skew-join still applies.
+spark.sql.autoBroadcastJoinThreshold=-1
+# Belt-and-suspenders: also disable Delta's MERGE source materialization,
+# which is what feeds the offending broadcast above.  Source plans are
+# re-evaluated per pass instead of materialized into an intermediate.
+spark.databricks.delta.merge.materializeSource=none
 spark.driver.maxResultSize=4g
 spark.sql.inMemoryColumnarStorage.compressed=true
 spark.locality.wait=0s
