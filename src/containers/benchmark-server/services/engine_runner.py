@@ -21,6 +21,16 @@ HEALTH_TIMEOUT = 300
 HEALTH_INTERVAL = 5
 
 
+class OpenIvmValidationError(RuntimeError):
+    """Raised when post-batch OpenIVM correctness validation (EXCEPT ALL) fails.
+
+    Distinct from generic ``RuntimeError`` so the OAT loop can recognise it
+    and FAIL FAST — a single validation diff means an MV definition or refresh
+    path is broken, so running the rest of the sweep would just burn host
+    resources reproducing the same bug at larger SFs.
+    """
+
+
 class EngineRunner:
     """
     Runs a full 3-batch benchmark for a single engine.
@@ -153,6 +163,13 @@ class EngineRunner:
         logger.info("Created batch staging override: %s", path)
         return path
 
+    @property
+    def result(self) -> EngineResult:
+        """Expose the in-progress EngineResult so callers that catch a
+        propagated exception can still recover partial state (batch
+        statuses, durations, error text)."""
+        return self._result
+
     def run(self) -> EngineResult:
         """Execute the full 3-batch benchmark."""
         name = self._engine.name
@@ -198,6 +215,16 @@ class EngineRunner:
             self._result.status = "completed"
             self._emit(f"[{name}] Benchmark completed successfully")
 
+        except OpenIvmValidationError as e:
+            # FATAL: tee onto the result AND re-raise so _run_engines_serial /
+            # _run_engine_wave can propagate the typed exception up to the OAT
+            # loop, which will abort the sweep instead of running the remaining
+            # experiments. finally: below still runs (compose-down + log capture).
+            self._result.status = "failed"
+            self._result.error = str(e)
+            self._emit(f"[{name}] FATAL OpenIVM validation failure: {e}")
+            logger.exception("Engine %s OpenIVM validation failure (fatal for OAT)", name)
+            raise
         except Exception as e:
             self._result.status = "failed"
             self._result.error = str(e)
@@ -205,14 +232,27 @@ class EngineRunner:
             logger.exception("Engine %s failed", name)
 
         finally:
-            self._collect_feldera_debug()
-            self._capture_logs()
-            self._engine_mgr.down()
-            self._cleanup_staging()
-            # Clean up temp override files
+            # Defensive: any exception in cleanup would otherwise REPLACE the
+            # in-flight OpenIvmValidationError (Python finally semantics),
+            # which would demote a fatal validation failure into a generic
+            # engine error and skip the OAT fail-fast path. Guard every step.
+            for cleanup_step, fn in (
+                ("collect_feldera_debug", self._collect_feldera_debug),
+                ("capture_logs", self._capture_logs),
+                ("engine_mgr.down", self._engine_mgr.down),
+                ("cleanup_staging", self._cleanup_staging),
+            ):
+                try:
+                    fn()
+                except Exception as ce:
+                    self._emit(f"[{name}] cleanup '{cleanup_step}' WARN: {ce}")
+                    logger.warning("Engine %s cleanup %s failed: %s", name, cleanup_step, ce)
             for f in (self._override_file, self._batch_override_file):
-                if f and os.path.exists(f):
-                    os.unlink(f)
+                try:
+                    if f and os.path.exists(f):
+                        os.unlink(f)
+                except Exception as ce:
+                    logger.warning("Engine %s unlink %s failed: %s", name, f, ce)
 
         return self._result
 
@@ -731,11 +771,18 @@ class EngineRunner:
     def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
         """Run default OpenIVM correctness validation outside the benchmark timer."""
         self._emit(f"[duckdb-openivm] Validating batch {batch_num} with EXCEPT ALL")
-        resp = requests.post(
-            f"{self._dbt_url}/validate/duckdb-openivm/{run_id}",
-            timeout=604800,
-        )
-        data = resp.json()
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/validate/duckdb-openivm/{run_id}",
+                timeout=604800,
+            )
+            data = resp.json()
+        except Exception as e:
+            # Transport / JSON failure during validation is just as fatal as
+            # an explicit diff — we can't conclude correctness either way.
+            raise OpenIvmValidationError(
+                f"OpenIVM validation request failed for batch {batch_num}: {e}"
+            ) from e
 
         results_dir = os.path.join(
             self._config.repo_dir,
@@ -753,7 +800,7 @@ class EngineRunner:
             detail = ", ".join(
                 f"{f.get('name')} diff={f.get('diff_count')}" for f in failures[:5]
             )
-            raise RuntimeError(
+            raise OpenIvmValidationError(
                 f"OpenIVM validation failed for batch {batch_num}"
                 + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
             )
@@ -768,11 +815,16 @@ class EngineRunner:
         — keeps the per-batch hook + result-JSON shape engine-agnostic so
         the existing chart/aggregate pipeline can consume both."""
         self._emit(f"[spark-openivm] Validating batch {batch_num} with EXCEPT ALL")
-        resp = requests.post(
-            f"{self._dbt_url}/validate/spark-openivm/{run_id}",
-            timeout=604800,
-        )
-        data = resp.json()
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/validate/spark-openivm/{run_id}",
+                timeout=604800,
+            )
+            data = resp.json()
+        except Exception as e:
+            raise OpenIvmValidationError(
+                f"OpenIVM validation request failed for batch {batch_num}: {e}"
+            ) from e
 
         results_dir = os.path.join(
             self._config.repo_dir,
@@ -791,7 +843,7 @@ class EngineRunner:
                 f"{f.get('schema')}.{f.get('name')} diff={f.get('diff_count')}"
                 for f in failures[:5]
             )
-            raise RuntimeError(
+            raise OpenIvmValidationError(
                 f"OpenIVM validation failed for batch {batch_num}"
                 + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
             )

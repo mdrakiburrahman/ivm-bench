@@ -21,7 +21,7 @@ from models.result import BenchmarkResult, EngineResult
 from services import oat_runner
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
-from services.engine_runner import EngineRunner
+from services.engine_runner import EngineRunner, OpenIvmValidationError
 from services.resource_calc import compute_engine_configs
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,10 @@ class Orchestrator:
         self._oat_run_id: Optional[str] = None
         self._oat_started_at: Optional[str] = None
         self._oat_per_exp_dicts: List[dict] = []
+        # Set by _run_one_oat_experiment when it catches OpenIvmValidationError.
+        # _run_oat checks this after every experiment and aborts the sweep
+        # immediately — a single MV-correctness diff is unrecoverable.
+        self._oat_fatal_validation_error: Optional[str] = None
 
     @property
     def config(self) -> BenchmarkConfig:
@@ -124,6 +128,7 @@ class Orchestrator:
             self._experiments = []
             self._oat_run_id = None
             self._oat_per_exp_dicts = []
+            self._oat_fatal_validation_error = None
             self._benchmark_id = None
 
             if not os.path.exists(experiments_file):
@@ -638,7 +643,18 @@ class Orchestrator:
         for name in self._config.engines:
             ec = engine_configs[name]
             runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
-            result = runner.run()
+            try:
+                result = runner.run()
+            except OpenIvmValidationError as e:
+                # The runner has already cleaned up (compose-down + log capture
+                # in its finally). Preserve its partial result (batch
+                # statuses, durations, error) — don't build a stripped
+                # replacement — then re-raise so the OAT loop fails fast.
+                er = runner.result
+                er.status = "failed"
+                er.error = str(e)
+                self._result.engines[name] = er
+                raise
             self._result.engines[name] = result
             if result.status == "failed":
                 raise RuntimeError(f"Engine {name} failed: {result.error}")
@@ -654,14 +670,22 @@ class Orchestrator:
             raise RuntimeError(f"Engines failed: {', '.join(failed)}")
 
     def _run_engine_wave(self, engines: List[str], engine_configs: Dict) -> None:
-        """Run a wave of engines in parallel."""
+        """Run a wave of engines in parallel.
+
+        Note: parallel mode is NOT truly fail-fast on OpenIvmValidationError —
+        we drain the remaining futures so no compose stacks dangle, then
+        propagate. PARALLEL=0 (serial) IS truly fail-fast.
+        """
         if not engines:
             return
         futures = {}
+        fatal_validation_exc: Optional[OpenIvmValidationError] = None
         with ThreadPoolExecutor(max_workers=len(engines)) as pool:
+            runners: Dict[str, EngineRunner] = {}
             for name in engines:
                 ec = engine_configs[name]
                 runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
+                runners[name] = runner
                 futures[pool.submit(runner.run)] = (name, runner)
 
             for future in as_completed(futures):
@@ -669,10 +693,25 @@ class Orchestrator:
                 try:
                     result = future.result()
                     self._result.engines[name] = result
+                except OpenIvmValidationError as e:
+                    # Preserve the runner's partial result (batches/durations)
+                    # for richer artifacts; remember the first fatal exc.
+                    er = runner.result
+                    er.status = "failed"
+                    er.error = str(e)
+                    self._result.engines[name] = er
+                    self.emit(f"[{name}] FATAL OpenIVM validation failure: {e}")
+                    if fatal_validation_exc is None:
+                        fatal_validation_exc = e
                 except Exception as e:
-                    er = EngineResult(engine=name, status="failed", error=str(e))
+                    er = runner.result
+                    er.status = "failed"
+                    er.error = str(e)
                     self._result.engines[name] = er
                     self.emit(f"[{name}] FAILED: {e}")
+
+        if fatal_validation_exc is not None:
+            raise fatal_validation_exc
 
     # ----- OAT (one-at-a-time) sweep -----
 
@@ -770,22 +809,95 @@ class Orchestrator:
                 # at WARN level on failure regardless.
                 self._phase3_oat_chart(silent=True)
 
-            # Propagate any per-experiment failure into the final sweep status.
-            # Skipped experiments (disk-guard) don't downgrade — they're a
-            # documented graceful outcome — but a real engine failure does.
+                # FAIL-FAST: an OpenIVM validation diff is unrecoverable
+                # (the MV definition or refresh path is broken). Abort the
+                # sweep immediately, marking the remaining experiments as
+                # skipped so RESULTS.md / chart-oat.png still render cleanly.
+                if self._oat_fatal_validation_error is not None:
+                    remaining = len(self._experiments) - (idx + 1)
+                    self.emit("")
+                    self.emit("=" * 78)
+                    self.emit("=== OAT SWEEP ABORTED — OpenIVM validation failure is FATAL ===")
+                    self.emit(f"  reason: {self._oat_fatal_validation_error}")
+                    self.emit(f"  experiment [{idx + 1}/{len(self._experiments)}] failed validation")
+                    self.emit(f"  skipping remaining {remaining} experiment(s)")
+                    self.emit("=" * 78)
+                    self._record_skipped_remaining(
+                        from_idx=idx + 1,
+                        reason=f"fail-fast: experiment {idx} had OpenIVM validation failure",
+                    )
+                    # Refresh master outputs + per-exp chart so the on-disk
+                    # state reflects the skips immediately — if the process
+                    # dies between here and _finalize_oat, artifacts are
+                    # still consistent.
+                    oat_runner.write_master_outputs(
+                        repo_dir=repo, oat_run_id=self._oat_run_id,
+                        experiments_file=self._experiments_file or "<n/a>",
+                        status="failed", started_at=self._oat_started_at,
+                        completed_at=None,
+                        total_duration_s=time.time() - oat_t0,
+                        per_experiment_dicts=self._oat_per_exp_dicts,
+                        error=f"fatal OpenIVM validation failure: {self._oat_fatal_validation_error}",
+                    )
+                    self._phase3_oat_chart(silent=True)
+                    break
+
+            # Propagate per-experiment failures into the final sweep status.
+            # Skipped experiments (disk-guard OR fail-fast) don't downgrade — they
+            # are documented graceful outcomes — but a real engine/validation
+            # failure does.
             failed_count = sum(
                 1 for d in self._oat_per_exp_dicts if d.get("status") == "failed"
             )
             final_status = "failed" if failed_count > 0 else "completed"
-            final_error = (
-                f"{failed_count}/{len(self._experiments)} experiment(s) failed"
-                if failed_count else None
-            )
+            if self._oat_fatal_validation_error is not None:
+                final_error = (
+                    f"fatal OpenIVM validation failure: {self._oat_fatal_validation_error}"
+                )
+            elif failed_count:
+                final_error = (
+                    f"{failed_count}/{len(self._experiments)} experiment(s) failed"
+                )
+            else:
+                final_error = None
             self._finalize_oat(final_status, oat_t0, error=final_error)
         except Exception as e:
             self.emit(f"OAT sweep FAILED: {e}")
             logger.exception("OAT sweep failed")
             self._finalize_oat("failed", oat_t0, error=str(e))
+
+    def _record_skipped_remaining(self, from_idx: int, reason: str) -> None:
+        """Write skipped per-experiment dicts for every experiment in [from_idx, N).
+
+        Used by fail-fast: an OpenIVM validation diff aborts the sweep, but
+        we still want RESULTS.md and chart-oat.png to render with a complete
+        row count so the observer can see exactly which experiments never ran.
+        """
+        repo = self._config.repo_dir
+        now = oat_runner.iso_now()
+        disk_pct = oat_runner.disk_check_pct_free(repo)
+        for skip_idx in range(from_idx, len(self._experiments)):
+            skip_inp = self._experiments[skip_idx]
+            skip_dict = oat_runner.build_per_experiment_dict(
+                exp_idx=skip_idx, inputs=skip_inp, result=None,
+                status="skipped", started_at=now, ended_at=now,
+                wall_clock_s=0.0, disk_free_pct=disk_pct,
+                error=None, skip_reason=reason,
+                repo_dir=repo, benchmark_id=None,
+            )
+            self._oat_per_exp_dicts.append(skip_dict)
+            try:
+                oat_runner.write_per_experiment_outputs(
+                    repo, self._oat_run_id, skip_idx, skip_dict
+                )
+            except Exception as we:
+                self.emit(f"  [oat-output] WARN: skipped-write failed for exp {skip_idx}: {we}")
+                logger.exception("OAT skipped write failed for exp %d", skip_idx)
+            self._persist_oat_experiment_row(skip_idx, skip_inp, skip_dict)
+            self.emit(
+                f"  [oat-skip] experiment [{skip_idx + 1}/{len(self._experiments)}] "
+                f"{skip_inp.label or f'exp-{skip_idx}'} → SKIPPED ({reason})"
+            )
 
     def _phase0_one_time_prep(self, experiments: List[ExperimentInputs]) -> None:
         """Run teardown, mount-clean, dir pre-create, and BUILDS once per OAT sweep.
@@ -887,6 +999,17 @@ class Orchestrator:
             self._phase2_benchmark()
             self._save_benchmark_results()
 
+        except OpenIvmValidationError as e:
+            # FAIL-FAST: a correctness diff means the MV definition or refresh
+            # path is broken. Remaining experiments would just reproduce the
+            # same bug at higher cost, so we abort the OAT sweep immediately
+            # after marking this experiment failed. _run_oat reads this state.
+            status = "failed"
+            error = str(e)
+            self._oat_fatal_validation_error = str(e)
+            self.emit(f"  [oat] experiment FATALLY FAILED on OpenIVM validation: {e}")
+            self.emit(f"  [oat] FAIL-FAST — aborting OAT sweep after this experiment")
+            logger.exception("OAT experiment %d had fatal OpenIVM validation failure", exp_idx)
         except Exception as e:
             status = "failed"
             error = str(e)

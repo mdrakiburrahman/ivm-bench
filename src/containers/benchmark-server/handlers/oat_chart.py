@@ -258,6 +258,20 @@ def _status(exp: Dict[str, Any]) -> str:
     return str(exp.get("status") or "unknown")
 
 
+def _status_note(exp: Dict[str, Any], max_len: int = 80) -> str:
+    """Short human-readable note for the Overview column: skip reason for
+    skipped rows, truncated error for failed rows, empty otherwise. Makes
+    fail-fast aborts visible in RESULTS.md without opening outputs.json."""
+    status = (exp.get("status") or "").lower()
+    if status == "skipped":
+        reason = exp.get("skip_reason") or ""
+        return _md_escape((reason[: max_len - 1] + "…") if len(reason) > max_len else reason)
+    if status == "failed":
+        err = exp.get("error") or ""
+        return _md_escape((err[: max_len - 1] + "…") if len(err) > max_len else err)
+    return ""
+
+
 def _status_color(status: str) -> str:
     lower = status.lower()
     if lower == "completed":
@@ -763,9 +777,15 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
                 ", ".join(_engine_names_for_exp(exp)),
                 _status(exp),
                 _format_duration(exp.get("wall_clock_s")),
+                _status_note(exp),
             ]
         )
-    lines.append(_markdown_table(["#", "label", "SF", "engines", "status", "wall_clock"], overview_rows))
+    lines.append(
+        _markdown_table(
+            ["#", "label", "SF", "engines", "status", "wall_clock", "note"],
+            overview_rows,
+        )
+    )
     lines.extend(["", "## Per-engine timing (aggregate)", ""])
 
     timing_headers = ["#", "label", "SF"] + _engine_batch_header(engines)
