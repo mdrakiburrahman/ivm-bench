@@ -54,7 +54,7 @@ on:
         type: string
       timeout_minutes:
         description: "Job timeout in minutes"
-        default: "120"
+        default: "500"
         type: string
 
 concurrency:
@@ -69,7 +69,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
-    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '120') }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
     env:
       SCALE_FACTOR: ${{ inputs.scale_factor || '25' }}
