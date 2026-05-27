@@ -55,6 +55,7 @@ def disk_cleanup_after_experiment(
     scale_factor: int,
     engines: Iterable[str],
     emit: Callable[[str], None] = logger.info,
+    failure_archive_dir: Optional[str] = None,
 ) -> None:
     """Aggressively wipe per-SF / per-engine state, preserving the audit trail.
 
@@ -70,13 +71,31 @@ def disk_cleanup_after_experiment(
       * mount/benchmark-state/                           (orchestrator SQLite)
       * mount/oat-state/                                 (OAT artifacts)
 
+    FORENSICS (when ``failure_archive_dir`` is set — i.e. the experiment failed):
+      Before wiping, copy the following into ``failure_archive_dir`` so they
+      survive the rmtree pass and remain available under mount/oat-state/:
+        * mount/logs/<sf>/<engine>/         → <archive>/<engine>-logs/
+        * mount/results/<sf>/dbt-server/    → <archive>/dbt-server-results/
+      Best-effort — archive failures are logged but do not block the wipe.
+
     Idempotent — missing paths are silently skipped.
     """
     sf = str(scale_factor)
     mount = os.path.join(repo_dir, "mount")
+    engines_list = list(engines)
+
+    if failure_archive_dir:
+        _archive_failure_forensics(
+            repo_dir=repo_dir,
+            mount=mount,
+            sf=sf,
+            engines=engines_list,
+            archive_dir=failure_archive_dir,
+            emit=emit,
+        )
 
     targets: List[str] = [os.path.join(mount, "raw", sf)]
-    for engine in engines:
+    for engine in engines_list:
         targets.append(os.path.join(mount, "results", sf, engine))
         targets.append(os.path.join(mount, "logs", sf, engine))
 
@@ -93,6 +112,53 @@ def disk_cleanup_after_experiment(
             emit(f"  [oat-cleanup] wiped {os.path.relpath(target, repo_dir)}")
         except OSError as e:
             emit(f"  [oat-cleanup] WARN failed to wipe {target}: {e}")
+
+
+def _archive_failure_forensics(
+    *,
+    repo_dir: str,
+    mount: str,
+    sf: str,
+    engines: List[str],
+    archive_dir: str,
+    emit: Callable[[str], None],
+) -> None:
+    """Copy per-engine logs + dbt-server JSON to ``archive_dir`` before wipe.
+
+    Best-effort: any archive failure is logged + skipped so the wipe still
+    runs and reclaims disk.
+    """
+    try:
+        os.makedirs(archive_dir, exist_ok=True)
+    except OSError as e:
+        emit(f"  [oat-archive] WARN could not create {archive_dir}: {e}")
+        return
+
+    # Per-engine container logs (the main forensic payload).
+    for engine in engines:
+        src = os.path.join(mount, "logs", sf, engine)
+        if not os.path.exists(src):
+            continue
+        dst = os.path.join(archive_dir, f"{engine}-logs")
+        try:
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            emit(f"  [oat-archive] saved {os.path.relpath(dst, repo_dir)}")
+        except OSError as e:
+            emit(f"  [oat-archive] WARN failed to archive {src} → {dst}: {e}")
+
+    # dbt-server JSON (small but worth bundling for self-contained forensics).
+    dbt_src = os.path.join(mount, "results", sf, "dbt-server")
+    if os.path.exists(dbt_src):
+        dbt_dst = os.path.join(archive_dir, "dbt-server-results")
+        try:
+            if os.path.exists(dbt_dst):
+                shutil.rmtree(dbt_dst)
+            shutil.copytree(dbt_src, dbt_dst)
+            emit(f"  [oat-archive] saved {os.path.relpath(dbt_dst, repo_dir)}")
+        except OSError as e:
+            emit(f"  [oat-archive] WARN failed to archive {dbt_src} → {dbt_dst}: {e}")
 
 
 # ---------------------------------------------------------------------------

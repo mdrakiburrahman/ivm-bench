@@ -1024,10 +1024,22 @@ class Orchestrator:
             # cleanup wipes mount/raw/<sf>/ + mount/results/<sf>/<engine>/
             # (preserves dbt-server/, stats/, bin/), so an ENOSPC mid-run
             # cannot prevent the next experiment from starting.
+            #
+            # On FAILURE, archive container logs + dbt-server JSON into
+            # mount/oat-state/<oat_run_id>/exp-<idx>/forensics/ BEFORE the
+            # wipe — that path survives all cleanup and gives us the Spark
+            # driver/executor logs needed to root-cause the failure.
+            archive_dir: Optional[str] = None
+            if status == "failed" and self._oat_run_id is not None:
+                archive_dir = os.path.join(
+                    repo, "mount", "oat-state", self._oat_run_id,
+                    f"exp-{exp_idx:03d}", "forensics",
+                )
             try:
                 oat_runner.disk_cleanup_after_experiment(
                     repo_dir=repo, scale_factor=inputs.scale_factor,
                     engines=inputs.engines, emit=self.emit,
+                    failure_archive_dir=archive_dir,
                 )
                 ran_cleanup = True
             except Exception as ce:
