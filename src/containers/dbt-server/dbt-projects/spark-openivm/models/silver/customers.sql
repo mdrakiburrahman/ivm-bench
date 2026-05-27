@@ -38,14 +38,14 @@ select
     coalesce(
         lag(action_ts) over (
             partition by c_id
-            order by action_ts desc
+            order by action_ts desc, action_type, ca_id, c_tax_id
         ) - interval 1 millisecond,
         to_timestamp('9999-12-31 23:59:59.999')
     ) as end_timestamp,
     case
         when row_number() over (
             partition by c_id
-            order by action_ts desc
+            order by action_ts desc, action_type, ca_id, c_tax_id
         ) = 1 then true
         else false
     end as is_current

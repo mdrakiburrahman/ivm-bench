@@ -30,7 +30,7 @@ select
     coalesce(
         lag(effective_timestamp) over (
             partition by company_id
-            order by effective_timestamp desc
+            order by effective_timestamp desc, year desc, quarter desc, posting_date desc, revenue desc
         ) - INTERVAL '0.001' SECOND,
         TIMESTAMP '9999-12-31 23:59:59.999'
     ) as end_timestamp,

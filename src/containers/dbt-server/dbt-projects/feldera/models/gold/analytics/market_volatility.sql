@@ -6,8 +6,8 @@ WITH price_changes AS (
         dm_high,
         dm_low,
         dm_vol,
-        LAG(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date) AS prev_close,
-        LEAD(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date) AS next_close,
+        LAG(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date, dm_close, dm_vol) AS prev_close,
+        LEAD(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date, dm_close, dm_vol) AS next_close,
         dm_high - dm_low AS intraday_range
     FROM {{ ref('daily_market') }}
 ),

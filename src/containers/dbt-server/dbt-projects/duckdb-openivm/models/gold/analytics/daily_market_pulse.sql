@@ -27,9 +27,9 @@ no_trade_days AS (
 with_lags AS (
     SELECT
         ntd.*,
-        LAG(ntd.total_volume) OVER (ORDER BY ntd.dm_date) AS prev_volume,
-        LAG(ntd.avg_close_price) OVER (ORDER BY ntd.dm_date) AS prev_avg_close,
-        LAG(ntd.active_symbols) OVER (ORDER BY ntd.dm_date) AS prev_active_symbols
+        LAG(ntd.total_volume) OVER (ORDER BY ntd.dm_date, ntd.num_records) AS prev_volume,
+        LAG(ntd.avg_close_price) OVER (ORDER BY ntd.dm_date, ntd.num_records) AS prev_avg_close,
+        LAG(ntd.active_symbols) OVER (ORDER BY ntd.dm_date, ntd.num_records) AS prev_active_symbols
     FROM no_trade_days ntd
 ),
 

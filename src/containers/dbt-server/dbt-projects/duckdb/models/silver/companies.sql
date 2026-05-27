@@ -17,14 +17,14 @@ select
     coalesce(
         lag(pts) over (
             partition by cik
-            order by pts desc
+            order by pts desc, company_name, status, industry_id, ceo_name
         ) - INTERVAL 1 MILLISECOND,
         TIMESTAMP '9999-12-31 23:59:59.999'
     ) as end_timestamp,
     case
         when row_number() over (
             partition by cik
-            order by pts desc
+            order by pts desc, company_name, status, industry_id, ceo_name
         ) = 1 then true
         else false
     end as is_current
