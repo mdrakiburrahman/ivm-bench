@@ -19,13 +19,22 @@ services:
         SCALA_VERSION: "2.12.18"
         DELTA_VERSION: "3.3.2"
         HADOOP_VERSION: "3.3.4"
-    cpus: ${DATAGEN_CPUS:-32}
-    mem_limit: ${DATAGEN_MEM:-128g}
+    cpus: ${DATAGEN_CPUS:-16}
+    mem_limit: ${DATAGEN_MEM:-96g}
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen:ro
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
-      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
+      # SF=400+ OOM-killed the JVM at the host (anon-rss ~70GB + ~36GB off-heap → 106GB total-vm
+      # on a 124GB host). Three changes to stay safe through SF=1000:
+      #   (1) -Xmx48g (was 80g) + -Xms8g — Spark spills to disk before OOM instead of holding
+      #       everything in heap; progressive expansion under G1 has no correctness impact.
+      #   (2) -XX:MaxDirectMemorySize=16g — caps Parquet writer + Snappy off-heap so concurrent
+      #       write tasks can't grow native allocations unbounded.
+      #   (3) cpus=16 + mem_limit=96g (was 32/128g) — halves concurrent task memory pressure and
+      #       back-stops at the container level (~32 GB headroom for native/metaspace/page cache)
+      #       so a single OOM kills only datagen, not the host.
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx48g -Xms8g -XX:MaxDirectMemorySize=16g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
       DIGEN_PATH: /data/digen
       DELTA_PATH: /data/delta
       BATCH_1_PCT: "${BATCH_1_PCT}"

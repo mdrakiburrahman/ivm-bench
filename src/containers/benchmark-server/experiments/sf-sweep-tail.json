@@ -1,0 +1,35 @@
+{
+  "_design_notes": [
+    "Tail of sf-sweep.json — re-runs only the SFs that failed in sweep b1763ad5",
+    "after the spark-digen-delta datagen JVM OOM fix in",
+    "docker/docker-compose.datagen.yml (Xmx 80g→48g, cpus 32→16, mem_limit 128g→96g,",
+    "+ MaxDirectMemorySize=16g).",
+    "",
+    "Prior sweep state (preserved on disk under mount/oat-state/b1763ad5/):",
+    "  SF=100 / SF=175 / SF=250 — completed, validated.",
+    "  SF=400 / SF=600         — failed at datagen with host-level OOM kill",
+    "                            (anon-rss ~70GB + ~36GB off-heap → 106GB total-vm).",
+    "  SF=1000                 — not reached (sweep was stopped before it OOMed).",
+    "",
+    "Baseline knobs match sf-sweep.json exactly so per-experiment lifecycle and",
+    "cleanup behave identically; only the experiment list differs."
+  ],
+  "baseline": {
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "2",
+    "engines": ["spark", "spark-openivm"],
+    "parallel": false,
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    { "label": "sf=400",  "scale_factor": 400  },
+    { "label": "sf=600",  "scale_factor": 600  },
+    { "label": "sf=1000", "scale_factor": 1000 }
+  ]
+}
