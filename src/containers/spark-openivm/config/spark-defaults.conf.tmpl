@@ -115,15 +115,38 @@ spark.sql.adaptive.enabled=true
 spark.sql.adaptive.coalescePartitions.enabled=true
 spark.sql.adaptive.advisoryPartitionSizeInMB=128
 spark.sql.adaptive.skewJoin.enabled=true
-# Disable auto-broadcast joins: Delta's MERGE "materialized source"
-# optimization can re-plan a 10+ GiB intermediate as a broadcast and hit
-# Spark's hardcoded 8 GiB BroadcastExchangeExec cap, surfacing as
-# `Cannot broadcast the table that is larger than 8.0 GiB: <N> GiB`.
-# Force sort-merge join across the board; AQE skew-join still applies.
-spark.sql.autoBroadcastJoinThreshold=-1
-# Belt-and-suspenders: also disable Delta's MERGE source materialization,
-# which is what feeds the offending broadcast above.  Source plans are
-# re-evaluated per pass instead of materialized into an intermediate.
+# Auto-broadcast joins re-enabled at 100 MiB (Spark's pre-disable default).
+#
+# History: commit 117f1e0 set this to -1 because Delta's MERGE
+# `materializeSource=auto` was re-evaluating the source into a Delta
+# scratch table whose Catalyst row-size estimate sometimes underflowed,
+# and AQE then promoted that 10+ GiB scratch table to a broadcast,
+# hitting Spark's hardcoded 8 GiB BroadcastExchangeExec cap.  We now
+# disable that materialization directly below
+# (`spark.databricks.delta.merge.materializeSource=none`), so the 11 GiB
+# intermediate that fed the offending broadcast no longer exists.
+# Disabling auto-broadcast as belt-and-suspenders is no longer required.
+#
+# Why this matters for IVM workloads: openivm's WINDOW_PARTITION and
+# AGGREGATE_GROUP refreshes emit `MERGE INTO mv USING (SELECT DISTINCT
+# <keys> FROM openivm_affected_<v>) AS d ON v.k = d.k WHEN MATCHED THEN
+# DELETE`, where `d` is bounded by the number of distinct affected
+# partitions in the delta — typically a few hundred bytes to a few MiB
+# at incremental scale.  Without broadcast, Spark sort-merge-joins by
+# shuffling the FULL MV data table (~1.3 GiB per side at TPC-DI SF=100
+# for `silver.trades_history`), which OOMs the local-mode driver
+# (observed at SF=100 batch-2: stage shuffle-write throws
+# `java.lang.OutOfMemoryError: Java heap space` from
+# `ParquetFileReader$ConsecutivePartList.readAll` -> `BypassMergeSort
+# ShuffleWriter`).  With a 100 MiB broadcast threshold, the tiny
+# affected_partitions side is broadcast and the target avoids the
+# shuffle entirely.  Larger affected sets (e.g. a full re-refresh that
+# touches the entire MV) still fall back to sort-merge automatically.
+spark.sql.autoBroadcastJoinThreshold=104857600
+# Also disable Delta's MERGE source materialization to keep the
+# pre-existing 11 GiB intermediate from re-appearing.  Source plans are
+# re-evaluated per join pass instead of materialized into a scratch
+# table — slightly higher CPU, but no plan ever feeds the 8 GiB cap.
 spark.databricks.delta.merge.materializeSource=none
 spark.driver.maxResultSize=4g
 spark.sql.inMemoryColumnarStorage.compressed=true

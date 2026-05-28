@@ -1,6 +1,32 @@
+# Resource breakdown for the spark-openivm engine.
+#
+# IMPORTANT: Livy is configured for `local[*]` (see livy.conf.tmpl), so
+# the Spark driver and Spark executors live in the SAME JVM.  In that
+# topology `spark.executor.memory` and `spark.executor.cores` are
+# silently ignored — only `spark.driver.memory` / `spark.driver.cores`
+# control the per-JVM heap and CPU envelope.  The `executor:` block
+# below is therefore decorative; we keep it for parity with the `spark`
+# engine and so the env-var plumbing in entrypoint.sh keeps working.
+#
+# Driver gets the lion's share (65% RAM, 90% cores) because the
+# single-JVM topology has to host: Catalyst planning + AQE, all
+# WholeStageCodegen state for the in-flight statement, the Delta
+# transaction log cache, MvCatalog + StagingCatalog (RocksDB JNI),
+# Parquet scan + shuffle buffers for the active job, and the small
+# native heap used by the OpenIvmCompiler DuckDB CLI subprocess (which
+# runs OUT-OF-JVM, so it doesn't compete with the Spark heap, only with
+# the cgroup memory limit).  At 124 GB host this lands at ~80 GB driver
+# heap, ~28 cores in the JVM, leaving ~44 GB for DuckDB + OS + page
+# cache + Netty/off-heap buffers + JVM non-heap (metaspace, code cache,
+# thread stacks, direct ByteBuffers).  Previously kept at 10% (~12 GB)
+# which OOMed at SF=100 batch-2 during WINDOW_PARTITION MERGE — see
+# spark-defaults.conf.tmpl for the matching `autoBroadcastJoinThreshold`
+# reasoning.  65% was picked as the conservative knee on a 124 GB host
+# — bump cautiously if the workload still OOMs, drop if container RSS
+# approaches the cgroup limit.
 driver:
-    pct_ram: 10
-    pct_cores: 10
+    pct_ram: 65
+    pct_cores: 90
 
 executor:
     pct_ram: 80

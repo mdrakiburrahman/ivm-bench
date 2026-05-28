@@ -94,8 +94,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  SPARK-OPENIVM BENCHMARK CONTAINER"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Host:     ${TOTAL_RAM_GB}GB RAM, ${TOTAL_CORES} cores"
-echo "  Driver:   ${SPARK_DRIVER_MEMORY} RAM, ${SPARK_DRIVER_CORES} cores (floor: 10g for OpenIvmCompiler)"
-echo "  Executor: ${SPARK_EXECUTOR_MEMORY} RAM, ${SPARK_EXECUTOR_CORES} cores"
+echo "  Driver:   ${SPARK_DRIVER_MEMORY} RAM, ${SPARK_DRIVER_CORES} cores (single JVM hosts driver+executor in local[*])"
+echo "  Executor: ${SPARK_EXECUTOR_MEMORY} RAM, ${SPARK_EXECUTOR_CORES} cores (decorative — local[*] ignores these)"
 echo "  Shuffle:  ${SHUFFLE_PARTITIONS}, Parallelism: ${DEFAULT_PARALLELISM}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
