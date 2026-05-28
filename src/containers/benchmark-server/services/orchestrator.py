@@ -382,10 +382,15 @@ class Orchestrator:
             mgr.build(["tpc-di-gen", "spark-digen-delta"])
 
         self.emit("  [datagen] Running tpc-di-gen → spark-digen-delta")
+        # 2h timeout — SF=400 tpc-di-gen alone takes >660s, SF=1000 estimated
+        # ~2500s for tpc-di-gen + ~600s for spark-digen-delta. DockerManager
+        # default 600s + 60s buffer SIGKILLs the compose subprocess mid-run
+        # at SF≥400. Bump to 7200s to safely cover SF up to ~1500.
         with self._heartbeat("datagen/run"):
             mgr.up(
                 services=["spark-digen-delta"],
                 detach=False,
+                timeout=7200,
                 stream_callback=lambda line: logger.debug("[datagen] %s", line),
             )
 
