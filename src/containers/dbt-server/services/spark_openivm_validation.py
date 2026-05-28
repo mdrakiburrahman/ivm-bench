@@ -11,23 +11,35 @@ For every successful dbt model node from the timed `run_id`, we:
   1. Build the validation SQL:
 
          CREATE OR REPLACE TEMPORARY VIEW openivm_expected_N AS <compiled_sql>;
-         SELECT COUNT(*) AS diff_count FROM (
-             (SELECT * FROM <relation> EXCEPT ALL
-              SELECT * FROM openivm_expected_N)
-             UNION ALL
-             (SELECT * FROM openivm_expected_N EXCEPT ALL
-              SELECT * FROM <relation>)
-         ) AS openivm_diff;
+         SELECT COUNT(*) AS __ivm_cnt,
+                COALESCE(SUM(xxhash64(c1, ..., cN)), 0L) AS __ivm_hash
+           FROM <relation>;
+         SELECT COUNT(*) AS __ivm_cnt,
+                COALESCE(SUM(xxhash64(c1, ..., cN)), 0L) AS __ivm_hash
+           FROM openivm_expected_N;
          DROP VIEW IF EXISTS openivm_expected_N;
 
      where `<relation>` is the MV's `<schema>.<name>` Spark relation (the
      same one dbt's materialization produced via
      `CREATE MATERIALIZED VIEW`).
 
-  2. Execute the three statements over Livy, parse the integer
-     `diff_count` from the SELECT statement's tabular output.
+     We use an order-independent multiset digest
+     (``(COUNT(*), SUM(xxhash64(*)))``) — single-pass scans on each side
+     with constant driver memory. Earlier revisions ran a paired
+     ``EXCEPT ALL`` followed by ``COUNT(*)``, but that shape OOMs the 12g
+     Spark driver at SF>=175 (the LeftAnti build side has to hash the
+     entire bag), and the resulting Livy session crash surfaces as 5x
+     ``diff_count=-1`` worker-crash sentinels for every subsequent model.
 
-  3. Record a per-model `pass` / `fail` row keyed by `diff_count == 0`.
+  2. Execute the four statements over Livy, extract the (count, hash)
+     pair from each digest SELECT.
+
+  3. Record a per-model `pass` / `fail` row keyed by
+     ``(mv_count, mv_hash) == (expected_count, expected_hash)``. On
+     mismatch we set ``diff_count`` to a non-zero lower bound
+     (``max(|mv_count - expected_count|, 1)``) so the existing
+     ``diff_count == 0`` pass test, the orchestrator "diff=N" log line,
+     and the JSON report's ``status`` field all keep their meaning.
 
 This intentionally runs OUTSIDE the benchmark timer (post-batch hook in
 benchmark-server). On the first failure the post-batch hook turns the
@@ -91,6 +103,44 @@ def _extract_diff_count(output: dict[str, Any], label: str) -> int:
     if not matches:
         raise RuntimeError(f"{label}: Livy returned no integer:\n{str(text)[-1000:]}")
     return int(matches[-1])
+
+
+def _extract_two_longs(output: dict[str, Any], label: str) -> tuple[int, int]:
+    """Parse a (count, hash) pair from the Livy SQL statement output.
+
+    Used for the order-independent multiset digest
+    ``SELECT COUNT(*), COALESCE(SUM(xxhash64(c1, ..., cN)), 0) FROM ...``.
+
+    Returns ``(count, hash_sum)`` as Python ints.
+    """
+    data = (output or {}).get("data") or {}
+    payload = data.get("application/json") or data.get("text/plain") or ""
+
+    if isinstance(payload, dict):
+        rows = payload.get("data") or []
+        if rows and len(rows[0]) >= 2:
+            return int(rows[0][0]), int(rows[0][1])
+        raise RuntimeError(
+            f"{label}: Livy returned no (count, hash) row in JSON output: {payload}"
+        )
+
+    # `text/plain` ASCII table. The data row sits between two horizontal
+    # rules and is the only row whose first cell is a signed integer.
+    for line in str(payload).splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|") if c.strip()]
+        if len(cells) < 2:
+            continue
+        try:
+            return int(cells[0]), int(cells[1])
+        except ValueError:
+            continue
+    raise RuntimeError(
+        f"{label}: Livy returned no (count, hash) pair:\n{str(payload)[-1000:]}"
+    )
+
 
 
 def _extract_columns(output: dict[str, Any], label: str) -> list[str]:
@@ -250,28 +300,49 @@ def _validate_one(
         mv_subquery = f"SELECT {proj} FROM {relation}"
         expected_subquery = f"SELECT {proj} FROM {expected_name}"
 
-        diff_sql = (
-            f"SELECT COUNT(*) AS diff_count FROM (\n"
-            f"    (({mv_subquery}) EXCEPT ALL "
-            f"({expected_subquery}))\n"
-            f"    UNION ALL\n"
-            f"    (({expected_subquery}) EXCEPT ALL "
-            f"({mv_subquery}))\n"
-            f") AS openivm_diff"
+        # Order-independent multiset equality via (COUNT(*), SUM(xxhash64(*)))
+        # digest. Replaces the previous bag-EXCEPT-ALL approach, which OOMs
+        # the 12g Spark driver at SF>=175 (both sides of EXCEPT ALL must hash
+        # the full bag, and the SELECT COUNT(*) wrapper still materializes
+        # the anti-join). The single-pass aggregation is O(scan) on each
+        # side with constant memory, and xxhash64 fingerprints any ULP-level
+        # column difference (so STDDEV/AVG float drift surfaces as a hash
+        # mismatch just like EXCEPT ALL would have flagged).
+        digest_select = (
+            f"SELECT COUNT(*) AS __ivm_cnt, "
+            f"COALESCE(SUM(xxhash64({proj})), 0L) AS __ivm_hash"
         )
-        out = livy.execute(diff_sql)
-        diff_count = _extract_diff_count(
-            out.get("output") or {}, label
+        mv_digest_sql = f"{digest_select} FROM ({mv_subquery}) AS __ivm_mv"
+        expected_digest_sql = (
+            f"{digest_select} FROM ({expected_subquery}) AS __ivm_exp"
         )
-        # On mismatch, capture up to 5 sample diff rows from
-        # each side so the JSON report is useful for root-cause
-        # work (no live cluster needed).
+        mv_out = livy.execute(mv_digest_sql)
+        mv_cnt, mv_hash = _extract_two_longs(
+            mv_out.get("output") or {}, label + " mv_digest"
+        )
+        exp_out = livy.execute(expected_digest_sql)
+        exp_cnt, exp_hash = _extract_two_longs(
+            exp_out.get("output") or {}, label + " expected_digest"
+        )
+        if mv_cnt == exp_cnt and mv_hash == exp_hash:
+            diff_count = 0
+        else:
+            # Surface a non-zero "diff_count" without doing an EXCEPT ALL
+            # (which would OOM at this scale). When counts differ, the
+            # cardinality delta is a strict lower bound on the symmetric
+            # difference; when only the hash differs, report 1 row as a
+            # symbolic "at least one row differs".
+            diff_count = max(abs(mv_cnt - exp_cnt), 1)
+        # On mismatch, capture up to 5 sample rows from each side so the
+        # JSON report is useful for root-cause work (no live cluster
+        # needed). Use plain LIMIT-5 SELECTs — bounded memory, no
+        # EXCEPT ALL — so a failure here cannot OOM the Livy session and
+        # break validation of subsequent models.
         if diff_count != 0:
             try:
                 sample_sql = (
-                    f"SELECT 'mv' AS side, * FROM ("
-                    f"({mv_subquery}) EXCEPT ALL "
-                    f"({expected_subquery})) LIMIT 5"
+                    f"SELECT 'mv' AS side, * FROM "
+                    f"({mv_subquery}) AS __ivm_mv_sample LIMIT 5"
                 )
                 mv_extra = livy.execute(sample_sql)
                 sample_payload_mv = (
@@ -279,43 +350,26 @@ def _validate_one(
                 ).get("application/json") or {}
                 sample_sql2 = (
                     f"SELECT 'expected' AS side, * FROM "
-                    f"(({expected_subquery}) EXCEPT ALL "
-                    f"({mv_subquery})) LIMIT 5"
+                    f"({expected_subquery}) AS __ivm_exp_sample LIMIT 5"
                 )
                 exp_extra = livy.execute(sample_sql2)
                 sample_payload_exp = (
                     (exp_extra.get("output") or {}).get("data") or {}
                 ).get("application/json") or {}
                 sample_payload = {
-                    "mv_extra": sample_payload_mv,
-                    "expected_extra": sample_payload_exp,
+                    "mv_sample": sample_payload_mv,
+                    "expected_sample": sample_payload_exp,
                     "user_cols": user_cols,
                     "mv_cols": mv_cols,
                     "expected_cols": expected_cols,
-                    "mv_count": None,
-                    "expected_count": None,
+                    "mv_count": mv_cnt,
+                    "expected_count": exp_cnt,
+                    "mv_hash": mv_hash,
+                    "expected_hash": exp_hash,
+                    "diff_kind": (
+                        "cardinality" if mv_cnt != exp_cnt else "values_only"
+                    ),
                 }
-                try:
-                    mv_cnt = livy.execute(
-                        f"SELECT COUNT(*) FROM ({mv_subquery})"
-                    )
-                    sample_payload["mv_count"] = _extract_diff_count(
-                        mv_cnt.get("output") or {}, label + " mv_count"
-                    )
-                except Exception:
-                    pass
-                try:
-                    exp_cnt = livy.execute(
-                        f"SELECT COUNT(*) FROM ({expected_subquery})"
-                    )
-                    sample_payload["expected_count"] = (
-                        _extract_diff_count(
-                            exp_cnt.get("output") or {},
-                            label + " exp_count",
-                        )
-                    )
-                except Exception:
-                    pass
             except Exception as sample_exc:
                 sample_payload = {"sample_error": str(sample_exc)}
     except Exception as exc:
