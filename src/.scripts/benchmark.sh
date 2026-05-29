@@ -5,9 +5,10 @@
 #
 # Environment variables:
 #   SCALE_FACTOR   — TPC-DI scale factor (default: 3)
-#   BATCH_1_PCT    — % of batch 1 data (required)
-#   BATCH_2_PCT    — % of batch 2 data (required)
-#   BATCH_3_PCT    — % of batch 3 data (required)
+#   BATCH_N_INSERT_PCT — % of batch N inserts. BATCH_N_PCT is a
+#                    backwards-compatible alias.
+#   BATCH_N_UPDATE_PCT / DELETE_PCT — optional physical mutation
+#                    percentages for batches 2 and 3 (default: 0)
 #   PARALLEL       — 0 = serial (default), 1 = run engines in parallel
 #   ENGINES        — comma-separated engine list (default: spark,duckdb,duckdb-openivm,feldera)
 #   HOST_CORES     — override auto-detected CPU count
@@ -27,12 +28,24 @@ cd "$(git rev-parse --show-toplevel)"
 
 export SCALE_FACTOR="${SCALE_FACTOR:-3}"
 
-if [[ -z "${BATCH_1_PCT:-}" || -z "${BATCH_2_PCT:-}" || -z "${BATCH_3_PCT:-}" ]]; then
-  echo "ERROR: BATCH_1_PCT, BATCH_2_PCT, and BATCH_3_PCT must all be set."
-  echo "  Example: export BATCH_1_PCT=1 BATCH_2_PCT=0.001 BATCH_3_PCT=0.002"
+export BATCH_1_INSERT_PCT="${BATCH_1_INSERT_PCT:-${BATCH_1_PCT:-}}"
+export BATCH_2_INSERT_PCT="${BATCH_2_INSERT_PCT:-${BATCH_2_PCT:-}}"
+export BATCH_3_INSERT_PCT="${BATCH_3_INSERT_PCT:-${BATCH_3_PCT:-}}"
+
+if [[ -z "${BATCH_1_INSERT_PCT:-}" || -z "${BATCH_2_INSERT_PCT:-}" || -z "${BATCH_3_INSERT_PCT:-}" ]]; then
+  echo "ERROR: BATCH_1_INSERT_PCT, BATCH_2_INSERT_PCT, and BATCH_3_INSERT_PCT must all be set."
+  echo "  Example: export BATCH_1_INSERT_PCT=1 BATCH_2_INSERT_PCT=0.001 BATCH_3_INSERT_PCT=0.002"
   exit 1
 fi
+
+export BATCH_1_PCT="${BATCH_1_PCT:-$BATCH_1_INSERT_PCT}"
+export BATCH_2_PCT="${BATCH_2_PCT:-$BATCH_2_INSERT_PCT}"
+export BATCH_3_PCT="${BATCH_3_PCT:-$BATCH_3_INSERT_PCT}"
 export BATCH_1_PCT BATCH_2_PCT BATCH_3_PCT
+export BATCH_2_UPDATE_PCT="${BATCH_2_UPDATE_PCT:-0}"
+export BATCH_2_DELETE_PCT="${BATCH_2_DELETE_PCT:-0}"
+export BATCH_3_UPDATE_PCT="${BATCH_3_UPDATE_PCT:-0}"
+export BATCH_3_DELETE_PCT="${BATCH_3_DELETE_PCT:-0}"
 export PARALLEL="${PARALLEL:-0}"
 export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"

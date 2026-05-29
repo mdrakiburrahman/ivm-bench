@@ -8,9 +8,16 @@ services:
       STATE_DIR: /tmp/dbt-state
       STATS_DIR: /data/stats
       SCALE_FACTOR: ${SCALE_FACTOR:-3}
+      BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
+      BATCH_2_INSERT_PCT: "${BATCH_2_INSERT_PCT:-}"
+      BATCH_3_INSERT_PCT: "${BATCH_3_INSERT_PCT:-}"
       BATCH_1_PCT: "${BATCH_1_PCT}"
       BATCH_2_PCT: "${BATCH_2_PCT}"
       BATCH_3_PCT: "${BATCH_3_PCT}"
+      BATCH_2_UPDATE_PCT: "${BATCH_2_UPDATE_PCT:-0}"
+      BATCH_2_DELETE_PCT: "${BATCH_2_DELETE_PCT:-0}"
+      BATCH_3_UPDATE_PCT: "${BATCH_3_UPDATE_PCT:-0}"
+      BATCH_3_DELETE_PCT: "${BATCH_3_DELETE_PCT:-0}"
     volumes:
       - ../mount/logs/${SCALE_FACTOR:-3}:/data/logs
       - /var/run/docker.sock:/var/run/docker.sock:ro

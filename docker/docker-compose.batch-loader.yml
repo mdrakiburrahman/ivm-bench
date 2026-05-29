@@ -15,3 +15,7 @@ services:
     environment:
       JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx${BATCH_LOADER_HEAP:-80g} -Xms${BATCH_LOADER_HEAP:-80g} -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=${BATCH_LOADER_GC_THREADS:-16} -XX:ConcGCThreads=${BATCH_LOADER_CONC_GC_THREADS:-8} -XX:+UseNUMA -XX:+AlwaysPreTouch"
       DELTA_PATH: /data/delta
+      BATCH_2_UPDATE_PCT: "${BATCH_2_UPDATE_PCT:-0}"
+      BATCH_2_DELETE_PCT: "${BATCH_2_DELETE_PCT:-0}"
+      BATCH_3_UPDATE_PCT: "${BATCH_3_UPDATE_PCT:-0}"
+      BATCH_3_DELETE_PCT: "${BATCH_3_DELETE_PCT:-0}"

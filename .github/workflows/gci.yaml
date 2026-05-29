@@ -12,13 +12,41 @@ on:
         description: "% of batch 1 data"
         default: "1"
         type: string
+      batch_1_insert_pct:
+        description: "% of batch 1 inserts (overrides batch_1_pct)"
+        default: ""
+        type: string
       batch_2_pct:
         description: "% of batch 2 data"
         default: "0.001"
         type: string
+      batch_2_insert_pct:
+        description: "% of batch 2 inserts (overrides batch_2_pct)"
+        default: ""
+        type: string
       batch_3_pct:
         description: "% of batch 3 data"
         default: "0.002"
+        type: string
+      batch_3_insert_pct:
+        description: "% of batch 3 inserts (overrides batch_3_pct)"
+        default: ""
+        type: string
+      batch_2_update_pct:
+        description: "% of existing staging rows to update before batch 2 insert"
+        default: "0"
+        type: string
+      batch_2_delete_pct:
+        description: "% of existing staging rows to delete before batch 2 insert"
+        default: "0"
+        type: string
+      batch_3_update_pct:
+        description: "% of existing staging rows to update before batch 3 insert"
+        default: "0"
+        type: string
+      batch_3_delete_pct:
+        description: "% of existing staging rows to delete before batch 3 insert"
+        default: "0"
         type: string
       parallel:
         description: "Run engines in parallel (0 or 1)"
@@ -61,9 +89,16 @@ jobs:
 
     env:
       SCALE_FACTOR: ${{ inputs.scale_factor || '3' }}
-      BATCH_1_PCT: ${{ inputs.batch_1_pct || '1' }}
-      BATCH_2_PCT: ${{ inputs.batch_2_pct || '0.001' }}
-      BATCH_3_PCT: ${{ inputs.batch_3_pct || '0.002' }}
+      BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '1' }}
+      BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '0.001' }}
+      BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '0.002' }}
+      BATCH_1_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '1' }}
+      BATCH_2_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '0.001' }}
+      BATCH_3_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '0.002' }}
+      BATCH_2_UPDATE_PCT: ${{ inputs.batch_2_update_pct || '0' }}
+      BATCH_2_DELETE_PCT: ${{ inputs.batch_2_delete_pct || '0' }}
+      BATCH_3_UPDATE_PCT: ${{ inputs.batch_3_update_pct || '0' }}
+      BATCH_3_DELETE_PCT: ${{ inputs.batch_3_delete_pct || '0' }}
       PARALLEL: ${{ inputs.parallel || '1' }}
       ENGINES: ${{ inputs.engines || 'spark,duckdb,duckdb-openivm,feldera' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
