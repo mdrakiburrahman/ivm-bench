@@ -1,6 +1,6 @@
 services:
   mssql-metastore:
-    image: mcr.microsoft.com/mssql/server:2025-latest
+    image: mcr.microsoft.com/mssql/server:2022-latest
     restart: on-failure:3
     environment:
       ACCEPT_EULA: "Y"
@@ -75,6 +75,13 @@ services:
         condition: service_healthy
     cpus: ${DBT_SERVER_CPUS:-4}
     mem_limit: ${DBT_SERVER_MEM:-8g}
+    environment:
+      # Throttle EXCEPT ALL validation fan-out (default 30) to reduce peak
+      # concurrent Hive metastore RPCs. At SF=400+ the full 30-thread
+      # validation pool was overwhelming SQL Server's SOS scheduler and
+      # tripping ASSERT(seenByMonitor < NonYieldThreshold). 10 threads is
+      # ~3x slower per-batch but bounded enough to avoid the crash.
+      SPARK_OPENIVM_VALIDATE_THREADS: "${SPARK_OPENIVM_VALIDATE_THREADS:-10}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm

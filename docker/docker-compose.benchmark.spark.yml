@@ -1,6 +1,6 @@
 services:
   mssql-metastore:
-    image: mcr.microsoft.com/mssql/server:2025-latest
+    image: mcr.microsoft.com/mssql/server:2022-latest
     restart: on-failure:3
     environment:
       ACCEPT_EULA: "Y"
