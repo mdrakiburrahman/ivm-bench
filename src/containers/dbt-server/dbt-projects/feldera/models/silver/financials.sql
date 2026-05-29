@@ -30,9 +30,15 @@ select
     coalesce(
         lag(effective_timestamp) over (
             partition by company_id
-            order by effective_timestamp desc
+            order by effective_timestamp desc, year desc, quarter desc, posting_date desc, company_name, revenue, earnings
         ) - INTERVAL '0.001' SECOND,
         TIMESTAMP '9999-12-31 23:59:59.999'
     ) as end_timestamp,
-    case when effective_timestamp = MAX(effective_timestamp) OVER (PARTITION BY company_id) then true else false end as is_current
+    case
+        when row_number() over (
+            partition by company_id
+            order by effective_timestamp desc, year desc, quarter desc, posting_date desc, company_name, revenue, earnings
+        ) = 1 then true
+        else false
+    end as is_current
 from s1
