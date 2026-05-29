@@ -5,15 +5,19 @@ services:
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "Hive@Pass123"
-      # Cap SQL Server's internal memory at ~70% of mem_limit to leave
+      # Cap SQL Server's internal memory at ~75% of mem_limit to leave
       # headroom for the OS / page cache. Under heavy sustained load
-      # at SF=100 PARALLEL=1 the default unconfigured server has been
-      # observed to crash with a fatal error (core-dumped) after ~15
-      # minutes. Hard-capping max server memory keeps SQL Server inside
-      # its cgroup limit instead of getting OOM-killed.
-      MSSQL_MEMORY_LIMIT_MB: "5500"
-    cpus: ${MSSQL_CPUS:-4}
-    mem_limit: ${MSSQL_MEM:-8g}
+      # the default unconfigured server has been observed to crash with
+      # a fatal error (core-dumped) after ~15 minutes at SF=100, and at
+      # SF=400 (3x larger validation working set + 30 concurrent Livy
+      # threads → ~150+ concurrent metastore RPCs) the older 4-cpu /
+      # 8g / 5500MB cap was hitting SOS scheduler
+      # ASSERT(seenByMonitor < NonYieldThreshold) (sosschedmon.cpp:202)
+      # — symptom of cgroup CPU starvation. Bumped to 8 cpus / 16g /
+      # 12000MB to give the scheduler enough headroom across SF=100→1000.
+      MSSQL_MEMORY_LIMIT_MB: "12000"
+    cpus: ${MSSQL_CPUS:-8}
+    mem_limit: ${MSSQL_MEM:-16g}
     healthcheck:
       test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Hive@Pass123" -C -Q "SELECT 1" -b
       interval: 10s
