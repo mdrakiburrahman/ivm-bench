@@ -41,10 +41,15 @@ class EngineConfig:
             "DBT_SERVER_MEM": self.dbt_server_resources.mem_str,
             "DBT_SERVER_PORT": str(self.port),
         }
-        # MSSQL for Spark
+        # MSSQL for Spark — must match defaults in
+        # docker/docker-compose.benchmark.spark{,-openivm}.yml. At SF=400+
+        # cpus=4/mem=8g triggered SQL Server's SOS scheduler ASSERT
+        # (((seenByMonitor)<(NonYieldThreshold)), sosschedmon.cpp:202)
+        # under validation's 30 concurrent Livy threads → ~150 concurrent
+        # metastore RPCs. Bumped to 8 cpus / 16g (internal cap 12000MB).
         if self.name in ("spark", "spark-openivm"):
-            env["MSSQL_CPUS"] = "4"
-            env["MSSQL_MEM"] = "8g"
+            env["MSSQL_CPUS"] = "8"
+            env["MSSQL_MEM"] = "16g"
         # Feldera: cap pipeline RSS at 95 % of its container memory.
         # The dbt-feldera adapter reads FELDERA_MAX_RSS_MB via env_var()
         # in profiles.yml and forwards it to runtime_config.max_rss_mb.
