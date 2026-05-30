@@ -56,11 +56,10 @@
     }
   },
   "experiments": [
+    { "label": "sf=100",  "scale_factor": 50  },
     { "label": "sf=100",  "scale_factor": 100  },
     { "label": "sf=175",  "scale_factor": 175  },
     { "label": "sf=250",  "scale_factor": 250  },
-    { "label": "sf=400",  "scale_factor": 400  },
-    { "label": "sf=600",  "scale_factor": 600  },
-    { "label": "sf=1000", "scale_factor": 1000 }
+    { "label": "sf=400",  "scale_factor": 400  }
   ]
 }
