@@ -53,11 +53,16 @@ docker kill $(docker ps -q)
 bash src/.scripts/benchmark.sh
 ```
 
-Per-experiment knobs (scale factor, batch percentages, engines, parallel mode,
-OpenIVM feature flags, Spark tunables) live INSIDE the experiments JSON — each
-row inherits from a `baseline` block and overrides only what varies. See
-`smoke.json` for the schema and the
+Per-experiment knobs (scale factor, batch percentages, per-batch update/delete
+mixes, engines, parallel mode, OpenIVM feature flags, Spark tunables) live
+INSIDE the experiments JSON — each row inherits from a `baseline` block and
+overrides only what varies. See `smoke.json` for the schema and the
 [OAT sweeps](#oat-sweeps-one-at-a-time) section below for artifact layout.
+
+For append-only runs, `batch_N_pct` (or the alias `batch_N_insert_pct`) is the
+insert percentage; for mixed-DML batches, `batch_N_update_pct` and
+`batch_N_delete_pct` are optional mutation percentages applied before the
+insert (batch 1 is always insert-only, defaults are `0`).
 
 At the end, `benchmark.sh` cats `mount/oat-state/latest/RESULTS.md`:
 

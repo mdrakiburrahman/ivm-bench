@@ -106,6 +106,10 @@ class BenchmarkConfig:
     batch_1_pct: str = "1"
     batch_2_pct: str = "0.001"
     batch_3_pct: str = "0.002"
+    batch_2_update_pct: str = "0"
+    batch_2_delete_pct: str = "0"
+    batch_3_update_pct: str = "0"
+    batch_3_delete_pct: str = "0"
     parallel: bool = False
     engines: List[str] = field(
         default_factory=lambda: [
@@ -124,7 +128,14 @@ class BenchmarkConfig:
         """Environment variables shared across all compose invocations."""
         return {
             "SCALE_FACTOR": str(self.scale_factor),
+            "BATCH_1_INSERT_PCT": self.batch_1_pct,
+            "BATCH_2_INSERT_PCT": self.batch_2_pct,
+            "BATCH_3_INSERT_PCT": self.batch_3_pct,
             "BATCH_1_PCT": self.batch_1_pct,
             "BATCH_2_PCT": self.batch_2_pct,
             "BATCH_3_PCT": self.batch_3_pct,
+            "BATCH_2_UPDATE_PCT": self.batch_2_update_pct,
+            "BATCH_2_DELETE_PCT": self.batch_2_delete_pct,
+            "BATCH_3_UPDATE_PCT": self.batch_3_update_pct,
+            "BATCH_3_DELETE_PCT": self.batch_3_delete_pct,
         }

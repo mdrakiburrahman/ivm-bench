@@ -30,6 +30,10 @@
 #   ENGINES        — comma-separated engine list. Default lets each
 #                    experiment in the JSON pick. The harness rebuilds the
 #                    union once during Phase 0 so no rebuilds mid-sweep.
+#   BATCH_N_INSERT_PCT / UPDATE_PCT / DELETE_PCT — per-experiment defaults
+#                    forwarded to the benchmark-server container. The OAT
+#                    JSON overrides these per experiment. BATCH_N_PCT is a
+#                    backwards-compatible alias for BATCH_N_INSERT_PCT.
 #   HOST_CORES     — override auto-detected CPU count
 #   HOST_MEMORY    — override auto-detected memory in GB
 #   PRESERVE_RAW   — 1 = keep mount/bin/ across sweeps. The OAT runner ALWAYS
@@ -82,8 +86,21 @@ export BENCHMARK_EXPERIMENTS_FILE
 echo "=== OAT sweep — experiments file: $BENCHMARK_EXPERIMENTS_FILE ==="
 
 export OAT_MIN_FREE_PCT="${OAT_MIN_FREE_PCT:-10}"
+
+# Forward per-batch DML mix env vars to the benchmark-server container.
+# These act as defaults only — the OAT JSON's per-experiment block overrides.
+export BATCH_1_INSERT_PCT="${BATCH_1_INSERT_PCT:-${BATCH_1_PCT:-}}"
+export BATCH_2_INSERT_PCT="${BATCH_2_INSERT_PCT:-${BATCH_2_PCT:-}}"
+export BATCH_3_INSERT_PCT="${BATCH_3_INSERT_PCT:-${BATCH_3_PCT:-}}"
+export BATCH_1_PCT="${BATCH_1_PCT:-${BATCH_1_INSERT_PCT:-1}}"
+export BATCH_2_PCT="${BATCH_2_PCT:-${BATCH_2_INSERT_PCT:-0.001}}"
+export BATCH_3_PCT="${BATCH_3_PCT:-${BATCH_3_INSERT_PCT:-0.002}}"
+export BATCH_2_UPDATE_PCT="${BATCH_2_UPDATE_PCT:-0}"
+export BATCH_2_DELETE_PCT="${BATCH_2_DELETE_PCT:-0}"
+export BATCH_3_UPDATE_PCT="${BATCH_3_UPDATE_PCT:-0}"
+export BATCH_3_DELETE_PCT="${BATCH_3_DELETE_PCT:-0}"
 export PARALLEL="${PARALLEL:-0}"
-export ENGINES="${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera,spark-openivm}"
+export ENGINES="${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"

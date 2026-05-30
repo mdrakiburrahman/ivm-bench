@@ -28,6 +28,9 @@ services:
       JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
       DIGEN_PATH: /data/digen
       DELTA_PATH: /data/delta
+      BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
+      BATCH_2_INSERT_PCT: "${BATCH_2_INSERT_PCT:-}"
+      BATCH_3_INSERT_PCT: "${BATCH_3_INSERT_PCT:-}"
       BATCH_1_PCT: "${BATCH_1_PCT}"
       BATCH_2_PCT: "${BATCH_2_PCT}"
       BATCH_3_PCT: "${BATCH_3_PCT}"

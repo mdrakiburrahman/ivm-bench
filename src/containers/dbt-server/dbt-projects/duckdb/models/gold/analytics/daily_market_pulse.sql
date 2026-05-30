@@ -4,11 +4,11 @@ WITH daily_stats AS (
         COUNT(*) AS num_records,
         COUNT(DISTINCT dm.dm_s_symb) AS active_symbols,
         SUM(CAST(dm.dm_vol AS BIGINT)) AS total_volume,
-        ROUND(AVG(CAST(dm.dm_close AS DOUBLE)), 6) AS avg_close_price,
+        ROUND(CAST(SUM(CAST(ROUND(dm.dm_close, 6) AS DECIMAL(38, 6))) AS DOUBLE) / NULLIF(COUNT(dm.dm_close), 0), 6) AS avg_close_price,
         ROUND(STDDEV(CAST(dm.dm_close AS DOUBLE)), 6) AS close_dispersion,
         MIN(dm.dm_low) AS market_low,
         MAX(dm.dm_high) AS market_high,
-        ROUND(AVG(CAST(dm.dm_high - dm.dm_low AS DOUBLE)), 6) AS avg_intraday_spread,
+        ROUND(CAST(SUM(CAST(ROUND(dm.dm_high - dm.dm_low, 6) AS DECIMAL(38, 6))) AS DOUBLE) / NULLIF(COUNT(dm.dm_high), 0), 6) AS avg_intraday_spread,
         SUM(CASE WHEN dm.dm_close >= dm.dm_low + (dm.dm_high - dm.dm_low) * 0.5
                  THEN 1 ELSE 0 END) AS closed_upper_half_count
     FROM {{ ref('daily_market') }} dm
@@ -27,9 +27,9 @@ no_trade_days AS (
 with_lags AS (
     SELECT
         ntd.*,
-        LAG(ntd.total_volume) OVER (ORDER BY ntd.dm_date, ntd.num_records) AS prev_volume,
-        LAG(ntd.avg_close_price) OVER (ORDER BY ntd.dm_date, ntd.num_records) AS prev_avg_close,
-        LAG(ntd.active_symbols) OVER (ORDER BY ntd.dm_date, ntd.num_records) AS prev_active_symbols
+        LAG(ntd.total_volume) OVER (ORDER BY ntd.dm_date) AS prev_volume,
+        LAG(ntd.avg_close_price) OVER (ORDER BY ntd.dm_date) AS prev_avg_close,
+        LAG(ntd.active_symbols) OVER (ORDER BY ntd.dm_date) AS prev_active_symbols
     FROM no_trade_days ntd
 ),
 
@@ -73,8 +73,8 @@ scored AS (
             wl.total_volume * 100.0 / NULLIF(gd.grand_total_volume, 0),
             4
         ) AS pct_of_total_volume,
-        RANK() OVER (ORDER BY wl.total_volume DESC, wl.dm_date) AS rank_by_volume,
-        RANK() OVER (ORDER BY wl.close_dispersion DESC, wl.dm_date) AS rank_by_dispersion
+        RANK() OVER (ORDER BY wl.total_volume DESC) AS rank_by_volume,
+        RANK() OVER (ORDER BY wl.close_dispersion DESC) AS rank_by_dispersion
     FROM with_lags wl
     CROSS JOIN global_daily gd
 )

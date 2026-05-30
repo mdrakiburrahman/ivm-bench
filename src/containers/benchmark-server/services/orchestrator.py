@@ -168,6 +168,10 @@ class Orchestrator:
             "batch_1_pct": self._config.batch_1_pct,
             "batch_2_pct": self._config.batch_2_pct,
             "batch_3_pct": self._config.batch_3_pct,
+            "batch_2_update_pct": self._config.batch_2_update_pct,
+            "batch_2_delete_pct": self._config.batch_2_delete_pct,
+            "batch_3_update_pct": self._config.batch_3_update_pct,
+            "batch_3_delete_pct": self._config.batch_3_delete_pct,
             "oat_run_id": self._oat_run_id,
         })
         with DB_LOCK:
@@ -1103,13 +1107,23 @@ class Orchestrator:
         self._config.batch_1_pct = inputs.batch_1_pct
         self._config.batch_2_pct = inputs.batch_2_pct
         self._config.batch_3_pct = inputs.batch_3_pct
+        self._config.batch_2_update_pct = inputs.batch_2_update_pct
+        self._config.batch_2_delete_pct = inputs.batch_2_delete_pct
+        self._config.batch_3_update_pct = inputs.batch_3_update_pct
+        self._config.batch_3_delete_pct = inputs.batch_3_delete_pct
         self._config.engines = list(inputs.engines)
         self._config.parallel = inputs.parallel
         oat_runner.apply_experiment_env(inputs)
+        dml_extras = []
+        for ix, (u, d) in enumerate(((inputs.batch_2_update_pct, inputs.batch_2_delete_pct),
+                                     (inputs.batch_3_update_pct, inputs.batch_3_delete_pct)), start=2):
+            if str(u) != "0" or str(d) != "0":
+                dml_extras.append(f"b{ix}u={u}/b{ix}d={d}")
+        dml_str = f" dml={','.join(dml_extras)}" if dml_extras else ""
         self.emit(
             f"  [oat-apply] SF={inputs.scale_factor} batches={inputs.batch_1_pct}/"
-            f"{inputs.batch_2_pct}/{inputs.batch_3_pct} engines={','.join(inputs.engines)} "
-            f"parallel={inputs.parallel}"
+            f"{inputs.batch_2_pct}/{inputs.batch_3_pct}{dml_str} "
+            f"engines={','.join(inputs.engines)} parallel={inputs.parallel}"
         )
 
     def _persist_oat_experiment_row(

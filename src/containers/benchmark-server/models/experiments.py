@@ -100,6 +100,10 @@ class ExperimentInputs:
     batch_1_pct: str = "100"
     batch_2_pct: str = "1"
     batch_3_pct: str = "2"
+    batch_2_update_pct: str = "0"
+    batch_2_delete_pct: str = "0"
+    batch_3_update_pct: str = "0"
+    batch_3_delete_pct: str = "0"
     engines: List[str] = field(default_factory=lambda: ["spark", "spark-openivm"])
     parallel: bool = False
     feature_flags: FeatureFlags = field(default_factory=FeatureFlags)
@@ -117,6 +121,10 @@ class ExperimentInputs:
             "BATCH_1_PCT": str(self.batch_1_pct),
             "BATCH_2_PCT": str(self.batch_2_pct),
             "BATCH_3_PCT": str(self.batch_3_pct),
+            "BATCH_2_UPDATE_PCT": str(self.batch_2_update_pct),
+            "BATCH_2_DELETE_PCT": str(self.batch_2_delete_pct),
+            "BATCH_3_UPDATE_PCT": str(self.batch_3_update_pct),
+            "BATCH_3_DELETE_PCT": str(self.batch_3_delete_pct),
             "PARALLEL": "1" if self.parallel else "0",
             "ENGINES": ",".join(self.engines),
         }
@@ -131,6 +139,10 @@ class ExperimentInputs:
             "batch_1_pct": self.batch_1_pct,
             "batch_2_pct": self.batch_2_pct,
             "batch_3_pct": self.batch_3_pct,
+            "batch_2_update_pct": self.batch_2_update_pct,
+            "batch_2_delete_pct": self.batch_2_delete_pct,
+            "batch_3_update_pct": self.batch_3_update_pct,
+            "batch_3_delete_pct": self.batch_3_delete_pct,
             "engines": list(self.engines),
             "parallel": self.parallel,
             "feature_flags": asdict(self.feature_flags),
@@ -144,6 +156,10 @@ class ExperimentInputs:
             "batch_1_pct": self.batch_1_pct,
             "batch_2_pct": self.batch_2_pct,
             "batch_3_pct": self.batch_3_pct,
+            "batch_2_update_pct": self.batch_2_update_pct,
+            "batch_2_delete_pct": self.batch_2_delete_pct,
+            "batch_3_update_pct": self.batch_3_update_pct,
+            "batch_3_delete_pct": self.batch_3_delete_pct,
             "engines": ",".join(self.engines),
             "parallel": int(self.parallel),
         }
@@ -162,6 +178,10 @@ class ExperimentInputs:
             "batch_1_pct": "b1%",
             "batch_2_pct": "b2%",
             "batch_3_pct": "b3%",
+            "batch_2_update_pct": "b2u%",
+            "batch_2_delete_pct": "b2d%",
+            "batch_3_update_pct": "b3u%",
+            "batch_3_delete_pct": "b3d%",
             "engines": "engines",
             "parallel": "parallel",
         }
@@ -201,11 +221,20 @@ class ExperimentInputs:
             default_parallelism=st_d.get("default_parallelism", base.spark_tunables.default_parallelism),
         )
 
+        # batch_N_pct accepts either the new explicit name or the legacy
+        # batch_N_insert_pct alias. The OAT JSON canonicalises to batch_N_pct.
+        def _pct(key: str, base_v: str) -> str:
+            return str(d.get(key, d.get(key.replace("_pct", "_insert_pct"), base_v)))
+
         return cls(
             scale_factor=int(d.get("scale_factor", base.scale_factor)),
-            batch_1_pct=str(d.get("batch_1_pct", base.batch_1_pct)),
-            batch_2_pct=str(d.get("batch_2_pct", base.batch_2_pct)),
-            batch_3_pct=str(d.get("batch_3_pct", base.batch_3_pct)),
+            batch_1_pct=_pct("batch_1_pct", base.batch_1_pct),
+            batch_2_pct=_pct("batch_2_pct", base.batch_2_pct),
+            batch_3_pct=_pct("batch_3_pct", base.batch_3_pct),
+            batch_2_update_pct=str(d.get("batch_2_update_pct", base.batch_2_update_pct)),
+            batch_2_delete_pct=str(d.get("batch_2_delete_pct", base.batch_2_delete_pct)),
+            batch_3_update_pct=str(d.get("batch_3_update_pct", base.batch_3_update_pct)),
+            batch_3_delete_pct=str(d.get("batch_3_delete_pct", base.batch_3_delete_pct)),
             engines=engines,
             parallel=bool(d.get("parallel", base.parallel)),
             feature_flags=ff,
