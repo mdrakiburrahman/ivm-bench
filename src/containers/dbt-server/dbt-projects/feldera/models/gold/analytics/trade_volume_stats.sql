@@ -8,14 +8,14 @@ WITH security_stats AS (
         COUNT(DISTINCT t.sk_broker_id) AS unique_brokers,
         COUNT(DISTINCT CAST(t.create_timestamp AS DATE)) AS active_days,
         SUM(CAST(t.quantity AS BIGINT)) AS total_volume,
-        SUM(CAST(t.trade_price AS DOUBLE) * CAST(t.quantity AS DOUBLE)) AS total_notional,
-        AVG(t.trade_price) AS avg_price,
-        STDDEV(CAST(t.trade_price AS DOUBLE)) AS price_stddev,
+        ROUND(SUM(CAST(t.trade_price AS DOUBLE) * CAST(t.quantity AS DOUBLE)), 4) AS total_notional,
+        ROUND(CAST(SUM(CAST(ROUND(t.trade_price, 4) AS DECIMAL(38, 4))) AS DOUBLE) / NULLIF(COUNT(t.trade_price), 0), 4) AS avg_price,
+        ROUND(STDDEV(CAST(t.trade_price AS DOUBLE)), 4) AS price_stddev,
         MIN(t.trade_price) AS min_price,
         MAX(t.trade_price) AS max_price,
-        AVG(t.fee) AS avg_fee,
-        AVG(t.commission) AS avg_commission,
-        SUM(CAST(t.fee AS DOUBLE) + CAST(t.commission AS DOUBLE)) AS total_cost
+        ROUND(CAST(SUM(CAST(ROUND(t.fee, 4) AS DECIMAL(38, 4))) AS DOUBLE) / NULLIF(COUNT(t.fee), 0), 4) AS avg_fee,
+        ROUND(CAST(SUM(CAST(ROUND(t.commission, 4) AS DECIMAL(38, 4))) AS DOUBLE) / NULLIF(COUNT(t.commission), 0), 4) AS avg_commission,
+        ROUND(SUM(CAST(t.fee AS DOUBLE) + CAST(t.commission AS DOUBLE)), 4) AS total_cost
     FROM {{ ref('fact_trade') }} t
     JOIN {{ ref('dim_security') }} s
         ON t.sk_security_id = s.sk_security_id

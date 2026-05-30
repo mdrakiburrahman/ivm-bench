@@ -4,11 +4,11 @@ WITH daily_stats AS (
         COUNT(*) AS num_records,
         COUNT(DISTINCT dm.dm_s_symb) AS active_symbols,
         SUM(CAST(dm.dm_vol AS BIGINT)) AS total_volume,
-        AVG(dm.dm_close) AS avg_close_price,
+        ROUND(CAST(SUM(CAST(ROUND(dm.dm_close, 6) AS DECIMAL(38, 6))) AS DOUBLE) / NULLIF(COUNT(dm.dm_close), 0), 6) AS avg_close_price,
         ROUND(STDDEV(CAST(dm.dm_close AS DOUBLE)), 6) AS close_dispersion,
         MIN(dm.dm_low) AS market_low,
         MAX(dm.dm_high) AS market_high,
-        AVG(CAST(dm.dm_high - dm.dm_low AS DOUBLE)) AS avg_intraday_spread,
+        ROUND(CAST(SUM(CAST(ROUND(dm.dm_high - dm.dm_low, 6) AS DECIMAL(38, 6))) AS DOUBLE) / NULLIF(COUNT(dm.dm_high), 0), 6) AS avg_intraday_spread,
         SUM(CASE WHEN dm.dm_close >= dm.dm_low + (dm.dm_high - dm.dm_low) * 0.5
                  THEN 1 ELSE 0 END) AS closed_upper_half_count
     FROM {{ ref('daily_market') }} dm

@@ -37,9 +37,13 @@ See [`contrib/README.md`](contrib/README.md) on how to bootstrap a fresh Windows
 ```bash
 export GIT_ROOT=$(git rev-parse --show-toplevel)
 export SCALE_FACTOR=3                               # 3 - 2147483647
-export BATCH_1_PCT=1                                # 1% of DIGen batch 1 data
-export BATCH_2_PCT=0.001                            # 0.001% of DIGen batch 2 data
-export BATCH_3_PCT=0.002                            # 0.002% of DIGen batch 3 data
+export BATCH_1_INSERT_PCT=1                         # 1% of DIGen batch 1 data
+export BATCH_2_INSERT_PCT=0.001                     # 0.001% of DIGen batch 2 data
+export BATCH_3_INSERT_PCT=0.002                     # 0.002% of DIGen batch 3 data
+export BATCH_2_UPDATE_PCT=0                         # % of pre-batch staging rows to update
+export BATCH_2_DELETE_PCT=0                         # % of pre-batch staging rows to delete
+export BATCH_3_UPDATE_PCT=0                         # % of pre-batch staging rows to update
+export BATCH_3_DELETE_PCT=0                         # % of pre-batch staging rows to delete
 export PARALLEL=1                                   # 0, 1
 export ENGINES=spark,duckdb,duckdb-openivm,feldera  # Comma seperated engines to run
 export PRESERVE_RAW=0                               # 0, 1 — set 1 to reuse mount/raw/ and mount/bin/ across runs (skips multi-hour Phase 1 datagen on iteration)
@@ -63,7 +67,10 @@ Spark:           00:03:32 -> 00:02:16 -> 00:02:14
 ====================== 00:16:51 ======================
 ```
 
-Runs 3 batches per engine (Full load`batch1` → append `batch2` → append `batch3`).
+Runs 3 batches per engine (full load `batch1` → append/mutate `batch2` → append/mutate `batch3`).
+For append-only runs, `BATCH_1_PCT`, `BATCH_2_PCT`, and `BATCH_3_PCT` can also
+be used as insert percentage flags. If both names are set, `BATCH_N_INSERT_PCT`
+wins. Mutation percentages default to `0`; batch 1 is always insert-only.
 
 ### Engines
 

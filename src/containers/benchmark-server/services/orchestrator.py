@@ -94,6 +94,10 @@ class Orchestrator:
                 "batch_1_pct": self._config.batch_1_pct,
                 "batch_2_pct": self._config.batch_2_pct,
                 "batch_3_pct": self._config.batch_3_pct,
+                "batch_2_update_pct": self._config.batch_2_update_pct,
+                "batch_2_delete_pct": self._config.batch_2_delete_pct,
+                "batch_3_update_pct": self._config.batch_3_update_pct,
+                "batch_3_delete_pct": self._config.batch_3_delete_pct,
             })
             with DB_LOCK:
                 conn = get_db()

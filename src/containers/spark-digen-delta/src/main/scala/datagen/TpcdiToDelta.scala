@@ -17,10 +17,18 @@ object TpcdiToDelta {
     val digenPath = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
     val deltaPath = sys.env.getOrElse("DELTA_PATH", "/data/delta")
 
+    def insertPct(batch: Int): Double =
+      sys.env
+        .get(s"BATCH_${batch}_INSERT_PCT")
+        .filter(_.nonEmpty)
+        .orElse(sys.env.get(s"BATCH_${batch}_PCT"))
+        .getOrElse(sys.error(s"BATCH_${batch}_INSERT_PCT or BATCH_${batch}_PCT env var required"))
+        .toDouble
+
     val batchPct = Map(
-      1 -> sys.env.getOrElse("BATCH_1_PCT", sys.error("BATCH_1_PCT env var required")).toDouble,
-      2 -> sys.env.getOrElse("BATCH_2_PCT", sys.error("BATCH_2_PCT env var required")).toDouble,
-      3 -> sys.env.getOrElse("BATCH_3_PCT", sys.error("BATCH_3_PCT env var required")).toDouble,
+      1 -> insertPct(1),
+      2 -> insertPct(2),
+      3 -> insertPct(3),
     )
     println(s"=== Batch limits: B1=${batchPct(1)}%, B2=${batchPct(2)}%, B3=${batchPct(3)}% ===")
 

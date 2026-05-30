@@ -4,10 +4,12 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.functions.lit
 import org.apache.hadoop.fs.Path
+import scala.math.BigDecimal.RoundingMode
 
 object BatchLoader {
 
   val deltaPath: String = sys.env.getOrElse("DELTA_PATH", "/data/delta")
+  val scoreModulus: Long = 1000000L
 
   // Category A: tables that start with batch1 data
   val categoryA: Seq[String] = Seq(
@@ -73,6 +75,55 @@ object BatchLoader {
     "batch_date" -> StructType(Seq(
       StructField("batchdate", DateType, true)
     ))
+  )
+
+  case class MutationSpec(
+    table: String,
+    scoreExpr: String,
+    updateAssignments: String
+  )
+
+  val mutationSpecs: Seq[MutationSpec] = Seq(
+    MutationSpec(
+      "cash_transaction",
+      "pmod(coalesce(ct_ca_id, 0L), 1000000L) * 2654435761L",
+      "ct_amt = coalesce(ct_amt, 0D) + 0.01D"
+    ),
+    MutationSpec(
+      "daily_market",
+      "datediff(dm_date, DATE '1970-01-01') * 2654435761L + coalesce(ascii(substr(dm_s_symb, 1, 1)), 0) * 9176L + coalesce(ascii(substr(dm_s_symb, 2, 1)), 0)",
+      "dm_close = dm_close + 0.01D, dm_high = dm_high + 0.01D, dm_vol = dm_vol + 1"
+    ),
+    MutationSpec(
+      "holding_history",
+      "pmod(coalesce(hh_h_t_id, 0), 1000000) * 2654435761L + pmod(coalesce(hh_t_id, 0), 1000000)",
+      "hh_after_qty = hh_after_qty + 1"
+    ),
+    MutationSpec(
+      "prospect",
+      "coalesce(age, 0) * 2654435761L + coalesce(creditrating, 0) * 9176L + coalesce(numbercars, 0) * 271L + coalesce(numberchildren, 0)",
+      "networth = networth + 1"
+    ),
+    MutationSpec(
+      "trade",
+      "pmod(coalesce(t_id, 0L), 1000000L) * 2654435761L",
+      "t_qty = t_qty + 1"
+    ),
+    MutationSpec(
+      "watch_history",
+      "pmod(coalesce(w_c_id, 0L), 1000000L) * 2654435761L",
+      "w_dts = w_dts + INTERVAL 1 SECOND"
+    ),
+    MutationSpec(
+      "account",
+      "pmod(coalesce(accountid, 0L), 1000000L) * 2654435761L",
+      "accountdesc = concat(accountdesc, ' upd')"
+    ),
+    MutationSpec(
+      "customer",
+      "pmod(coalesce(customerid, 0L), 1000000L) * 2654435761L",
+      "tier = CASE WHEN tier IS NULL THEN NULL ELSE CAST(((CAST(tier AS INT) + 1) % 100) AS TINYINT) END"
+    )
   )
 
   def main(args: Array[String]): Unit = {
@@ -160,6 +211,8 @@ object BatchLoader {
     val stagingDir = s"$deltaPath/staging"
     val allTables = categoryA ++ categoryB
 
+    applyMutations(session, stagingDir, batchNum)
+
     allTables.foreach { table =>
       val srcPath = s"$deltaPath/batch$batchNum/$table"
       val dstPath = s"$stagingDir/$table"
@@ -181,5 +234,65 @@ object BatchLoader {
 
     println(s"[append] Batch $batchNum append complete.")
     session.stop()
+  }
+
+  private def mutationPct(batchNum: Int, op: String): BigDecimal = {
+    val name = s"BATCH_${batchNum}_${op.toUpperCase}_PCT"
+    val value = BigDecimal(sys.env.getOrElse(name, "0"))
+    if (value < 0 || value > 100) {
+      sys.error(s"$name must be between 0 and 100")
+    }
+    value
+  }
+
+  private def mutationBuckets(batchNum: Int): Map[String, (Long, Long, BigDecimal)] = {
+    if (batchNum == 1) return Map.empty
+    val pcts = Map(
+      "update" -> mutationPct(batchNum, "update"),
+      "delete" -> mutationPct(batchNum, "delete")
+    )
+    val total = pcts.values.sum
+    if (total > 100) {
+      sys.error(s"Batch $batchNum mutation percentages sum to $total; max is 100")
+    }
+
+    var start = 0L
+    Seq("update", "delete").map { op =>
+      val width = ((pcts(op) * scoreModulus) / 100).setScale(0, RoundingMode.HALF_UP).toLong
+      val bucket = (start, start + width, pcts(op))
+      start += width
+      op -> bucket
+    }.toMap
+  }
+
+  private def scorePredicate(spec: MutationSpec, batchNum: Int, start: Long, end: Long): String = {
+    if (start == end) return "false"
+    val score = s"pmod(cast((${spec.scoreExpr} + ${batchNum * 7919L}) as long), $scoreModulus)"
+    s"$score >= $start AND $score < $end"
+  }
+
+  private def applyMutations(session: SparkSession, stagingDir: String, batchNum: Int): Unit = {
+    val buckets = mutationBuckets(batchNum)
+    if (buckets.isEmpty || buckets.values.forall { case (start, end, _) => start == end }) {
+      return
+    }
+
+    mutationSpecs.foreach { spec =>
+      val tablePath = s"$stagingDir/${spec.table}"
+      val relation = s"delta.`$tablePath`"
+      val (updateStart, updateEnd, updatePct) = buckets("update")
+      val (deleteStart, deleteEnd, deletePct) = buckets("delete")
+
+      if (updateStart != updateEnd) {
+        val pred = scorePredicate(spec, batchNum, updateStart, updateEnd)
+        println(s"[mutate] batch$batchNum/${spec.table}: UPDATE ${updatePct}%")
+        session.sql(s"UPDATE $relation SET ${spec.updateAssignments} WHERE $pred")
+      }
+      if (deleteStart != deleteEnd) {
+        val pred = scorePredicate(spec, batchNum, deleteStart, deleteEnd)
+        println(s"[mutate] batch$batchNum/${spec.table}: DELETE ${deletePct}%")
+        session.sql(s"DELETE FROM $relation WHERE $pred")
+      }
+    }
   }
 }
