@@ -1,0 +1,24 @@
+{
+  "_design_notes": [
+    "SF=10 backfill — single experiment to re-run the previously-failed sf=10",
+    "iteration of sf-sweep.json after the openivm-spark broadcast-explosion",
+    "fix. Settings cloned verbatim from sf-sweep.json experiments[0] /",
+    "baseline so the output is byte-comparable with the rest of the sweep."
+  ],
+  "baseline": {
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "2",
+    "engines": ["spark", "spark-openivm"],
+    "parallel": false,
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    { "label": "sf=10", "scale_factor": 10 }
+  ]
+}
