@@ -36,9 +36,10 @@
     {% endcall %}
 
   {% else %}
-    {# Incremental refresh — openivm-spark's REFRESH path picks up the
-       staging deltas that IvmDmlInterceptorRule has logged since the
-       last refresh and applies the RefreshType-specific rewrite. #}
+    {# Incremental refresh — under spark.openivm.changeFeed.mode=cdf the
+       REFRESH path reads Delta Change Data Feed from each source table and
+       applies the RefreshType-specific rewrite. Sources must have
+       delta.enableChangeDataFeed=true (set in spark_openivm_sources). #}
     {% call statement('main') %}
       REFRESH MATERIALIZED VIEW {{ target_relation }}
     {% endcall %}

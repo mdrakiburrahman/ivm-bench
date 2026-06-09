@@ -7,6 +7,12 @@ spark.sql.sources.default=delta
 # Activate the openivm-spark extension (defaults to false, must be enabled)
 spark.openivm.enabled=true
 
+# Change propagation mode — `cdf` reads Delta Change Data Feed during REFRESH
+# instead of teeing DML through IvmDmlInterceptorRule. Required so writers
+# other than this Spark session can update the base Delta tables and the MVs
+# still propagate. Source tables MUST have `delta.enableChangeDataFeed=true`.
+spark.openivm.changeFeed.mode=cdf
+
 # Refresh profile telemetry — when enabled, every CREATE/REFRESH MATERIALIZED
 # VIEW writes per-step rows into the RocksDB `refresh_profile` column family
 # (see RefreshProfileCatalog), readable via `SHOW OPENIVM REFRESH PROFILE`.

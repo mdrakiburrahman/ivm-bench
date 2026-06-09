@@ -1,15 +1,10 @@
 """spark-openivm source-table management.
 
 Routes batch1 init + batch{2,3} append through Spark SQL DML over Livy.
-Each `INSERT INTO <tracked_delta_table> SELECT * FROM delta.\\`<batchN_path>\\``
-is intercepted by openivm-spark's `IvmDmlInterceptorRule`, which tees the
-change set to the staging Delta — that's what `REFRESH MATERIALIZED VIEW`
-consumes during batches 2/3.
-
-Why not the spark-batch-loader's path-based writes? Because
-`df.write.format("delta").mode("append").save(path)` bypasses Spark SQL DML
-entirely, so the interceptor never sees the change. We MUST go through
-`INSERT INTO` so the rule fires.
+The tracked Delta tables are registered with `delta.enableChangeDataFeed=true`
+so each `INSERT INTO` produces Change Data Feed records. Under
+`spark.openivm.changeFeed.mode=cdf` the next `REFRESH MATERIALIZED VIEW`
+reads those CDF records from each source to incrementalize the dependent MVs.
 
 Why a separate Livy session from the dbt run's? The init/append happens
 BEFORE the first dbt build (or BETWEEN builds), and the fabricspark adapter
@@ -111,7 +106,8 @@ class LivyClient:
     `spark.openivm.rocksdb.multiProcess=false` (the fast path).
 
     Runs statements one-by-one so multi-statement parsing isn't an issue and
-    each `INSERT INTO` is its own AppendData plan for `IvmDmlInterceptorRule`.
+    each `INSERT INTO` produces a discrete Delta commit (and therefore a
+    discrete CDF record range) for the REFRESH path to consume.
 
     Thread-safety: after `open()` completes, `execute()` is safe to call
     concurrently from multiple threads against a single client instance.
@@ -325,7 +321,8 @@ def init_sources() -> dict:
         dst_path = os.path.join(SOURCES_DIR, tname)
         statements.append(
             f"CREATE TABLE IF NOT EXISTS tpcdi.{tname} "
-            f"USING DELTA LOCATION '{dst_path}' AS "
+            f"USING DELTA LOCATION '{dst_path}' "
+            f"TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true') AS "
             f"SELECT * FROM delta.`{src_path}`"
         )
         tables_created += 1
@@ -340,10 +337,11 @@ def init_sources() -> dict:
 def append_sources(batch_num: int) -> dict:
     """INSERT new batch{N} rows into each staging table.
 
-    Routed through Spark SQL DML so `IvmDmlInterceptorRule` fires and tees
-    the change set to the staging Delta. The interceptor only tees tables
-    that have at least one dependent MV (`MvCatalog.viewsForSource(...)`),
-    so the dbt batch-1 full-refresh MUST have run before any append.
+    The benchmark engine runs in `spark.openivm.changeFeed.mode=cdf`, so the
+    INSERT writes ordinary Delta rows (plus CDF records, because the staging
+    tables were registered with `delta.enableChangeDataFeed=true`). The next
+    REFRESH consumes those CDF records to incrementalize the MVs — no DML
+    interception in this mode.
     """
     if batch_num not in (2, 3):
         raise ValueError(f"append_sources only supports batch 2 or 3, got {batch_num}")

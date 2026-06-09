@@ -181,7 +181,9 @@ class EngineRunner:
             # spark-openivm KEEPS the batch-loader flow: it relies on
             # mount/raw/<SF>/delta/staging being shaped with the CDC columns,
             # then issues `INSERT INTO tpcdi.<t> SELECT * FROM delta.\`...\``
-            # via Livy so IvmDmlInterceptorRule fires.
+            # via Livy. Under `spark.openivm.changeFeed.mode=cdf` the INSERT
+            # writes Delta CDF records that the next REFRESH consumes — no DML
+            # interception in this mode.
             if name not in ("duckdb", "duckdb-openivm") and not self._parallel:
                 self._batch_loader_init()
 
@@ -700,8 +702,8 @@ class EngineRunner:
           batch 2/3 (incremental):
             1. /sources/spark-openivm/append/<N> — INSERT INTO tpcdi.staging_<t>
                                                     SELECT * FROM delta.`batchN/...`
-                                                    (IvmDmlInterceptorRule tees
-                                                    staging deltas)
+                                                    (writes Delta CDF records
+                                                    consumed by REFRESH)
             2. dbt build                          — fabricspark issues
                                                     REFRESH MATERIALIZED VIEW per model.
 
