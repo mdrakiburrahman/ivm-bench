@@ -21,7 +21,11 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Anchor REPO_ROOT to the script's own location (src/.scripts/) rather than
+# `git rev-parse --show-toplevel`, which picks up an outer git repo when this
+# checkout is nested inside one (e.g. ~/openivm-spark/.temp/ivm-bench).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
 cd "$REPO_ROOT"
 
 if [[ ! -f "$REPO_ROOT/.env" ]]; then
