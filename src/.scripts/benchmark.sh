@@ -1,59 +1,113 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# benchmark.sh — thin client that launches the benchmark-server and streams
-# progress via Server-Sent Events.
+# benchmark.sh — thin client that drives an OAT (one-at-a-time) sweep against
+# the benchmark-server and streams progress via Server-Sent Events.
+#
+# REQUIRED:
+#   BENCHMARK_EXPERIMENTS_FILE — absolute path of an experiments JSON file
+#                    that MUST live under the repo root so the existing
+#                    bind-mount makes it visible inside the benchmark-server
+#                    container at the same path. Each experiment owns its
+#                    own scale factor, batch percentages, engines, Spark
+#                    tunables, and OpenIVM feature flags.
+#
+#                    Built-in sweeps:
+#                      src/containers/benchmark-server/experiments/sf-sweep.json
+#                      src/containers/benchmark-server/experiments/smoke.json
+#
+# Artifacts (per-sweep, refreshed after every experiment):
+#   mount/oat-state/<oat_run_id>/{chart-oat,chart-per-model}.png
+#   mount/oat-state/<oat_run_id>/RESULTS.md
+#   mount/oat-state/<oat_run_id>/outputs.json
+#   mount/oat-state/latest → <oat_run_id>
 #
 # Environment variables:
-#   SCALE_FACTOR   — TPC-DI scale factor (default: 3)
-#   BATCH_N_INSERT_PCT — % of batch N inserts. BATCH_N_PCT is a
-#                    backwards-compatible alias.
-#   BATCH_N_UPDATE_PCT / DELETE_PCT — optional physical mutation
-#                    percentages for batches 2 and 3 (default: 0)
-#   PARALLEL       — 0 = serial (default), 1 = run engines in parallel
-#   ENGINES        — comma-separated engine list (default: spark,duckdb,duckdb-openivm,feldera)
+#   OAT_MIN_FREE_PCT — minimum % free disk under repo root to keep running.
+#                    Default 10. The sweep SKIPS remaining experiments below
+#                    this threshold (no host crash on WSL).
+#   PARALLEL       — 0 = serial (default), 1 = run engines in parallel.
+#                    Can also be set per-experiment inside the JSON.
+#   ENGINES        — comma-separated engine list. Default lets each
+#                    experiment in the JSON pick. The harness rebuilds the
+#                    union once during Phase 0 so no rebuilds mid-sweep.
+#   BATCH_N_INSERT_PCT / UPDATE_PCT / DELETE_PCT — per-experiment defaults
+#                    forwarded to the benchmark-server container. The OAT
+#                    JSON overrides these per experiment. BATCH_N_PCT is a
+#                    backwards-compatible alias for BATCH_N_INSERT_PCT.
 #   HOST_CORES     — override auto-detected CPU count
 #   HOST_MEMORY    — override auto-detected memory in GB
-#   PRESERVE_RAW   — 0 = clean mount/ at start (default), 1 = keep mount/raw/
-#                    and mount/bin/ across runs so multi-hour Phase-1
-#                    datagen + duckdb-openivm builds are reused
+#   PRESERVE_RAW   — 1 = keep mount/bin/ across sweeps. The OAT runner ALWAYS
+#                    wipes mount/raw/ in Phase 0 regardless (stale per-SF
+#                    Delta tables would silently feed wrong batch percentages
+#                    into the first experiment).
 #   OPENIVM_VALIDATE — 1 = validate OpenIVM views with EXCEPT ALL after each
 #                    timed batch (default), 0 = skip post-timer validation
-#   OPENIVM_PROFILE_REFRESH — 1 = export OpenIVM profiling CSVs after each
-#                    timed batch (default: 0)
+#   OPENIVM_PROFILE_REFRESH — 1 = export OpenIVM profiling CSVs into
+#                    mount/results/<sf>/dbt-server/ after each timed batch
+#   OPENIVM_QUERY_LOG — 1 = export the full SQL trace OpenIVM ran for every
+#                    CREATE/REFRESH MV (spark-openivm only). Writes a per-MV
+#                    per-refresh directory tree of `.sql` files under
+#                    mount/results/<sf>/spark-openivm/query-log/.
 #   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(pwd)"
 
-export SCALE_FACTOR="${SCALE_FACTOR:-3}"
-
-export BATCH_1_INSERT_PCT="${BATCH_1_INSERT_PCT:-${BATCH_1_PCT:-}}"
-export BATCH_2_INSERT_PCT="${BATCH_2_INSERT_PCT:-${BATCH_2_PCT:-}}"
-export BATCH_3_INSERT_PCT="${BATCH_3_INSERT_PCT:-${BATCH_3_PCT:-}}"
-
-if [[ -z "${BATCH_1_INSERT_PCT:-}" || -z "${BATCH_2_INSERT_PCT:-}" || -z "${BATCH_3_INSERT_PCT:-}" ]]; then
-  echo "ERROR: BATCH_1_INSERT_PCT, BATCH_2_INSERT_PCT, and BATCH_3_INSERT_PCT must all be set."
-  echo "  Example: export BATCH_1_INSERT_PCT=1 BATCH_2_INSERT_PCT=0.001 BATCH_3_INSERT_PCT=0.002"
+if [[ -z "${BENCHMARK_EXPERIMENTS_FILE:-}" ]]; then
+  echo "ERROR: BENCHMARK_EXPERIMENTS_FILE must be set."
+  echo "  Example:"
+  echo "    export BENCHMARK_EXPERIMENTS_FILE=\"\$(git rev-parse --show-toplevel)/src/containers/benchmark-server/experiments/sf-sweep.json\""
+  echo "    bash src/.scripts/benchmark.sh"
   exit 1
 fi
 
-export BATCH_1_PCT="${BATCH_1_PCT:-$BATCH_1_INSERT_PCT}"
-export BATCH_2_PCT="${BATCH_2_PCT:-$BATCH_2_INSERT_PCT}"
-export BATCH_3_PCT="${BATCH_3_PCT:-$BATCH_3_INSERT_PCT}"
-export BATCH_1_PCT BATCH_2_PCT BATCH_3_PCT
+# Resolve to absolute path; require it live under the repo root so the
+# benchmark-server bind-mount makes it visible at the same in-container path.
+if [[ "$BENCHMARK_EXPERIMENTS_FILE" != /* ]]; then
+  BENCHMARK_EXPERIMENTS_FILE="$REPO_ROOT/$BENCHMARK_EXPERIMENTS_FILE"
+fi
+if [[ ! -f "$BENCHMARK_EXPERIMENTS_FILE" ]]; then
+  echo "ERROR: BENCHMARK_EXPERIMENTS_FILE=$BENCHMARK_EXPERIMENTS_FILE does not exist"
+  exit 1
+fi
+case "$BENCHMARK_EXPERIMENTS_FILE" in
+  "$REPO_ROOT"/*) ;;
+  *)
+    echo "ERROR: BENCHMARK_EXPERIMENTS_FILE must live under the repo root ($REPO_ROOT)"
+    echo "       so the benchmark-server container can see it via the bind-mount."
+    echo "       Move the file under the repo or symlink it in."
+    exit 1
+    ;;
+esac
+export BENCHMARK_EXPERIMENTS_FILE
+
+echo "=== OAT sweep — experiments file: $BENCHMARK_EXPERIMENTS_FILE ==="
+
+export OAT_MIN_FREE_PCT="${OAT_MIN_FREE_PCT:-10}"
+
+# Forward per-batch DML mix env vars to the benchmark-server container.
+# These act as defaults only — the OAT JSON's per-experiment block overrides.
+export BATCH_1_INSERT_PCT="${BATCH_1_INSERT_PCT:-${BATCH_1_PCT:-}}"
+export BATCH_2_INSERT_PCT="${BATCH_2_INSERT_PCT:-${BATCH_2_PCT:-}}"
+export BATCH_3_INSERT_PCT="${BATCH_3_INSERT_PCT:-${BATCH_3_PCT:-}}"
+export BATCH_1_PCT="${BATCH_1_PCT:-${BATCH_1_INSERT_PCT:-1}}"
+export BATCH_2_PCT="${BATCH_2_PCT:-${BATCH_2_INSERT_PCT:-0.001}}"
+export BATCH_3_PCT="${BATCH_3_PCT:-${BATCH_3_INSERT_PCT:-0.002}}"
 export BATCH_2_UPDATE_PCT="${BATCH_2_UPDATE_PCT:-0}"
 export BATCH_2_DELETE_PCT="${BATCH_2_DELETE_PCT:-0}"
 export BATCH_3_UPDATE_PCT="${BATCH_3_UPDATE_PCT:-0}"
 export BATCH_3_DELETE_PCT="${BATCH_3_DELETE_PCT:-0}"
 export PARALLEL="${PARALLEL:-0}"
-export ENGINES="${ENGINES:-spark,duckdb,duckdb-openivm,feldera}"
+export ENGINES="${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-1}"
 export OPENIVM_PROFILE_REFRESH="${OPENIVM_PROFILE_REFRESH:-0}"
-export REPO_HOST_PATH="$(pwd)"
+export OPENIVM_QUERY_LOG="${OPENIVM_QUERY_LOG:-1}"
+export REPO_HOST_PATH="$REPO_ROOT"
 
 detect_ec2_ubuntu_mirror() {
   local token region
@@ -77,60 +131,6 @@ export OPENIVM_UBUNTU_MIRROR
 
 COMPOSE_FILE="docker/docker-compose.benchmark-server.yml"
 HEALTH_RETRIES=60
-
-fmt_duration() {
-  local secs="$1"
-  local int_secs
-  int_secs=$(printf '%.0f' "$secs")
-  local h m s
-  h=$((int_secs / 3600))
-  m=$(( (int_secs % 3600) / 60 ))
-  s=$((int_secs % 60))
-  printf '%02d:%02d:%02d' "$h" "$m" "$s"
-}
-
-print_results() {
-  local json="$1"
-  local status
-  status=$(echo "$json" | jq -r '.status')
-
-  if [[ "$status" == "completed" ]]; then
-    echo "=== All benchmarks completed successfully ==="
-  else
-    echo "=== Benchmark finished with status: ${status} ==="
-  fi
-  echo ""
-
-  # Find the longest engine name for alignment
-  local max_len=0
-  for name in $(echo "$json" | jq -r '.engines | keys[]'); do
-    (( ${#name} > max_len )) && max_len=${#name}
-  done
-
-  # Header
-  local pad=$((max_len + 2))
-  printf "%-${pad}s 1           2           3\n" ""
-
-  # Per-engine rows
-  for name in $(echo "$json" | jq -r '.engines | keys[]'); do
-    local label
-    label="$(echo "${name:0:1}" | tr '[:lower:]' '[:upper:]')${name:1}:"
-    local b1 b2 b3
-    b1=$(echo "$json" | jq -r ".engines[\"$name\"].batches[0].duration_s")
-    b2=$(echo "$json" | jq -r ".engines[\"$name\"].batches[1].duration_s")
-    b3=$(echo "$json" | jq -r ".engines[\"$name\"].batches[2].duration_s")
-    printf "%-${pad}s %s -> %s -> %s\n" "$label" "$(fmt_duration "$b1")" "$(fmt_duration "$b2")" "$(fmt_duration "$b3")"
-  done
-
-  echo ""
-  local total
-  total=$(echo "$json" | jq -r '.total_duration_s')
-  local total_fmt
-  total_fmt=$(fmt_duration "$total")
-  local ruler_len=$(( ${#total_fmt} + pad + 30 ))
-  local side=$(( (ruler_len - ${#total_fmt} - 2) / 2 ))
-  printf "%${side}s %s %s\n" "$(printf '=%.0s' $(seq 1 $side))" "$total_fmt" "$(printf '=%.0s' $(seq 1 $side))"
-}
 
 cleanup() {
   docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
@@ -179,9 +179,17 @@ while IFS= read -r line; do
 done < <(curl -sfN "http://localhost:9000/benchmark/stream" 2>/dev/null)
 
 echo ""
+echo "=== OAT sweep finished — status: ${FINAL_STATUS} ==="
+echo ""
 
-RESULTS_JSON=$(curl -sf "http://localhost:9000/benchmark/status")
-print_results "$RESULTS_JSON"
+OAT_RESULTS_MD="mount/oat-state/latest/RESULTS.md"
+if [[ -f "$OAT_RESULTS_MD" ]]; then
+  cat "$OAT_RESULTS_MD"
+  echo ""
+  echo "Artifacts: mount/oat-state/latest/"
+else
+  echo "(no RESULTS.md found at $OAT_RESULTS_MD — check mount/oat-state/ for partial output)"
+fi
 
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 

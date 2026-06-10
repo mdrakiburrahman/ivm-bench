@@ -4,13 +4,17 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      experiments_file:
+        description: "Path under repo root of a pre-built OAT experiments JSON (overrides the per-knob inputs below if set; e.g. src/containers/benchmark-server/experiments/sf-sweep.json)"
+        default: ""
+        type: string
       scale_factor:
         description: "TPC-DI scale factor"
-        default: "3"
+        default: "10"
         type: string
       batch_1_pct:
         description: "% of batch 1 data"
-        default: "1"
+        default: "100"
         type: string
       batch_1_insert_pct:
         description: "% of batch 1 inserts (overrides batch_1_pct)"
@@ -18,7 +22,7 @@ on:
         type: string
       batch_2_pct:
         description: "% of batch 2 data"
-        default: "0.001"
+        default: "1"
         type: string
       batch_2_insert_pct:
         description: "% of batch 2 inserts (overrides batch_2_pct)"
@@ -26,7 +30,7 @@ on:
         type: string
       batch_3_pct:
         description: "% of batch 3 data"
-        default: "0.002"
+        default: "2"
         type: string
       batch_3_insert_pct:
         description: "% of batch 3 inserts (overrides batch_3_pct)"
@@ -50,27 +54,35 @@ on:
         type: string
       parallel:
         description: "Run engines in parallel (0 or 1)"
-        default: "1"
+        default: "0"
         type: string
       engines:
         description: "Comma-separated engine list"
-        default: "spark,duckdb,duckdb-openivm,feldera"
+        default: "spark,spark-openivm,duckdb,duckdb-openivm,feldera"
         type: string
       preserve_raw:
         description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
-        default: "0"
+        default: "1"
         type: string
       openivm_validate:
         description: "Validate OpenIVM views with EXCEPT ALL after each timed batch (0 or 1)"
-        default: "0"
+        default: "1"
         type: string
       openivm_profile_refresh:
         description: "Export OpenIVM refresh profiling CSVs after each batch (0 or 1)"
-        default: "0"
+        default: "1"
+        type: string
+      openivm_query_log:
+        description: "Export per-MV per-refresh SQL trace (spark-openivm only; 0 or 1)"
+        default: "1"
+        type: string
+      oat_min_free_pct:
+        description: "Skip remaining OAT experiments when free disk drops below this %"
+        default: "10"
         type: string
       timeout_minutes:
         description: "Job timeout in minutes"
-        default: "120"
+        default: "500"
         type: string
 
 concurrency:
@@ -85,25 +97,27 @@ permissions:
 jobs:
   benchmark:
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
-    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '120') }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
     env:
-      SCALE_FACTOR: ${{ inputs.scale_factor || '3' }}
-      BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '1' }}
-      BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '0.001' }}
-      BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '0.002' }}
-      BATCH_1_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '1' }}
-      BATCH_2_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '0.001' }}
-      BATCH_3_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '0.002' }}
+      SCALE_FACTOR: ${{ inputs.scale_factor || '10' }}
+      BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
+      BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
+      BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}
+      BATCH_1_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
+      BATCH_2_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
+      BATCH_3_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}
       BATCH_2_UPDATE_PCT: ${{ inputs.batch_2_update_pct || '0' }}
       BATCH_2_DELETE_PCT: ${{ inputs.batch_2_delete_pct || '0' }}
       BATCH_3_UPDATE_PCT: ${{ inputs.batch_3_update_pct || '0' }}
       BATCH_3_DELETE_PCT: ${{ inputs.batch_3_delete_pct || '0' }}
-      PARALLEL: ${{ inputs.parallel || '1' }}
-      ENGINES: ${{ inputs.engines || 'spark,duckdb,duckdb-openivm,feldera' }}
-      PRESERVE_RAW: ${{ inputs.preserve_raw || '0' }}
-      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '0' }}
-      OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '0' }}
+      PARALLEL: ${{ inputs.parallel || '0' }}
+      ENGINES: ${{ inputs.engines || 'spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
+      PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
+      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
+      OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
+      OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
+      OAT_MIN_FREE_PCT: ${{ inputs.oat_min_free_pct || '10' }}
 
     steps:
       - name: "🧹 Clean Docker-owned files"
@@ -113,6 +127,74 @@ jobs:
       - uses: actions/checkout@v4
         with:
           clean: true
+
+      - name: "🧬 Resolve experiments file"
+        env:
+          INPUT_EXPERIMENTS_FILE: ${{ inputs.experiments_file || '' }}
+        run: |
+          set -euo pipefail
+          REPO_ROOT="$(pwd)"
+          if [[ -n "${INPUT_EXPERIMENTS_FILE}" ]]; then
+            EXP_FILE="${INPUT_EXPERIMENTS_FILE}"
+            [[ "$EXP_FILE" = /* ]] || EXP_FILE="$REPO_ROOT/$EXP_FILE"
+            if [[ ! -f "$EXP_FILE" ]]; then
+              echo "ERROR: experiments_file=$EXP_FILE does not exist"
+              exit 1
+            fi
+            echo "Using pre-built experiments file: $EXP_FILE"
+          else
+            EXP_FILE="$REPO_ROOT/gci-experiments.json"
+            engines_json="$(printf '%s' "$ENGINES" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; ""))')"
+            parallel_b=$([[ "$PARALLEL" = "1" ]] && echo true || echo false)
+            preserve_raw_b=$([[ "$PRESERVE_RAW" = "1" ]] && echo true || echo false)
+            openivm_validate_b=$([[ "$OPENIVM_VALIDATE" = "1" ]] && echo true || echo false)
+            openivm_profile_refresh_b=$([[ "$OPENIVM_PROFILE_REFRESH" = "1" ]] && echo true || echo false)
+            openivm_query_log_b=$([[ "$OPENIVM_QUERY_LOG" = "1" ]] && echo true || echo false)
+            jq -n \
+              --argjson sf "$SCALE_FACTOR" \
+              --arg b1 "$BATCH_1_PCT" \
+              --arg b2 "$BATCH_2_PCT" \
+              --arg b3 "$BATCH_3_PCT" \
+              --arg b2u "$BATCH_2_UPDATE_PCT" \
+              --arg b2d "$BATCH_2_DELETE_PCT" \
+              --arg b3u "$BATCH_3_UPDATE_PCT" \
+              --arg b3d "$BATCH_3_DELETE_PCT" \
+              --argjson engines "$engines_json" \
+              --argjson parallel "$parallel_b" \
+              --argjson preserve_raw "$preserve_raw_b" \
+              --argjson openivm_validate "$openivm_validate_b" \
+              --argjson openivm_profile_refresh "$openivm_profile_refresh_b" \
+              --argjson openivm_query_log "$openivm_query_log_b" \
+              '{
+                _design_notes: ["Synthesised by .github/workflows/gci.yaml from per-knob inputs (1-row OAT sweep)."],
+                baseline: {
+                  engines: $engines,
+                  parallel: $parallel,
+                  feature_flags: {
+                    preserve_raw: $preserve_raw,
+                    openivm_validate: $openivm_validate,
+                    openivm_profile_refresh: $openivm_profile_refresh,
+                    openivm_query_log: $openivm_query_log
+                  }
+                },
+                experiments: [
+                  {
+                    label: "gci-sf\($sf)",
+                    scale_factor: $sf,
+                    batch_1_pct: $b1,
+                    batch_2_pct: $b2,
+                    batch_3_pct: $b3,
+                    batch_2_update_pct: $b2u,
+                    batch_2_delete_pct: $b2d,
+                    batch_3_update_pct: $b3u,
+                    batch_3_delete_pct: $b3d
+                  }
+                ]
+              }' > "$EXP_FILE"
+            echo "Synthesised 1-row experiments file: $EXP_FILE"
+            cat "$EXP_FILE"
+          fi
+          echo "BENCHMARK_EXPERIMENTS_FILE=$EXP_FILE" >> "$GITHUB_ENV"
 
       - name: "🏁 Run benchmark"
         run: bash src/.scripts/benchmark.sh
@@ -131,10 +213,11 @@ jobs:
           name: benchmark-results-sf${{ env.SCALE_FACTOR }}
           path: |
             mount/logs/
-            mount/results/${{ env.SCALE_FACTOR }}/dbt-server/
+            mount/results/
             mount/stats/
             mount/debug/
-            imgs/*.png
+            mount/oat-state/
+            gci-experiments.json
           if-no-files-found: warn
           retention-days: 30
 

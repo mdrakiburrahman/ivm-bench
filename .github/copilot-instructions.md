@@ -127,3 +127,17 @@ Instead, if you need to test application code, spin up the relevant container an
 ### During a `/plan`, always clarify any doubts or ambiguity with the end user
 
 Do not make assumptions unless you are **crystal clear** on the user's intent.
+
+### OAT (one-at-a-time) sweep harness
+
+`benchmark.sh` is OAT-only — it always runs an experiments JSON file passed
+via `BENCHMARK_EXPERIMENTS_FILE`. The server runs each experiment serially
+with disk-aware cleanup (`OAT_MIN_FREE_PCT`, default 10%). Per-run artifacts
+(`chart-oat.png`, `chart-per-model.png`, `RESULTS.md`, `outputs.json`) land
+under `mount/oat-state/<run_id>/` with a `mount/oat-state/latest` symlink and
+are refreshed after every experiment so the run can be observed live.
+Built-in sweeps: `experiments/sf-sweep.json` (12 SFs, spark vs spark-openivm)
+and `experiments/smoke.json` (SF=3 dry-run). The experiments dataclass +
+parser are in `models/experiments.py`; orchestrator dispatch is at
+`services/orchestrator._run_oat`; per-experiment helpers live in
+`services/oat_runner.py`.

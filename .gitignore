@@ -1,5 +1,7 @@
 .temp/*
 .env
 .logs/
+.smoke-logs/
 !results/.gitkeep
 mount/*
+__pycache__/

@@ -1,6 +1,27 @@
+# Resource breakdown for the plain `spark` engine (baseline).
+#
+# IMPORTANT: Livy is configured for `local[*]` (see livy.conf.tmpl), so
+# the Spark driver and Spark executors live in the SAME JVM. In that
+# topology `spark.executor.memory` and `spark.executor.cores` are
+# silently ignored — only `spark.driver.memory` / `spark.driver.cores`
+# control the per-JVM heap and CPU envelope.  The `executor:` block
+# below is therefore decorative; we keep it for parity with the
+# `spark-openivm` engine and so the env-var plumbing in entrypoint.sh
+# keeps working.
+#
+# Driver gets the lion's share (65% RAM, 90% cores) to match the
+# spark-openivm engine.  Previously kept at 10% (~12 GB on a 124 GB
+# host) which silently passed SF=100/175/250 but OOMed at SF=400 in
+# fact_market_history WindowExec (`SparkOutOfMemoryError:
+# UNABLE_TO_ACQUIRE_MEMORY` in stage 259 — UnsafeExternalSorter could
+# not grow the pointer array).  At 124 GB host this now lands at
+# ~80 GB driver heap, ~28 cores, leaving ~44 GB for OS + page cache +
+# Netty/off-heap buffers + JVM non-heap (metaspace, code cache, thread
+# stacks, direct ByteBuffers).  Matches spark-openivm so the two
+# engines compare on workload, not on JVM ceiling.
 driver:
-    pct_ram: 10
-    pct_cores: 10
+    pct_ram: 65
+    pct_cores: 90
 
 executor:
     pct_ram: 80

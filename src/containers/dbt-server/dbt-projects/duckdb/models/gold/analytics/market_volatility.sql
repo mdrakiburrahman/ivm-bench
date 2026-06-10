@@ -6,8 +6,8 @@ WITH price_changes AS (
         dm_high,
         dm_low,
         dm_vol,
-        LAG(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date) AS prev_close,
-        LEAD(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date) AS next_close,
+        LAG(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date, dm_close, dm_vol) AS prev_close,
+        LEAD(dm_close) OVER (PARTITION BY dm_s_symb ORDER BY dm_date, dm_close, dm_vol) AS next_close,
         dm_high - dm_low AS intraday_range
     FROM {{ ref('daily_market') }}
 ),
@@ -76,8 +76,8 @@ scored AS (
             sv.total_volume * 100.0 / NULLIF(gm.mkt_total_volume, 0),
             4
         ) AS pct_market_volume,
-        RANK() OVER (ORDER BY sv.return_volatility DESC) AS rank_by_volatility,
-        RANK() OVER (ORDER BY sv.total_volume DESC) AS rank_by_volume
+        RANK() OVER (ORDER BY sv.return_volatility DESC, sv.dm_s_symb) AS rank_by_volatility,
+        RANK() OVER (ORDER BY sv.total_volume DESC, sv.dm_s_symb) AS rank_by_volume
     FROM symbol_volatility sv
     CROSS JOIN global_market gm
 )

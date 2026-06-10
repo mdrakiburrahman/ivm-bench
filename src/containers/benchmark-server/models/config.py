@@ -41,10 +41,15 @@ class EngineConfig:
             "DBT_SERVER_MEM": self.dbt_server_resources.mem_str,
             "DBT_SERVER_PORT": str(self.port),
         }
-        # MSSQL for Spark
-        if self.name == "spark":
-            env["MSSQL_CPUS"] = "4"
-            env["MSSQL_MEM"] = "8g"
+        # MSSQL for Spark — must match defaults in
+        # docker/docker-compose.benchmark.spark{,-openivm}.yml. At SF=400+
+        # cpus=4/mem=8g triggered SQL Server's SOS scheduler ASSERT
+        # (((seenByMonitor)<(NonYieldThreshold)), sosschedmon.cpp:202)
+        # under validation's 30 concurrent Livy threads → ~150 concurrent
+        # metastore RPCs. Bumped to 8 cpus / 16g (internal cap 12000MB).
+        if self.name in ("spark", "spark-openivm"):
+            env["MSSQL_CPUS"] = "8"
+            env["MSSQL_MEM"] = "16g"
         # Feldera: cap pipeline RSS at 95 % of its container memory.
         # The dbt-feldera adapter reads FELDERA_MAX_RSS_MB via env_var()
         # in profiles.yml and forwards it to runtime_config.max_rss_mb.
@@ -73,6 +78,7 @@ ENGINE_PORTS = {
     "duckdb": 5002,
     "duckdb-openivm": 5003,
     "feldera": 5004,
+    "spark-openivm": 5005,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -80,6 +86,7 @@ ENGINE_COMPOSE_FILES = {
     "duckdb": "docker/docker-compose.benchmark.duckdb.yml",
     "duckdb-openivm": "docker/docker-compose.benchmark.duckdb-openivm.yml",
     "feldera": "docker/docker-compose.benchmark.feldera.yml",
+    "spark-openivm": "docker/docker-compose.benchmark.spark-openivm.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine)
@@ -88,6 +95,7 @@ ENGINE_MAIN_SERVICES = {
     "duckdb": None,
     "duckdb-openivm": None,
     "feldera": "pipeline-manager",
+    "spark-openivm": "spark-openivm",
 }
 
 
@@ -103,7 +111,15 @@ class BenchmarkConfig:
     batch_3_update_pct: str = "0"
     batch_3_delete_pct: str = "0"
     parallel: bool = False
-    engines: List[str] = field(default_factory=lambda: ["spark", "duckdb", "duckdb-openivm", "feldera"])
+    engines: List[str] = field(
+        default_factory=lambda: [
+            "spark",
+            "duckdb",
+            "duckdb-openivm",
+            "feldera",
+            "spark-openivm",
+        ]
+    )
     host_cores: Optional[int] = None
     host_memory_gb: Optional[int] = None
     repo_dir: str = "/repo"

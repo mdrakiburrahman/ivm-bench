@@ -42,8 +42,12 @@ echo YES >&3   # Agree to EULA
 # PDGF has a known BucketSort race condition that can kill a housekeeper
 # thread and deadlock the process (it never exits despite all data being
 # written). We monitor the sentinel file and kill PDGF if it hangs.
-DIGEN_TIMEOUT=600  # 10 minutes max for data generation
-DIGEN_SETTLE_LIMIT=30  # consider done after 30s of no writes
+# DIGEN_TIMEOUT is intentionally generous — SF=400 tpc-di-gen alone takes
+# ~10-15 min, SF=1000 estimated 30-40 min. The SETTLE check above kills
+# DIGen as soon as writes go quiet, so the timeout is purely a safety net
+# for true hangs. Override via env for unusual scale factors.
+DIGEN_TIMEOUT="${DIGEN_TIMEOUT:-7200}"  # 2 hours hard timeout
+DIGEN_SETTLE_LIMIT="${DIGEN_SETTLE_LIMIT:-30}"  # consider done after 30s of no writes
 ELAPSED=0
 while kill -0 "$DIGEN_PID" 2>/dev/null; do
   sleep 5

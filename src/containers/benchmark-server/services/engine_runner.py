@@ -21,6 +21,16 @@ HEALTH_TIMEOUT = 300
 HEALTH_INTERVAL = 5
 
 
+class OpenIvmValidationError(RuntimeError):
+    """Raised when post-batch OpenIVM correctness validation (EXCEPT ALL) fails.
+
+    Distinct from generic ``RuntimeError`` so the OAT loop can recognise it
+    and FAIL FAST — a single validation diff means an MV definition or refresh
+    path is broken, so running the rest of the sweep would just burn host
+    resources reproducing the same bug at larger SFs.
+    """
+
+
 class EngineRunner:
     """
     Runs a full 3-batch benchmark for a single engine.
@@ -65,7 +75,7 @@ class EngineRunner:
                 extra_compose_files=[self._override_file],
             )
             # Also create a batch-loader override so appends go to per-engine staging
-            if engine_config.name != "duckdb-openivm":
+            if engine_config.name not in ("duckdb-openivm",):
                 self._batch_override_file = self._create_batch_staging_override()
         else:
             self._engine_mgr = DockerManager(
@@ -153,6 +163,13 @@ class EngineRunner:
         logger.info("Created batch staging override: %s", path)
         return path
 
+    @property
+    def result(self) -> EngineResult:
+        """Expose the in-progress EngineResult so callers that catch a
+        propagated exception can still recover partial state (batch
+        statuses, durations, error text)."""
+        return self._result
+
     def run(self) -> EngineResult:
         """Execute the full 3-batch benchmark."""
         name = self._engine.name
@@ -161,13 +178,19 @@ class EngineRunner:
             self._emit(f"[{name}] Starting benchmark")
 
             # Initialize Delta staging for engines that still consume Delta directly.
+            # spark-openivm KEEPS the batch-loader flow: it relies on
+            # mount/raw/<SF>/delta/staging being shaped with the CDC columns,
+            # then issues `INSERT INTO tpcdi.<t> SELECT * FROM delta.\`...\``
+            # via Livy. Under `spark.openivm.changeFeed.mode=cdf` the INSERT
+            # writes Delta CDF records that the next REFRESH consumes — no DML
+            # interception in this mode.
             if name not in ("duckdb", "duckdb-openivm") and not self._parallel:
                 self._batch_loader_init()
 
             # Start engine stack
             self._emit(f"[{name}] Building and starting compose stack")
             self._engine_mgr.build()
-            self._engine_mgr.up(detach=True)
+            self._up_with_retry()
 
             # Wait for dbt-server health
             self._emit(f"[{name}] Waiting for dbt-server health")
@@ -194,6 +217,16 @@ class EngineRunner:
             self._result.status = "completed"
             self._emit(f"[{name}] Benchmark completed successfully")
 
+        except OpenIvmValidationError as e:
+            # FATAL: tee onto the result AND re-raise so _run_engines_serial /
+            # _run_engine_wave can propagate the typed exception up to the OAT
+            # loop, which will abort the sweep instead of running the remaining
+            # experiments. finally: below still runs (compose-down + log capture).
+            self._result.status = "failed"
+            self._result.error = str(e)
+            self._emit(f"[{name}] FATAL OpenIVM validation failure: {e}")
+            logger.exception("Engine %s OpenIVM validation failure (fatal for OAT)", name)
+            raise
         except Exception as e:
             self._result.status = "failed"
             self._result.error = str(e)
@@ -201,16 +234,77 @@ class EngineRunner:
             logger.exception("Engine %s failed", name)
 
         finally:
-            self._collect_feldera_debug()
-            self._capture_logs()
-            self._engine_mgr.down()
-            self._cleanup_staging()
-            # Clean up temp override files
+            # Defensive: any exception in cleanup would otherwise REPLACE the
+            # in-flight OpenIvmValidationError (Python finally semantics),
+            # which would demote a fatal validation failure into a generic
+            # engine error and skip the OAT fail-fast path. Guard every step.
+            for cleanup_step, fn in (
+                ("collect_feldera_debug", self._collect_feldera_debug),
+                ("capture_logs", self._capture_logs),
+                ("engine_mgr.down", self._engine_mgr.down),
+                ("cleanup_staging", self._cleanup_staging),
+            ):
+                try:
+                    fn()
+                except Exception as ce:
+                    self._emit(f"[{name}] cleanup '{cleanup_step}' WARN: {ce}")
+                    logger.warning("Engine %s cleanup %s failed: %s", name, cleanup_step, ce)
             for f in (self._override_file, self._batch_override_file):
-                if f and os.path.exists(f):
-                    os.unlink(f)
+                try:
+                    if f and os.path.exists(f):
+                        os.unlink(f)
+                except Exception as ce:
+                    logger.warning("Engine %s unlink %s failed: %s", name, f, ce)
 
         return self._result
+
+    def _up_with_retry(self, max_attempts: int = 3, backoff_s: int = 30) -> None:
+        """Start the compose stack, retrying on transient mssql startup crashes.
+
+        SQL Server 2025 occasionally hits the sqlpal NtumWaiter ASSERT on
+        first boot under heavy host CPU load.  The container's own
+        ``restart: on-failure:3`` policy then brings it back up within
+        ~10-30s, but docker-compose's ``up -d`` has already exited with
+        ``dependency mssql-metastore failed to start ... is unhealthy`` and
+        will not retry on its own.  This wrapper re-issues the ``up`` after
+        a short backoff so the second invocation can pick up the already-
+        restarted mssql container and proceed.
+
+        Any non-transient failure (compose build error, image-not-found,
+        port conflict) re-raises immediately on the first attempt because
+        the substring matchers below are narrow.
+        """
+        name = self._engine.name
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._engine_mgr.up(detach=True)
+                return
+            except RuntimeError as exc:
+                msg = str(exc)
+                transient = (
+                    "dependency mssql-metastore failed to start" in msg
+                    or "is unhealthy" in msg
+                )
+                if not transient or attempt == max_attempts:
+                    raise
+                last_exc = exc
+                self._emit(
+                    f"[{name}] up attempt {attempt}/{max_attempts} hit transient "
+                    f"mssql startup crash — sleeping {backoff_s}s then retrying"
+                )
+                logger.warning(
+                    "Transient mssql failure on attempt %d; retrying after %ds",
+                    attempt,
+                    backoff_s,
+                )
+                try:
+                    self._engine_mgr.down()
+                except Exception:
+                    logger.exception("Cleanup down() failed between up retries")
+                time.sleep(backoff_s)
+        if last_exc is not None:
+            raise last_exc
 
     # ----- Batch execution -----
 
@@ -226,6 +320,9 @@ class EngineRunner:
             # Append data for batches 2/3. DuckDB and DuckDB-OpenIVM manage
             # DuckLake source appends inside their measured batch path; Feldera
             # batches 2/3 append while the pipeline is paused inside _run_feldera_wait.
+            # spark-openivm DOES use the batch-loader (so mount/raw/<SF>/delta/batchN
+            # gets populated with the correct CDC shape), then _run_spark_openivm
+            # additionally fires INSERT INTO via Livy AFTER the timer starts.
             if batch_num > 1 and name not in ("duckdb", "duckdb-openivm") and not (name == "feldera" and batch_num > 1):
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
@@ -242,6 +339,8 @@ class EngineRunner:
                 self._run_duckdb_ducklake(batch_num)
             elif name == "duckdb-openivm":
                 run_id = self._run_duckdb_openivm(batch_num)
+            elif name == "spark-openivm":
+                run_id = self._run_spark_openivm(batch_num)
             else:
                 self._run_dbt(batch_num)
 
@@ -256,6 +355,14 @@ class EngineRunner:
                 self._validate_duckdb_openivm(run_id, batch_num)
 
             if (
+                name == "spark-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
+            ):
+                self._validate_spark_openivm(run_id, batch_num)
+
+            if (
                 name == "duckdb-openivm"
                 and run_id
                 and batch.status != "failed"
@@ -263,8 +370,25 @@ class EngineRunner:
             ):
                 self._export_duckdb_openivm_profile(run_id, batch_num)
 
+            if (
+                name == "spark-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
+            ):
+                self._export_spark_openivm_profile(run_id, batch_num)
+
+            if (
+                name == "spark-openivm"
+                and run_id
+                and batch.status != "failed"
+                and os.environ.get("OPENIVM_QUERY_LOG", "0") == "1"
+            ):
+                self._export_spark_openivm_query_log(run_id, batch_num)
+
             # Check status from the stream_progress result
             if batch.status != "failed":
+                self._save_openivm_ops_chart(name, batch_num)
                 batch.status = "completed"
                 self._emit(
                     f"[{name}] Batch {batch_num} completed in {batch.duration_s:.1f}s"
@@ -276,6 +400,25 @@ class EngineRunner:
         finally:
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
+
+    def _save_openivm_ops_chart(self, name: str, batch_num: int) -> None:
+        if name not in ("spark-openivm", "duckdb-openivm"):
+            return
+        try:
+            from .openivm_ops_chart import save_batch_png
+
+            out = save_batch_png(
+                sf=str(self._config.scale_factor),
+                engine=name,
+                batch=batch_num,
+                repo_dir=os.environ.get("REPO_DIR", "/repo"),
+            )
+            if out:
+                self._emit(f"[{name}] op-chart saved: {out}")
+            else:
+                self._emit(f"[{name}] op-chart render skipped: no telemetry found")
+        except Exception as e:
+            self._emit(f"[{name}] op-chart render skipped: {e}")
 
     def _run_dbt(self, batch_num: int) -> None:
         """Trigger a dbt run via the dbt-server REST API."""
@@ -387,25 +530,49 @@ class EngineRunner:
             json.dump(wait_data, f, indent=2)
 
     def _poll_feldera_compilation(self, run_id: str) -> None:
-        """Poll dbt-server progress endpoint until all Feldera models are compiled."""
+        """Poll dbt-server progress endpoint until all Feldera models are compiled.
+
+        The poll loop is resilient to transient HTTP errors. Under heavy host
+        load (e.g. Feldera Rust compilation pegging all cores), the cross-
+        container HTTP call from benchmark-server → dbt-server via
+        host.docker.internal can hit a transient stall and raise
+        ``requests.Timeout`` / ``requests.ConnectionError`` / JSON decode
+        errors. These are non-fatal: the dbt run and the Feldera compilation
+        keep progressing independently, so we just retry the next poll.
+
+        Stale detection uses wall-clock time (``time.monotonic()``) rather
+        than iteration counting so that retried timeouts cannot artificially
+        blow out the 30-minute compilation guard.
+        """
         cursor = 0
-        stale_count = 0
-        max_stale = 1800  # 30 min — Feldera pipeline compilation can take 5+ min
+        max_stale_s = 1800  # 30 min wall-clock without progress
+        now = time.monotonic
+        last_progress_at = now()
+        last_status_emit_at = now()
+        consecutive_errors = 0
+        last_warn_at = 0.0
 
         while True:
             try:
                 resp = requests.get(
                     f"{self._dbt_url}/runs/{run_id}/progress",
                     params={"since": cursor},
-                    timeout=30,
+                    timeout=(5, 30),
                 )
                 data = resp.json()
                 events = data.get("events", [])
                 total = data.get("total", 0)
                 status = data.get("run_status", "running")
 
+                if consecutive_errors > 0:
+                    self._emit(
+                        f"[feldera] Polling recovered after "
+                        f"{consecutive_errors} transient error(s)"
+                    )
+                    consecutive_errors = 0
+
                 if events:
-                    stale_count = 0
+                    last_progress_at = now()
                     for i, e in enumerate(events):
                         st = e.get("status", "")
                         name = e.get("name", "")
@@ -419,25 +586,57 @@ class EngineRunner:
                         elif st == "error":
                             self._emit(f"[feldera]   {idx:>3} of {total}  ERROR model {name}")
                     cursor = data.get("next_cursor", cursor + len(events))
-                else:
-                    stale_count += 1
-                    # Emit periodic status when waiting for Feldera pipeline compilation
-                    if cursor >= total > 0 and stale_count % 30 == 0:
-                        self._emit(f"[feldera] Waiting for pipeline compilation... ({stale_count}s)")
+
+                stale_s = now() - last_progress_at
+                # Emit periodic status every ~30s while waiting for Feldera
+                # pipeline compilation (after all models are compiled by dbt
+                # but before the on-run-end hook finishes).
+                if (
+                    cursor >= total > 0
+                    and not events
+                    and now() - last_status_emit_at >= 30
+                ):
+                    self._emit(
+                        f"[feldera] Waiting for pipeline compilation... "
+                        f"({stale_s:.0f}s)"
+                    )
+                    last_status_emit_at = now()
 
                 # Wait for the dbt run to fully complete (including on-run-end
-                # hook which compiles the Feldera pipeline binary and starts it paused).
-                # Just having all model events isn't enough — the on-run-end hook
-                # triggers the actual Feldera compilation which can take minutes.
+                # hook which compiles the Feldera pipeline binary and starts
+                # it paused). Just having all model events isn't enough — the
+                # on-run-end hook triggers the actual Feldera compilation
+                # which can take minutes.
                 if status == "completed":
                     return
                 if status == "failed":
                     raise RuntimeError("Feldera dbt run failed during compilation")
-                if stale_count > max_stale:
-                    raise TimeoutError("Feldera compilation stalled")
+                if stale_s > max_stale_s:
+                    raise TimeoutError(
+                        f"Feldera compilation stalled for {stale_s:.0f}s"
+                    )
 
-            except requests.ConnectionError:
-                pass
+            except (
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.exceptions.JSONDecodeError,
+            ) as e:
+                consecutive_errors += 1
+                # Throttle warnings: first failure, then at most every ~30s.
+                t = now()
+                if t - last_warn_at >= 30:
+                    self._emit(
+                        f"[feldera] Transient poll error #{consecutive_errors} "
+                        f"({type(e).__name__}: {e}) — retrying"
+                    )
+                    last_warn_at = t
+                # Wall-clock stale check still applies during error storms so
+                # a genuinely dead dbt-server eventually trips max_stale_s.
+                if now() - last_progress_at > max_stale_s:
+                    raise TimeoutError(
+                        f"Feldera compilation polling stalled for "
+                        f"{max_stale_s}s ({consecutive_errors} consecutive errors)"
+                    )
 
             time.sleep(1)
 
@@ -490,14 +689,102 @@ class EngineRunner:
         self._save_run_result(run_id, batch_num)
         return run_id
 
+    def _run_spark_openivm(self, batch_num: int) -> str:
+        """Run spark-openivm: source init/append via DML, then dbt build.
+
+        Flow per batch:
+          batch 1 (full refresh):
+            1. /sources/spark-openivm/init     — creates db + tracked Delta tables,
+                                                  bulk-loads batch1 data via
+                                                  INSERT INTO ... SELECT FROM delta.`...`
+            2. dbt build --full-refresh        — fabricspark issues DROP MV +
+                                                  CREATE MATERIALIZED VIEW per model.
+          batch 2/3 (incremental):
+            1. /sources/spark-openivm/append/<N> — INSERT INTO tpcdi.staging_<t>
+                                                    SELECT * FROM delta.`batchN/...`
+                                                    (writes Delta CDF records
+                                                    consumed by REFRESH)
+            2. dbt build                          — fabricspark issues
+                                                    REFRESH MATERIALIZED VIEW per model.
+
+        All wall-clock between the source mutation and the dbt build *is*
+        part of the measured batch latency, mirroring the duckdb-openivm
+        flow where init/append+dbt are both inside `t0..t1`.
+        """
+        full_refresh = batch_num == 1
+
+        if batch_num == 1:
+            self._emit("[spark-openivm] Initialising sources (DML via Livy)")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/spark-openivm/init",
+                timeout=3600,
+            )
+            resp.raise_for_status()
+            src_result = resp.json()
+            if src_result.get("status") != "ok":
+                raise RuntimeError(
+                    f"spark-openivm source init failed: {src_result.get('error', src_result)}"
+                )
+            self._emit(
+                f"[spark-openivm] Sources initialised: {src_result.get('tables_created', '?')} tables"
+            )
+        else:
+            self._emit(f"[spark-openivm] Appending batch {batch_num} sources (DML via Livy)")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/spark-openivm/append/{batch_num}",
+                timeout=3600,
+            )
+            resp.raise_for_status()
+            src_result = resp.json()
+            if src_result.get("status") != "ok":
+                raise RuntimeError(
+                    f"spark-openivm source append batch {batch_num} failed: "
+                    f"{src_result.get('error', src_result)}"
+                )
+            self._emit(
+                f"[spark-openivm] Batch {batch_num} appended: "
+                f"{src_result.get('tables_appended', '?')} tables"
+            )
+
+        # Standard dbt build through the fabricspark adapter — the custom
+        # materialized_view materialization (in dbt-projects/spark-openivm/
+        # macros/materializations/materialized_view.sql) dispatches to
+        # CREATE/REFRESH MV per the full_refresh flag.
+        resp = requests.post(
+            f"{self._dbt_url}/run/spark-openivm",
+            json={
+                "scale_factor": self._config.scale_factor,
+                "full_refresh": full_refresh,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        run_id = resp.json()["run_id"]
+        self._emit(
+            f"[spark-openivm] dbt run_id={run_id} "
+            f"(batch={batch_num}, full_refresh={full_refresh})"
+        )
+
+        self._stream_dbt_progress(run_id, batch_num)
+        self._check_run_result(run_id, batch_num)
+        self._save_run_result(run_id, batch_num)
+        return run_id
+
     def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
         """Run default OpenIVM correctness validation outside the benchmark timer."""
         self._emit(f"[duckdb-openivm] Validating batch {batch_num} with EXCEPT ALL")
-        resp = requests.post(
-            f"{self._dbt_url}/validate/duckdb-openivm/{run_id}",
-            timeout=604800,
-        )
-        data = resp.json()
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/validate/duckdb-openivm/{run_id}",
+                timeout=604800,
+            )
+            data = resp.json()
+        except Exception as e:
+            # Transport / JSON failure during validation is just as fatal as
+            # an explicit diff — we can't conclude correctness either way.
+            raise OpenIvmValidationError(
+                f"OpenIVM validation request failed for batch {batch_num}: {e}"
+            ) from e
 
         results_dir = os.path.join(
             self._config.repo_dir,
@@ -515,12 +802,55 @@ class EngineRunner:
             detail = ", ".join(
                 f"{f.get('name')} diff={f.get('diff_count')}" for f in failures[:5]
             )
-            raise RuntimeError(
+            raise OpenIvmValidationError(
                 f"OpenIVM validation failed for batch {batch_num}"
                 + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
             )
         self._emit(
             f"[duckdb-openivm] Validation passed for batch {batch_num}: "
+            f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
+        )
+
+    def _validate_spark_openivm(self, run_id: str, batch_num: int) -> None:
+        """Run OpenIVM correctness validation against the spark-openivm
+        materialized views over Livy. Mirrors `_validate_duckdb_openivm`
+        — keeps the per-batch hook + result-JSON shape engine-agnostic so
+        the existing chart/aggregate pipeline can consume both."""
+        self._emit(f"[spark-openivm] Validating batch {batch_num} with EXCEPT ALL")
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/validate/spark-openivm/{run_id}",
+                timeout=604800,
+            )
+            data = resp.json()
+        except Exception as e:
+            raise OpenIvmValidationError(
+                f"OpenIVM validation request failed for batch {batch_num}: {e}"
+            ) from e
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        with open(
+            os.path.join(results_dir, f"validation-spark-openivm-batch{batch_num}.json"),
+            "w",
+        ) as f:
+            json.dump(data, f, indent=2)
+
+        if resp.status_code != 200 or data.get("status") != "passed":
+            failures = data.get("failures") or []
+            detail = ", ".join(
+                f"{f.get('schema')}.{f.get('name')} diff={f.get('diff_count')}"
+                for f in failures[:5]
+            )
+            raise OpenIvmValidationError(
+                f"OpenIVM validation failed for batch {batch_num}"
+                + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
+            )
+        self._emit(
+            f"[spark-openivm] Validation passed for batch {batch_num}: "
             f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
         )
 
@@ -566,6 +896,273 @@ class EngineRunner:
             f"[duckdb-openivm] OpenIVM profile exported after batch {batch_num}: "
             f"{data.get('row_count', 0)} rows across {data.get('view_count', 0)} views"
         )
+
+    def _export_spark_openivm_profile(self, run_id: str, batch_num: int) -> None:
+        """Export spark-openivm refresh-profile CSVs outside the benchmark timer.
+
+        Mirrors `_export_duckdb_openivm_profile`. The dbt-server route issues
+        `SHOW OPENIVM REFRESH PROFILE` against the live Livy SQL session.
+        """
+        self._emit(f"[spark-openivm] Exporting OpenIVM profile after batch {batch_num}")
+        resp = requests.post(
+            f"{self._dbt_url}/profile/spark-openivm/{run_id}/{batch_num}",
+            timeout=7200,
+        )
+        data = resp.json()
+        if resp.status_code != 200 or data.get("status") != "ok":
+            raise RuntimeError(
+                f"spark-openivm profile export failed for batch {batch_num}: "
+                f"{data.get('error', 'unknown error')}"
+            )
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+
+        csv_payloads = data.get("csv") or {}
+        file_map = {
+            "profile": f"spark-openivm-profile-batch{batch_num}.csv",
+            "by_step": f"spark-openivm-profile-by-step-batch{batch_num}.csv",
+            "by_view_step": f"spark-openivm-profile-by-view-step-batch{batch_num}.csv",
+        }
+        for key, filename in file_map.items():
+            with open(os.path.join(results_dir, filename), "w", encoding="utf-8") as f:
+                f.write(csv_payloads.get(key, ""))
+
+        metadata = {k: v for k, v in data.items() if k != "csv"}
+        with open(
+            os.path.join(results_dir, f"spark-openivm-profile-export-batch{batch_num}.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(metadata, f, indent=2)
+
+        self._emit(
+            f"[spark-openivm] OpenIVM profile exported after batch {batch_num}: "
+            f"{data.get('row_count', 0)} rows across {data.get('view_count', 0)} views"
+        )
+
+    def _export_spark_openivm_query_log(self, run_id: str, batch_num: int) -> None:
+        """Export the per-MV per-refresh SQL trace OpenIVM ran on Spark.
+
+        Runs outside the benchmark timer (called from `run_batch` *after*
+        `stream_progress` has stopped the per-batch wall clock — see lines
+        267-289 above). For each row of `SHOW OPENIVM QUERY LOG` we:
+
+          1. Group by `(view_name, refresh_id)`.
+          2. For each group, write a manifest.json plus one .sql file per
+             statement under
+             `mount/results/<sf>/spark-openivm/query-log/<view>/<refresh_dir>/`.
+          3. Each .sql file is sqlglot-formatted (Spark dialect, pretty=True);
+             parse failures fall back to the raw OpenIVM-emitted SQL with a
+             `formatted: false` marker in the manifest entry.
+
+        Idempotent: the per-refresh directory is `rmtree`d before being
+        re-written so the on-disk state always equals the catalog state.
+        """
+        self._emit(
+            f"[spark-openivm] Exporting OpenIVM query-log after batch {batch_num}"
+        )
+        resp = requests.post(
+            f"{self._dbt_url}/query-log/spark-openivm/{run_id}/{batch_num}",
+            timeout=7200,
+        )
+        data = resp.json()
+        if resp.status_code != 200 or data.get("status") != "ok":
+            raise RuntimeError(
+                f"spark-openivm query-log export failed for batch {batch_num}: "
+                f"{data.get('error', 'unknown error')}"
+            )
+
+        rows = data.get("rows") or []
+        base_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "spark-openivm",
+            "query-log",
+        )
+        os.makedirs(base_dir, exist_ok=True)
+
+        files_written = self._write_query_log_tree(
+            base_dir=base_dir,
+            rows=rows,
+            run_id=run_id,
+            batch_num=batch_num,
+        )
+
+        self._emit(
+            f"[spark-openivm] OpenIVM query-log exported after batch {batch_num}: "
+            f"{data.get('row_count', 0)} statements across "
+            f"{data.get('refresh_count', 0)} refreshes / "
+            f"{data.get('view_count', 0)} MVs "
+            f"({files_written} .sql files)"
+        )
+
+    def _write_query_log_tree(
+        self,
+        base_dir: str,
+        rows: list,
+        run_id: str,
+        batch_num: int,
+    ) -> int:
+        """Render the JSON rows from /query-log/spark-openivm as a directory
+        tree of `.sql` files + manifest.json files.
+
+        Returns the number of .sql files written.
+
+        Layout:
+
+            <base_dir>/<view_name>/<refresh_dir>/
+                manifest.json
+                000__<category>[__attempt<N>].sql
+                001__<category>[__attempt<N>].sql
+                ...
+
+        `<refresh_dir>` is `create_mv_<nanos>` or `refresh_<nanos>` derived
+        from the OpenIVM-minted `refresh_id`.
+        """
+        # `sqlglot` is added in benchmark-server/requirements.txt. We import
+        # it lazily so the rest of engine_runner stays importable even if the
+        # image is briefly out of sync.
+        try:
+            import sqlglot  # type: ignore
+            import sqlglot.errors  # type: ignore
+        except Exception:  # pragma: no cover — only on missing pip dep
+            logger.warning(
+                "[spark-openivm] sqlglot not installed — falling back to "
+                "raw (unformatted) SQL for the query-log export"
+            )
+            sqlglot = None  # type: ignore
+
+        def _format_sql(raw: str) -> tuple[str, bool]:
+            """Return (formatted_sql, was_formatted_flag).
+
+            Falls back to raw SQL on any parse error so the on-disk artifact
+            always contains the actual SQL OpenIVM emitted.
+            """
+            if not raw or sqlglot is None:
+                return (raw or "", False)
+            try:
+                out = sqlglot.transpile(
+                    raw, read="spark", write="spark", pretty=True
+                )
+                if out:
+                    return (out[0], True)
+                return (raw, False)
+            except Exception:  # noqa: BLE001 — parse errors are expected
+                return (raw, False)
+
+        # Group rows by (view_name, refresh_id) preserving stmt_order.
+        from collections import OrderedDict
+
+        groups: "OrderedDict[tuple[str, str], list]" = OrderedDict()
+        for row in rows:
+            view = str(row.get("view_name") or "").strip() or "_unknown_view"
+            rid = str(row.get("refresh_id") or "").strip() or "_unknown_refresh"
+            groups.setdefault((view, rid), []).append(row)
+
+        # Track which refresh directories we touched so prior runs of the
+        # same refresh_id are fully replaced. We rmtree per refresh-id-dir
+        # only (not per view dir) so distinct refreshes accumulate across
+        # batches as expected.
+        files_written = 0
+        for (view, rid), stmts in groups.items():
+            view_dir = os.path.join(base_dir, view)
+            os.makedirs(view_dir, exist_ok=True)
+
+            # Pick the `create_mv_<nanos>` / `refresh_<nanos>` form by
+            # stripping the leading `<db>.<view>_` prefix from the refresh_id.
+            # Fall back to the raw refresh_id if the prefix doesn't match.
+            refresh_dir_name = rid
+            if rid.startswith(view + "_"):
+                refresh_dir_name = rid[len(view) + 1:]
+            refresh_dir = os.path.join(view_dir, refresh_dir_name)
+            # Idempotent overwrite: remove + recreate.
+            if os.path.isdir(refresh_dir):
+                shutil.rmtree(refresh_dir, ignore_errors=True)
+            os.makedirs(refresh_dir, exist_ok=True)
+
+            mode = "create"
+            total_ms = 0
+            manifest_stmts = []
+            # Sort by (stmt_order, attempt_idx) for stable filenames.
+            stmts_sorted = sorted(
+                stmts,
+                key=lambda r: (
+                    self._safe_int(r.get("stmt_order"), 0),
+                    self._safe_int(r.get("attempt_idx"), 0),
+                ),
+            )
+            for row in stmts_sorted:
+                stmt_order = self._safe_int(row.get("stmt_order"), 0)
+                attempt_idx = self._safe_int(row.get("attempt_idx"), 0)
+                duration_ms = self._safe_int(row.get("duration_ms"), 0)
+                category = str(row.get("category") or "stmt")
+                stmt_kind = str(row.get("stmt_kind") or "other")
+                mode = str(row.get("mode") or mode)
+                sql_text = str(row.get("sql_text") or "")
+                profile_ts = str(row.get("profile_timestamp") or "")
+
+                formatted_sql, was_formatted = _format_sql(sql_text)
+
+                # stmt_order may be -1 for `original_query`; clamp to 0 for
+                # the filename prefix but keep the actual value in the
+                # manifest so the reader can spot the synthetic event.
+                file_order = max(stmt_order, 0)
+                attempt_suffix = (
+                    f"__attempt{attempt_idx}" if attempt_idx > 0 else ""
+                )
+                # Defensive: never let a `/` in category create a subdir.
+                safe_category = category.replace("/", "_")
+                filename = f"{file_order:03d}__{safe_category}{attempt_suffix}.sql"
+                with open(
+                    os.path.join(refresh_dir, filename), "w", encoding="utf-8"
+                ) as f:
+                    f.write(formatted_sql)
+                    if not formatted_sql.endswith("\n"):
+                        f.write("\n")
+                files_written += 1
+
+                if duration_ms > 0:
+                    total_ms += duration_ms
+                manifest_stmts.append({
+                    "stmt_order": stmt_order,
+                    "attempt_idx": attempt_idx,
+                    "category": category,
+                    "stmt_kind": stmt_kind,
+                    "duration_ms": duration_ms,
+                    "sql_file": filename,
+                    "profile_timestamp": profile_ts,
+                    "formatted": was_formatted,
+                })
+
+            manifest = {
+                "refresh_id": rid,
+                "view_name": view,
+                "mode": mode,
+                "exported_after_batch": batch_num,
+                "exported_after_run_id": run_id,
+                "total_duration_ms": total_ms,
+                "statements": manifest_stmts,
+            }
+            with open(
+                os.path.join(refresh_dir, "manifest.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(manifest, f, indent=2)
+
+        return files_written
+
+    @staticmethod
+    def _safe_int(value, default: int) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _run_feldera_wait(self, batch_num: int) -> None:
         """Feldera batches 2/3: pause → append → resume → poll stats.
@@ -899,7 +1496,9 @@ class EngineRunner:
                 if resp.ok:
                     self._emit(f"[{self._engine.name}] dbt-server is healthy")
                     return
-            except requests.ConnectionError:
+            except (requests.ConnectionError, requests.Timeout):
+                # Container still warming up, or a transient cross-container
+                # network stall under host load — retry next interval.
                 pass
             self._emit(
                 f"[{self._engine.name}] Waiting for dbt-server... "

@@ -1,0 +1,26 @@
+tpcdi:
+  target: spark-openivm
+  outputs:
+    spark-openivm:
+      type: fabricspark
+      method: livy
+      livy_mode: local
+      livy_url: "http://spark-openivm:8998"
+      session_id_file: /tmp/spark-openivm-livy.session-id
+      host: spark-openivm
+      connect_retries: 25
+      connect_timeout: 10
+      lakehouse: tpcdi
+      schema: tpcdi
+      # Aligned with the `spark` profile (threads: 30) so the two engines
+      # use an identical dbt configuration; the resulting bench numbers are
+      # directly comparable. Note: dbt-fabricspark + `livy_mode: local`
+      # multiplexes ALL dbt threads onto a single shared Livy session whose
+      # statement-executor pool serializes statements, so the effective
+      # in-Spark concurrency is 1 regardless of this value (see
+      # dbt/adapters/fabricspark/livysession.py LivySessionManager —
+      # `livy_global_session` is a class-level singleton).
+      threads: 30
+      retry_all: true
+      spark_config:
+        name: dbt-tpcdi-spark-openivm

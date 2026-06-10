@@ -22,6 +22,7 @@ from handlers.feldera import FelderaHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
 from handlers.duckdb_openivm import DuckDBOpenIVMHandler
+from handlers.spark_openivm import SparkOpenIVMHandler
 from handlers.runs import RunsHandler
 from handlers.sql_analysis import SQLAnalysisHandler
 from services.db import init_db
@@ -64,6 +65,7 @@ def register_handlers(flask_app: Flask) -> None:
     handlers = [
         HealthHandler(),
         DuckDBOpenIVMHandler(),
+        SparkOpenIVMHandler(),
         RunsHandler(),
         FelderaHandler(),
         ChartHandler(),
