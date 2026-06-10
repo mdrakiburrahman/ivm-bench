@@ -1,5 +1,3 @@
-# Pinned to a merged main commit of KangarooKube/terraform-infrastructure-modules
-# from PR https://github.com/KangarooKube/terraform-infrastructure-modules/pull/1.
 module "github_runner" {
   source = "git::https://github.com/KangarooKube/terraform-infrastructure-modules.git//modules/github-runner/azure-vmss?ref=d62879b869b9ac927686d20c816b73b19152aa7a"
 
