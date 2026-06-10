@@ -144,15 +144,15 @@ bash src/.scripts/benchmark.sh
 Per-OAT artifacts land under `mount/oat-state/<oat_run_id>/` with a
 `mount/oat-state/latest` symlink:
 
-| File                       | Description                                                              |
-| -------------------------- | ------------------------------------------------------------------------ |
-| `inputs.json`              | The experiments JSON as-loaded (provenance)                              |
-| `outputs.json`             | Per-experiment aggregated outputs (status, walls, per-batch durations…)  |
-| `chart-oat.png`            | Aggregate heatmap (rows = experiments, columns = batch × engine)         |
-| `chart-per-model.png`      | Per-dbt-model heatmap with log₂(openivm / spark) per batch               |
-| `RESULTS.md`               | Markdown overview + per-input/output tables + per-model break-even table |
-| `benchmark-server.log`     | Copy of the orchestrator log for that run                                |
-| `exp-<NNN>/outputs.json`   | One per experiment — same shape as a per-experiment entry in master      |
+| File                     | Description                                                              |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `inputs.json`            | The experiments JSON as-loaded (provenance)                              |
+| `outputs.json`           | Per-experiment aggregated outputs (status, walls, per-batch durations…)  |
+| `chart-oat.png`          | Aggregate heatmap (rows = experiments, columns = batch × engine)         |
+| `chart-per-model.png`    | Per-dbt-model heatmap with log₂(openivm / spark) per batch               |
+| `RESULTS.md`             | Markdown overview + per-input/output tables + per-model break-even table |
+| `benchmark-server.log`   | Copy of the orchestrator log for that run                                |
+| `exp-<NNN>/outputs.json` | One per experiment — same shape as a per-experiment entry in master      |
 
 To write your own sweep, copy `experiments/smoke.json` as a starting point
 and override `scale_factor` / `batch_*_pct` / `engines` / `parallel` /
