@@ -10,7 +10,7 @@ on:
         type: string
       scale_factor:
         description: "TPC-DI scale factor"
-        default: "25"
+        default: "10"
         type: string
       batch_1_pct:
         description: "% of batch 1 data"
@@ -100,7 +100,7 @@ jobs:
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
     env:
-      SCALE_FACTOR: ${{ inputs.scale_factor || '25' }}
+      SCALE_FACTOR: ${{ inputs.scale_factor || '10' }}
       BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
       BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
       BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}

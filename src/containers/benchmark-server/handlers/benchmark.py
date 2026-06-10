@@ -1,4 +1,4 @@
-"""Benchmark handler — start, stream, and status endpoints (OAT-only)."""
+"""Benchmark handler — start, stream, and status endpoints."""
 
 import logging
 import os
