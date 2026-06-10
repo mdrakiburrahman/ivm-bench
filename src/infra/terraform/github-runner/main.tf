@@ -1,7 +1,7 @@
-# Pinned to KangarooKube/terraform-infrastructure-modules dev branch HEAD.
-# Will be repinned to the post-merge main commit before the ivm-bench PR.
+# Pinned to a merged main commit of KangarooKube/terraform-infrastructure-modules
+# from PR https://github.com/KangarooKube/terraform-infrastructure-modules/pull/1.
 module "github_runner" {
-  source = "git::https://github.com/KangarooKube/terraform-infrastructure-modules.git//modules/github-runner/azure-vmss?ref=ebb5e6bc4a94fa9ca055b9b8ca84d1454b300692"
+  source = "git::https://github.com/KangarooKube/terraform-infrastructure-modules.git//modules/github-runner/azure-vmss?ref=d62879b869b9ac927686d20c816b73b19152aa7a"
 
   resource_group_name = var.resource_group_name
   location            = var.location
