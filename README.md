@@ -112,9 +112,9 @@ Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, RESULTS.
 
 ![Heuristics](imgs/benchmark-heuristics.png)
 
-### Scale Factor: 3 (1%, 0.001%, 0.002%)
+### Scale Factor: 25 (100%, 1%, 1%)
 
-![Results](imgs/scale-factor-3-1-0_001-0_002.png)
+![Results](imgs/scale-factor-25-100-1-1.png)
 
 ### Scale Factor: 100 (100%, 1%, 1%)
 

@@ -1076,6 +1076,14 @@ class Orchestrator:
         # _save_benchmark_results() catches+logs internally; no extra wrap.
         self._save_benchmark_results()
 
+        # Per-experiment scale-factor + heuristics PNGs under imgs/. Mirrors
+        # the pre-OAT single-experiment behavior so each OAT iteration leaves
+        # behind a standalone visualization keyed by (SF, b1, b2, b3). Safe
+        # to call here: disk_cleanup_after_experiment preserves the
+        # mount/results/<sf>/dbt-server/ and mount/stats/<sf>/ inputs the
+        # chart code reads. Best-effort — never aborts the sweep.
+        self._oat_write_per_experiment_imgs(inputs)
+
         # Build + persist per-experiment artifacts. AFTER cleanup so tiny
         # outputs.json/db writes don't ENOSPC themselves.
         exp_dict = oat_runner.build_per_experiment_dict(
@@ -1255,6 +1263,58 @@ class Orchestrator:
             if not silent:
                 self.emit(f"  [oat-chart] WARN: RESULTS.md render failed: {e}")
             logger.warning("OAT RESULTS.md render failed: %s", e)
+
+    def _oat_write_per_experiment_imgs(self, inputs: ExperimentInputs) -> None:
+        """Write imgs/scale-factor-<sf>-<b1>-<b2>-<b3>.png + imgs/benchmark-heuristics.png.
+
+        Mirrors the pre-OAT single-experiment chart generation that used to
+        live in the orchestrator. Best-effort: any failure here is logged
+        and swallowed so it cannot abort the OAT sweep.
+        """
+        repo = self._config.repo_dir
+        sf = str(inputs.scale_factor)
+        b1, b2, b3 = inputs.batch_1_pct, inputs.batch_2_pct, inputs.batch_3_pct
+        results_dir = os.path.join(repo, "mount", "results", sf, "dbt-server")
+        stats_dir = os.path.join(repo, "mount", "stats", sf)
+        imgs_dir = os.path.join(repo, "imgs")
+
+        try:
+            from handlers.chart import generate_chart_png, generate_heuristics_png
+        except Exception as e:
+            self.emit(f"  WARNING: chart handler not importable: {e}")
+            logger.warning("chart handler import failed: %s", e)
+            return
+
+        try:
+            png = generate_chart_png(
+                state_dir=results_dir, sf=sf,
+                b1pct=b1, b2pct=b2, b3pct=b3,
+                stats_dir=stats_dir,
+            )
+            if png:
+                os.makedirs(imgs_dir, exist_ok=True)
+                slug = f"{sf}-{b1.replace('.', '_')}-{b2.replace('.', '_')}-{b3.replace('.', '_')}"
+                out_path = os.path.join(imgs_dir, f"scale-factor-{slug}.png")
+                with open(out_path, "wb") as f:
+                    f.write(png)
+                self.emit(f"  Scale-factor chart saved to imgs/scale-factor-{slug}.png")
+            else:
+                self.emit(f"  WARNING: no data for scale-factor chart (SF={sf})")
+        except Exception as e:
+            self.emit(f"  WARNING: scale-factor chart generation failed: {e}")
+            logger.warning("Scale-factor chart generation failed: %s", e)
+
+        try:
+            png = generate_heuristics_png(state_dir=results_dir)
+            if png:
+                os.makedirs(imgs_dir, exist_ok=True)
+                out_path = os.path.join(imgs_dir, "benchmark-heuristics.png")
+                with open(out_path, "wb") as f:
+                    f.write(png)
+                self.emit("  Heuristics chart saved to imgs/benchmark-heuristics.png")
+        except Exception as e:
+            self.emit(f"  WARNING: heuristics chart generation failed: {e}")
+            logger.warning("Heuristics chart generation failed: %s", e)
 
     def _dump_server_log_into_oat_state(self) -> None:
         """Copy /tmp/benchmark-server.log into the OAT state dir."""

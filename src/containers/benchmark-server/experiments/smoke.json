@@ -11,7 +11,7 @@
     "    bash src/.scripts/benchmark.sh"
   ],
   "baseline": {
-    "engines": ["spark", "spark-openivm"],
+    "engines": ["spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera"],
     "parallel": false,
     "feature_flags": {
       "openivm_validate": true,
@@ -22,11 +22,11 @@
   },
   "experiments": [
     {
-      "label": "smoke-sf3",
-      "scale_factor": 3,
-      "batch_1_pct": "1",
-      "batch_2_pct": "0.001",
-      "batch_3_pct": "0.002"
+      "label": "smoke",
+      "scale_factor": 100,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1"
     }
   ]
 }
