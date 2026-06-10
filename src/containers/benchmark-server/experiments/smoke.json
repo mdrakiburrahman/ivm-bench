@@ -23,7 +23,7 @@
   "experiments": [
     {
       "label": "smoke",
-      "scale_factor": 100,
+      "scale_factor": 3,
       "batch_1_pct": "100",
       "batch_2_pct": "1",
       "batch_3_pct": "1"
