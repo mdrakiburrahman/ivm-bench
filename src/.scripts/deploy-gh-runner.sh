@@ -108,6 +108,12 @@ SSH_PUBLIC_KEY="$(cat "$SSH_PUB_PATH")"
 TF_DIR="$REPO_ROOT/src/infra/terraform/github-runner"
 STATE_KEY="github-runner.tfstate"
 
+# Refresh the upstream module pinned via `git::` source in main.tf before
+# init/plan/apply. Cheap when the ref is a commit SHA (cached after first
+# fetch); ensures upstream changes are picked up if the ref is moved.
+echo "=== terraform get -update (refresh pinned KangarooKube module) ==="
+terraform -chdir="$TF_DIR" get -update
+
 echo "=== terraform init (backend: $TF_STATE_STORAGE_ACCOUNT_NAME / $TF_STATE_STORAGE_ACCOUNT_CONTAINER / $STATE_KEY) ==="
 terraform -chdir="$TF_DIR" init -reconfigure \
   -backend-config="storage_account_name=${TF_STATE_STORAGE_ACCOUNT_NAME}" \

@@ -10,7 +10,7 @@ variable "resource_group_name" {
 
 variable "location" {
   type        = string
-  description = "Azure region"
+  description = "Azure region. Defaults to the module default (`canadacentral`)."
   default     = "canadacentral"
 }
 
@@ -31,58 +31,14 @@ variable "ssh_public_key" {
   sensitive   = true
 }
 
-variable "runner_labels" {
-  type        = list(string)
-  description = "Custom labels added to the runner. The default 'self-hosted, Linux, X64' set is added by GitHub automatically."
-  default     = ["ivm-bench-azure"]
+variable "instance_sku" {
+  type        = string
+  description = "VMSS instance SKU (e.g. Standard_E32as_v4, Standard_E16as_v4). Overrides the module default."
+  default     = "Standard_E32as_v4"
 }
 
 variable "instance_count" {
   type        = number
-  description = "Number of VMSS instances (manual scale-out supported)"
+  description = "Number of VMSS instances. The VMSS is not autoscaled, so this is both the current and the max node count."
   default     = 2
-}
-
-variable "instance_sku" {
-  type        = string
-  description = "VMSS instance SKU"
-  default     = "Standard_E32as_v4"
-}
-
-variable "os_disk_size_gb" {
-  type        = number
-  description = "OS disk size in GB"
-  default     = 1024
-}
-
-variable "vm_image" {
-  type = object({
-    publisher = string
-    offer     = string
-    sku       = string
-    version   = string
-  })
-  description = "Source image for the VMSS instances"
-  default = {
-    publisher = "Canonical"
-    offer     = "ubuntu-24_04-lts"
-    sku       = "server"
-    version   = "latest"
-  }
-}
-
-variable "admin_username" {
-  type        = string
-  description = "Admin username on each VMSS instance"
-  default     = "azureuser"
-}
-
-variable "tags" {
-  type        = map(string)
-  description = "Tags applied to every resource"
-  default = {
-    project = "ivm-bench"
-    purpose = "github-actions-runner"
-    managed = "terraform"
-  }
 }
