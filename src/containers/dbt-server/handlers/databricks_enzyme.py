@@ -7,12 +7,17 @@ The benchmark-server calls these around each dbt build:
   - POST /sources/databricks-enzyme/append/<batch_num>/<sf>
         Sync new staging Delta files and (if CTAS strategy) INSERT INTO.
   - POST /sources/databricks-enzyme/cleanup-schema
-        DROP both `<catalog>.tpcdi_bench` and `<catalog>.tpcdi_src` CASCADE
-        — kills all MVs so no background refresh keeps billing.
+        DROP all 5 per-experiment schemas (data + bronze/silver/gold/work)
+        CASCADE — kills all MVs so no background refresh keeps billing.
   - POST /sources/databricks-enzyme/cleanup-volume/<sf>
-        Remove `/Volumes/.../sf=<sf>/` recursively (used when SF changes).
+        Remove the cache `sf=<sf>/` subdirectory recursively (used when
+        we want to force a per-SF cache rebuild; not normally needed).
   - POST /sources/databricks-enzyme/cleanup-all
-        End-of-sweep teardown: schemas + every `sf=*` subdir.
+        End-of-sweep teardown: every `exp_*` schema + the entire cache
+        volume.
+  - POST /sources/databricks-enzyme/sweep-stale
+        Drop `exp_<ts>_*` schemas older than 1 day. Called at the start
+        of every experiment to recover from crashed prior experiments.
   - POST /sources/databricks-enzyme/warmup
         SELECT 1 against the warehouse so the timer doesn't pay cold-start.
   - POST /metrics/databricks-enzyme/<batch_num>
@@ -92,6 +97,28 @@ def cleanup_all():
         return jsonify(databricks_enzyme_sources.cleanup_all()), 200
     except Exception as e:
         logger.exception("[databricks-enzyme] cleanup-all failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/sources/databricks-enzyme/sweep-stale", methods=["POST"])
+def sweep_stale():
+    """Drop per-experiment schemas from prior crashed/abandoned experiments.
+
+    Called by the benchmark-server at experiment START (before
+    init/<sf>). Lists every ``exp_<microsec_ts>_*`` schema in the
+    configured catalog, parses the embedded microsecond timestamp,
+    and drops CASCADE anything older than
+    ``DATABRICKS_STALE_MAX_AGE_SECONDS`` (default 86400 = 1 day).
+    Active experiments are safe by construction (freshly-minted IDs
+    are always age 0).
+
+    Idempotent. Safe to call concurrently from multiple experiments —
+    ``DROP SCHEMA IF EXISTS … CASCADE`` is the only mutation.
+    """
+    try:
+        return jsonify(databricks_enzyme_sources.sweep_stale_schemas()), 200
+    except Exception as e:
+        logger.exception("[databricks-enzyme] sweep-stale failed")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 

@@ -6,7 +6,7 @@ underlying Delta operation took, etc. This is captured by:
 
   - `SHOW TABLES IN <catalog>.<schema>` — discover every relation the dbt
     build materialised across every per-layer schema (bronze/silver/gold/
-    work plus the historical `tpcdi_bench` / `tpcdi_src`). Enzyme MVs
+    work plus the per-experiment ``exp_<ts>_data`` source schema). Enzyme MVs
     surface here as TABLE rows whose `tableType` is `MATERIALIZED_VIEW`.
   - For each, `DESCRIBE HISTORY <fqn> LIMIT <K>` — Delta op history with
     `operationMetrics` map containing executionTimeMs, numOutputRows,
@@ -28,18 +28,13 @@ logger = logging.getLogger(__name__)
 def _candidate_schemas() -> List[str]:
     """All Databricks schemas we should sweep for MVs / Delta tables.
 
-    Includes the per-layer schemas defined in the dbt project
-    (bronze/silver/gold/work by default) plus the historical
-    `tpcdi_bench` / `tpcdi_src` for backwards compatibility.
+    Per-experiment isolation: this is the 5 ``exp_<ts>_*`` schemas for
+    the active experiment_id (data + 4 layers). The MV refresh metrics
+    of interest live in bronze/silver/gold; the source tables live in
+    data; work is ephemeral. We include all 5 so the metrics endpoint
+    matches whatever dbt actually wrote.
     """
-    seen: set[str] = set()
-    out: List[str] = []
-    for s in [src.DBT_SCHEMA, src.SOURCE_SCHEMA, *src.LAYER_SCHEMAS]:
-        if not s or s in seen:
-            continue
-        seen.add(s)
-        out.append(s)
-    return out
+    return list(src.all_experiment_schemas())
 
 
 def _list_relations_in_schema(schema: str) -> List[Dict[str, str]]:

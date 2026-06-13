@@ -39,13 +39,14 @@ _EVENTS_PAGE_SIZE = 250
 
 
 def _candidate_mv_schemas() -> List[str]:
-    out: List[str] = []
-    seen = set()
-    for s in [src.DBT_SCHEMA, *src.LAYER_SCHEMAS]:
-        if s and s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
+    """Per-experiment MV-bearing schemas.
+
+    MVs land in the per-experiment layer schemas; the per-experiment
+    ``data`` schema holds only Delta source tables (not MVs). We still
+    include ``data`` so a stray ``materialized = view`` or similar would
+    still be discoverable.
+    """
+    return list(src.all_experiment_schemas())
 
 
 def _list_mvs_in_schema(conn, schema: str) -> List[Dict[str, str]]:

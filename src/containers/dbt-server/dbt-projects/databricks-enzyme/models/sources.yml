@@ -4,9 +4,8 @@ sources:
   - name: tpcdi
     # `database` = UC catalog in dbt-databricks.
     database: "{{ env_var('DATABRICKS_CATALOG', 'ivmbenchdbrx') }}"
-    # Source schema — separate from the dbt-output schema so cleanup
-    # of `tpcdi_bench` (the MVs) does not nuke the uploaded raw data.
-    schema: "{{ env_var('DATABRICKS_SOURCE_SCHEMA', 'tpcdi_src') }}"
+    # Per-experiment isolation
+    schema: "exp_{{ env_var('DATABRICKS_EXPERIMENT_ID', 'unset') }}_data"
     tables:
       # Batch1-only reference tables.
       - name: batch1_customer_mgmt

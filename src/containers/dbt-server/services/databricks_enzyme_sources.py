@@ -1,47 +1,56 @@
-"""databricks-enzyme source-table management.
+"""databricks-enzyme source-table management (per-experiment isolated).
 
-Routes batch1 init + batch{2,3} append through:
+Each OAT experiment runs in its own **shared-nothing** namespace inside the
+Unity Catalog so multiple experiments — sequential or concurrent — can
+share the same workspace without stomping each other:
 
-  1) **Files upload** of the local Delta directories
-     (`/data/raw/delta/{batch1,staging,audit}/<table>/...`) into the
-     Databricks Unity Catalog Volume at
-     `/Volumes/<catalog>/<schema>/<volume>/sf=<N>/{batch1,staging,audit}/<table>/`
-     via the Databricks SDK Files API (`ws.files.upload`).
+  * The orchestrator mints a microsecond-resolution ``experiment_id`` per
+    OAT experiment row and propagates it as the ``DATABRICKS_EXPERIMENT_ID``
+    env var into the dbt-server container.
+  * Every Databricks artifact created during an experiment lives under one
+    of these five per-experiment schemas (all dropped CASCADE at the end of
+    the experiment):
 
-  2) **Source-table registration** in `<catalog>.<source_schema>`. Two
-     strategies, decided once per `init_sources(sf)` call by probing
-     Databricks Enzyme:
+        <catalog>.exp_<ts>_data        # source-table CTAS-from-cache
+        <catalog>.exp_<ts>_bronze      # dbt bronze MVs
+        <catalog>.exp_<ts>_silver      # dbt silver MVs
+        <catalog>.exp_<ts>_gold        # dbt gold MVs
+        <catalog>.exp_<ts>_work        # dbt work (ephemeral) artifacts
 
-       a) **VIEW over delta-path** — `CREATE OR REPLACE VIEW <catalog>.
-          <source_schema>.<t> AS SELECT * FROM delta.`<volume_path>` `.
-          Cheapest, no double-storage. Used when the Enzyme `EXPLAIN
-          CREATE MATERIALIZED VIEW ... REFRESH POLICY INCREMENTAL STRICT
-          AS SELECT * FROM <view>` probe accepts a view source.
+  * Raw TPC-DI Delta files are uploaded ONCE per SF into a persistent
+    shared **read-only** cache volume:
 
-       b) **CTAS managed Delta** — `CREATE OR REPLACE TABLE <catalog>.
-          <source_schema>.<t> ... TBLPROPERTIES(delta.enableRowTracking
-          = true) AS SELECT * FROM delta.`<volume_path>` `. Used when
-          the probe rejects the VIEW path (row-tracking / change-data-
-          feed required by Enzyme is only present on managed Delta
-          tables, not external paths).
+        /Volumes/<catalog>/_shared_cache/tpcdi_raw_cache/sf=<N>/{
+            batch1/<table>/...,            (init only)
+            staging_batch1/<table>/...,
+            staging_batch2/<table>/...,
+            staging_batch3/<table>/...,
+            audit/...,
+        }
 
-       The chosen strategy is recorded in a small marker file at
-       `/Volumes/.../sf=<N>/_STRATEGY` so `append_sources` knows whether
-       to INSERT INTO the managed table or just re-upload new Delta
-       files.
+    Idempotent via per-section ``_UPLOADED`` marker files. Per-experiment
+    source tables are then created server-side as **CTAS managed Delta**
+    from those cache paths — no client-side re-upload past the first run
+    at a given SF.
 
-  3) **Idempotence** via `/Volumes/.../sf=<N>/_UPLOADED` marker. Once
-     written, `init_sources(sf)` short-circuits to a no-op (returns the
-     cached strategy) — re-running an experiment at the same SF stays
-     cheap.
+  * The VIEW-over-delta-path strategy is no longer probed: Enzyme requires
+    row-tracking on its source tables, which only managed Delta tables
+    have, so we always CTAS.
 
-The benchmark-server's engine runner calls these:
+  * Crash-recovery: at the start of every experiment the orchestrator
+    calls ``sweep_stale_schemas`` which lists every ``exp_*`` schema in
+    the catalog, parses the embedded microsecond timestamp, and drops
+    CASCADE anything older than ``OAT_STALE_SCHEMA_MAX_AGE_SECONDS``
+    (default ``86400`` = 1 day). A freshly-minted experiment ID is
+    always < 1 day old, so the active experiment is never targeted.
 
+The benchmark-server's engine runner calls these routes:
+
+  POST /sources/databricks-enzyme/sweep-stale            (start of every exp)
   POST /sources/databricks-enzyme/init/<sf>              (before batch 1)
   POST /sources/databricks-enzyme/append/<batch_num>/<sf> (before batch 2/3)
-  POST /sources/databricks-enzyme/cleanup-schema          (start of every exp)
-  POST /sources/databricks-enzyme/cleanup-volume/<sf>     (when SF changes)
-  POST /sources/databricks-enzyme/cleanup-all             (end of sweep)
+  POST /sources/databricks-enzyme/cleanup-schema         (end of every exp)
+  POST /sources/databricks-enzyme/cleanup-all            (end of sweep)
 """
 
 from __future__ import annotations
@@ -49,9 +58,11 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import threading
+import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -64,16 +75,106 @@ logger = logging.getLogger(__name__)
 
 RAW_DELTA_DIR = os.environ.get("RAW_DELTA_DIR", "/data/raw/delta")
 CATALOG = os.environ.get("DATABRICKS_CATALOG", "ivmbenchdbrx")
-DBT_SCHEMA = os.environ.get("DATABRICKS_SCHEMA", "tpcdi_bench")
-SOURCE_SCHEMA = os.environ.get("DATABRICKS_SOURCE_SCHEMA", "tpcdi_src")
-VOLUME = os.environ.get("DATABRICKS_VOLUME", "tpcdi_raw")
-LAYER_SCHEMAS = [
-    s.strip()
-    for s in os.environ.get(
-        "DATABRICKS_LAYER_SCHEMAS", "bronze,silver,gold,work"
-    ).split(",")
-    if s.strip()
-]
+
+# Shared READ-ONLY cache for raw TPC-DI Delta files. ONE schema + ONE
+# volume per workspace, idempotently populated per-SF, then read by every
+# subsequent experiment's CTAS source-table creation. Never cleaned up
+# automatically — keep your raw data around to avoid expensive re-uploads.
+CACHE_SCHEMA = os.environ.get("DATABRICKS_CACHE_SCHEMA", "_shared_cache")
+CACHE_VOLUME = os.environ.get("DATABRICKS_CACHE_VOLUME", "tpcdi_raw_cache")
+
+# Per-experiment schemas all share the literal prefix ``exp_<ts>_``. This
+# is the SOLE convention the sweeper uses to discover stale schemas; do
+# not change it without also updating the regex below.
+_EXP_PREFIX = "exp_"
+_EXP_SCHEMA_PATTERN = re.compile(r"^exp_(\d+)_([A-Za-z0-9_]+)$")
+_EXP_LAYER_NAMES = ("data", "bronze", "silver", "gold", "work")
+
+# Stale-schema retention (seconds). 1 day by default. Sweeper drops any
+# `exp_<ts>_*` schemas whose timestamp is older than this. Overridable
+# per environment for short-lived CI runs.
+_STALE_MAX_AGE_S = int(
+    os.environ.get("DATABRICKS_STALE_SCHEMA_MAX_AGE_SECONDS", str(24 * 60 * 60))
+)
+
+
+# ---------------------------------------------------------------------------
+# Per-experiment ID + schema helpers (lazy — env is read at call time so
+# the module loads cleanly in non-databricks-enzyme containers, which all
+# share the same dbt-server image but never call into this service).
+# ---------------------------------------------------------------------------
+
+
+def _experiment_id() -> str:
+    """Return the active per-experiment microsecond timestamp.
+
+    Raises ``RuntimeError`` if ``DATABRICKS_EXPERIMENT_ID`` is unset or
+    malformed — every public function in this module needs it to compute
+    the per-experiment schema names, so we refuse to operate without it
+    rather than silently fall back to a shared namespace.
+    """
+    eid = os.environ.get("DATABRICKS_EXPERIMENT_ID", "").strip()
+    if not eid:
+        raise RuntimeError(
+            "DATABRICKS_EXPERIMENT_ID env var is required for databricks-enzyme "
+            "operations (per-experiment isolation). The benchmark-server "
+            "orchestrator should set this when starting the engine container."
+        )
+    if not eid.isdigit():
+        raise RuntimeError(
+            f"DATABRICKS_EXPERIMENT_ID must be a microsecond integer; got {eid!r}"
+        )
+    return eid
+
+
+def _schema_for(layer: str) -> str:
+    return f"{_EXP_PREFIX}{_experiment_id()}_{layer}"
+
+
+def data_schema() -> str:
+    """Schema holding the per-experiment CTAS source tables."""
+    return _schema_for("data")
+
+
+def bronze_schema() -> str: return _schema_for("bronze")
+def silver_schema() -> str: return _schema_for("silver")
+def gold_schema() -> str: return _schema_for("gold")
+def work_schema() -> str: return _schema_for("work")
+
+
+def layer_schemas() -> List[str]:
+    """The 4 per-experiment layer schemas dbt-databricks materialises into."""
+    return [bronze_schema(), silver_schema(), gold_schema(), work_schema()]
+
+
+def all_experiment_schemas() -> List[str]:
+    """All 5 per-experiment schemas (data + 4 layers). Used by cleanup."""
+    return [data_schema(), *layer_schemas()]
+
+
+# ---------------------------------------------------------------------------
+# Back-compat shims — older code imports `DBT_SCHEMA`, `SOURCE_SCHEMA`,
+# `LAYER_SCHEMAS` directly. Keep the names but make them callable so any
+# caller that did `src.DBT_SCHEMA` (string) still works without code changes.
+# All such call sites have been migrated to the function forms above; these
+# shims exist purely to surface a clear error if anything still references
+# the old constants.
+# ---------------------------------------------------------------------------
+
+
+def _deprecated_constant_error(name: str) -> str:
+    return (
+        f"databricks_enzyme_sources.{name} was removed when per-experiment "
+        f"isolation landed. Use the function form instead "
+        f"(data_schema / bronze_schema / silver_schema / gold_schema / "
+        f"work_schema / layer_schemas / all_experiment_schemas)."
+    )
+
+
+def __getattr__(name: str):  # PEP 562 module __getattr__
+    if name in ("DBT_SCHEMA", "SOURCE_SCHEMA", "VOLUME", "LAYER_SCHEMAS"):
+        raise AttributeError(_deprecated_constant_error(name))
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 BATCH1_TABLES: List[str] = [
     "customer_mgmt",
@@ -101,7 +202,14 @@ STAGING_TABLES: List[str] = [
 
 
 def _all_init_tables() -> List[Tuple[str, str, str]]:
-    """Yield (group, local_subdir, source_table_name) for the batch1 load."""
+    """Yield (group, local_subdir, source_table_name) for the batch1 load.
+
+    The ``staging`` group represents the *batch 1 slice* of staging tables
+    (in the local Delta layout it's the full ``staging/`` dir at init
+    time, since batch 2/3 haven't appended yet).  Subsequent batches land
+    in ``staging_batch<N>/`` directories in the shared cache and are
+    INSERTed into the per-experiment ``exp_<ts>_data.staging_<t>`` tables.
+    """
     out: List[Tuple[str, str, str]] = []
     for t in BATCH1_TABLES:
         out.append(("batch1", f"batch1/{t}", f"batch1_{t}"))
@@ -111,12 +219,34 @@ def _all_init_tables() -> List[Tuple[str, str, str]]:
     return out
 
 
-def _volume_root() -> str:
-    return f"/Volumes/{CATALOG}/{DBT_SCHEMA}/{VOLUME}"
+# ---------------------------------------------------------------------------
+# Volume / path helpers
+# ---------------------------------------------------------------------------
 
 
-def _sf_root(sf: int) -> str:
-    return f"{_volume_root()}/sf={sf}"
+def _cache_volume_root() -> str:
+    """Persistent, per-workspace shared cache volume root (read-only after
+    first seed at each SF)."""
+    return f"/Volumes/{CATALOG}/{CACHE_SCHEMA}/{CACHE_VOLUME}"
+
+
+def _cache_sf_root(sf: int) -> str:
+    return f"{_cache_volume_root()}/sf={sf}"
+
+
+def _cache_init_marker(sf: int) -> str:
+    return f"{_cache_sf_root(sf)}/_UPLOADED_INIT"
+
+
+def _cache_batch_marker(sf: int, batch_num: int) -> str:
+    return f"{_cache_sf_root(sf)}/_UPLOADED_BATCH{batch_num}"
+
+
+def _cache_section_path(sf: int, section: str) -> str:
+    """Cache subpath for an ``_all_init_tables`` section. ``section`` is
+    one of ``batch1/<t>``, ``staging/<t>``, ``audit``, or
+    ``staging_batch<N>/<t>``."""
+    return f"{_cache_sf_root(sf)}/{section}"
 
 
 def _databricks_config() -> Config:
@@ -296,73 +426,233 @@ def _delete_volume_dir(ws: WorkspaceClient, path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Source-strategy probe
+# Schema / cache lifecycle
 # ---------------------------------------------------------------------------
 
 
-def _ensure_schemas(ws: WorkspaceClient) -> None:
-    _execute(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{DBT_SCHEMA}`")
-    _execute(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{SOURCE_SCHEMA}`")
+def _ensure_cache_schema(ws: WorkspaceClient) -> None:
+    """Idempotent: create the shared cache schema + volume if they don't
+    already exist. Safe to call from every experiment."""
+    _execute(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{CACHE_SCHEMA}`")
     _execute(
-        f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{DBT_SCHEMA}`.`{VOLUME}`"
+        f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{CACHE_SCHEMA}`.`{CACHE_VOLUME}`"
     )
 
 
-def _probe_view_strategy(sample_volume_path: str) -> bool:
-    """Probe whether INCREMENTAL STRICT MV accepts a VIEW-over-delta-path.
+def _ensure_experiment_schemas() -> None:
+    """Create all 5 per-experiment schemas for the active experiment_id.
 
-    Returns True if the strategy is acceptable to Databricks Enzyme.
-
-    NB: an `EXPLAIN CREATE MATERIALIZED VIEW ... REFRESH POLICY INCREMENTAL
-    STRICT` does NOT validate row tracking — only syntax — so it can pass
-    even when the actual CREATE will fail with
-    `MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE: Tables do not have row
-    tracking enabled`. Therefore the only reliable probe is a real CREATE
-    MV against a one-row table sample, executed then dropped.
-
-    The override env var DATABRICKS_ENZYME_STRATEGY may pin this without
-    a network round-trip ("view" | "ctas" | "auto" [default]).
+    These are the schemas dbt-databricks materialises MVs into PLUS the
+    ``exp_<ts>_data`` schema that holds the CTAS source tables. The
+    materialized_view materialization needs them to exist before
+    ``CREATE MATERIALIZED VIEW`` runs (dbt-databricks does not
+    auto-create custom schemas for MV materializations), and the
+    pre-flight stub-VIEW registration in `databricks_enzyme_explain`
+    also needs them to exist before its `CREATE OR REPLACE VIEW
+    exp_<ts>_<layer>.<model>` calls (otherwise it warns
+    `SCHEMA_NOT_FOUND` per model).
     """
-    pin = os.environ.get("DATABRICKS_ENZYME_STRATEGY", "auto").strip().lower()
-    if pin == "view":
-        logger.info("[databricks-enzyme] strategy pinned to 'view' via env")
-        return True
-    if pin == "ctas":
-        logger.info("[databricks-enzyme] strategy pinned to 'ctas' via env")
-        return False
+    for schema in all_experiment_schemas():
+        _execute(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{schema}`")
 
-    probe_view = (
-        f"`{CATALOG}`.`{SOURCE_SCHEMA}`._probe_view_src"
-    )
-    probe_mv = f"`{CATALOG}`.`{SOURCE_SCHEMA}`._probe_mv"
+
+def sweep_stale_schemas(
+    max_age_seconds: Optional[int] = None,
+) -> dict:
+    """Drop every ``exp_<microsec_ts>_<layer>`` schema older than
+    ``max_age_seconds`` (default = 1 day).
+
+    Discovery uses ``SHOW SCHEMAS LIKE 'exp_*'`` (cheap, no
+    information_schema dependency). For each matching schema name we
+    parse the ``exp_(\\d+)_<layer>`` form, group by timestamp, and drop
+    CASCADE every group whose timestamp is older than the cutoff.
+
+    Crash-safety: a freshly-minted experiment ID is always < 1 day old
+    so the active experiment is never targeted. ``DROP SCHEMA IF EXISTS
+    ... CASCADE`` is idempotent so concurrent sweepers can't error out
+    on each other.
+
+    Returns ``{status, scanned, kept, dropped, errors, cutoff_age_s}``.
+    """
+    cutoff_age = max_age_seconds if max_age_seconds is not None else _STALE_MAX_AGE_S
+    now_us = int(time.time() * 1_000_000)
+    cutoff_us = now_us - int(cutoff_age) * 1_000_000
+
+    scanned: List[str] = []
+    by_ts: Dict[int, List[str]] = {}
     try:
-        _execute(f"DROP MATERIALIZED VIEW IF EXISTS {probe_mv}")
-        _execute(f"DROP VIEW IF EXISTS {probe_view}")
-        _execute(
-            f"CREATE VIEW {probe_view} AS "
-            f"SELECT * FROM delta.`{sample_volume_path}`"
+        df = _execute(
+            f"SHOW SCHEMAS IN `{CATALOG}` LIKE '{_EXP_PREFIX}*'"
         )
-        _execute(
-            f"CREATE MATERIALIZED VIEW {probe_mv} "
-            f"REFRESH POLICY INCREMENTAL STRICT "
-            f"AS SELECT * FROM {probe_view}"
-        )
-        return True
     except Exception as exc:
-        logger.info(
-            "[databricks-enzyme] VIEW probe rejected, falling back to CTAS: %s",
-            exc,
+        logger.warning(
+            "[databricks-enzyme/sweep] SHOW SCHEMAS LIKE '%s*' failed: %s",
+            _EXP_PREFIX, exc,
         )
-        return False
-    finally:
-        try:
-            _execute(f"DROP MATERIALIZED VIEW IF EXISTS {probe_mv}")
-        except Exception:
-            pass
-        try:
-            _execute(f"DROP VIEW IF EXISTS {probe_view}")
-        except Exception:
-            pass
+        return {
+            "status": "error",
+            "scanned": 0,
+            "kept": [],
+            "dropped": [],
+            "errors": [str(exc)],
+            "cutoff_age_s": cutoff_age,
+        }
+
+    if df is None or df.empty:
+        return {
+            "status": "ok",
+            "scanned": 0,
+            "kept": [],
+            "dropped": [],
+            "errors": [],
+            "cutoff_age_s": cutoff_age,
+        }
+
+    # The first column of SHOW SCHEMAS holds the schema name. Different
+    # Databricks/Spark versions name it differently (namespace /
+    # databaseName / schema_name), so just read column 0 positionally.
+    name_col = df.columns[0]
+    for raw in df[name_col].tolist():
+        if raw is None:
+            continue
+        name = str(raw).strip()
+        if not name:
+            continue
+        scanned.append(name)
+        m = _EXP_SCHEMA_PATTERN.match(name)
+        if not m:
+            continue
+        ts = int(m.group(1))
+        by_ts.setdefault(ts, []).append(name)
+
+    kept: List[str] = []
+    dropped: List[str] = []
+    errors: List[str] = []
+    for ts in sorted(by_ts):
+        if ts >= cutoff_us:
+            kept.extend(by_ts[ts])
+            continue
+        for schema in sorted(by_ts[ts]):
+            try:
+                _execute(f"DROP SCHEMA IF EXISTS `{CATALOG}`.`{schema}` CASCADE")
+                dropped.append(schema)
+            except Exception as exc:
+                logger.warning(
+                    "[databricks-enzyme/sweep] DROP SCHEMA %s failed: %s",
+                    schema, exc,
+                )
+                errors.append(f"{schema}: {exc}")
+
+    logger.info(
+        "[databricks-enzyme/sweep] scanned=%d kept=%d dropped=%d errors=%d cutoff_age_s=%d",
+        len(scanned), len(kept), len(dropped), len(errors), cutoff_age,
+    )
+    return {
+        "status": "ok" if not errors else "partial",
+        "scanned": len(scanned),
+        "kept": kept,
+        "dropped": dropped,
+        "errors": errors,
+        "cutoff_age_s": cutoff_age,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Shared-cache seeding (idempotent per SF + per batch)
+# ---------------------------------------------------------------------------
+
+
+def _seed_cache_init(ws: WorkspaceClient, sf: int) -> Tuple[int, bool]:
+    """Idempotent: upload the batch-1 + initial-staging + audit Delta dirs
+    into the shared cache for ``sf``. Returns (files_uploaded, already_seeded).
+
+    The marker file at ``_UPLOADED_INIT`` indicates a successful seed; if
+    present, this is a no-op.
+    """
+    marker = _cache_init_marker(sf)
+    if _file_exists(ws, marker):
+        return (0, True)
+
+    logger.info(
+        "[databricks-enzyme/cache] seeding init sf=%d into %s",
+        sf, _cache_sf_root(sf),
+    )
+    total = 0
+    for _group, subdir, tname in _all_init_tables():
+        local = Path(RAW_DELTA_DIR) / subdir
+        remote = _cache_section_path(sf, subdir)
+        n = _upload_dir(ws, local, remote)
+        total += n
+        logger.info(
+            "[databricks-enzyme/cache] uploaded %d files for %s -> %s",
+            n, tname, remote,
+        )
+
+    _upload_bytes(ws, marker, b"ok\n")
+    return (total, False)
+
+
+def _seed_cache_batch(
+    ws: WorkspaceClient, sf: int, batch_num: int,
+) -> Tuple[int, bool]:
+    """Idempotent: upload the per-batch staging Delta dirs (and any
+    optional ``batch<N>/<t>`` per-batch dir) into the shared cache for
+    ``sf`` under ``staging_batch<N>/``. Returns (files_uploaded,
+    already_seeded).
+    """
+    if batch_num not in (2, 3):
+        raise ValueError(
+            f"_seed_cache_batch only supports batch 2 or 3, got {batch_num}"
+        )
+    marker = _cache_batch_marker(sf, batch_num)
+    if _file_exists(ws, marker):
+        return (0, True)
+
+    logger.info(
+        "[databricks-enzyme/cache] seeding batch=%d sf=%d into %s",
+        batch_num, sf, _cache_sf_root(sf),
+    )
+    total = 0
+    for t in STAGING_TABLES:
+        # Source for batch-2/3 increments: prefer the per-batch dir if
+        # the batch_loader populated one; else use staging/<t> (which
+        # for incremental loaders is overwritten between batches).
+        local_batch = Path(RAW_DELTA_DIR) / f"batch{batch_num}" / t
+        if local_batch.is_dir():
+            remote = _cache_section_path(sf, f"staging_batch{batch_num}/{t}")
+            n = _upload_dir(ws, local_batch, remote)
+            total += n
+            continue
+        local_staging = Path(RAW_DELTA_DIR) / "staging" / t
+        if local_staging.is_dir():
+            remote = _cache_section_path(sf, f"staging_batch{batch_num}/{t}")
+            n = _upload_dir(ws, local_staging, remote)
+            total += n
+
+    _upload_bytes(ws, marker, b"ok\n")
+    return (total, False)
+
+
+def seed_shared_cache(sf: int) -> dict:
+    """Public helper: seed init + (optionally) any pre-existing per-batch
+    staging dirs for ``sf`` into the cache. Safe to call multiple times.
+    """
+    ws = _workspace_client()
+    _ensure_cache_schema(ws)
+    init_files, init_skipped = _seed_cache_init(ws, sf)
+    batch_results: Dict[int, dict] = {}
+    for bn in (2, 3):
+        local_batch_root = Path(RAW_DELTA_DIR) / f"batch{bn}"
+        if not local_batch_root.is_dir():
+            continue
+        files, skipped = _seed_cache_batch(ws, sf, bn)
+        batch_results[bn] = {"files_uploaded": files, "already_seeded": skipped}
+    return {
+        "status": "ok",
+        "scale_factor": sf,
+        "init": {"files_uploaded": init_files, "already_seeded": init_skipped},
+        "batches": batch_results,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -371,103 +661,83 @@ def _probe_view_strategy(sample_volume_path: str) -> bool:
 
 
 def init_sources(sf: int) -> dict:
-    """Idempotent: upload Delta source dirs into UC Volume for `sf`, then
-    register source tables/views in `<catalog>.<source_schema>`.
+    """Prepare a per-experiment source-table set for batch 1.
 
-    Re-running with the same SF after a successful run is a no-op: we
-    just re-register the source relations (cheap CREATE OR REPLACE) so
-    they survive a `cleanup_schemas()` between experiments.
+    Steps:
+      1. Ensure shared cache (``_shared_cache.tpcdi_raw_cache``) exists.
+      2. Idempotently seed the cache with raw Delta files for ``sf`` if
+         the ``_UPLOADED_INIT`` marker is missing (first run at this SF).
+      3. Create the 5 per-experiment schemas
+         (``exp_<ts>_{data,bronze,silver,gold,work}``).
+      4. CTAS every source table in ``exp_<ts>_data`` *server-side* from
+         the cache's Delta paths with ``delta.enableRowTracking=true``
+         (Enzyme's INCREMENTAL STRICT requires row tracking on sources).
+
+    No client-side data upload happens here past the first run at this
+    SF — the cache is hit instead. Idempotent across re-runs.
     """
     ws = _workspace_client()
-    _ensure_schemas(ws)
 
-    sf_root = _sf_root(sf)
-    uploaded_marker = f"{sf_root}/_UPLOADED"
-    strategy_marker = f"{sf_root}/_STRATEGY"
-
-    already_uploaded = _file_exists(ws, uploaded_marker)
-
-    if already_uploaded:
+    _ensure_cache_schema(ws)
+    files_uploaded, already_seeded = _seed_cache_init(ws, sf)
+    if already_seeded:
         logger.info(
-            "[databricks-enzyme] sf=%d already uploaded; re-registering sources",
-            sf,
+            "[databricks-enzyme] sf=%d cache already seeded; skipping upload", sf,
         )
-        files_uploaded = 0
     else:
         logger.info(
-            "[databricks-enzyme] sf=%d not uploaded; uploading Delta sources",
-            sf,
+            "[databricks-enzyme] sf=%d cache seeded with %d files", sf, files_uploaded,
         )
-        files_uploaded = 0
-        for _group, subdir, tname in _all_init_tables():
-            local = Path(RAW_DELTA_DIR) / subdir
-            remote = f"{sf_root}/{subdir}"
-            n = _upload_dir(ws, local, remote)
-            files_uploaded += n
-            logger.info(
-                "[databricks-enzyme] uploaded %d files for %s -> %s",
-                n, tname, remote,
-            )
 
-    sample_tname = "audit"
-    sample_remote = f"{sf_root}/audit"
-    use_view = _probe_view_strategy(sample_remote)
-    strategy = "view" if use_view else "ctas"
+    _ensure_experiment_schemas()
+    ds = data_schema()
 
     tables_registered = 0
     for _group, subdir, tname in _all_init_tables():
-        remote = f"{sf_root}/{subdir}"
-        fq = f"`{CATALOG}`.`{SOURCE_SCHEMA}`.`{tname}`"
-        if use_view:
-            _execute(f"DROP TABLE IF EXISTS {fq}")
-            _execute(
-                f"CREATE OR REPLACE VIEW {fq} AS "
-                f"SELECT * FROM delta.`{remote}`"
-            )
-        else:
-            _execute(f"DROP VIEW IF EXISTS {fq}")
-            _execute(
-                f"CREATE OR REPLACE TABLE {fq} "
-                f"TBLPROPERTIES ('delta.enableRowTracking' = 'true') AS "
-                f"SELECT * FROM delta.`{remote}`"
-            )
+        remote = _cache_section_path(sf, subdir)
+        fq = f"`{CATALOG}`.`{ds}`.`{tname}`"
+        # CTAS managed Delta with row tracking + CDF — both required by
+        # Enzyme to incrementalize downstream MVs. DROP first because
+        # CREATE OR REPLACE TABLE does not always reset table-level
+        # TBLPROPERTIES across re-runs.
+        _execute(f"DROP TABLE IF EXISTS {fq}")
+        _execute(
+            f"CREATE TABLE {fq} "
+            f"TBLPROPERTIES ('delta.enableRowTracking' = 'true', "
+            f"                'delta.enableChangeDataFeed' = 'true') AS "
+            f"SELECT * FROM delta.`{remote}`"
+        )
         tables_registered += 1
 
-    if not already_uploaded:
-        _upload_bytes(ws, uploaded_marker, b"ok\n")
-        _upload_bytes(ws, strategy_marker, strategy.encode("utf-8") + b"\n")
-
     logger.info(
-        "[databricks-enzyme] init complete sf=%d strategy=%s files=%d tables=%d",
-        sf, strategy, files_uploaded, tables_registered,
+        "[databricks-enzyme] init complete sf=%d experiment_id=%s "
+        "data_schema=%s files_uploaded=%d tables=%d",
+        sf, _experiment_id(), ds, files_uploaded, tables_registered,
     )
     return {
         "status": "ok",
         "scale_factor": sf,
-        "strategy": strategy,
+        "experiment_id": _experiment_id(),
+        "data_schema": ds,
+        "strategy": "ctas",
         "files_uploaded": files_uploaded,
         "tables_created": tables_registered,
-        "skipped_upload": already_uploaded,
+        "skipped_upload": already_seeded,
     }
 
 
-def _read_strategy(ws: WorkspaceClient, sf: int) -> str:
-    strategy_marker = f"{_sf_root(sf)}/_STRATEGY"
-    try:
-        f = ws.files.download(file_path=strategy_marker)
-        body = f.contents.read().decode("utf-8", errors="replace").strip()
-        if body in ("view", "ctas"):
-            return body
-    except Exception:
-        pass
-    return "view"
-
-
 def append_sources(batch_num: int, sf: int) -> dict:
-    """For batch 2/3, sync any new local staging Delta files up to the
-    UC Volume, then (when strategy=ctas) `INSERT INTO` the new rows.
-    For strategy=view nothing else is needed — the next REFRESH reads
-    the freshly-uploaded Delta files via the existing view definition.
+    """Per-experiment batch append (batch 2 or 3).
+
+    Steps:
+      1. Idempotently seed the per-batch staging dirs into the shared
+         cache (``_UPLOADED_BATCH<N>`` marker).
+      2. ``INSERT INTO exp_<ts>_data.staging_<t> SELECT * FROM
+         delta.\`/Volumes/_shared_cache/.../sf=<N>/staging_batch<N>/<t>\``
+         for each staging table — server-side, no client bytes.
+
+    The next dbt-databricks REFRESH on the MVs will see the new rows
+    via the standard Delta change-feed path.
     """
     if batch_num not in (2, 3):
         raise ValueError(
@@ -475,95 +745,99 @@ def append_sources(batch_num: int, sf: int) -> dict:
         )
 
     ws = _workspace_client()
-    strategy = _read_strategy(ws, sf)
+    _ensure_cache_schema(ws)
+    files_uploaded, already_seeded = _seed_cache_batch(ws, sf, batch_num)
+    if already_seeded:
+        logger.info(
+            "[databricks-enzyme] batch=%d sf=%d cache already seeded; skipping upload",
+            batch_num, sf,
+        )
+    else:
+        logger.info(
+            "[databricks-enzyme] batch=%d sf=%d cache seeded with %d files",
+            batch_num, sf, files_uploaded,
+        )
 
-    sf_root = _sf_root(sf)
-
-    tables_synced = 0
+    ds = data_schema()
     tables_inserted = 0
-    files_uploaded = 0
-    files_skipped = 0
-
     for t in STAGING_TABLES:
-        local_staging = Path(RAW_DELTA_DIR) / "staging" / t
-        remote_staging = f"{sf_root}/staging/{t}"
-        if local_staging.is_dir():
-            up, sk = _sync_dir(ws, local_staging, remote_staging)
-            files_uploaded += up
-            files_skipped += sk
-            if up:
-                tables_synced += 1
-
-        # The batch-loader also writes a per-batch dir at `batchN/<t>` —
-        # mirror those up too so the source view sees the new rows when
-        # they are union-ed into staging. (In practice the spark-batch-
-        # loader's "append" mode also appends INTO staging/<t>, so this
-        # is belt-and-braces.)
-        local_batch = Path(RAW_DELTA_DIR) / f"batch{batch_num}" / t
-        if local_batch.is_dir():
-            remote_batch = f"{sf_root}/batch{batch_num}/{t}"
-            up, sk = _sync_dir(ws, local_batch, remote_batch)
-            files_uploaded += up
-            files_skipped += sk
-
-    if strategy == "ctas":
-        for t in STAGING_TABLES:
-            local_batch = Path(RAW_DELTA_DIR) / f"batch{batch_num}" / t
-            if not local_batch.is_dir():
-                continue
-            remote_batch = f"{sf_root}/batch{batch_num}/{t}"
-            fq = f"`{CATALOG}`.`{SOURCE_SCHEMA}`.`staging_{t}`"
+        # Only INSERT for tables that actually have a per-batch dir in
+        # the cache — some staging tables (e.g. ``batch_date``) may not
+        # appear in every batch.
+        remote = _cache_section_path(sf, f"staging_batch{batch_num}/{t}")
+        if not _file_exists(ws, remote):
+            # The marker file exists but no per-batch dir for THIS table
+            # means there was no new data for it in this batch. Skip.
+            continue
+        fq = f"`{CATALOG}`.`{ds}`.`staging_{t}`"
+        try:
             _execute(
                 f"INSERT INTO {fq} "
-                f"SELECT * FROM delta.`{remote_batch}`"
+                f"SELECT * FROM delta.`{remote}`"
             )
             tables_inserted += 1
+        except Exception as exc:
+            logger.warning(
+                "[databricks-enzyme] INSERT INTO %s from %s failed: %s",
+                fq, remote, exc,
+            )
+            raise
 
     logger.info(
-        "[databricks-enzyme] append batch=%d sf=%d strategy=%s "
-        "uploaded=%d skipped=%d inserted=%d",
-        batch_num, sf, strategy, files_uploaded, files_skipped, tables_inserted,
+        "[databricks-enzyme] append batch=%d sf=%d experiment_id=%s "
+        "files_uploaded=%d tables_inserted=%d",
+        batch_num, sf, _experiment_id(), files_uploaded, tables_inserted,
     )
     return {
         "status": "ok",
         "scale_factor": sf,
         "batch_num": batch_num,
-        "strategy": strategy,
+        "experiment_id": _experiment_id(),
+        "strategy": "ctas",
         "files_uploaded": files_uploaded,
-        "files_skipped": files_skipped,
-        "tables_appended": tables_synced if strategy == "view" else tables_inserted,
+        "files_skipped": 0,
+        "tables_appended": tables_inserted,
     }
 
 
 def cleanup_schemas() -> dict:
-    """Drop every schema dbt-databricks writes into (CASCADE) so background
+    """Drop every per-experiment schema (5 of them) CASCADE so background
     REFRESH on MVs stops accruing Serverless SQL bills.
 
-    `DBT_SCHEMA` and `SOURCE_SCHEMA` are dropped for legacy compatibility;
-    the actual MV output lands in the per-layer schemas declared in
-    `dbt_project.yml` (`bronze`, `silver`, `gold`, `work` by default —
-    overridable via `DATABRICKS_LAYER_SCHEMAS=foo,bar`).
+    Does NOT touch the shared cache (``_shared_cache.tpcdi_raw_cache``)
+    or any other workspace state.
     """
     dropped: List[str] = []
-    targets = [DBT_SCHEMA, SOURCE_SCHEMA, *LAYER_SCHEMAS]
-    seen: set[str] = set()
+    errors: List[str] = []
+    try:
+        targets = all_experiment_schemas()
+    except RuntimeError as exc:
+        # No active DATABRICKS_EXPERIMENT_ID — nothing to drop for "this"
+        # experiment. Defer to sweep_stale_schemas for crash recovery.
+        logger.warning(
+            "[databricks-enzyme] cleanup-schema called without experiment_id: %s",
+            exc,
+        )
+        return {"status": "ok", "dropped": [], "errors": [str(exc)]}
     for s in targets:
-        if not s or s in seen:
-            continue
-        seen.add(s)
         try:
             _execute(f"DROP SCHEMA IF EXISTS `{CATALOG}`.`{s}` CASCADE")
             dropped.append(s)
         except Exception as exc:
             logger.warning(
-                "[databricks-enzyme] DROP SCHEMA %s failed: %s", s, exc
+                "[databricks-enzyme] DROP SCHEMA %s failed: %s", s, exc,
             )
-    return {"status": "ok", "dropped": dropped}
+            errors.append(f"{s}: {exc}")
+    return {"status": "ok" if not errors else "partial",
+            "dropped": dropped, "errors": errors}
 
 
 def cleanup_volume_for_sf(sf: int) -> dict:
+    """Drop the *cache* subdir for ``sf`` — back-compat hook so old
+    orchestrator code that called this when SF changed still has a no-op
+    target. Forces a re-seed on the next ``init_sources(sf)``."""
     ws = _workspace_client()
-    _delete_volume_dir(ws, _sf_root(sf))
+    _delete_volume_dir(ws, _cache_sf_root(sf))
     return {"status": "ok", "scale_factor": sf}
 
 
@@ -576,8 +850,6 @@ def warmup(max_attempts: int = 6, sleep_s: float = 5.0) -> dict:
     attempts needed (typically 1 if the warehouse is already running, more
     if it had to be resumed from suspend).
     """
-    import time
-
     started = time.time()
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_attempts + 1):
@@ -611,24 +883,33 @@ def warmup(max_attempts: int = 6, sleep_s: float = 5.0) -> dict:
 
 
 def cleanup_all() -> dict:
-    """End-of-sweep teardown: drop schemas, wipe every sf=* in the Volume."""
-    cleanup_schemas()
+    """End-of-sweep teardown: sweeper-style drop of every ``exp_*`` schema
+    in the catalog regardless of age, plus best-effort wipe of every
+    ``sf=*`` subdir in the shared cache.
+
+    Use sparingly — this nukes the cache too, so the next experiment
+    pays the full re-upload cost.
+    """
+    # 1) Drop EVERY exp_* schema in the catalog (age=0 cutoff drops all).
+    sweep = sweep_stale_schemas(max_age_seconds=0)
+
+    # 2) Best-effort: wipe every sf=* subdir in the shared cache volume.
     ws = _workspace_client()
-    volume_root = _volume_root()
+    cache_root = _cache_volume_root()
+    deleted = 0
     try:
         entries = list(
-            ws.files.list_directory_contents(directory_path=volume_root)
+            ws.files.list_directory_contents(directory_path=cache_root)
         )
     except NotFound:
-        return {"status": "ok", "deleted": 0}
+        return {"status": "ok", "sweep": sweep, "cache_subdirs_deleted": 0}
     except Exception as exc:
         logger.warning(
-            "[databricks-enzyme] list %s failed: %s", volume_root, exc
+            "[databricks-enzyme] list %s failed: %s", cache_root, exc,
         )
-        return {"status": "ok", "deleted": 0}
-    deleted = 0
+        return {"status": "ok", "sweep": sweep, "cache_subdirs_deleted": 0}
     for entry in entries:
         if getattr(entry, "is_directory", False):
             _delete_volume_dir(ws, entry.path)
             deleted += 1
-    return {"status": "ok", "deleted": deleted}
+    return {"status": "ok", "sweep": sweep, "cache_subdirs_deleted": deleted}

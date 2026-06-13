@@ -13,22 +13,14 @@ services:
       DATABRICKS_SQL_HTTP_PATH: "${DATABRICKS_SQL_HTTP_PATH}"
       DATABRICKS_SPN_CLIENT_ID: "${DATABRICKS_SPN_CLIENT_ID}"
       DATABRICKS_SPN_CLIENT_SECRET: "${DATABRICKS_SPN_CLIENT_SECRET}"
-      # Named DB/schema/volume for the engine — defaults match the plan,
-      # overridable per-environment.
+      # Catalog is fixed per-deployment
       DATABRICKS_CATALOG: "${DATABRICKS_CATALOG:-ivmbenchdbrx}"
-      DATABRICKS_SCHEMA: "${DATABRICKS_SCHEMA:-tpcdi_bench}"
-      DATABRICKS_SOURCE_SCHEMA: "${DATABRICKS_SOURCE_SCHEMA:-tpcdi_src}"
-      DATABRICKS_VOLUME: "${DATABRICKS_VOLUME:-tpcdi_raw}"
+      # Per-experiment isolation
+      DATABRICKS_EXPERIMENT_ID: "${DATABRICKS_EXPERIMENT_ID:-}"
       # Source-table strategy:
-      #   "auto" — probe each SF with a real CREATE MV against a 1-row
-      #             VIEW-over-delta to detect whether INCREMENTAL STRICT
-      #             accepts external Delta (row-tracking-less) sources.
-      #             If not, falls back to "ctas".
-      #   "view" — pin to VIEW-over-delta (cheap, but Enzyme will reject
-      #             INCREMENTAL STRICT on external Delta without row
-      #             tracking).
-      #   "ctas" — pin to CTAS managed tables with row tracking enabled
-      #             (default and only known-good for INCREMENTAL STRICT).
+      #   "ctas" — CTAS managed Delta tables with row tracking enabled
+      #             (the only known-good strategy for INCREMENTAL STRICT;
+      #             external Delta sources lack row tracking).
       DATABRICKS_ENZYME_STRATEGY: "${DATABRICKS_ENZYME_STRATEGY:-ctas}"
       # Tells the dbt-server's databricks_enzyme_sources service where
       # to find the locally-generated Delta dirs to upload from.

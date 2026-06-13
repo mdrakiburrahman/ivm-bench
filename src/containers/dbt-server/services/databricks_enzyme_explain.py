@@ -18,7 +18,8 @@ Designed to run AFTER `init_sources(sf)` and BEFORE batch 1's timer so:
   queries the planner accepted vs rejected.
 
 Cross-model resolution: Silver references bronze, gold references both.
-At pre-flight time only `tpcdi_src.*` exists. So we walk the dbt DAG in
+At pre-flight time only `exp_<ts>_data.*` (the per-experiment source
+table schema) exists. So we walk the dbt DAG in
 topological order and after a successful EXPLAIN, `CREATE OR REPLACE
 VIEW` the model's compiled SQL at its *real* target name. Regular views
 are metadata-only (no compute), and downstream EXPLAINs can then resolve
@@ -59,7 +60,14 @@ def _sanitize(name: str) -> str:
 
 
 def _sandbox_schema() -> str:
-    return f"{src.SOURCE_SCHEMA}{_SANDBOX_SUFFIX}"
+    """Per-experiment sandbox schema for throwaway EXPLAIN stub views.
+
+    Lives inside the per-experiment ``data`` schema so a CASCADE cleanup
+    of the experiment also drops any leftover stub views in case the
+    pre-flight crashed mid-walk. Distinct from the layer schemas
+    (bronze/silver/gold/work) so the stubs never collide with real MVs.
+    """
+    return f"{src.data_schema()}{_SANDBOX_SUFFIX}"
 
 
 def _fq_sandbox(sanitized: str) -> str:
@@ -149,6 +157,7 @@ def _select_models(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _ensure_sandbox() -> None:
+    src._ensure_experiment_schemas()
     src._execute(
         f"CREATE SCHEMA IF NOT EXISTS `{src.CATALOG}`.`{_sandbox_schema()}`"
     )

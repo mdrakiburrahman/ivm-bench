@@ -1045,11 +1045,34 @@ class EngineRunner:
         sf = self._config.scale_factor
 
         if batch_num == 1:
+            # Per-experiment isolation
+            self._emit("[databricks-enzyme] Sweeping stale exp_* schemas (> 1 day)")
+            try:
+                resp = requests.post(
+                    f"{self._dbt_url}/sources/databricks-enzyme/sweep-stale",
+                    timeout=600,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self._emit(
+                        f"[databricks-enzyme] sweep-stale OK: "
+                        f"scanned={data.get('scanned')} "
+                        f"dropped={len(data.get('dropped') or [])} "
+                        f"kept={len(data.get('kept') or [])}"
+                    )
+                else:
+                    self._emit(
+                        f"[databricks-enzyme] sweep-stale WARN: "
+                        f"HTTP {resp.status_code} {resp.text[:200]}"
+                    )
+            except Exception as e:
+                self._emit(f"[databricks-enzyme] sweep-stale WARN: {e}")
+
             last_sf = self._read_last_sf()
             if last_sf is not None and last_sf != sf:
                 self._emit(
                     f"[databricks-enzyme] SF changed {last_sf} -> {sf}; "
-                    f"dropping sf={last_sf} Volume subdir"
+                    f"dropping cache sf={last_sf} subdir"
                 )
                 try:
                     resp = requests.post(
@@ -1066,7 +1089,10 @@ class EngineRunner:
                         f"[databricks-enzyme] cleanup-volume/{last_sf} WARN: {e}"
                     )
 
-            self._emit("[databricks-enzyme] Dropping prior tpcdi_bench / tpcdi_src schemas")
+            # Per-experiment cleanup-schema
+            self._emit(
+                "[databricks-enzyme] Dropping prior exp_<ts>_* schemas (idempotent)"
+            )
             resp = requests.post(
                 f"{self._dbt_url}/sources/databricks-enzyme/cleanup-schema",
                 timeout=600,

@@ -47,9 +47,10 @@ services:
       DATABRICKS_SPN_CLIENT_ID: "${DATABRICKS_SPN_CLIENT_ID:-}"
       DATABRICKS_SPN_CLIENT_SECRET: "${DATABRICKS_SPN_CLIENT_SECRET:-}"
       DATABRICKS_CATALOG: "${DATABRICKS_CATALOG:-ivmbenchdbrx}"
-      DATABRICKS_SCHEMA: "${DATABRICKS_SCHEMA:-tpcdi_bench}"
-      DATABRICKS_SOURCE_SCHEMA: "${DATABRICKS_SOURCE_SCHEMA:-tpcdi_src}"
-      DATABRICKS_VOLUME: "${DATABRICKS_VOLUME:-tpcdi_raw}"
+      # Per-experiment isolation: orchestrator re-exports this before
+      # bringing up the databricks-enzyme engine stack. Empty default
+      # is intentional — non-databricks experiments don't need it.
+      DATABRICKS_EXPERIMENT_ID: "${DATABRICKS_EXPERIMENT_ID:-}"
     healthcheck:
       test: curl -sf http://localhost:9000/health || exit 1
       interval: 5s

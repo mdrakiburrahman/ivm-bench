@@ -9,7 +9,7 @@ tpcdi:
       client_id: "{{ env_var('DATABRICKS_SPN_CLIENT_ID') }}"
       client_secret: "{{ env_var('DATABRICKS_SPN_CLIENT_SECRET') }}"
       catalog: "{{ env_var('DATABRICKS_CATALOG', 'ivmbenchdbrx') }}"
-      schema: "{{ env_var('DATABRICKS_SCHEMA', 'tpcdi_bench') }}"
+      schema: "exp_{{ env_var('DATABRICKS_EXPERIMENT_ID', 'unset') }}_data"
       threads: 8
       connect_retries: 5
       connect_timeout: 60
