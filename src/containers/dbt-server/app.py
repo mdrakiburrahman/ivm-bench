@@ -17,11 +17,13 @@ from flask import Flask, g, request
 
 from handlers.chart import ChartHandler
 from handlers.container_stats import ContainerStatsHandler
+from handlers.databricks_enzyme import DatabricksEnzymeHandler
 from handlers.delta_stats import DeltaStatsHandler
 from handlers.feldera import FelderaHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
 from handlers.duckdb_openivm import DuckDBOpenIVMHandler
+from handlers.query_plans import QueryPlansHandler
 from handlers.spark_openivm import SparkOpenIVMHandler
 from handlers.runs import RunsHandler
 from handlers.sql_analysis import SQLAnalysisHandler
@@ -66,6 +68,7 @@ def register_handlers(flask_app: Flask) -> None:
         HealthHandler(),
         DuckDBOpenIVMHandler(),
         SparkOpenIVMHandler(),
+        DatabricksEnzymeHandler(),
         RunsHandler(),
         FelderaHandler(),
         ChartHandler(),
@@ -73,6 +76,7 @@ def register_handlers(flask_app: Flask) -> None:
         SQLAnalysisHandler(),
         ContainerStatsHandler(),
         DeltaStatsHandler(),
+        QueryPlansHandler(),
     ]
     for handler in handlers:
         handler.register(flask_app)

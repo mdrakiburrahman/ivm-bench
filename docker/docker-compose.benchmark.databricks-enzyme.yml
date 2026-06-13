@@ -1,0 +1,39 @@
+services:
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    cpus: ${DATABRICKS_ENZYME_CPUS:-4}
+    mem_limit: ${DATABRICKS_ENZYME_MEM:-8g}
+    environment:
+      # Databricks Serverless SQL warehouse + Service Principal (OAuth M2M).
+      # The dbt-databricks profile in dbt-projects/databricks-enzyme/
+      # reads these via env_var() at run time.
+      DATABRICKS_HOST: "${DATABRICKS_HOST}"
+      DATABRICKS_SQL_HTTP_PATH: "${DATABRICKS_SQL_HTTP_PATH}"
+      DATABRICKS_SPN_CLIENT_ID: "${DATABRICKS_SPN_CLIENT_ID}"
+      DATABRICKS_SPN_CLIENT_SECRET: "${DATABRICKS_SPN_CLIENT_SECRET}"
+      # Named DB/schema/volume for the engine — defaults match the plan,
+      # overridable per-environment.
+      DATABRICKS_CATALOG: "${DATABRICKS_CATALOG:-ivmbenchdbrx}"
+      DATABRICKS_SCHEMA: "${DATABRICKS_SCHEMA:-tpcdi_bench}"
+      DATABRICKS_SOURCE_SCHEMA: "${DATABRICKS_SOURCE_SCHEMA:-tpcdi_src}"
+      DATABRICKS_VOLUME: "${DATABRICKS_VOLUME:-tpcdi_raw}"
+      # Source-table strategy:
+      #   "auto" — probe each SF with a real CREATE MV against a 1-row
+      #             VIEW-over-delta to detect whether INCREMENTAL STRICT
+      #             accepts external Delta (row-tracking-less) sources.
+      #             If not, falls back to "ctas".
+      #   "view" — pin to VIEW-over-delta (cheap, but Enzyme will reject
+      #             INCREMENTAL STRICT on external Delta without row
+      #             tracking).
+      #   "ctas" — pin to CTAS managed tables with row tracking enabled
+      #             (default and only known-good for INCREMENTAL STRICT).
+      DATABRICKS_ENZYME_STRATEGY: "${DATABRICKS_ENZYME_STRATEGY:-ctas}"
+      # Tells the dbt-server's databricks_enzyme_sources service where
+      # to find the locally-generated Delta dirs to upload from.
+      RAW_DELTA_DIR: /data/raw/delta
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/databricks-enzyme:/data/processed/databricks-enzyme
+      - ../mount/stats/${SCALE_FACTOR:-3}/databricks-enzyme:/data/stats

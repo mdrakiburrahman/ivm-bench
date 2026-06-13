@@ -1,0 +1,32 @@
+version: 2
+
+sources:
+  - name: tpcdi
+    # `database` = UC catalog in dbt-databricks.
+    database: "{{ env_var('DATABRICKS_CATALOG', 'ivmbenchdbrx') }}"
+    # Source schema — separate from the dbt-output schema so cleanup
+    # of `tpcdi_bench` (the MVs) does not nuke the uploaded raw data.
+    schema: "{{ env_var('DATABRICKS_SOURCE_SCHEMA', 'tpcdi_src') }}"
+    tables:
+      # Batch1-only reference tables.
+      - name: batch1_customer_mgmt
+      - name: batch1_date
+      - name: batch1_finwire
+      - name: batch1_hr
+      - name: batch1_industry
+      - name: batch1_status_type
+      - name: batch1_tax_rate
+      - name: batch1_trade_history
+      - name: batch1_trade_type
+      # Staging tables (grow with each batch append).
+      - name: staging_cash_transaction
+      - name: staging_daily_market
+      - name: staging_holding_history
+      - name: staging_prospect
+      - name: staging_trade
+      - name: staging_watch_history
+      - name: staging_account
+      - name: staging_customer
+      - name: staging_batch_date
+      # Audit.
+      - name: audit

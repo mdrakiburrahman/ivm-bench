@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 import requests
 
@@ -241,6 +241,7 @@ class EngineRunner:
             for cleanup_step, fn in (
                 ("collect_feldera_debug", self._collect_feldera_debug),
                 ("capture_logs", self._capture_logs),
+                ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
                 ("engine_mgr.down", self._engine_mgr.down),
                 ("cleanup_staging", self._cleanup_staging),
             ):
@@ -257,6 +258,33 @@ class EngineRunner:
                     logger.warning("Engine %s unlink %s failed: %s", name, f, ce)
 
         return self._result
+
+    def _databricks_enzyme_drop_mvs(self) -> None:
+        """End-of-run: drop the databricks-enzyme MVs so REFRESH SCHEDULE
+        does not keep accruing Databricks Serverless SQL bills between
+        experiments and after the sweep finishes.
+
+        No-op for any other engine.
+        """
+        if self._engine.name != "databricks-enzyme":
+            return
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/sources/databricks-enzyme/cleanup-schema",
+                timeout=600,
+            )
+            if resp.status_code == 200:
+                self._emit(
+                    "[databricks-enzyme] Post-run cleanup-schema OK "
+                    "(dropped MVs to halt refresh billing)"
+                )
+            else:
+                self._emit(
+                    f"[databricks-enzyme] Post-run cleanup-schema WARN: "
+                    f"HTTP {resp.status_code} {resp.text[:200]}"
+                )
+        except Exception as e:
+            self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
 
     def _up_with_retry(self, max_attempts: int = 3, backoff_s: int = 30) -> None:
         """Start the compose stack, retrying on transient mssql startup crashes.
@@ -327,6 +355,9 @@ class EngineRunner:
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
 
+            if name == "databricks-enzyme":
+                self._databricks_enzyme_warmup(batch_num)
+
             t0 = time.time()
 
             run_id = None
@@ -341,8 +372,10 @@ class EngineRunner:
                 run_id = self._run_duckdb_openivm(batch_num)
             elif name == "spark-openivm":
                 run_id = self._run_spark_openivm(batch_num)
+            elif name == "databricks-enzyme":
+                run_id = self._run_databricks_enzyme(batch_num)
             else:
-                self._run_dbt(batch_num)
+                run_id = self._run_dbt(batch_num)
 
             batch.duration_s = time.time() - t0
 
@@ -386,6 +419,20 @@ class EngineRunner:
             ):
                 self._export_spark_openivm_query_log(run_id, batch_num)
 
+            if (
+                name in ("databricks-enzyme", "spark", "spark-openivm")
+                and run_id
+                and batch.status != "failed"
+            ):
+                self._export_query_plans(name, run_id, batch_num)
+
+            if (
+                name == "databricks-enzyme"
+                and batch.status != "failed"
+            ):
+                self._export_databricks_enzyme_metrics(batch_num)
+                self._export_databricks_enzyme_pipeline_events(batch_num)
+
             # Check status from the stream_progress result
             if batch.status != "failed":
                 self._save_openivm_ops_chart(name, batch_num)
@@ -420,8 +467,8 @@ class EngineRunner:
         except Exception as e:
             self._emit(f"[{name}] op-chart render skipped: {e}")
 
-    def _run_dbt(self, batch_num: int) -> None:
-        """Trigger a dbt run via the dbt-server REST API."""
+    def _run_dbt(self, batch_num: int) -> str:
+        """Trigger a dbt run via the dbt-server REST API. Returns the run_id."""
         name = self._engine.name
         resp = requests.post(
             f"{self._dbt_url}/run/{name}",
@@ -435,6 +482,7 @@ class EngineRunner:
         self._stream_dbt_progress(run_id, batch_num)
         self._check_run_result(run_id, batch_num)
         self._save_run_result(run_id, batch_num)
+        return run_id
 
     def _run_duckdb_ducklake(self, batch_num: int) -> None:
         """Run DuckDB full refresh against DuckLake-backed source tables."""
@@ -770,6 +818,350 @@ class EngineRunner:
         self._save_run_result(run_id, batch_num)
         return run_id
 
+    def _last_sf_marker_path(self) -> str:
+        """Host-side marker recording the SF of the last databricks-enzyme run.
+
+        Lives under `mount/benchmark-state/` (the only directory not wiped
+        between experiments — see services/orchestrator._clean_mount). When
+        the SF changes between two experiments, we drop the previous SF's
+        UC Volume subdir to cap storage cost.
+        """
+        return os.path.join(
+            self._config.repo_dir,
+            "mount", "benchmark-state", "databricks-enzyme.last-sf",
+        )
+
+    def _read_last_sf(self) -> Optional[int]:
+        path = self._last_sf_marker_path()
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def _write_last_sf(self, sf: int) -> None:
+        path = self._last_sf_marker_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(str(sf))
+        except OSError as e:
+            logger.warning("Failed to write last-sf marker %s: %s", path, e)
+
+    def _databricks_enzyme_warmup(self, batch_num: int) -> None:
+        """Run `SELECT 1` against the Databricks SQL warehouse so its
+        cold-start latency is NOT charged against the measured batch time.
+
+        Called from `_run_batch` for every batch immediately before
+        ``t0 = time.time()``. If the warmup itself fails the batch is
+        aborted with a clear error rather than silently penalising the
+        engine with a multi-minute warehouse-resume in the timer.
+        """
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/sources/databricks-enzyme/warmup",
+                timeout=600,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"databricks-enzyme warmup request failed before batch {batch_num}: {e}"
+            )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"databricks-enzyme warmup failed before batch {batch_num}: "
+                f"HTTP {resp.status_code} {resp.text[:500]}"
+            )
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        if data.get("status") != "ok":
+            raise RuntimeError(
+                f"databricks-enzyme warmup returned non-ok before batch {batch_num}: {data}"
+            )
+        self._emit(
+            f"[databricks-enzyme] Warehouse warm (batch {batch_num} pre-timer): "
+            f"attempts={data.get('attempts')} elapsed_s={data.get('elapsed_s')}"
+        )
+
+    def _databricks_enzyme_validate_incrementalizable(self, sf: int) -> None:
+        """Pre-flight gate: EXPLAIN every model under INCREMENTAL STRICT.
+
+        POSTs to dbt-server's
+        ``/validate/databricks-enzyme/explain-create-materialized-view/<sf>``
+        which runs EXPLAIN CREATE MATERIALIZED VIEW ... REFRESH POLICY
+        INCREMENTAL STRICT AS <compiled_sql> for every non-ephemeral
+        model in the databricks-enzyme dbt project against the Serverless
+        SQL warehouse. Returns 200 if every model is incrementalizable,
+        422 if any model fails.
+
+        Called after ``init/<sf>`` succeeds (so the planner can resolve
+        ``tpcdi_src.*``) and before the dbt build (so a failure short-
+        circuits without any ``CREATE MATERIALIZED VIEW`` being emitted).
+
+        Persists per-model artifacts to
+        ``mount/query-plan/<sf>/databricks-enzyme/
+        explain-create-materialized-view/`` so it's visually obvious
+        which route produced what data — the directory name maps 1-to-1
+        with the route segment.
+
+        Raises ``RuntimeError`` on any non-incrementalizable model, on
+        non-200/non-422 HTTP, or on a missing/invalid JSON body. The
+        raise aborts the current batch (batch 1) and the orchestrator
+        marks the engine failed for this experiment.
+        """
+        self._emit(
+            f"[databricks-enzyme] Pre-flight: validating every model is "
+            f"incrementalizable (EXPLAIN CREATE MV ... REFRESH POLICY "
+            f"INCREMENTAL STRICT) sf={sf}"
+        )
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/validate/databricks-enzyme/"
+                f"explain-create-materialized-view/{sf}",
+                timeout=1800,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"databricks-enzyme explain-create-materialized-view sf={sf} "
+                f"request failed: {e}"
+            )
+        if resp.status_code not in (200, 422):
+            raise RuntimeError(
+                f"databricks-enzyme explain-create-materialized-view sf={sf} "
+                f"failed: HTTP {resp.status_code} {resp.text[:500]}"
+            )
+        try:
+            data = resp.json()
+        except Exception as e:
+            raise RuntimeError(
+                f"databricks-enzyme explain-create-materialized-view sf={sf} "
+                f"returned non-JSON: {e}: {resp.text[:500]}"
+            )
+
+        self._write_databricks_enzyme_explain_artifacts(sf, data)
+
+        if data.get("status") != "ok":
+            failures = data.get("failures") or []
+            fail_summary = ", ".join(
+                f"{f.get('model')}" for f in failures[:10]
+            )
+            extra = "" if len(failures) <= 10 else f" (+{len(failures) - 10} more)"
+            raise RuntimeError(
+                f"databricks-enzyme pre-flight FAILED: "
+                f"{data.get('failed')}/{data.get('total_models')} models are "
+                f"not incrementalizable under REFRESH POLICY INCREMENTAL STRICT. "
+                f"Failed models: {fail_summary}{extra}. "
+                f"See mount/query-plan/{sf}/databricks-enzyme/"
+                f"explain-create-materialized-view/summary.json for details."
+            )
+
+        self._emit(
+            f"[databricks-enzyme] Pre-flight PASSED: "
+            f"{data.get('passed')}/{data.get('total_models')} models "
+            f"incrementalizable; "
+            f"{len(data.get('skipped_ephemeral') or [])} ephemeral skipped; "
+            f"elapsed_ms={data.get('elapsed_ms')}"
+        )
+
+    def _write_databricks_enzyme_explain_artifacts(
+        self, sf: int, data: Dict[str, Any],
+    ) -> None:
+        """Persist the EXPLAIN sweep response to mount under a directory
+        whose name matches the route segment that produced it.
+
+        Layout:
+          mount/query-plan/<sf>/databricks-enzyme/
+            explain-create-materialized-view/
+              summary.json           ← response minus the bulky `plans` field
+              <sanitized_model>.txt  ← EXPLAIN plan (or error trace)
+              <sanitized_model>.sql  ← exact compiled SQL we sent
+        """
+        base_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "query-plan", str(self._config.scale_factor),
+            "databricks-enzyme", "explain-create-materialized-view",
+        )
+        os.makedirs(base_dir, exist_ok=True)
+
+        plans = data.get("plans") or []
+        for plan in plans:
+            name = plan.get("model") or plan.get("unique_id") or "unknown"
+            safe_name = "".join(
+                c if c.isalnum() or c in "._-" else "_" for c in name
+            )
+            txt_path = os.path.join(base_dir, f"{safe_name}.txt")
+            sql_path = os.path.join(base_dir, f"{safe_name}.sql")
+            body = plan.get("plan") or ""
+            if plan.get("error"):
+                body = (
+                    f"-- STATUS: NOT INCREMENTALIZABLE --\n"
+                    f"{plan.get('error')}\n"
+                )
+            with open(txt_path, "w") as f:
+                f.write(body)
+            with open(sql_path, "w") as f:
+                f.write(plan.get("compiled_sql") or "")
+
+        summary = {k: v for k, v in data.items() if k != "plans"}
+        with open(os.path.join(base_dir, "summary.json"), "w") as f:
+            json.dump(summary, f, indent=2, default=str)
+
+        self._emit(
+            f"[databricks-enzyme] EXPLAIN artifacts written: "
+            f"{base_dir} ({len(plans)} models)"
+        )
+
+    def _run_databricks_enzyme(self, batch_num: int) -> str:
+        """Run databricks-enzyme: per-batch source sync, then dbt build.
+
+        Batch 1 (full refresh):
+          0. (Optional) If a prior experiment ran at a different SF, drop
+             its `sf=<prev>` Volume subdir to cap storage cost.
+          1. cleanup-schema  — DROP `tpcdi_bench` + `tpcdi_src` CASCADE so
+                                last run's MVs stop accruing refresh bills.
+          2. init/<sf>       — idempotent upload of local Delta dirs to
+                                /Volumes/<catalog>/<schema>/<volume>/sf=<sf>/...
+                                plus register source views/tables.
+          3. dbt build --full-refresh  — custom MV materialization emits
+                                DROP MV + CREATE MV + ALTER MV SET REFRESH
+                                POLICY <policy>.
+
+        Batch 2/3 (incremental):
+          1. _batch_loader_append already ran (in `_run_batch`) — writes
+             new CDC files to /data/raw/delta/{batchN,staging}/<t>/.
+          2. append/<batch_num>/<sf> — sync those new files up to the
+                                       UC Volume. If strategy is CTAS,
+                                       also INSERT INTO the managed
+                                       Delta tables.
+          3. dbt build (no --full-refresh) — custom MV materialization
+                                emits REFRESH MATERIALIZED VIEW per model.
+
+        All wall-clock between the source mutation and the dbt build *is*
+        part of the measured batch latency, mirroring the spark-openivm /
+        duckdb-openivm flow.
+        """
+        full_refresh = batch_num == 1
+        sf = self._config.scale_factor
+
+        if batch_num == 1:
+            last_sf = self._read_last_sf()
+            if last_sf is not None and last_sf != sf:
+                self._emit(
+                    f"[databricks-enzyme] SF changed {last_sf} -> {sf}; "
+                    f"dropping sf={last_sf} Volume subdir"
+                )
+                try:
+                    resp = requests.post(
+                        f"{self._dbt_url}/sources/databricks-enzyme/cleanup-volume/{last_sf}",
+                        timeout=600,
+                    )
+                    if resp.status_code != 200:
+                        self._emit(
+                            f"[databricks-enzyme] cleanup-volume/{last_sf} WARN: "
+                            f"HTTP {resp.status_code} {resp.text[:200]}"
+                        )
+                except Exception as e:
+                    self._emit(
+                        f"[databricks-enzyme] cleanup-volume/{last_sf} WARN: {e}"
+                    )
+
+            self._emit("[databricks-enzyme] Dropping prior tpcdi_bench / tpcdi_src schemas")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/databricks-enzyme/cleanup-schema",
+                timeout=600,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"databricks-enzyme cleanup-schema failed: "
+                    f"HTTP {resp.status_code} {resp.text[:500]}"
+                )
+
+            self._emit(f"[databricks-enzyme] Initialising sources for sf={sf}")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/databricks-enzyme/init/{sf}",
+                timeout=7200,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"databricks-enzyme init/{sf} failed: "
+                    f"HTTP {resp.status_code} {resp.text[:500]}"
+                )
+            data = resp.json()
+            if data.get("status") != "ok":
+                raise RuntimeError(
+                    f"databricks-enzyme init/{sf} returned non-ok: {data}"
+                )
+            self._emit(
+                f"[databricks-enzyme] Sources initialised: strategy={data.get('strategy')} "
+                f"files_uploaded={data.get('files_uploaded')} "
+                f"tables={data.get('tables_created')} "
+                f"skipped_upload={data.get('skipped_upload')}"
+            )
+
+            # Pre-flight incrementalizability gate. Runs after init/<sf>
+            # so `tpcdi_src.*` exists for the planner to resolve, but
+            # BEFORE the dbt build so a failure short-circuits without
+            # any `CREATE MATERIALIZED VIEW` being emitted. Cost is in
+            # batch 1's timer (matches the init/<sf>-in-timer convention
+            # used by every other engine for initial source loading).
+            self._databricks_enzyme_validate_incrementalizable(sf)
+        else:
+            self._emit(
+                f"[databricks-enzyme] Syncing batch {batch_num} sources to "
+                f"UC Volume (sf={sf})"
+            )
+            resp = requests.post(
+                f"{self._dbt_url}/sources/databricks-enzyme/append/{batch_num}/{sf}",
+                timeout=7200,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"databricks-enzyme append/{batch_num}/{sf} failed: "
+                    f"HTTP {resp.status_code} {resp.text[:500]}"
+                )
+            data = resp.json()
+            if data.get("status") != "ok":
+                raise RuntimeError(
+                    f"databricks-enzyme append/{batch_num}/{sf} non-ok: {data}"
+                )
+            self._emit(
+                f"[databricks-enzyme] Batch {batch_num} synced: "
+                f"strategy={data.get('strategy')} "
+                f"uploaded={data.get('files_uploaded')} "
+                f"skipped={data.get('files_skipped')} "
+                f"appended={data.get('tables_appended')}"
+            )
+
+        # Standard dbt build through the dbt-databricks adapter — the
+        # custom materialized_view materialization (in dbt-projects/
+        # databricks-enzyme/macros/materializations/materialized_view.sql)
+        # dispatches to CREATE MV (+ALTER MV SET REFRESH POLICY) on
+        # full_refresh and REFRESH MV otherwise.
+        resp = requests.post(
+            f"{self._dbt_url}/run/databricks-enzyme",
+            json={
+                "scale_factor": sf,
+                "full_refresh": full_refresh,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        run_id = resp.json()["run_id"]
+        self._emit(
+            f"[databricks-enzyme] dbt run_id={run_id} "
+            f"(batch={batch_num}, full_refresh={full_refresh})"
+        )
+
+        self._stream_dbt_progress(run_id, batch_num)
+        self._check_run_result(run_id, batch_num)
+        self._save_run_result(run_id, batch_num)
+
+        if batch_num == 1:
+            self._write_last_sf(sf)
+
+        return run_id
+
     def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
         """Run default OpenIVM correctness validation outside the benchmark timer."""
         self._emit(f"[duckdb-openivm] Validating batch {batch_num} with EXCEPT ALL")
@@ -997,6 +1389,196 @@ class EngineRunner:
             f"{data.get('refresh_count', 0)} refreshes / "
             f"{data.get('view_count', 0)} MVs "
             f"({files_written} .sql files)"
+        )
+
+    def _export_query_plans(self, engine: str, run_id: str, batch_num: int) -> None:
+        """Capture EXPLAIN plans for every successful model in this batch.
+
+        Persisted to mount/query-plan/<sf>/<engine>/batch<N>/<model>.txt plus a
+        manifest.json. Best-effort: capture failures emit a warning but never
+        fail the batch - the timer should already be stopped before this runs.
+        """
+        self._emit(f"[{engine}] Capturing query plans for batch {batch_num}")
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/query-plan/{engine}/{run_id}/{batch_num}",
+                timeout=1800,
+            )
+            data = resp.json()
+            if resp.status_code != 200 or data.get("status") not in ("ok", "partial"):
+                self._emit(
+                    f"[{engine}] query-plan capture failed batch {batch_num}: "
+                    f"{data.get('error', 'unknown')}"
+                )
+                return
+        except Exception as e:
+            self._emit(f"[{engine}] query-plan capture exception batch {batch_num}: {e}")
+            return
+
+        base_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "query-plan", str(self._config.scale_factor),
+            engine, f"batch{batch_num}",
+        )
+        os.makedirs(base_dir, exist_ok=True)
+
+        plans = data.get("plans") or []
+        for plan in plans:
+            name = plan.get("name") or plan.get("unique_id") or "unknown"
+            safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+            with open(os.path.join(base_dir, f"{safe_name}.txt"), "w") as f:
+                f.write(plan.get("plan", ""))
+
+        manifest = {
+            "engine": engine,
+            "run_id": run_id,
+            "batch_num": batch_num,
+            "summary": data.get("summary", {}),
+            "failures": data.get("failures", []),
+        }
+        with open(os.path.join(base_dir, "manifest.json"), "w") as f:
+            json.dump(manifest, f, indent=2, default=str)
+
+        self._emit(
+            f"[{engine}] Query plans captured batch {batch_num}: "
+            f"{len(plans)} plans / {len(data.get('failures', []))} failures"
+        )
+
+    def _export_databricks_enzyme_metrics(self, batch_num: int) -> None:
+        """Capture Delta history / refresh metrics for the databricks-enzyme MVs.
+
+        Persisted to mount/stats/<sf>/databricks-enzyme/refresh-history-batch<N>.json.
+        Best-effort: failures here do not fail the batch.
+        """
+        self._emit(
+            f"[databricks-enzyme] Capturing refresh metrics for batch {batch_num}"
+        )
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/metrics/databricks-enzyme/{batch_num}",
+                timeout=1800,
+            )
+            data = resp.json()
+            if resp.status_code != 200 or data.get("status") not in ("ok", "partial"):
+                self._emit(
+                    f"[databricks-enzyme] metrics capture failed batch {batch_num}: "
+                    f"{data.get('error', 'unknown')}"
+                )
+                return
+        except Exception as e:
+            self._emit(
+                f"[databricks-enzyme] metrics capture exception batch {batch_num}: {e}"
+            )
+            return
+
+        base_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "stats", str(self._config.scale_factor),
+            "databricks-enzyme",
+        )
+        os.makedirs(base_dir, exist_ok=True)
+        out_path = os.path.join(base_dir, f"refresh-history-batch{batch_num}.json")
+        with open(out_path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        self._emit(
+            f"[databricks-enzyme] Refresh metrics captured batch {batch_num}: "
+            f"{len(data.get('relations', []))} relations"
+        )
+
+    def _export_databricks_enzyme_pipeline_events(self, batch_num: int) -> None:
+        """Capture every Databricks Lakeflow pipeline event for every
+        ``MV-<catalog>.*`` pipeline in the workspace. One JSON file per
+        update, ALL events for that update embedded (including the
+        ``details.planning_information`` blob that tells us whether the
+        refresh was incremental or fell back to FULL_RECOMPUTE).
+
+        Persisted to
+        ``mount/pipeline-events/<sf>/databricks-enzyme/batch<N>/<schema>.<table>/<update_id>.json``
+        plus a per-batch ``manifest.json``. Best-effort: failures here do
+        not fail the batch (the timer is already stopped before this runs).
+        """
+        self._emit(
+            f"[databricks-enzyme] Capturing pipeline events for batch {batch_num}"
+        )
+        try:
+            resp = requests.post(
+                f"{self._dbt_url}/sources/databricks-enzyme/pipeline-events/{batch_num}",
+                timeout=3600,
+            )
+            data = resp.json()
+            if resp.status_code != 200 or data.get("status") not in ("ok", "partial"):
+                self._emit(
+                    f"[databricks-enzyme] pipeline-events capture failed batch "
+                    f"{batch_num}: {data.get('error', 'unknown')}"
+                )
+                return
+        except Exception as e:
+            self._emit(
+                f"[databricks-enzyme] pipeline-events capture exception batch "
+                f"{batch_num}: {e}"
+            )
+            return
+
+        base_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "pipeline-events", str(self._config.scale_factor),
+            "databricks-enzyme", f"batch{batch_num}",
+        )
+        os.makedirs(base_dir, exist_ok=True)
+
+        pipelines = data.get("pipelines") or []
+        files_written = 0
+        for p in pipelines:
+            schema = p.get("schema") or "unknown"
+            table = p.get("table") or "unknown"
+            mv_key = f"{schema}.{table}"
+            safe_mv = "".join(
+                c if c.isalnum() or c in "._-" else "_" for c in mv_key
+            )
+            mv_dir = os.path.join(base_dir, safe_mv)
+            os.makedirs(mv_dir, exist_ok=True)
+            for upd in p.get("updates", []) or []:
+                update_id = upd.get("update_id") or "unknown"
+                safe_uid = "".join(
+                    c if c.isalnum() or c in "._-" else "_" for c in update_id
+                )
+                payload = {
+                    "pipeline_id": p.get("pipeline_id"),
+                    "name": p.get("name"),
+                    "schema": schema,
+                    "table": table,
+                    "update": upd,
+                }
+                with open(os.path.join(mv_dir, f"{safe_uid}.json"), "w") as f:
+                    json.dump(payload, f, indent=2, default=str)
+                files_written += 1
+            pipeline_level = p.get("pipeline_level_events") or []
+            if pipeline_level:
+                with open(os.path.join(mv_dir, "__pipeline_events.json"), "w") as f:
+                    json.dump({
+                        "pipeline_id": p.get("pipeline_id"),
+                        "name": p.get("name"),
+                        "events": pipeline_level,
+                    }, f, indent=2, default=str)
+                files_written += 1
+
+        manifest = {
+            "batch_num": batch_num,
+            "catalog": data.get("catalog"),
+            "pipeline_count": data.get("pipeline_count", 0),
+            "update_count": data.get("update_count", 0),
+            "event_count": data.get("event_count", 0),
+            "files_written": files_written,
+        }
+        with open(os.path.join(base_dir, "manifest.json"), "w") as f:
+            json.dump(manifest, f, indent=2, default=str)
+
+        self._emit(
+            f"[databricks-enzyme] Pipeline events captured batch {batch_num}: "
+            f"{manifest['pipeline_count']} pipelines / "
+            f"{manifest['update_count']} updates / "
+            f"{manifest['event_count']} events / "
+            f"{files_written} files"
         )
 
     def _write_query_log_tree(

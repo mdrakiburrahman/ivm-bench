@@ -110,7 +110,7 @@ fi
 SSH_PUBLIC_KEY="$(cat "$SSH_PUB_PATH")"
 
 TF_DIR="$REPO_ROOT/src/infra/terraform/github-runner"
-STATE_KEY="github-runner.tfstate"
+STATE_KEY="github-runner-ivm-bench.tfstate"
 
 # Refresh the upstream module pinned via `git::` source in main.tf before
 # init/plan/apply. Cheap when the ref is a commit SHA (cached after first

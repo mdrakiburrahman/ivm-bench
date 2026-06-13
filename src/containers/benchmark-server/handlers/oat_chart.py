@@ -51,7 +51,7 @@ bp = Blueprint("oat_chart", __name__)
 
 _MISSING = "—"
 _BATCHES = (1, 2, 3)
-_ENGINE_ORDER = ("spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera")
+_ENGINE_ORDER = ("spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "databricks-enzyme")
 
 
 @dataclass(frozen=True)
