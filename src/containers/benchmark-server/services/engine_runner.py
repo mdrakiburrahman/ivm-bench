@@ -359,6 +359,7 @@ class EngineRunner:
                 self._databricks_enzyme_warmup(batch_num)
 
             t0 = time.time()
+            t0_ms = int(t0 * 1000)
 
             run_id = None
             if name == "feldera":
@@ -378,6 +379,10 @@ class EngineRunner:
                 run_id = self._run_dbt(batch_num)
 
             batch.duration_s = time.time() - t0
+            t1_ms = int(time.time() * 1000)
+            batch.extra["duration_s_wallclock"] = batch.duration_s
+            batch.extra["wall_window_start_ms"] = t0_ms
+            batch.extra["wall_window_end_ms"] = t1_ms
 
             if (
                 name == "duckdb-openivm"
@@ -431,7 +436,15 @@ class EngineRunner:
                 and batch.status != "failed"
             ):
                 self._export_databricks_enzyme_metrics(batch_num)
-                self._export_databricks_enzyme_pipeline_events(batch_num)
+                # CRITICAL: derive pure-compute time from pipeline events.
+                # User mandate: report engine compute, NOT wall-clock that
+                # includes Lakeflow pipeline orchestration overhead.
+                # FAILS the batch if events are missing — never silently
+                # fall back to wall-clock. The compute call internally
+                # POLLS Databricks events for up to
+                # ``DATABRICKS_COMPUTE_POLL_MAX_S`` seconds (default 300s)
+                # before failing, to absorb event-propagation lag.
+                self._apply_databricks_enzyme_pure_compute(batch_num, batch, run_id)
 
             # Check status from the stream_progress result
             if batch.status != "failed":
@@ -1607,6 +1620,268 @@ class EngineRunner:
             f"{files_written} files"
         )
 
+    def _expected_databricks_model_count(
+        self, batch_num: int, run_id: Optional[str]
+    ) -> Optional[int]:
+        """Count of dbt ``model`` nodes in the persisted run JSON for this
+        batch — the number of MV pipeline updates we expect to see
+        COMPLETED events for.
+
+        Returns ``None`` if the run JSON is not yet on disk (in which case
+        the polling loop falls back to ``tables_with_compute > 0`` as the
+        success criterion).
+        """
+        if not run_id:
+            return None
+        run_json_path = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+            f"run-databricks-enzyme-batch{batch_num}.json",
+        )
+        if not os.path.exists(run_json_path):
+            return None
+        try:
+            with open(run_json_path) as f:
+                run_doc = json.load(f)
+        except Exception:
+            return None
+        models = [
+            n for n in (run_doc.get("nodes") or [])
+            if n.get("resource_type") == "model"
+        ]
+        return len(models) or None
+
+    def _apply_databricks_enzyme_pure_compute(
+        self,
+        batch_num: int,
+        batch,
+        run_id: Optional[str],
+    ) -> None:
+        """Replace wall-clock timings with Databricks pipeline pure-compute.
+
+        After dbt finishes, POLL Databricks for pipeline events until they
+        are complete (every expected MV has at least one COMPLETED flow
+        segment) or until ``DATABRICKS_COMPUTE_POLL_MAX_S`` elapses
+        (default 300 s). Then:
+
+        1. Overwrite ``batch.duration_s`` with the batch's coverage-time
+           (union of every flow's ``[QUEUED, COMPLETED]`` window across
+           every MV update that ran within this batch's wall-clock
+           window — i.e. the Databricks UI "Duration" column unioned).
+        2. Patch ``run-databricks-enzyme-batch<N>.json`` so each model's
+           ``execution_time_s`` becomes the per-MV pure-compute seconds
+           (Databricks-reported ``execution_duration_ms`` when present;
+           ``COMPLETED_ts - QUEUED_ts`` otherwise — matches the UI
+           Duration column for that flow).
+        3. Persist forensics sidecar
+           ``mount/results/<sf>/dbt-server/databricks-compute-batch<N>.json``
+           with the full per-update breakdown.
+        4. Surface ``compute_wall_s`` / ``compute_work_s`` /
+           ``duration_s_wallclock`` on ``batch.extra`` so reviewers can
+           reconcile the swap.
+
+        Fail-loud policy: if pipeline events are still missing or no
+        compute signal is extractable after the polling budget, raise —
+        the user explicitly forbade falling back to wall-clock (which
+        includes pipeline overhead and would inflate Databricks's
+        reported numbers).
+        """
+        from services import databricks_enzyme_compute as dec
+
+        events_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "pipeline-events", str(self._config.scale_factor),
+            "databricks-enzyme", f"batch{batch_num}",
+        )
+
+        t0_ms = batch.extra.get("wall_window_start_ms")
+        t1_ms = batch.extra.get("wall_window_end_ms")
+
+        expected = self._expected_databricks_model_count(batch_num, run_id)
+        max_wait_s = float(
+            os.environ.get("DATABRICKS_COMPUTE_POLL_MAX_S", "300")
+        )
+        poll_interval_s = float(
+            os.environ.get("DATABRICKS_COMPUTE_POLL_INTERVAL_S", "15")
+        )
+
+        deadline = time.time() + max_wait_s
+        attempt = 0
+        summary = None
+        bsum = None
+        last_reason = "no attempts yet"
+        while True:
+            attempt += 1
+            self._export_databricks_enzyme_pipeline_events(batch_num)
+
+            try:
+                summary = dec.compute_batch_summary(events_dir, t0_ms, t1_ms)
+                bsum = summary["batch"]
+                got_tables = bsum["tables_with_compute"]
+                got_wall_ms = bsum["compute_wall_ms"]
+
+                if expected is None:
+                    enough = got_tables > 0 and got_wall_ms > 0
+                    last_reason = (
+                        f"tables_with_compute={got_tables} (expected unknown), "
+                        f"compute_wall_ms={got_wall_ms}"
+                    )
+                else:
+                    enough = (
+                        got_tables >= expected
+                        and got_wall_ms > 0
+                    )
+                    last_reason = (
+                        f"tables_with_compute={got_tables}/{expected}, "
+                        f"compute_wall_ms={got_wall_ms}"
+                    )
+
+                if enough:
+                    break
+            except Exception as e:
+                last_reason = f"compute_batch_summary exception: {e}"
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                batch.status = "failed"
+                batch.error = (
+                    f"databricks-enzyme: pipeline events incomplete after "
+                    f"{max_wait_s:.0f}s polling for batch {batch_num} "
+                    f"({last_reason})"
+                )
+                self._emit(f"[databricks-enzyme] FATAL: {batch.error}")
+                raise RuntimeError(batch.error)
+
+            sleep_s = min(poll_interval_s, max(1.0, remaining))
+            self._emit(
+                f"[databricks-enzyme] events incomplete batch {batch_num} "
+                f"(attempt {attempt}, {last_reason}); "
+                f"sleeping {sleep_s:.0f}s "
+                f"(budget {remaining:.0f}s remaining)"
+            )
+            time.sleep(sleep_s)
+
+        # bsum / summary are guaranteed populated by the loop exit condition
+        assert summary is not None and bsum is not None
+
+        compute_wall_s = bsum["compute_wall_ms"] / 1000.0
+        compute_work_s = bsum["compute_work_ms"] / 1000.0
+        wallclock_s = batch.duration_s
+
+        batch.duration_s = compute_wall_s
+        batch.extra["compute_wall_s"] = compute_wall_s
+        batch.extra["compute_work_s"] = compute_work_s
+        batch.extra["tables_with_compute"] = bsum["tables_with_compute"]
+        batch.extra["updates_in_window"] = bsum["updates_in_window"]
+        batch.extra["segments_total"] = bsum["segments_total"]
+        batch.extra["segments_fallback"] = bsum["segments_fallback"]
+        batch.extra["compute_poll_attempts"] = attempt
+        if expected is not None:
+            batch.extra["expected_tables"] = expected
+
+        self._emit(
+            f"[databricks-enzyme] Pure-compute batch {batch_num}: "
+            f"wall_clock={wallclock_s:.1f}s -> "
+            f"compute_wall(coverage)={compute_wall_s:.1f}s "
+            f"compute_work(sum)={compute_work_s:.1f}s "
+            f"(tables={bsum['tables_with_compute']}"
+            f"{'/' + str(expected) if expected else ''}, "
+            f"updates_in_window={bsum['updates_in_window']}, "
+            f"segments={bsum['segments_total']}, "
+            f"ts_delta_segments={bsum['segments_fallback']}/{bsum['segments_total']}, "
+            f"poll_attempts={attempt})"
+        )
+
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        sidecar_path = os.path.join(
+            results_dir, f"databricks-compute-batch{batch_num}.json"
+        )
+        persistence = dec.summarize_for_persistence(summary)
+        persistence["batch"]["duration_s_wallclock"] = wallclock_s
+        persistence["batch_num"] = batch_num
+        persistence["scale_factor"] = self._config.scale_factor
+        with open(sidecar_path, "w") as f:
+            json.dump(persistence, f, indent=2)
+
+        # Patch the per-node run JSON so the chart's per-model bars
+        # reflect pure compute instead of dbt-reported wall time.
+        if not run_id:
+            self._emit(
+                f"[databricks-enzyme] no run_id for batch {batch_num}; "
+                f"skipping per-node JSON patch"
+            )
+            return
+        run_json_path = os.path.join(
+            results_dir, f"run-databricks-enzyme-batch{batch_num}.json"
+        )
+        if not os.path.exists(run_json_path):
+            self._emit(
+                f"[databricks-enzyme] run JSON missing at {run_json_path}; "
+                f"skipping per-node patch"
+            )
+            return
+
+        try:
+            with open(run_json_path) as f:
+                run_doc = json.load(f)
+        except Exception as e:
+            self._emit(
+                f"[databricks-enzyme] failed to read {run_json_path}: {e}"
+            )
+            return
+
+        compute_by_table: Dict[str, int] = {}
+        for key, updates in summary["tables"].items():
+            picked = dec.best_per_table_compute_ms(updates)
+            if picked is None:
+                continue
+            schema, _, table = key.partition(".")
+            compute_by_table[table.lower()] = picked
+
+        patched = 0
+        skipped = []
+        for node in run_doc.get("nodes", []):
+            if node.get("resource_type") != "model":
+                continue
+            tname = (node.get("name") or "").lower()
+            if not tname:
+                continue
+            if tname in compute_by_table:
+                node["execution_time_s_wallclock"] = node.get("execution_time_s")
+                node["execution_time_s"] = compute_by_table[tname] / 1000.0
+                node["execution_time_source"] = "databricks_pure_compute"
+                patched += 1
+            else:
+                skipped.append(tname)
+
+        run_doc.setdefault("_databricks_compute_meta", {}).update({
+            "batch_num": batch_num,
+            "patched_models": patched,
+            "skipped_models": skipped,
+            "wallclock_s": wallclock_s,
+            "compute_wall_s": compute_wall_s,
+            "compute_work_s": compute_work_s,
+        })
+
+        with open(run_json_path, "w") as f:
+            json.dump(run_doc, f, indent=2)
+
+        self._emit(
+            f"[databricks-enzyme] Patched run JSON batch {batch_num}: "
+            f"{patched} models swapped to pure compute, "
+            f"{len(skipped)} unpatched"
+        )
+        if skipped:
+            self._emit(
+                f"[databricks-enzyme] WARN unpatched (no events found): "
+                f"{', '.join(sorted(skipped)[:10])}"
+                f"{'...' if len(skipped) > 10 else ''}"
+            )
+
     def _write_query_log_tree(
         self,
         base_dir: str,
@@ -2063,12 +2338,15 @@ class EngineRunner:
         if not self._benchmark_id:
             return
         try:
-            result_json = json.dumps({
+            payload: Dict[str, Any] = {
                 "batch_num": batch_num,
                 "duration_s": batch.duration_s,
                 "status": batch.status,
                 "error": batch.error,
-            })
+            }
+            if getattr(batch, "extra", None):
+                payload["extra"] = batch.extra
+            result_json = json.dumps(payload, default=str)
             with DB_LOCK:
                 conn = get_db()
                 conn.execute(

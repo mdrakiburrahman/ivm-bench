@@ -31,9 +31,11 @@ ENGINE_COLORS = {
     "spark": "#da571b",
     "feldera": "#ca46bf",
     "duckdb-openivm": "#4a90d9",
+    "spark-openivm": "#27ae60",
+    "databricks-enzyme": "#c0392b",
 }
 
-ENGINE_ORDER = ["duckdb", "spark", "duckdb-openivm", "feldera"]
+ENGINE_ORDER = ["duckdb", "spark", "duckdb-openivm", "spark-openivm", "feldera", "databricks-enzyme"]
 
 BATCH_COLORS = {1: "#3498db", 2: "#e67e22", 3: "#2ecc71"}
 
