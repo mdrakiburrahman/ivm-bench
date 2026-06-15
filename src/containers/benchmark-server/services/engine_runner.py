@@ -898,35 +898,44 @@ class EngineRunner:
         )
 
     def _databricks_enzyme_validate_incrementalizable(self, sf: int) -> None:
-        """Pre-flight gate: EXPLAIN every model under INCREMENTAL STRICT.
+        """Pre-flight diagnostic: EXPLAIN every model under INCREMENTAL STRICT.
 
         POSTs to dbt-server's
         ``/validate/databricks-enzyme/explain-create-materialized-view/<sf>``
         which runs EXPLAIN CREATE MATERIALIZED VIEW ... REFRESH POLICY
         INCREMENTAL STRICT AS <compiled_sql> for every non-ephemeral
         model in the databricks-enzyme dbt project against the Serverless
-        SQL warehouse. Returns 200 if every model is incrementalizable,
-        422 if any model fails.
+        SQL warehouse.
+
+        **Record-only, NOT a gate.** Since the engine now runs under
+        REFRESH POLICY AUTO (databricks-enzyme/dbt_project.yml), models
+        that the STRICT planner rejects with
+        ``MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE: <reason>`` are still
+        materializable — Databricks falls back to FULL refresh. We keep
+        the STRICT sweep because it's the only way to surface the
+        per-model reason strings that feed the
+        ``benchmark-heuristics.png`` incrementalization-coverage panel.
 
         Called after ``init/<sf>`` succeeds (so the planner can resolve
-        ``tpcdi_src.*``) and before the dbt build (so a failure short-
-        circuits without any ``CREATE MATERIALIZED VIEW`` being emitted).
+        ``tpcdi_src.*``) and before the dbt build. Cost is in batch 1's
+        timer to match the init/<sf>-in-timer convention used by every
+        other engine for initial source loading.
 
         Persists per-model artifacts to
         ``mount/query-plan/<sf>/databricks-enzyme/
         explain-create-materialized-view/`` so it's visually obvious
         which route produced what data — the directory name maps 1-to-1
-        with the route segment.
+        with the route segment. The chart code reads
+        ``summary.json`` from there to derive the per-model verdicts.
 
-        Raises ``RuntimeError`` on any non-incrementalizable model, on
-        non-200/non-422 HTTP, or on a missing/invalid JSON body. The
-        raise aborts the current batch (batch 1) and the orchestrator
-        marks the engine failed for this experiment.
+        Raises ``RuntimeError`` only on transport-layer failures
+        (non-200/non-422 HTTP, request timeout, malformed JSON). Does
+        NOT raise on per-model EXPLAIN failures.
         """
         self._emit(
-            f"[databricks-enzyme] Pre-flight: validating every model is "
-            f"incrementalizable (EXPLAIN CREATE MV ... REFRESH POLICY "
-            f"INCREMENTAL STRICT) sf={sf}"
+            f"[databricks-enzyme] Pre-flight diagnostic: EXPLAIN every model "
+            f"under REFRESH POLICY INCREMENTAL STRICT (record-only, "
+            f"actual run uses AUTO) sf={sf}"
         )
         try:
             resp = requests.post(
@@ -954,25 +963,23 @@ class EngineRunner:
 
         self._write_databricks_enzyme_explain_artifacts(sf, data)
 
-        if data.get("status") != "ok":
+        passed = int(data.get("passed") or 0)
+        failed = int(data.get("failed") or 0)
+        total = int(data.get("total_models") or 0)
+        if failed:
             failures = data.get("failures") or []
-            fail_summary = ", ".join(
-                f"{f.get('model')}" for f in failures[:10]
-            )
-            extra = "" if len(failures) <= 10 else f" (+{len(failures) - 10} more)"
-            raise RuntimeError(
-                f"databricks-enzyme pre-flight FAILED: "
-                f"{data.get('failed')}/{data.get('total_models')} models are "
-                f"not incrementalizable under REFRESH POLICY INCREMENTAL STRICT. "
-                f"Failed models: {fail_summary}{extra}. "
+            sample = ", ".join(f.get("model", "?") for f in failures[:5])
+            extra = "" if len(failures) <= 5 else f" (+{len(failures) - 5} more)"
+            self._emit(
+                f"[databricks-enzyme] Pre-flight: {failed}/{total} models "
+                f"NOT incrementalizable under STRICT (will use FULL refresh "
+                f"under AUTO): {sample}{extra}. "
                 f"See mount/query-plan/{sf}/databricks-enzyme/"
-                f"explain-create-materialized-view/summary.json for details."
+                f"explain-create-materialized-view/summary.json for reasons."
             )
-
         self._emit(
-            f"[databricks-enzyme] Pre-flight PASSED: "
-            f"{data.get('passed')}/{data.get('total_models')} models "
-            f"incrementalizable; "
+            f"[databricks-enzyme] Pre-flight done: "
+            f"{passed}/{total} incrementalizable, {failed}/{total} fallback-to-FULL; "
             f"{len(data.get('skipped_ephemeral') or [])} ephemeral skipped; "
             f"elapsed_ms={data.get('elapsed_ms')}"
         )

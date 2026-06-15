@@ -48,7 +48,7 @@ dispatch:
 models:
   tpcdi:
     +materialized: materialized_view
-    +refresh_policy: 'INCREMENTAL STRICT'
+    +refresh_policy: 'AUTO'
     bronze:
       +schema: bronze
     silver:
@@ -56,7 +56,7 @@ models:
     gold:
       +schema: gold
       analytics:
-        +refresh_policy: 'INCREMENTAL STRICT'
+        +refresh_policy: 'AUTO'
     work:
       +schema: work
       +materialized: ephemeral

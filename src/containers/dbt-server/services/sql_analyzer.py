@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 # Dialect mapping for engines
 ENGINE_DIALECTS = {
     "spark": "spark",
+    "spark-openivm": "spark",
     "duckdb": "duckdb",
+    "duckdb-openivm": "duckdb",
+    "databricks-enzyme": "databricks",
     "feldera": None,  # sqlglot doesn't support Feldera; use generic
 }
 

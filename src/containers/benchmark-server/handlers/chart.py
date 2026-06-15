@@ -14,7 +14,7 @@ import os
 import re
 from collections import defaultdict
 from io import BytesIO
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 from flask import Blueprint, Flask, Response, jsonify, request
 
@@ -505,13 +505,422 @@ def generate_chart_png(
 # Heuristics Chart
 # ==========================================================================
 
+# --- Incrementalization-coverage helpers ----------------------------------
+
+_INC_OK_COLOR = "#27ae60"
+_INC_BAD_COLOR = "#c0392b"
+_INC_NA_COLOR = "#bdbdbd"
+_NOT_INC_PATTERN = re.compile(
+    r"MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE[^:]*:\s*(.+?)(?:\.\s*SQLSTATE|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _short_reason(reason: str, max_len: int = 90) -> str:
+    """Collapse whitespace and truncate so footnote text stays readable."""
+    if not reason:
+        return ""
+    one_line = re.sub(r"\s+", " ", reason).strip()
+    return (one_line[: max_len - 1] + "\u2026") if len(one_line) > max_len else one_line
+
+
+def _parse_databricks_reason(error: str) -> str:
+    """Pull the human-readable reason out of a Databricks EXPLAIN error."""
+    if not error:
+        return ""
+    m = _NOT_INC_PATTERN.search(error)
+    if m:
+        return _short_reason(m.group(1))
+    return _short_reason(error)
+
+
+def _collect_openivm_views(
+    state_dir: str, engine: str,
+) -> Tuple[set, Optional[str]]:
+    """Return the set of view_names with a `total_refresh` step in batch>=2.
+
+    OpenIVM's profile only records `total_refresh` once the IVM CTAS rewriter
+    has produced an incremental refresh plan and Spark/DuckDB has executed
+    it. A view that fell back to FULL recompute (or that openivm couldn't
+    rewrite) never gets a `total_refresh` row in batch 2/3 — exactly the
+    signal we want for "did openivm incrementalize this model".
+    """
+    for batch in (2, 3, 1):
+        for fname in (
+            f"openivm-profile-by-view-step-batch{batch}.csv",
+            f"openivm-profile-by-view-step-{engine}-batch{batch}.csv",
+        ):
+            fp = os.path.join(state_dir, fname)
+            if not os.path.exists(fp):
+                continue
+            views = set()
+            try:
+                import csv
+                with open(fp, newline="") as fh:
+                    reader = csv.DictReader(fh)
+                    for row in reader:
+                        if row.get("step_name") == "total_refresh":
+                            v = (row.get("view_name") or "").strip()
+                            if v and v != "view_name":
+                                views.add(v)
+            except Exception as e:
+                logger.warning(
+                    "[chart] openivm CSV parse failed for %s: %s", fp, e,
+                )
+                continue
+            if views:
+                return views, os.path.basename(fp)
+    return set(), None
+
+
+def _collect_feldera_status(state_dir: str) -> Tuple[bool, Optional[str]]:
+    """Did feldera's incremental batch (batch>=2) finish successfully?
+
+    Feldera writes one run-feldera-batch<N>.json per batch with a
+    per-model `nodes` list and per-node `status`. There is no top-level
+    `status` field; the batch is considered successful if every node
+    finished with `status=='success'` (which is feldera's contract:
+    every dbt model maps to a dataflow operator in the running DBSP
+    circuit — if any failed the pipeline would not have advanced).
+    """
+    for batch in (2, 3):
+        fp = os.path.join(state_dir, f"run-feldera-batch{batch}.json")
+        if not os.path.exists(fp):
+            continue
+        try:
+            with open(fp) as fh:
+                data = json.load(fh)
+            nodes = data.get("nodes") or []
+            if not nodes:
+                continue
+            if all((n.get("status") or "").lower() == "success" for n in nodes):
+                return True, os.path.basename(fp)
+        except Exception as e:
+            logger.warning("[chart] feldera run JSON parse failed for %s: %s", fp, e)
+    return False, None
+
+
+def _collect_databricks_summary(
+    repo_dir: str, sf: str,
+) -> Optional[Dict[str, Any]]:
+    """Load the EXPLAIN STRICT pre-flight summary written by engine_runner."""
+    fp = os.path.join(
+        repo_dir, "mount", "query-plan", str(sf), "databricks-enzyme",
+        "explain-create-materialized-view", "summary.json",
+    )
+    if not os.path.exists(fp):
+        return None
+    try:
+        with open(fp) as fh:
+            return json.load(fh)
+    except Exception as e:
+        logger.warning("[chart] databricks summary parse failed for %s: %s", fp, e)
+        return None
+
+
+def _infer_sf_from_state_dir(state_dir: str) -> Optional[str]:
+    """state_dir is `<repo>/mount/results/<sf>/dbt-server` — pull <sf> out."""
+    parts = os.path.normpath(state_dir).split(os.sep)
+    try:
+        i = parts.index("results")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    except ValueError:
+        pass
+    return None
+
+
+def _infer_repo_from_state_dir(state_dir: str) -> str:
+    """state_dir is `<repo>/mount/results/<sf>/dbt-server`."""
+    parts = os.path.normpath(state_dir).split(os.sep)
+    try:
+        i = parts.index("mount")
+        return os.sep + os.path.join(*parts[:i]) if i > 0 else "/repo"
+    except ValueError:
+        return "/repo"
+
+
+def _collect_incrementalization(
+    engines: list,
+    sql_data: Dict[str, Any],
+    state_dir: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Build {engine: {total, ok_count, models: {name: {ok, reason}}, source}}.
+
+    Per-engine rules:
+      databricks-enzyme: read EXPLAIN STRICT summary.json. Models in
+                        `failures` are NOT incrementalizable, reason comes
+                        from the `MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE: …`
+                        prefix on the error string.
+      spark-openivm:    a view with a `total_refresh` step in
+                        openivm-profile-by-view-step-batch2.csv (or 3) was
+                        incrementalized by the IVM engine. Missing means it
+                        fell back / wasn't rewritten.
+      duckdb-openivm:   same as spark-openivm.
+      feldera:          if run-feldera-batch2.json status==ok then 100%.
+                        Feldera contract: all SQL compiles to DBSP or the
+                        pipeline never starts.
+      spark, duckdb:    no IVM layer → 0%.
+    """
+    repo_dir = _infer_repo_from_state_dir(state_dir)
+    sf = _infer_sf_from_state_dir(state_dir) or "?"
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for engine in engines:
+        models = [m["model_name"] for m in sql_data.get(engine, {}).get("models", [])]
+        per_model: Dict[str, Dict[str, Any]] = {
+            n: {"ok": False, "reason": ""} for n in models
+        }
+        source = "n/a"
+
+        if engine == "databricks-enzyme":
+            summary = _collect_databricks_summary(repo_dir, sf)
+            if summary is not None:
+                source = f"mount/query-plan/{sf}/databricks-enzyme/.../summary.json"
+                # Strip ephemeral models from the count — they're never
+                # materialized as MVs so there's nothing to incrementalize.
+                ephemeral = {
+                    uid.split(".")[-1]
+                    for uid in (summary.get("skipped_ephemeral") or [])
+                }
+                for eph in ephemeral:
+                    per_model.pop(eph, None)
+                failures = {
+                    (f.get("model") or "").split(".")[-1]:
+                    _parse_databricks_reason(f.get("error") or "")
+                    for f in (summary.get("failures") or [])
+                }
+                # Every model the EXPLAIN sweep saw: default ok unless in failures.
+                seen = set()
+                for plan in (summary.get("plans") or []):
+                    bare = (plan.get("model") or plan.get("name") or "").split(".")[-1]
+                    if not bare or bare in ephemeral:
+                        continue
+                    seen.add(bare)
+                    if bare in per_model:
+                        if plan.get("error"):
+                            per_model[bare] = {
+                                "ok": False,
+                                "reason": _parse_databricks_reason(plan["error"]),
+                            }
+                        else:
+                            per_model[bare] = {"ok": True, "reason": ""}
+                # Models from sql_data the EXPLAIN sweep didn't see (e.g. summary
+                # without per-plan detail) — fall back to failures-list intersection.
+                for name in list(per_model.keys()):
+                    if name in seen:
+                        continue
+                    if name in failures:
+                        per_model[name] = {"ok": False, "reason": failures[name]}
+                    else:
+                        per_model[name] = {"ok": True, "reason": ""}
+            else:
+                source = "summary.json missing — defaulting to ok"
+                for name in models:
+                    per_model[name] = {"ok": True, "reason": ""}
+
+        elif engine in ("spark-openivm", "duckdb-openivm"):
+            views, csv_name = _collect_openivm_views(state_dir, engine)
+            if csv_name:
+                source = csv_name
+                for name in models:
+                    if name in views:
+                        per_model[name] = {"ok": True, "reason": ""}
+                    else:
+                        per_model[name] = {
+                            "ok": False,
+                            "reason": "no total_refresh step in IVM profile",
+                        }
+            else:
+                source = "openivm profile CSV not found"
+                for name in models:
+                    per_model[name] = {
+                        "ok": False, "reason": "no IVM profile available",
+                    }
+
+        elif engine == "feldera":
+            ok, src_name = _collect_feldera_status(state_dir)
+            if ok:
+                source = f"{src_name} (DBSP contract: all SQL → incremental circuit)"
+                for name in models:
+                    per_model[name] = {"ok": True, "reason": ""}
+            else:
+                source = "run-feldera-batch>=2 missing/non-ok"
+                for name in models:
+                    per_model[name] = {
+                        "ok": False, "reason": "feldera incremental batch did not complete",
+                    }
+
+        else:
+            source = f"{engine}: no IVM layer (vanilla recompute every batch)"
+            for name in models:
+                per_model[name] = {
+                    "ok": False, "reason": "engine has no IVM layer",
+                }
+
+        ok_count = sum(1 for v in per_model.values() if v["ok"])
+        out[engine] = {
+            "total": len(per_model),
+            "ok_count": ok_count,
+            "models": per_model,
+            "source": source,
+        }
+    return out
+
+
+def _render_incrementalization_section(
+    fig,
+    gs_slot,
+    engines: list,
+    inc_data: Dict[str, Dict[str, Any]],
+    canonical_models: list,
+) -> None:
+    """Two-panel section: per-engine bar + per-model matrix.
+
+    Bar:    horizontal stack (green=ok, red=not), label `X/N (P%)`.
+    Matrix: rows=engines, cols=canonical_models; green/red/gray cells.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import numpy as np
+
+    sub = gs_slot.subgridspec(
+        2, 1, height_ratios=[1.2, max(2.0, 0.35 * len(engines) + 1.0)],
+        hspace=0.55,
+    )
+
+    # ---- Panel A: stacked horizontal bar per engine ----
+    ax_bar = fig.add_subplot(sub[0, 0])
+    y_pos = np.arange(len(engines))
+    bar_height = 0.6
+    max_total = max((inc_data[e]["total"] for e in engines), default=1) or 1
+
+    for i, engine in enumerate(engines):
+        d = inc_data[engine]
+        ok = d["ok_count"]
+        total = d["total"]
+        not_ok = total - ok
+        pct = (100.0 * ok / total) if total else 0.0
+
+        ax_bar.barh(
+            y_pos[i], ok, height=bar_height,
+            color=_INC_OK_COLOR, edgecolor="white", linewidth=0.5,
+        )
+        ax_bar.barh(
+            y_pos[i], not_ok, left=ok, height=bar_height,
+            color=_INC_BAD_COLOR, edgecolor="white", linewidth=0.5,
+        )
+        label = f"{ok} / {total}  ({pct:.0f}%)"
+        ax_bar.text(
+            total + max_total * 0.01, y_pos[i], label,
+            va="center", ha="left", fontsize=8, fontweight="bold",
+        )
+
+    ax_bar.set_yticks(y_pos)
+    ax_bar.set_yticklabels(engines, fontsize=8)
+    ax_bar.invert_yaxis()
+    ax_bar.set_xlim(0, max_total * 1.25)
+    ax_bar.set_xlabel("# dbt models", fontsize=8)
+    ax_bar.set_title(
+        "Incrementalization Coverage \u2014 per engine\n"
+        "(green=incrementalizable, red=full/fallback)",
+        fontsize=11, fontweight="bold",
+    )
+    ax_bar.grid(axis="x", alpha=0.3, linestyle="--")
+
+    legend_handles = [
+        mpatches.Patch(color=_INC_OK_COLOR, label="Incrementalizable"),
+        mpatches.Patch(color=_INC_BAD_COLOR, label="Not incrementalizable"),
+        mpatches.Patch(color=_INC_NA_COLOR, label="Model not present"),
+    ]
+    ax_bar.legend(handles=legend_handles, fontsize=7, loc="lower right")
+
+    # ---- Panel B: per-model matrix ----
+    ax_mat = fig.add_subplot(sub[1, 0])
+    n_e = len(engines)
+    n_m = len(canonical_models)
+    if n_m == 0:
+        ax_mat.set_axis_off()
+        return
+
+    color_grid = np.zeros((n_e, n_m, 3))
+    for i, engine in enumerate(engines):
+        per = inc_data[engine]["models"]
+        for j, name in enumerate(canonical_models):
+            entry = per.get(name)
+            if entry is None:
+                rgb = (0.745, 0.745, 0.745)
+            elif entry["ok"]:
+                rgb = (0.153, 0.682, 0.376)
+            else:
+                rgb = (0.753, 0.224, 0.169)
+            color_grid[i, j] = rgb
+
+    ax_mat.imshow(color_grid, aspect="auto", interpolation="nearest")
+    ax_mat.set_yticks(range(n_e))
+    ax_mat.set_yticklabels(engines, fontsize=7)
+    ax_mat.set_xticks(range(n_m))
+    ax_mat.set_xticklabels(canonical_models, fontsize=4, rotation=90)
+
+    # Annotate cells with ✓ / ✗ / •
+    for i, engine in enumerate(engines):
+        per = inc_data[engine]["models"]
+        for j, name in enumerate(canonical_models):
+            entry = per.get(name)
+            if entry is None:
+                glyph = "\u00b7"
+            elif entry["ok"]:
+                glyph = "\u2713"
+            else:
+                glyph = "\u2717"
+            ax_mat.text(
+                j, i, glyph,
+                ha="center", va="center", fontsize=4.5,
+                color="white", fontweight="bold",
+            )
+
+    ax_mat.set_title(
+        "Per-model incrementalization matrix (\u2713 ok, \u2717 not, \u00b7 not present)",
+        fontsize=10, fontweight="bold",
+    )
+
+    # Combined footer: verdict sources + top non-incremental reasons per engine.
+    # Placed via fig.text (figure-relative) so it sits below the matrix
+    # axes rather than overlapping the bar panel above.
+    src_lines = [f"  {e:<22s} <- {inc_data[e]['source']}" for e in engines]
+    reason_lines = []
+    for engine in engines:
+        per = inc_data[engine]["models"]
+        counts: Dict[str, int] = {}
+        for entry in per.values():
+            if entry["ok"] or not entry["reason"]:
+                continue
+            counts[entry["reason"]] = counts.get(entry["reason"], 0) + 1
+        if not counts:
+            continue
+        top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        for reason, n in top:
+            reason_lines.append(f"  {engine:<22s} x{n:<3d} {reason}")
+
+    footer = "Verdict sources:\n" + "\n".join(src_lines)
+    if reason_lines:
+        footer += "\n\nTop non-incremental reasons:\n" + "\n".join(reason_lines)
+    bbox = ax_mat.get_position()
+    fig.text(
+        bbox.x0, bbox.y0 - 0.012,
+        footer,
+        fontsize=6, va="top", ha="left", family="monospace", color="#444",
+    )
+
+
 def generate_heuristics_png(state_dir: str) -> Optional[bytes]:
     """Generate the heuristics PNG from lineage and SQL analysis data.
 
-    Sections (top to bottom, engines as columns):
+    Sections (top to bottom, engines as columns unless noted):
     1. Operator heatmaps
     2. Lineage DAGs
     3. Operator chains per query
+    4. Incrementalization coverage (per-engine bar + per-model matrix)
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -571,16 +980,22 @@ def generate_heuristics_png(state_dir: str) -> Optional[bytes]:
         active_ops = OPERATOR_ORDER
     n_ops = len(active_ops)
 
+    # --- Pre-collect incrementalization verdicts (Section 4) ---
+    inc_data = _collect_incrementalization(engines, sql_data, state_dir)
+
     # --- Section heights ---
     heatmap_h = max(8, n_models * 0.2 + 3)
     dag_h = max(10, n_models * 0.25)
     chain_h = max(8, n_models * 0.25 + 2)
-    total_h = heatmap_h + dag_h + chain_h
+    inc_h = max(6, 2 + 0.4 * n_engines + 0.05 * n_models + 2)
+    total_h = heatmap_h + dag_h + chain_h + inc_h
     fig_width = max(8, 6 * n_engines + 1)
 
     fig = plt.figure(figsize=(fig_width, total_h))
     gs = fig.add_gridspec(
-        3, 1, height_ratios=[heatmap_h, dag_h, chain_h], hspace=0.3,
+        4, 1,
+        height_ratios=[heatmap_h, dag_h, chain_h, inc_h],
+        hspace=0.35,
     )
 
     # ===== Section 1: Operator Heatmaps =====
@@ -793,8 +1208,13 @@ def generate_heuristics_png(state_dir: str) -> Optional[bytes]:
         )
         ax.set_axis_off()
 
+    # ===== Section 4: Incrementalization Coverage =====
+    _render_incrementalization_section(
+        fig, gs[3], engines, inc_data, canonical_models,
+    )
+
     fig.suptitle(
-        "Benchmark Heuristics \u2014 SQL Complexity & Lineage",
+        "Benchmark Heuristics \u2014 SQL Complexity, Lineage & Incrementalization",
         fontsize=14, y=0.995,
     )
 
