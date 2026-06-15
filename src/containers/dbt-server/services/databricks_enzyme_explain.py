@@ -195,10 +195,48 @@ def _drop_stub_views(stubs: List[Tuple[str, str]]) -> None:
 # ---------------------------------------------------------------------------
 
 
+_NOT_INCREMENTALIZABLE_MARKER = re.compile(
+    r"cannot be incrementally refreshed", re.IGNORECASE,
+)
+_DETAILED_INFO_SECTION = re.compile(
+    r"==\s*Detailed Incrementalization Info\s*==\s*\n(.*?)(?:\n==|\Z)",
+    re.IGNORECASE | re.DOTALL,
+)
+_REASON_BULLET = re.compile(r"^\s*-\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _extract_non_incrementalizable_reasons(plan: str) -> Optional[str]:
+    """Return a synthetic error string if the EXPLAIN plan says the MV
+    cannot be incrementally refreshed under INCREMENTAL STRICT.
+
+    Under STRICT, Databricks does NOT raise — it returns a plan whose
+    header says "The Materialized View cannot be incrementally refreshed"
+    and embeds a "== Detailed Incrementalization Info ==" section with
+    bullet reasons (e.g. ``- OPERATOR_NOT_INCREMENTALIZABLE: ...``).
+
+    Returns ``MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE: <reasons>`` so the
+    chart's existing ``_parse_databricks_reason`` regex picks it up; the
+    reasons are joined with ``; `` to preserve all bullets in one line.
+    Returns ``None`` if the plan is genuinely incrementalizable.
+    """
+    if not plan or not _NOT_INCREMENTALIZABLE_MARKER.search(plan):
+        return None
+    section = _DETAILED_INFO_SECTION.search(plan)
+    if section:
+        bullets = [b.strip() for b in _REASON_BULLET.findall(section.group(1)) if b.strip()]
+        reasons = "; ".join(bullets) if bullets else "no detailed reason"
+    else:
+        reasons = "no detailed reason"
+    return f"MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE: {reasons}"
+
+
 def _explain_one(model: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """Run EXPLAIN CREATE MATERIALIZED VIEW for one model.
 
-    Returns (plan_text, None) on success or (None, error_text) on failure.
+    Returns (plan_text, None) on success or (plan_text, error_text) when
+    the planner accepts the EXPLAIN but the plan body reports the MV
+    cannot be incrementally refreshed. Returns (None, error_text) only
+    when the SQL execution itself fails.
     """
     sanitized = _sanitize(f"{model['schema']}__{model['name']}")
     sandbox_target = _fq_sandbox(sanitized)
@@ -216,6 +254,9 @@ def _explain_one(model: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     if df is None or df.empty:
         return "", None
     plan = "\n".join(str(v) for v in df.iloc[:, 0].tolist()).rstrip()
+    synth_error = _extract_non_incrementalizable_reasons(plan)
+    if synth_error is not None:
+        return plan, synth_error
     return plan, None
 
 

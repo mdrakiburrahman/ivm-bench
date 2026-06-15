@@ -1012,12 +1012,15 @@ class EngineRunner:
             )
             txt_path = os.path.join(base_dir, f"{safe_name}.txt")
             sql_path = os.path.join(base_dir, f"{safe_name}.sql")
-            body = plan.get("plan") or ""
+            plan_body = plan.get("plan") or ""
             if plan.get("error"):
-                body = (
+                header = (
                     f"-- STATUS: NOT INCREMENTALIZABLE --\n"
-                    f"{plan.get('error')}\n"
+                    f"-- {plan.get('error')}\n"
                 )
+                body = header + (plan_body or "")
+            else:
+                body = plan_body
             with open(txt_path, "w") as f:
                 f.write(body)
             with open(sql_path, "w") as f:
