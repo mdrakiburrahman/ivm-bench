@@ -43,7 +43,7 @@ foreach ($distro in $distros) {
     wsl --unregister $distro
 }
 
-$RECOMMENDED_CORES = 16
+$RECOMMENDED_CORES = 32
 $RECOMMENDED_FREE_GB = 128
 
 $memGB=[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)
