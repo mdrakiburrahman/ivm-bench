@@ -6,9 +6,9 @@ WITH customer_positions AS (
         s.symbol,
         COUNT(*) AS trade_count,
         SUM(CAST(ft.quantity AS BIGINT)) AS total_qty,
-        SUM(CAST(ft.trade_price AS DECIMAL(18, 6)) * CAST(ft.quantity AS DECIMAL(18, 0))) AS position_value,
-        AVG(CAST(ft.trade_price AS DECIMAL(18, 6))) AS avg_trade_price,
-        SUM(CAST(ft.fee AS DECIMAL(18, 6)) + CAST(ft.commission AS DECIMAL(18, 6))) AS total_costs
+        SUM(CAST(ft.trade_price AS DOUBLE) * CAST(ft.quantity AS DOUBLE)) AS position_value,
+        AVG(ft.trade_price) AS avg_trade_price,
+        SUM(CAST(ft.fee AS DOUBLE) + CAST(ft.commission AS DOUBLE)) AS total_costs
     FROM {{ ref('fact_trade') }} ft
     JOIN {{ ref('dim_security') }} s
         ON ft.sk_security_id = s.sk_security_id
@@ -27,26 +27,51 @@ customer_totals AS (
     FROM customer_positions
     GROUP BY sk_customer_id
     HAVING SUM(trade_count) >= 2
+),
+
+unwatched_customers AS (
+    SELECT *
+    FROM customer_totals ct
+    WHERE NOT EXISTS (
+        SELECT 1 FROM {{ ref('fact_watches') }} fw
+        WHERE fw.sk_customer_id = ct.sk_customer_id
+    )
+),
+
+global_customer AS (
+    SELECT
+        AVG(total_portfolio_value) AS avg_portfolio,
+        STDDEV(total_portfolio_value) AS std_portfolio,
+        AVG(CAST(num_securities AS DOUBLE)) AS avg_securities,
+        SUM(total_portfolio_value) AS market_total
+    FROM customer_totals
+),
+
+scored AS (
+    SELECT
+        uc.sk_customer_id,
+        uc.num_accounts,
+        uc.num_securities,
+        uc.total_trades,
+        ROUND(uc.total_portfolio_value, 6) AS total_portfolio_value,
+        ROUND(uc.total_costs, 6) AS total_costs,
+        ROUND(uc.largest_position, 6) AS largest_position,
+        ROUND(
+            uc.largest_position * 100.0 / NULLIF(uc.total_portfolio_value, 0),
+            4
+        ) AS concentration_pct,
+        ROUND(
+            (uc.total_portfolio_value - gc.avg_portfolio) / NULLIF(gc.std_portfolio, 0),
+            4
+        ) AS portfolio_z_score,
+        ROUND(
+            uc.total_portfolio_value * 100.0 / NULLIF(gc.market_total, 0),
+            4
+        ) AS pct_of_market,
+        DENSE_RANK() OVER (ORDER BY uc.total_portfolio_value DESC) AS rank_by_portfolio,
+        DENSE_RANK() OVER (ORDER BY uc.num_securities DESC) AS rank_by_diversity
+    FROM unwatched_customers uc
+    CROSS JOIN global_customer gc
 )
 
-SELECT
-    sk_customer_id,
-    num_accounts,
-    num_securities,
-    total_trades,
-    ROUND(total_portfolio_value, 6) AS total_portfolio_value,
-    ROUND(total_costs, 6) AS total_costs,
-    ROUND(largest_position, 6) AS largest_position,
-    ROUND(
-        largest_position * 100.0 / NULLIF(total_portfolio_value, 0),
-        4
-    ) AS concentration_pct,
-    ROUND(
-        total_costs * 100.0 / NULLIF(total_portfolio_value, 0),
-        4
-    ) AS cost_pct_of_portfolio,
-    ROUND(
-        total_portfolio_value / NULLIF(CAST(total_trades AS DECIMAL(18, 0)), 0),
-        6
-    ) AS avg_value_per_trade
-FROM customer_totals
+SELECT * FROM scored
