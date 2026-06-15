@@ -93,6 +93,7 @@ def init_db():
             compiled_sql TEXT,
             depends_on TEXT,
             rows_affected INTEGER,
+            message TEXT,
             PRIMARY KEY (run_id, unique_id),
             FOREIGN KEY (run_id) REFERENCES runs(run_id)
         );

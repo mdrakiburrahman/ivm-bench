@@ -20,6 +20,30 @@ logger = logging.getLogger(__name__)
 HEALTH_TIMEOUT = 300
 HEALTH_INTERVAL = 5
 
+# Databricks-enzyme dbt-build retry policy for transient DLT pipeline
+# failures (lost executor, INTERNAL_ERROR, transient Connection refused).
+# Real model/SQL bugs are NOT retried — see `_is_databricks_transient`.
+DATABRICKS_ENZYME_MAX_RETRIES = int(
+    os.environ.get("DATABRICKS_ENZYME_MAX_RETRIES", "2")
+)
+DATABRICKS_ENZYME_RETRY_BACKOFF_S = int(
+    os.environ.get("DATABRICKS_ENZYME_RETRY_BACKOFF_S", "60")
+)
+# Substrings in a failed node's dbt `message` that indicate a
+# Databricks-side transient (lost executor, DLT pipeline restart, etc.)
+# rather than a genuine model error. Match is case-sensitive on the raw
+# dbt error text.
+DATABRICKS_TRANSIENT_SIGNATURES = (
+    "INTERNAL_ERROR: Unexpected failure during pipeline execution",
+    "Connection refused",
+    "DatabricksServiceException",
+    "BAD_REQUEST: finishConnect",
+    "TIMEOUT_OCCURRED",
+    "PIPELINE_INTERNAL_ERROR",
+    "SERVICE_UNAVAILABLE",
+    "TEMPORARILY_UNAVAILABLE",
+)
+
 
 class OpenIvmValidationError(RuntimeError):
     """Raised when post-batch OpenIVM correctness validation (EXCEPT ALL) fails.
@@ -1186,30 +1210,160 @@ class EngineRunner:
         # custom materialized_view materialization (in dbt-projects/
         # databricks-enzyme/macros/materializations/materialized_view.sql)
         # dispatches to CREATE MV (+ALTER MV SET REFRESH POLICY) on
-        # full_refresh and REFRESH MV otherwise.
-        resp = requests.post(
-            f"{self._dbt_url}/run/databricks-enzyme",
-            json={
-                "scale_factor": sf,
-                "full_refresh": full_refresh,
-            },
-            timeout=30,
+        # full_refresh and REFRESH MV otherwise. Wrapped in a
+        # retry-with-backoff loop because Databricks DLT pipelines
+        # transiently fail with INTERNAL_ERROR / lost-executor
+        # Connection refused on long-running refreshes — see
+        # `_is_databricks_transient`. The wall-clock timer in
+        # `_run_batch` covers all retry attempts.
+        run_id = self._run_databricks_enzyme_dbt_with_retry(
+            batch_num, full_refresh
         )
-        resp.raise_for_status()
-        run_id = resp.json()["run_id"]
-        self._emit(
-            f"[databricks-enzyme] dbt run_id={run_id} "
-            f"(batch={batch_num}, full_refresh={full_refresh})"
-        )
-
-        self._stream_dbt_progress(run_id, batch_num)
-        self._check_run_result(run_id, batch_num)
-        self._save_run_result(run_id, batch_num)
 
         if batch_num == 1:
             self._write_last_sf(sf)
 
         return run_id
+
+    def _run_databricks_enzyme_dbt_with_retry(
+        self, batch_num: int, full_refresh: bool
+    ) -> str:
+        """POST /run/databricks-enzyme, stream progress, check result.
+
+        Retries the dbt build on transient Databricks DLT platform
+        failures (lost executor, INTERNAL_ERROR pipeline restart). A
+        real model bug — anything whose dbt error message does NOT
+        match a transient signature — fails immediately. Returns the
+        run_id of the FINAL attempt (whether success or final failure)
+        so downstream artifact collection / pure-compute extraction
+        works against the right run.
+        """
+        sf = self._config.scale_factor
+        batch = self._result.batches[batch_num - 1]
+        max_attempts = DATABRICKS_ENZYME_MAX_RETRIES + 1
+        last_run_id: str = ""
+
+        for attempt in range(1, max_attempts + 1):
+            resp = requests.post(
+                f"{self._dbt_url}/run/databricks-enzyme",
+                json={
+                    "scale_factor": sf,
+                    "full_refresh": full_refresh,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            run_id = resp.json()["run_id"]
+            last_run_id = run_id
+            attempt_suffix = (
+                f" (attempt {attempt}/{max_attempts})"
+                if max_attempts > 1
+                else ""
+            )
+            self._emit(
+                f"[databricks-enzyme] dbt run_id={run_id} "
+                f"(batch={batch_num}, full_refresh={full_refresh})"
+                f"{attempt_suffix}"
+            )
+
+            self._stream_dbt_progress(run_id, batch_num)
+            self._check_run_result(run_id, batch_num)
+
+            if batch.status != "failed":
+                # Success — save final result under canonical filename.
+                self._save_run_result(run_id, batch_num)
+                return run_id
+
+            transient, summary = self._is_databricks_transient(run_id)
+            if not transient or attempt == max_attempts:
+                # Real bug, or retries exhausted — surface the failure.
+                self._save_run_result(run_id, batch_num)
+                if attempt == max_attempts and transient:
+                    self._emit(
+                        f"[databricks-enzyme] batch {batch_num} retries "
+                        f"exhausted after {max_attempts} attempts; last "
+                        f"failure was transient ({summary})"
+                    )
+                return run_id
+
+            # Transient: archive this attempt under a numbered filename
+            # so forensics keep both the failed and the successful runs,
+            # then reset batch state and back off before the next try.
+            self._save_run_result(
+                run_id, batch_num, suffix=f"-attempt{attempt}"
+            )
+            backoff = DATABRICKS_ENZYME_RETRY_BACKOFF_S * (2 ** (attempt - 1))
+            self._emit(
+                f"[databricks-enzyme] batch {batch_num} attempt {attempt} "
+                f"hit transient Databricks failure ({summary}); "
+                f"sleeping {backoff}s then retrying"
+            )
+            logger.warning(
+                "databricks-enzyme batch %d attempt %d transient failure "
+                "(%s); retrying after %ds",
+                batch_num, attempt, summary, backoff,
+            )
+            batch.status = "running"
+            batch.error = ""
+            time.sleep(backoff)
+
+        return last_run_id
+
+    def _is_databricks_transient(self, run_id: str) -> tuple[bool, str]:
+        """Inspect failed nodes from a dbt run and decide if the failure
+        was a Databricks-side platform transient (worth retrying) vs a
+        real model/SQL bug (must surface immediately).
+
+        Returns (is_transient, short_summary). The decision is
+        conservative — if ANY failed node has a non-transient error,
+        the whole run is treated as non-transient because re-running
+        the build will deterministically hit the real bug again.
+        """
+        try:
+            resp = requests.get(f"{self._dbt_url}/runs/{run_id}", timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            return False, f"could not fetch run JSON: {exc}"
+
+        failed_nodes = [
+            n for n in (data.get("nodes") or [])
+            if n.get("status") in ("error", "fail")
+        ]
+        if not failed_nodes:
+            # No node-level failures but the run was marked failed —
+            # almost always a dbt compile / parse error, not transient.
+            return False, "no failing nodes (likely compile/parse error)"
+
+        transient_nodes = []
+        non_transient_nodes = []
+        for n in failed_nodes:
+            msg = n.get("message") or ""
+            hit = next(
+                (sig for sig in DATABRICKS_TRANSIENT_SIGNATURES if sig in msg),
+                None,
+            )
+            if hit:
+                transient_nodes.append((n.get("name", "?"), hit))
+            else:
+                non_transient_nodes.append((n.get("name", "?"), msg[:120]))
+
+        if non_transient_nodes:
+            sample = non_transient_nodes[0]
+            return (
+                False,
+                f"{len(non_transient_nodes)}/{len(failed_nodes)} non-transient "
+                f"(e.g. {sample[0]}: {sample[1]!r})",
+            )
+
+        sig_summary = ", ".join(
+            f"{n}:{s.split(':')[0]}" for n, s in transient_nodes[:3]
+        )
+        more = (
+            f" (+{len(transient_nodes) - 3} more)"
+            if len(transient_nodes) > 3 else ""
+        )
+        return True, f"all {len(transient_nodes)} transient — {sig_summary}{more}"
 
     def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
         """Run default OpenIVM correctness validation outside the benchmark timer."""
@@ -2328,8 +2482,15 @@ class EngineRunner:
             logger.warning("Failed to collect Feldera debug bundle: %s", e)
             self._emit(f"[feldera] WARNING: Failed to collect debug bundle: {e}")
 
-    def _save_run_result(self, run_id: str, batch_num: int) -> None:
-        """Save dbt run results JSON."""
+    def _save_run_result(
+        self, run_id: str, batch_num: int, suffix: str = ""
+    ) -> None:
+        """Save dbt run results JSON.
+
+        ``suffix`` is appended to the filename stem so retry attempts
+        can be archived without overwriting the canonical
+        ``run-<engine>-batch<N>.json`` (final attempt).
+        """
         name = self._engine.name
         try:
             resp = requests.get(f"{self._dbt_url}/runs/{run_id}", timeout=30)
@@ -2338,7 +2499,8 @@ class EngineRunner:
                 "mount", "results", str(self._config.scale_factor), "dbt-server",
             )
             os.makedirs(results_dir, exist_ok=True)
-            with open(os.path.join(results_dir, f"run-{name}-batch{batch_num}.json"), "w") as f:
+            filename = f"run-{name}-batch{batch_num}{suffix}.json"
+            with open(os.path.join(results_dir, filename), "w") as f:
                 json.dump(resp.json(), f, indent=2)
         except Exception as e:
             logger.warning("Failed to save run result: %s", e)

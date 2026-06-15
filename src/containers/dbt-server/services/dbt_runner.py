@@ -173,6 +173,7 @@ def _parse_results(run_id: str, project_dir: str) -> dict[str, int]:
             mdata.get("compiled_sql", ""),
             mdata.get("depends_on", "[]"),
             r.get("adapter_response", {}).get("rows_affected"),
+            r.get("message") or "",
         ))
 
     if rows:
@@ -180,8 +181,8 @@ def _parse_results(run_id: str, project_dir: str) -> dict[str, int]:
             conn = get_db()
             conn.executemany(
                 """INSERT OR REPLACE INTO run_nodes
-                   (run_id, unique_id, name, resource_type, execution_time_s, status, compiled_sql, depends_on, rows_affected)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (run_id, unique_id, name, resource_type, execution_time_s, status, compiled_sql, depends_on, rows_affected, message)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
             conn.commit()
