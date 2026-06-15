@@ -1,52 +1,13 @@
 {
   "_design_notes": [
-    "Scale-Factor break-even sweep — spark vs spark-openivm.",
-    "",
-    "Goal: identify the SF at which spark-openivm starts to outperform vanilla",
-    "spark, both in aggregate (batch totals) AND per dbt model.",
-    "",
-    "Per-experiment lifecycle (executed serially by the OAT runner):",
-    "  1. Disk pre-flight (>=OAT_MIN_FREE_PCT, default 10% free) — if not, skip.",
-    "  2. Datagen for THIS SF (idempotent — usually fresh because the previous",
-    "     iteration's cleanup wiped mount/raw/<SF>/).",
-    "  3. Engine bench (spark, spark-openivm) — serial, NOT parallel, so each",
-    "     engine gets the full host budget.",
-    "  4. Result persistence to mount/results/<SF>/dbt-server/ AND oat_experiments.",
-    "  5. Cleanup: wipe mount/raw/<SF>/, mount/results/<SF>/{spark,spark-openivm}/,",
-    "     mount/logs/<SF>/{spark,spark-openivm}/. Keep dbt-server/, stats/, bin/,",
-    "     benchmark-state/ so charts and history survive.",
-    "",
-    "SF list is non-uniform on purpose: smaller granularity at small SFs (where",
-    "openivm overhead dominates) and larger steps at the tail (where the raw",
-    "data volume changes the question from 'who wins' to 'do we still fit on",
-    "disk'). The sweep stops gracefully if disk drops below 10% — the harness",
-    "still emits the chart with whatever experiments completed.",
-    "",
-    "Knobs that ARE swept (one-at-a-time, knob = scale_factor):",
-    "  scale_factor: 3, 5, 10, 15, 25, 50, 100, 175, 250, 400, 600, 1000",
-    "",
-    "Knobs held at baseline:",
-    "  batch_1_pct = 100   (full historical batch)",
-    "  batch_2_pct = 1     (1% incremental delta)",
-    "  batch_3_pct = 2     (2% incremental delta)",
-    "  engines     = [spark, spark-openivm]",
-    "  parallel    = false (serial; full host per engine)",
-    "  feature_flags.openivm_validate        = true",
-    "  feature_flags.openivm_profile_refresh = true",
-    "  feature_flags.openivm_query_log       = true",
-    "  feature_flags.preserve_raw            = false  (no-op inside OAT)",
-    "  spark_tunables.*                      = inherit YAML",
-    "",
-    "Disk sizing:",
-    "  ~170 MB raw per unit SF; ~6x including delta + per-engine outputs.",
-    "  At SF=1000, raw alone is ~170 GB. We expect the disk-guard to trip",
-    "  somewhere between SF=400 and SF=1000 on a host with <1 TB free."
+    "Full SF sweep.",
+    "Runs all engines."
   ],
   "baseline": {
     "batch_1_pct": "100",
     "batch_2_pct": "1",
     "batch_3_pct": "2",
-    "engines": ["spark", "spark-openivm"],
+    "engines": ["databricks-enzyme", "spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera"],
     "parallel": false,
     "feature_flags": {
       "openivm_validate": true,
@@ -56,9 +17,8 @@
     }
   },
   "experiments": [
-    { "label": "sf=100",  "scale_factor": 10  },
-    { "label": "sf=100",  "scale_factor": 100  },
-    { "label": "sf=250",  "scale_factor": 200  },
-    { "label": "sf=400",  "scale_factor": 400  }
+    { "label": "sf=3",    "scale_factor": 3 },
+    { "label": "sf=25",   "scale_factor": 25 },
+    { "label": "sf=100",  "scale_factor": 100 }
   ]
 }
