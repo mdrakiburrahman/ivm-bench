@@ -134,13 +134,17 @@ Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, RESULTS.
 
 ![Heuristics](imgs/benchmark-heuristics.png)
 
-### Scale Factor: 25 (100%, 1%, 1%)
+### Scale Factor: 3 (100%, 1%, 2%)
 
-![Results](imgs/scale-factor-25-100-1-1.png)
+![Results](imgs/scale-factor-3-100-1-2.png)
 
-### Scale Factor: 100 (100%, 1%, 1%)
+### Scale Factor: 25 (100%, 1%, 2%)
 
-![Results](imgs/scale-factor-100-100-1-1.png)
+![Results](imgs/scale-factor-25-100-1-2.png)
+
+### Scale Factor: 100 (100%, 1%, 2%)
+
+![Results](imgs/scale-factor-100-100-1-2.png)
 
 ### OAT sweeps (one-at-a-time)
 
