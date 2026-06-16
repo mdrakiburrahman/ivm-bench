@@ -361,6 +361,7 @@ def apply_experiment_env(inputs: ExperimentInputs) -> Dict[str, Optional[str]]:
         "SPARK_EXECUTOR_PCT_RAM",
         "SPARK_SUBMIT_SHUFFLE_PARTITIONS",
         "SPARK_SUBMIT_DEFAULT_PARALLELISM",
+        "SPARK_DBT_THREADS",
     ):
         if k not in new_env:
             if k in os.environ:

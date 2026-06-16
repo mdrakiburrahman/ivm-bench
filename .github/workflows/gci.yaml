@@ -58,7 +58,7 @@ on:
         type: string
       engines:
         description: "Comma-separated engine list"
-        default: "spark,spark-openivm,duckdb,duckdb-openivm,feldera"
+        default: "databricks-enzyme,databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera"
         type: string
       preserve_raw:
         description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
@@ -112,7 +112,7 @@ jobs:
       BATCH_3_UPDATE_PCT: ${{ inputs.batch_3_update_pct || '0' }}
       BATCH_3_DELETE_PCT: ${{ inputs.batch_3_delete_pct || '0' }}
       PARALLEL: ${{ inputs.parallel || '0' }}
-      ENGINES: ${{ inputs.engines || 'spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
+      ENGINES: ${{ inputs.engines || 'databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
@@ -196,6 +196,19 @@ jobs:
           fi
           echo "BENCHMARK_EXPERIMENTS_FILE=$EXP_FILE" >> "$GITHUB_ENV"
 
+      - name: "🔐 Write .env from BASE64_ENV secret"
+        env:
+          BASE64_ENV: ${{ secrets.BASE64_ENV }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BASE64_ENV:-}" ]]; then
+            echo "ERROR: BASE64_ENV secret is not set"
+            exit 1
+          fi
+          printf '%s' "$BASE64_ENV" | base64 -d > "$GITHUB_WORKSPACE/.env"
+          chmod 600 "$GITHUB_WORKSPACE/.env"
+          echo "Wrote $(wc -c < "$GITHUB_WORKSPACE/.env") bytes to .env"
+
       - name: "🏁 Run benchmark"
         run: bash src/.scripts/benchmark.sh
 
@@ -215,6 +228,8 @@ jobs:
             mount/logs/
             mount/results/
             mount/stats/
+            mount/query-plan/
+            mount/pipeline-events/
             mount/debug/
             mount/oat-state/
             gci-experiments.json

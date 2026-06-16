@@ -1,0 +1,31 @@
+services:
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    cpus: ${DATABRICKS_ENZYME_CPUS:-4}
+    mem_limit: ${DATABRICKS_ENZYME_MEM:-8g}
+    environment:
+      # Databricks Serverless SQL warehouse + Service Principal (OAuth M2M).
+      # The dbt-databricks profile in dbt-projects/databricks-enzyme/
+      # reads these via env_var() at run time.
+      DATABRICKS_HOST: "${DATABRICKS_HOST}"
+      DATABRICKS_SQL_HTTP_PATH: "${DATABRICKS_SQL_HTTP_PATH}"
+      DATABRICKS_SPN_CLIENT_ID: "${DATABRICKS_SPN_CLIENT_ID}"
+      DATABRICKS_SPN_CLIENT_SECRET: "${DATABRICKS_SPN_CLIENT_SECRET}"
+      # Catalog is fixed per-deployment
+      DATABRICKS_CATALOG: "${DATABRICKS_CATALOG:-ivmbenchdbrx}"
+      # Per-experiment isolation
+      DATABRICKS_EXPERIMENT_ID: "${DATABRICKS_EXPERIMENT_ID:-}"
+      # Source-table strategy:
+      #   "ctas" — CTAS managed Delta tables with row tracking enabled
+      #             (the only known-good strategy for INCREMENTAL STRICT;
+      #             external Delta sources lack row tracking).
+      DATABRICKS_ENZYME_STRATEGY: "${DATABRICKS_ENZYME_STRATEGY:-ctas}"
+      # Tells the dbt-server's databricks_enzyme_sources service where
+      # to find the locally-generated Delta dirs to upload from.
+      RAW_DELTA_DIR: /data/raw/delta
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/databricks-enzyme:/data/processed/databricks-enzyme
+      - ../mount/stats/${SCALE_FACTOR:-3}/databricks-enzyme:/data/stats

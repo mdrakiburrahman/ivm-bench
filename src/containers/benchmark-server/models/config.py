@@ -79,6 +79,7 @@ ENGINE_PORTS = {
     "duckdb-openivm": 5003,
     "feldera": 5004,
     "spark-openivm": 5005,
+    "databricks-enzyme": 5006,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -87,6 +88,7 @@ ENGINE_COMPOSE_FILES = {
     "duckdb-openivm": "docker/docker-compose.benchmark.duckdb-openivm.yml",
     "feldera": "docker/docker-compose.benchmark.feldera.yml",
     "spark-openivm": "docker/docker-compose.benchmark.spark-openivm.yml",
+    "databricks-enzyme": "docker/docker-compose.benchmark.databricks-enzyme.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine)
@@ -96,6 +98,7 @@ ENGINE_MAIN_SERVICES = {
     "duckdb-openivm": None,
     "feldera": "pipeline-manager",
     "spark-openivm": "spark-openivm",
+    "databricks-enzyme": None,
 }
 
 

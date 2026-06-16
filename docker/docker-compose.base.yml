@@ -18,6 +18,7 @@ services:
       BATCH_2_DELETE_PCT: "${BATCH_2_DELETE_PCT:-0}"
       BATCH_3_UPDATE_PCT: "${BATCH_3_UPDATE_PCT:-0}"
       BATCH_3_DELETE_PCT: "${BATCH_3_DELETE_PCT:-0}"
+      SPARK_DBT_THREADS: "${SPARK_DBT_THREADS:-}"
     volumes:
       - ../mount/logs/${SCALE_FACTOR:-3}:/data/logs
       - /var/run/docker.sock:/var/run/docker.sock:ro

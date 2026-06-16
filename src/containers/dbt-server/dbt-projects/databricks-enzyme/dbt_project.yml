@@ -1,0 +1,62 @@
+name: 'tpcdi'
+version: '1.0.0'
+config-version: 2
+
+profile: 'tpcdi'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+dispatch:
+  - macro_namespace: dbt_utils
+    search_order: ["tpcdi", "dbt_utils"]
+
+# Source registration is handled out-of-band by the dbt-server endpoint
+# `/sources/databricks-enzyme/init/<sf>` before the first dbt build, and
+# `/sources/databricks-enzyme/append/<batch_num>/<sf>` before batches 2/3.
+
+# Refresh-policy knob: every model in bronze/silver/gold is materialized as
+# a Databricks Materialized View whose `REFRESH POLICY` clause is taken
+# from `+refresh_policy:` here. Recognised values (per
+# https://learn.microsoft.com/azure/databricks/sql/language-manual/sql-ref-syntax-ddl-create-materialized-view-refresh-policy):
+#   - 'AUTO'                 # Databricks decides per refresh
+#   - 'INCREMENTAL'          # falls back to FULL if not incrementalizable
+#   - 'INCREMENTAL STRICT'   # FAILS hard if any refresh is not incrementalizable
+#   - 'FULL'                 # always recompute
+#
+# Override per-layer or per-model with `+refresh_policy:` in the matching
+# block below or via `{{ config(refresh_policy='…') }}` inside a model file.
+#
+# Pre-flight gate: the benchmark-server calls
+#   POST /validate/databricks-enzyme/explain-create-materialized-view/<sf>
+# on the dbt-server before the dbt build emits any DDL. That endpoint runs
+#   EXPLAIN CREATE MATERIALIZED VIEW <sandbox>.<model>
+#   REFRESH POLICY INCREMENTAL STRICT
+#   AS <compiled_sql>
+# for every non-ephemeral model and fails the engine fast if any model is
+# not incrementalizable — without polluting timing data with a half-failed
+# dbt run. Artifacts land under
+#   mount/query-plan/<sf>/databricks-enzyme/explain-create-materialized-view/.
+models:
+  tpcdi:
+    +materialized: materialized_view
+    +refresh_policy: 'AUTO'
+    bronze:
+      +schema: bronze
+    silver:
+      +schema: silver
+    gold:
+      +schema: gold
+      analytics:
+        +refresh_policy: 'AUTO'
+    work:
+      +schema: work
+      +materialized: ephemeral
