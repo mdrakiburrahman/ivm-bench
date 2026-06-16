@@ -71,11 +71,20 @@ class SparkTunables:
     BEFORE falling back to spark-defaults-breakdown.yaml. None/empty means
     "fall back to YAML"; we only emit env vars when the experiment actually
     pins a value, so unset experiments inherit the existing YAML defaults.
+
+    ``dbt_threads`` is read by the spark / spark-openivm dbt profiles.yml
+    (via ``SPARK_DBT_THREADS``) and caps how many models dbt builds
+    concurrently. Because Livy runs ``local[*]`` (one JVM), a high thread
+    count lets several heavy gold facts build at once and can OOM the
+    single driver heap at large SF — capping threads is the lever to keep
+    peak concurrent memory in check. None means "inherit the profiles.yml
+    default" (30).
     """
     driver_pct_ram: Optional[int] = None
     executor_pct_ram: Optional[int] = None
     shuffle_partitions: Optional[int] = None
     default_parallelism: Optional[int] = None
+    dbt_threads: Optional[int] = None
 
     def to_compose_env(self) -> Dict[str, str]:
         env: Dict[str, str] = {}
@@ -87,6 +96,8 @@ class SparkTunables:
             env["SPARK_SUBMIT_SHUFFLE_PARTITIONS"] = str(self.shuffle_partitions)
         if self.default_parallelism is not None:
             env["SPARK_SUBMIT_DEFAULT_PARALLELISM"] = str(self.default_parallelism)
+        if self.dbt_threads is not None:
+            env["SPARK_DBT_THREADS"] = str(self.dbt_threads)
         return env
 
 
@@ -219,6 +230,7 @@ class ExperimentInputs:
             executor_pct_ram=st_d.get("executor_pct_ram", base.spark_tunables.executor_pct_ram),
             shuffle_partitions=st_d.get("shuffle_partitions", base.spark_tunables.shuffle_partitions),
             default_parallelism=st_d.get("default_parallelism", base.spark_tunables.default_parallelism),
+            dbt_threads=st_d.get("dbt_threads", base.spark_tunables.dbt_threads),
         )
 
         # batch_N_pct accepts either the new explicit name or the legacy
