@@ -29,6 +29,20 @@ DATABRICKS_ENZYME_MAX_RETRIES = int(
 DATABRICKS_ENZYME_RETRY_BACKOFF_S = int(
     os.environ.get("DATABRICKS_ENZYME_RETRY_BACKOFF_S", "60")
 )
+# Append-time batch-loader heap sizing. The init loader (batch 1) runs BEFORE
+# the engine stack is up and can claim a large heap, but the append loader
+# (batches 2/3) runs CONCURRENTLY with the live engine server, which by then
+# holds the full batch-1 state (heavy for the IVM engines). The loader JVM
+# pre-touches its whole heap (-Xms<heap> -XX:+AlwaysPreTouch), so reusing the
+# large init heap oversubscribes the host and the append JVM is OOM-killed at
+# startup. Appends only load a 1-2% delta, so cap the append heap to the engine
+# memory NOT given to the main service (the dbt-server slice) minus this slack.
+BATCH_LOADER_APPEND_SLACK_GB = int(
+    os.environ.get("BATCH_LOADER_APPEND_SLACK_GB", "8")
+)
+BATCH_LOADER_APPEND_MIN_HEAP_GB = int(
+    os.environ.get("BATCH_LOADER_APPEND_MIN_HEAP_GB", "8")
+)
 # Substrings in a failed node's dbt `message` that indicate a
 # Databricks-side transient (lost executor, DLT pipeline restart, etc.)
 # rather than a genuine model error. Match is case-sensitive on the raw
@@ -109,11 +123,22 @@ class EngineRunner:
                 cwd=config.repo_dir,
             )
 
-        # Calculate JVM heap for batch_loader (60% of available memory, min 4g)
+        # Calculate JVM heap for batch_loader (60% of available memory, min 4g).
+        # This is the INIT heap, used while the engine stack is still down.
         batch_mem_gb = engine_config.main_resources.memory_gb
         batch_heap_gb = max(4, int(batch_mem_gb * 0.6))
         batch_gc_threads = max(4, engine_config.main_resources.cpus // 2)
         batch_conc_gc = max(2, batch_gc_threads // 2)
+
+        # APPEND heap: the loader for batches 2/3 runs alongside the live engine
+        # server, so it must fit in the engine memory left free by the main
+        # service (the dbt-server slice, == per_engine_mem - main_mem in both
+        # serial and parallel modes). Otherwise -Xms pre-touch OOM-kills it.
+        dbt_headroom_gb = engine_config.dbt_server_resources.memory_gb
+        self._batch_append_heap_gb = max(
+            BATCH_LOADER_APPEND_MIN_HEAP_GB,
+            min(batch_heap_gb, dbt_headroom_gb - BATCH_LOADER_APPEND_SLACK_GB),
+        )
 
         batch_extra = [self._batch_override_file] if self._batch_override_file else []
         self._batch_mgr = DockerManager(
@@ -2330,9 +2355,20 @@ class EngineRunner:
         self._emit(f"[{name}] Batch loader: init complete")
 
     def _batch_loader_append(self, batch_num: int) -> None:
-        """Append a batch to staging."""
+        """Append a batch to staging.
+
+        Uses the smaller append heap (see __init__): the engine server is
+        already running and holds the full batch-1 state, so the loader must
+        fit in the memory the main service did not reserve.
+        """
         name = self._engine.name
-        self._emit(f"[{name}] Batch loader: append {batch_num}")
+        self._batch_mgr.update_env(
+            {"BATCH_LOADER_HEAP": f"{self._batch_append_heap_gb}g"}
+        )
+        self._emit(
+            f"[{name}] Batch loader: append {batch_num} "
+            f"(heap {self._batch_append_heap_gb}g)"
+        )
         self._batch_mgr.run_service(
             "spark-batch-loader",
             cmd_args=["append", str(batch_num)],
