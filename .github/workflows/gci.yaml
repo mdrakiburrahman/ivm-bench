@@ -58,7 +58,7 @@ on:
         type: string
       engines:
         description: "Comma-separated engine list"
-        default: "databricks-enzyme,databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera"
+        default: "databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera"
         type: string
       preserve_raw:
         description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
