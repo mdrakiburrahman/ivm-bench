@@ -56,6 +56,10 @@ on:
         description: "Run engines in parallel (0 or 1)"
         default: "0"
         type: string
+      spark_dbt_threads:
+        description: "Cap spark/spark-openivm dbt build concurrency (SPARK_DBT_THREADS). Empty = engine default (30). Mirrors full.json's high-SF gimping."
+        default: ""
+        type: string
       engines:
         description: "Comma-separated engine list"
         default: "databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera"
@@ -131,6 +135,7 @@ jobs:
       - name: "🧬 Resolve experiments file"
         env:
           INPUT_EXPERIMENTS_FILE: ${{ inputs.experiments_file || '' }}
+          SPARK_DBT_THREADS_INPUT: ${{ inputs.spark_dbt_threads || '' }}
         run: |
           set -euo pipefail
           REPO_ROOT="$(pwd)"
@@ -145,6 +150,10 @@ jobs:
           else
             EXP_FILE="$REPO_ROOT/gci-experiments.json"
             engines_json="$(printf '%s' "$ENGINES" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; ""))')"
+            if [[ -n "${SPARK_DBT_THREADS_INPUT}" && ! "${SPARK_DBT_THREADS_INPUT}" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: spark_dbt_threads must be a positive integer (got: ${SPARK_DBT_THREADS_INPUT})"
+              exit 1
+            fi
             parallel_b=$([[ "$PARALLEL" = "1" ]] && echo true || echo false)
             preserve_raw_b=$([[ "$PRESERVE_RAW" = "1" ]] && echo true || echo false)
             openivm_validate_b=$([[ "$OPENIVM_VALIDATE" = "1" ]] && echo true || echo false)
@@ -160,6 +169,7 @@ jobs:
               --arg b3u "$BATCH_3_UPDATE_PCT" \
               --arg b3d "$BATCH_3_DELETE_PCT" \
               --argjson engines "$engines_json" \
+              --arg sdt "$SPARK_DBT_THREADS_INPUT" \
               --argjson parallel "$parallel_b" \
               --argjson preserve_raw "$preserve_raw_b" \
               --argjson openivm_validate "$openivm_validate_b" \
@@ -178,7 +188,7 @@ jobs:
                   }
                 },
                 experiments: [
-                  {
+                  ({
                     label: "gci-sf\($sf)",
                     scale_factor: $sf,
                     batch_1_pct: $b1,
@@ -188,7 +198,7 @@ jobs:
                     batch_2_delete_pct: $b2d,
                     batch_3_update_pct: $b3u,
                     batch_3_delete_pct: $b3d
-                  }
+                  } + (if $sdt != "" then { spark_tunables: { dbt_threads: ($sdt | tonumber) } } else {} end))
                 ]
               }' > "$EXP_FILE"
             echo "Synthesised 1-row experiments file: $EXP_FILE"
