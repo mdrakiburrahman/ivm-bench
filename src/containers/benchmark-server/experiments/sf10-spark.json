@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "SF10 Spark-only perf gate for the openivm-spark perf-tuning roadmap.",
+    "engines = [spark, spark-openivm] only (no duckdb/feldera).",
+    "batch 1 = 100% historical (CREATE MV), batch 2 = 1% delta, batch 3 = 2% delta.",
+    "Acceptance (aggregate batch totals): spark-openivm batch2/3 total wall <",
+    "its batch1 total AND < vanilla-spark batch2/3 total.",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=$PWD/src/containers/benchmark-server/experiments/sf10-spark.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["spark", "spark-openivm"],
+    "parallel": false,
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "sf10",
+      "scale_factor": 10,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "2"
+    }
+  ]
+}

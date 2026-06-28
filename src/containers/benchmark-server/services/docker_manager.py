@@ -134,7 +134,7 @@ class DockerManager:
 
     # ----- High-level operations -----
 
-    def build(self, services: Optional[List[str]] = None, timeout: int = 1800) -> None:
+    def build(self, services: Optional[List[str]] = None, timeout: int = 3600) -> None:
         """Build images."""
         args = ["build"]
         if services:
