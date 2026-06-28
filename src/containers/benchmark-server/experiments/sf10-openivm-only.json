@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "SF10 spark-openivm ONLY — fast iteration variant of sf10-spark.json for",
+    "perf-tuning measure/tune cycles. Vanilla-spark is unaffected by openivm-spark",
+    "changes, so compare batch totals against the captured spark baseline",
+    "(252 / 224 / 230 s for batch 1/2/3) and against spark-openivm's own batch 1.",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=$PWD/src/containers/benchmark-server/experiments/sf10-openivm-only.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["spark-openivm"],
+    "parallel": false,
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "sf10",
+      "scale_factor": 10,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "2"
+    }
+  ]
+}
