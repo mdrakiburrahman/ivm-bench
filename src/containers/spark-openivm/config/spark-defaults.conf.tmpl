@@ -99,6 +99,14 @@ spark.databricks.delta.schema.autoMerge.enabled=true
 # tables created before this flag was set.
 spark.openivm.delta.enableDeletionVectors=true
 
+# Perf experiment (result-invariant by construction; EXCEPT-ALL validation
+# guards correctness): prune the FULL_SOURCE scan in JOIN_DELTA / range-join
+# MVs via a semi-join pre-filter on the delta key domain, and accelerate the
+# SCD-2 BETWEEN range join. Targets the ~84s of range-join SIMPLE_PROJECTION
+# refresh cost at SF10 batch-2 (watches, dim_trade, fact_watches, ...).
+spark.openivm.refresh.semiJoinPrune.enabled=true
+spark.openivm.refresh.scd2RangeAccel.enabled=true
+
 # Resource allocation (computed from spark-defaults-breakdown.yaml; we
 # additionally enforce a 10g floor on the driver heap because Catalyst
 # planning, MvCatalog operations, and the OpenIvmCompiler DuckDB subprocess
