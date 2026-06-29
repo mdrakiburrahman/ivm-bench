@@ -1,0 +1,1 @@
+{"_comment":["SF3 fast-iteration variant; engines=spark-openivm"],"baseline":{"engines":["spark-openivm"],"parallel":false,"feature_flags":{"openivm_validate":true,"openivm_profile_refresh":true,"openivm_query_log":true,"preserve_raw":false}},"experiments":[{"label":"sf3-openivm-only","scale_factor":3,"batch_1_pct":"100","batch_2_pct":"1","batch_3_pct":"2"}]}
