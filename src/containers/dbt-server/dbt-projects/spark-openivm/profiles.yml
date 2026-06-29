@@ -21,6 +21,10 @@ tpcdi:
       # dbt/adapters/fabricspark/livysession.py LivySessionManager —
       # `livy_global_session` is a class-level singleton).
       threads: 30
-      retry_all: true
+      # Do not ask dbt-fabricspark to retry every DbtDatabaseError. Spark
+      # analysis / Delta errors are deterministic; retry_all turns them into
+      # long idle stalls where dbt sleeps between attempts while no Livy
+      # statement is running.
+      retry_all: false
       spark_config:
         name: dbt-tpcdi-spark-openivm
