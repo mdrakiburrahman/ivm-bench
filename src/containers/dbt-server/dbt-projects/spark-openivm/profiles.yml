@@ -23,10 +23,6 @@ tpcdi:
       # OAT-capped via SPARK_DBT_THREADS (spark_tunables.dbt_threads);
       # empty env / unset -> default 30.
       threads: "{{ (env_var('SPARK_DBT_THREADS', '') or '30') | int }}"
-      # Do not ask dbt-fabricspark to retry every DbtDatabaseError. Spark
-      # analysis / Delta errors are deterministic; retry_all turns them into
-      # long idle stalls where dbt sleeps between attempts while no Livy
-      # statement is running.
       retry_all: false
       spark_config:
         name: dbt-tpcdi-spark-openivm
