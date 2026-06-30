@@ -48,6 +48,7 @@ class FeatureFlags:
     openivm_profile_refresh: bool = True
     openivm_query_log: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
+    spark_metrics_capture: bool = True
 
     def to_compose_env(self) -> Dict[str, str]:
         return {
@@ -55,6 +56,7 @@ class FeatureFlags:
             "OPENIVM_PROFILE_REFRESH": "1" if self.openivm_profile_refresh else "0",
             "OPENIVM_QUERY_LOG": "1" if self.openivm_query_log else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
+            "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
         }
 
 
@@ -222,6 +224,7 @@ class ExperimentInputs:
             openivm_profile_refresh=bool(ff_d.get("openivm_profile_refresh", base.feature_flags.openivm_profile_refresh)),
             openivm_query_log=bool(ff_d.get("openivm_query_log", base.feature_flags.openivm_query_log)),
             preserve_raw=bool(ff_d.get("preserve_raw", base.feature_flags.preserve_raw)),
+            spark_metrics_capture=bool(ff_d.get("spark_metrics_capture", base.feature_flags.spark_metrics_capture)),
         )
 
         st_d = d.get("spark_tunables") or {}

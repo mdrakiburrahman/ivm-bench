@@ -333,6 +333,8 @@ class Orchestrator:
             ])
             if engine == "feldera":
                 dirs.append(f"mount/debug/{sf}/feldera")
+            if engine in ("spark", "spark-openivm"):
+                dirs.append(f"mount/metrics/{sf}/{engine}/spark-events")
         dirs.extend([
             f"mount/results/{sf}/dbt-server",
             f"mount/bin/duckdb-openivm",
@@ -1044,6 +1046,7 @@ class Orchestrator:
                     repo, "mount", "oat-state", self._oat_run_id,
                     f"exp-{exp_idx:03d}", "forensics",
                 )
+            self._emit_spark_metrics(exp_idx, inputs)
             try:
                 oat_runner.disk_cleanup_after_experiment(
                     repo_dir=repo, scale_factor=inputs.scale_factor,
@@ -1269,6 +1272,64 @@ class Orchestrator:
             if not silent:
                 self.emit(f"  [oat-chart] WARN: RESULTS.md render failed: {e}")
             logger.warning("OAT RESULTS.md render failed: %s", e)
+
+    def _emit_spark_metrics(self, exp_idx: int, inputs: ExperimentInputs) -> None:
+        """Parse Spark event logs → A/B Parquet + PNG + RESULTS.md + zip (issue #36).
+
+        Runs at the end of each experiment, BEFORE disk_cleanup wipes the raw
+        spark-events. Persists the bundle into mount/oat-state/<run>/exp-NNN/
+        metrics/ so it survives cleanup and is visible under oat-state/latest.
+        Best-effort — never aborts the sweep.
+        """
+        spark_engines = [e for e in inputs.engines if e in ("spark", "spark-openivm")]
+        if not spark_engines:
+            return
+        if not inputs.feature_flags.spark_metrics_capture:
+            self.emit("  [spark-metrics] capture disabled for this experiment — skipping")
+            return
+
+        repo = self._config.repo_dir
+        sf = str(inputs.scale_factor)
+        run_id = self._benchmark_id or f"exp-{exp_idx:03d}"
+        try:
+            from services import spark_metrics
+
+            summary = spark_metrics.process(
+                repo_dir=repo, sf=sf, benchmark_id=self._benchmark_id or "",
+                run_id=run_id, engines=spark_engines, emit=self.emit,
+            )
+        except Exception as e:
+            self.emit(f"  [spark-metrics] post-processing failed: {e}")
+            logger.exception("spark-metrics post-processing failed for exp %d", exp_idx)
+            return
+
+        if summary.get("status") != "ok":
+            return
+
+        if self._oat_run_id is None:
+            return
+        try:
+            processed_dir = summary.get("processed_dir")
+            dest = os.path.join(
+                repo, "mount", "oat-state", self._oat_run_id,
+                f"exp-{exp_idx:03d}", "metrics",
+            )
+            if processed_dir and os.path.isdir(processed_dir):
+                dest_processed = os.path.join(dest, "processed")
+                if os.path.isdir(dest_processed):
+                    shutil.rmtree(dest_processed)
+                shutil.copytree(processed_dir, dest_processed)
+            zip_path = summary.get("zip")
+            if zip_path and os.path.exists(zip_path):
+                os.makedirs(dest, exist_ok=True)
+                shutil.copy2(zip_path, os.path.join(dest, os.path.basename(zip_path)))
+            self.emit(
+                f"  [spark-metrics] bundle persisted to oat-state/exp-{exp_idx:03d}/metrics/ "
+                f"(engines={summary.get('engines')}, both={summary.get('both_engines')})"
+            )
+        except Exception as e:
+            self.emit(f"  [spark-metrics] oat-state copy failed: {e}")
+            logger.exception("spark-metrics oat-state copy failed for exp %d", exp_idx)
 
     def _oat_write_per_experiment_imgs(self, inputs: ExperimentInputs) -> None:
         """Write imgs/scale-factor-<sf>-<b1>-<b2>-<b3>.png + imgs/benchmark-heuristics.png.

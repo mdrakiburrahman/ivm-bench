@@ -167,3 +167,10 @@ spark.locality.wait=0s
 # Warehouse — separate location from the plain `spark` engine so the two
 # don't trample each other when both run on the same host.
 spark.sql.warehouse.dir=/data/processed/spark-openivm
+
+# Spark-native event log
+spark.eventLog.enabled=${SPARK_EVENTLOG_ENABLED_BOOL}
+spark.eventLog.dir=file:/data/metrics/spark-events
+spark.eventLog.rolling.enabled=true
+spark.eventLog.rolling.maxFileSize=128m
+spark.eventLog.logStageExecutorMetrics=true

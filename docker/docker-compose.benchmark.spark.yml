@@ -40,9 +40,11 @@ services:
       SPARK_EXECUTOR_PCT_RAM: "${SPARK_EXECUTOR_PCT_RAM:-}"
       SPARK_SUBMIT_SHUFFLE_PARTITIONS: "${SPARK_SUBMIT_SHUFFLE_PARTITIONS:-}"
       SPARK_SUBMIT_DEFAULT_PARALLELISM: "${SPARK_SUBMIT_DEFAULT_PARALLELISM:-}"
+      SPARK_METRICS_CAPTURE: "${SPARK_METRICS_CAPTURE:-1}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark
+      - ../mount/metrics/${SCALE_FACTOR:-3}/spark/spark-events:/data/metrics/spark-events
     healthcheck:
       test: curl -sf http://localhost:8998/sessions || exit 1
       interval: 10s
