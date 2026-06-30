@@ -217,6 +217,8 @@ jobs:
             mount/stats/
             mount/debug/
             mount/oat-state/
+            mount/imgs/
+            imgs/
             gci-experiments.json
           if-no-files-found: warn
           retention-days: 30

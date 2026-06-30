@@ -47,3 +47,10 @@
    ```
 
 1. Fill up `.env` based on `.env.example` for interaction with cloud infra (e.g. Databricks).
+
+1. Install AI:
+
+   ```bash
+   curl -fsSL https://gh.io/copilot-install | bash
+   $HOME/.local/bin/copilot --yolo
+   ```
