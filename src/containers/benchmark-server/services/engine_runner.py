@@ -20,6 +20,45 @@ logger = logging.getLogger(__name__)
 HEALTH_TIMEOUT = 300
 HEALTH_INTERVAL = 5
 
+_RETRY_DELAYS = [30, 60, 120]
+
+
+def _post_with_retry(
+    url: str,
+    timeout: int,
+    emit: Callable[[str], None],
+    label: str,
+    **kwargs,
+) -> requests.Response:
+    """POST with exponential-backoff retry on 5xx / connection errors.
+
+    Retries up to len(_RETRY_DELAYS) times before propagating the last
+    exception.  Non-5xx HTTP errors (4xx etc.) are re-raised immediately.
+    """
+    last_exc: Exception = RuntimeError("no attempts made")
+    for attempt, delay in enumerate(
+        [0] + _RETRY_DELAYS, start=1
+    ):
+        if delay:
+            emit(f"[{label}] retrying in {delay}s (attempt {attempt}/{len(_RETRY_DELAYS) + 1})")
+            time.sleep(delay)
+        try:
+            resp = requests.post(url, timeout=timeout, **kwargs)
+            if resp.status_code >= 500:
+                last_exc = requests.HTTPError(
+                    f"{resp.status_code} Server Error for url: {url}",
+                    response=resp,
+                )
+                emit(f"[{label}] FAILED: {last_exc} — will retry")
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.ConnectionError as exc:
+            last_exc = exc
+            emit(f"[{label}] connection error: {exc} — will retry")
+            continue
+    raise last_exc
+
 
 class OpenIvmValidationError(RuntimeError):
     """Raised when post-batch OpenIVM correctness validation (EXCEPT ALL) fails.
@@ -446,8 +485,12 @@ class EngineRunner:
             self._emit(f"[duckdb] Sources initialised: {src_result.get('tables_created', '?')} tables")
         else:
             self._emit(f"[duckdb] Appending batch {batch_num} sources")
-            resp = requests.post(f"{self._dbt_url}/sources/duckdb/append/{batch_num}", timeout=600)
-            resp.raise_for_status()
+            resp = _post_with_retry(
+                f"{self._dbt_url}/sources/duckdb/append/{batch_num}",
+                timeout=600,
+                emit=self._emit,
+                label="duckdb",
+            )
             src_result = resp.json()
             self._emit(
                 f"[duckdb] Batch {batch_num} appended: "
@@ -657,11 +700,12 @@ class EngineRunner:
             )
         else:
             self._emit(f"[duckdb-openivm] Appending batch {batch_num} sources")
-            resp = requests.post(
+            resp = _post_with_retry(
                 f"{self._dbt_url}/sources/duckdb-openivm/append/{batch_num}",
                 timeout=600,
+                emit=self._emit,
+                label="duckdb-openivm",
             )
-            resp.raise_for_status()
             src_result = resp.json()
             self._emit(
                 f"[duckdb-openivm] Batch {batch_num} appended: "
@@ -715,11 +759,12 @@ class EngineRunner:
 
         if batch_num == 1:
             self._emit("[spark-openivm] Initialising sources (DML via Livy)")
-            resp = requests.post(
+            resp = _post_with_retry(
                 f"{self._dbt_url}/sources/spark-openivm/init",
                 timeout=3600,
+                emit=self._emit,
+                label="spark-openivm",
             )
-            resp.raise_for_status()
             src_result = resp.json()
             if src_result.get("status") != "ok":
                 raise RuntimeError(
@@ -730,11 +775,12 @@ class EngineRunner:
             )
         else:
             self._emit(f"[spark-openivm] Appending batch {batch_num} sources (DML via Livy)")
-            resp = requests.post(
+            resp = _post_with_retry(
                 f"{self._dbt_url}/sources/spark-openivm/append/{batch_num}",
                 timeout=3600,
+                emit=self._emit,
+                label="spark-openivm",
             )
-            resp.raise_for_status()
             src_result = resp.json()
             if src_result.get("status") != "ok":
                 raise RuntimeError(
