@@ -125,10 +125,15 @@ class DockerManager:
 
         stdout = "\n".join(output_lines)
         if check and proc.returncode != 0:
+            # The real error (Spark/JVM stack trace) is at the TAIL of the
+            # stream, so surface the tail rather than the head.
+            tail = stdout[-4000:]
+            if len(stdout) > 4000:
+                tail = "...(output truncated — showing tail)...\n" + tail
             raise RuntimeError(
                 f"Docker compose command failed (exit {proc.returncode}):\n"
                 f"cmd: {' '.join(cmd)}\n"
-                f"output: {stdout[:2000]}"
+                f"output (tail): {tail}"
             )
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout, "")
 

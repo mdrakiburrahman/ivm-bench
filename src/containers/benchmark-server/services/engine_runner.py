@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -2388,16 +2388,54 @@ class EngineRunner:
 
     # ----- Batch loading -----
 
+    def _batch_loader_log_file(self, suffix: str) -> Optional[str]:
+        """Path under mount/logs/<sf>/<engine>/ for batch-loader output.
+
+        Written so the real Spark error survives the loader container's `--rm`
+        and is archived into the uploaded artifact by _archive_failure_forensics
+        (which copies mount/logs/<sf>/<engine>/ on failure).
+        """
+        try:
+            log_dir = os.path.join(
+                self._config.repo_dir, "mount", "logs",
+                str(self._config.scale_factor), self._engine.name,
+            )
+            os.makedirs(log_dir, exist_ok=True)
+            return os.path.join(log_dir, f"batch-loader-{suffix}.log")
+        except OSError:
+            return None
+
+    def _run_batch_loader_service(self, cmd_args: List[str], log_suffix: str) -> None:
+        """Run the spark-batch-loader one-shot, teeing output to a forensic log."""
+        name = self._engine.name
+        log_path = self._batch_loader_log_file(log_suffix)
+        fh = open(log_path, "w") if log_path else None
+
+        def _sink(line: str) -> None:
+            logger.debug("[batch-loader/%s] %s", name, line)
+            if fh is not None:
+                try:
+                    fh.write(line + "\n")
+                    fh.flush()
+                except OSError:
+                    pass
+
+        try:
+            self._batch_mgr.run_service(
+                "spark-batch-loader",
+                cmd_args=cmd_args,
+                stream_callback=_sink,
+            )
+        finally:
+            if fh is not None:
+                fh.close()
+
     def _batch_loader_init(self) -> None:
         """Initialize staging from batch1 (serial mode only)."""
         name = self._engine.name
         self._emit(f"[{name}] Batch loader: init")
 
-        self._batch_mgr.run_service(
-            "spark-batch-loader",
-            cmd_args=["init"],
-            stream_callback=lambda line: logger.debug("[batch-loader/%s] %s", name, line),
-        )
+        self._run_batch_loader_service(["init"], "init")
         self._fix_delta_permissions()
         self._emit(f"[{name}] Batch loader: init complete")
 
@@ -2416,10 +2454,8 @@ class EngineRunner:
             f"[{name}] Batch loader: append {batch_num} "
             f"(heap {self._batch_append_heap_gb}g)"
         )
-        self._batch_mgr.run_service(
-            "spark-batch-loader",
-            cmd_args=["append", str(batch_num)],
-            stream_callback=lambda line: logger.debug("[batch-loader/%s] %s", name, line),
+        self._run_batch_loader_service(
+            ["append", str(batch_num)], f"append{batch_num}"
         )
         self._fix_delta_permissions()
         self._emit(f"[{name}] Batch loader: append {batch_num} complete")

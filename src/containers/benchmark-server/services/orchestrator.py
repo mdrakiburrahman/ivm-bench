@@ -1143,32 +1143,46 @@ class Orchestrator:
     def _persist_oat_experiment_row(
         self, exp_idx: int, inputs: ExperimentInputs, exp_dict: dict,
     ) -> None:
-        """UPSERT one row into ``oat_experiments``."""
-        with DB_LOCK:
-            conn = get_db()
-            conn.execute(
-                "INSERT OR REPLACE INTO oat_experiments "
-                "(oat_run_id, exp_idx, benchmark_id, label, status, "
-                " started_at, ended_at, wall_clock_s, disk_free_pct, "
-                " inputs_json, outputs_json, error) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    self._oat_run_id,
-                    exp_idx,
-                    exp_dict.get("benchmark_id"),
-                    exp_dict.get("label"),
-                    exp_dict.get("status"),
-                    exp_dict.get("started_at"),
-                    exp_dict.get("ended_at"),
-                    exp_dict.get("wall_clock_s"),
-                    exp_dict.get("disk_free_pct"),
-                    json.dumps(inputs.to_dict()),
-                    json.dumps(exp_dict),
-                    exp_dict.get("error"),
-                ),
+        """UPSERT one row into ``oat_experiments`` (best-effort).
+
+        A SQLite failure here (e.g. the bind-mounted state dir vanished
+        mid-sweep) must never abort the sweep — the filesystem outputs.json /
+        RESULTS.md are the real deliverables. Degrade to a WARN.
+        """
+        try:
+            with DB_LOCK:
+                conn = get_db()
+                conn.execute(
+                    "INSERT OR REPLACE INTO oat_experiments "
+                    "(oat_run_id, exp_idx, benchmark_id, label, status, "
+                    " started_at, ended_at, wall_clock_s, disk_free_pct, "
+                    " inputs_json, outputs_json, error) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        self._oat_run_id,
+                        exp_idx,
+                        exp_dict.get("benchmark_id"),
+                        exp_dict.get("label"),
+                        exp_dict.get("status"),
+                        exp_dict.get("started_at"),
+                        exp_dict.get("ended_at"),
+                        exp_dict.get("wall_clock_s"),
+                        exp_dict.get("disk_free_pct"),
+                        json.dumps(inputs.to_dict()),
+                        json.dumps(exp_dict),
+                        exp_dict.get("error"),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            self.emit(
+                f"  [oat-db] WARN: failed to persist oat_experiments row "
+                f"exp={exp_idx}: {e}"
             )
-            conn.commit()
-            conn.close()
+            logger.warning(
+                "Failed to persist oat_experiments row for exp %d: %s", exp_idx, e
+            )
 
     def _finalize_oat(
         self, status: str, oat_t0: float, error: Optional[str] = None,
@@ -1187,14 +1201,20 @@ class Orchestrator:
             error=error,
         )
 
-        with DB_LOCK:
-            conn = get_db()
-            conn.execute(
-                "UPDATE oat_runs SET status=?, completed_at=?, total_duration_s=?, error=? WHERE id=?",
-                (status, completed_at, total, error, self._oat_run_id),
-            )
-            conn.commit()
-            conn.close()
+        # Best-effort: a SQLite failure (e.g. vanished state dir) must not
+        # block the chart / RESULTS.md / server-log artifacts written below.
+        try:
+            with DB_LOCK:
+                conn = get_db()
+                conn.execute(
+                    "UPDATE oat_runs SET status=?, completed_at=?, total_duration_s=?, error=? WHERE id=?",
+                    (status, completed_at, total, error, self._oat_run_id),
+                )
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            self.emit(f"  [oat-db] WARN: failed to update oat_runs row: {e}")
+            logger.warning("Failed to update oat_runs row %s: %s", self._oat_run_id, e)
 
         # Chart + RESULTS.md generation (best-effort — never fail the run).
         self._phase3_oat_chart()
