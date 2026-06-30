@@ -37,8 +37,6 @@ SOURCES_DIR = os.path.join(WORK_DIR, "sources")
 # that 5 sequential statements/model (CREATE TEMP VIEW, DESCRIBE×2,
 # COUNT-EXCEPT, DROP) is not dominated by polling sleeps. Overridable so we
 # can dial up if Livy ever rate-limits the HTTP GETs.
-# SPARK_OPENIVM_LIVY_STATEMENT_TIMEOUT_S bounds a single statement so the
-# benchmark fails instead of waiting forever if Livy stops advancing a result.
 LIVY_STMT_POLL_INTERVAL_S = float(
     os.environ.get("SPARK_OPENIVM_LIVY_POLL_INTERVAL", "0.1")
 )
