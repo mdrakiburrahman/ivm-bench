@@ -55,6 +55,12 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 REPO_ROOT="$(pwd)"
 
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  set -o allexport
+  source "$REPO_ROOT/.env"
+  set +o allexport
+fi
+
 if [[ -z "${BENCHMARK_EXPERIMENTS_FILE:-}" ]]; then
   echo "ERROR: BENCHMARK_EXPERIMENTS_FILE must be set."
   echo "  Example:"

@@ -4,6 +4,9 @@ matplotlib>=3.8
 dbt-core~=1.11
 https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
 dbt-duckdb>=1.9
+dbt-databricks~=1.11
+databricks-sql-connector>=4.0
+databricks-sdk>=0.40
 duckdb>=1.5.2
 deltalake>=0.18
 dbt-feldera @ git+https://github.com/mdrakiburrahman/feldera.git@41548878813d750a25f531280517b96ede7b56a1#subdirectory=python/dbt-feldera

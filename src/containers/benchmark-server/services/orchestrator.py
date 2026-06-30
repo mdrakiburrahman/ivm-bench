@@ -252,7 +252,7 @@ class Orchestrator:
             ("docker/docker-compose.spark-openivm-build.yml", "spark-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm", "databricks-enzyme"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:
@@ -1122,6 +1122,11 @@ class Orchestrator:
         self._config.engines = list(inputs.engines)
         self._config.parallel = inputs.parallel
         oat_runner.apply_experiment_env(inputs)
+
+        experiment_id = str(int(time.time() * 1_000_000))
+        os.environ["DATABRICKS_EXPERIMENT_ID"] = experiment_id
+        self._databricks_experiment_id = experiment_id
+
         dml_extras = []
         for ix, (u, d) in enumerate(((inputs.batch_2_update_pct, inputs.batch_2_delete_pct),
                                      (inputs.batch_3_update_pct, inputs.batch_3_delete_pct)), start=2):
@@ -1131,7 +1136,8 @@ class Orchestrator:
         self.emit(
             f"  [oat-apply] SF={inputs.scale_factor} batches={inputs.batch_1_pct}/"
             f"{inputs.batch_2_pct}/{inputs.batch_3_pct}{dml_str} "
-            f"engines={','.join(inputs.engines)} parallel={inputs.parallel}"
+            f"engines={','.join(inputs.engines)} parallel={inputs.parallel} "
+            f"databricks_exp_id={experiment_id}"
         )
 
     def _persist_oat_experiment_row(

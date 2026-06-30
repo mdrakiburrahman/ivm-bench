@@ -12,15 +12,17 @@ tpcdi:
       connect_timeout: 10
       lakehouse: tpcdi
       schema: tpcdi
-      # Aligned with the `spark` profile (threads: 30) so the two engines
-      # use an identical dbt configuration; the resulting bench numbers are
+      # Aligned with the `spark` profile so the two engines use an
+      # identical dbt configuration; the resulting bench numbers are
       # directly comparable. Note: dbt-fabricspark + `livy_mode: local`
       # multiplexes ALL dbt threads onto a single shared Livy session whose
       # statement-executor pool serializes statements, so the effective
       # in-Spark concurrency is 1 regardless of this value (see
       # dbt/adapters/fabricspark/livysession.py LivySessionManager —
       # `livy_global_session` is a class-level singleton).
-      threads: 30
+      # OAT-capped via SPARK_DBT_THREADS (spark_tunables.dbt_threads);
+      # empty env / unset -> default 30.
+      threads: "{{ (env_var('SPARK_DBT_THREADS', '') or '30') | int }}"
       # Do not ask dbt-fabricspark to retry every DbtDatabaseError. Spark
       # analysis / Delta errors are deterministic; retry_all turns them into
       # long idle stalls where dbt sleeps between attempts while no Livy

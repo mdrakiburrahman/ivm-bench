@@ -1,0 +1,15 @@
+tpcdi:
+  target: databricks-enzyme
+  outputs:
+    databricks-enzyme:
+      type: databricks
+      auth_type: oauth
+      host: "{{ env_var('DATABRICKS_HOST') | replace('https://', '') | replace('http://', '') }}"
+      http_path: "{{ env_var('DATABRICKS_SQL_HTTP_PATH') }}"
+      client_id: "{{ env_var('DATABRICKS_SPN_CLIENT_ID') }}"
+      client_secret: "{{ env_var('DATABRICKS_SPN_CLIENT_SECRET') }}"
+      catalog: "{{ env_var('DATABRICKS_CATALOG', 'ivmbenchdbrx') }}"
+      schema: "exp_{{ env_var('DATABRICKS_EXPERIMENT_ID', 'unset') }}_data"
+      threads: 8
+      connect_retries: 5
+      connect_timeout: 60

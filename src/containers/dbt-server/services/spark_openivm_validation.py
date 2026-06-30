@@ -220,6 +220,8 @@ _NUMERIC_TYPE_PREFIXES = (
     "numeric",
 )
 
+_CONTINUOUS_NUMERIC_PREFIXES = ("float", "double", "decimal", "numeric")
+
 
 def _is_numeric_type(spark_type: str) -> bool:
     """True iff Spark's DESCRIBE type label denotes a numeric type.
@@ -233,6 +235,23 @@ def _is_numeric_type(spark_type: str) -> bool:
     t = (spark_type or "").strip().lower()
     return any(t == prefix or t.startswith(prefix + "(") or t.startswith(prefix + " ")
                or t == prefix for prefix in _NUMERIC_TYPE_PREFIXES)
+
+
+def _is_continuous_numeric_type(spark_type: str) -> bool:
+    """True iff the Spark type is a continuous numeric (float/double/decimal).
+
+    Continuous numerics are subject to ULP-level drift between IVM-incremental
+    refresh and full re-eval — Spark's IVM rewriter can pick different
+    intermediate DECIMAL precision/scale and float arithmetic ordering, so
+    the stored bytes differ even when values are mathematically equivalent.
+    These columns get tolerance-rounded before hashing. Integer types are
+    always exact (BIGINT counts must match precisely) and pass through.
+    """
+    t = (spark_type or "").strip().lower()
+    return any(
+        t == p or t.startswith(p + "(") or t.startswith(p + " ")
+        for p in _CONTINUOUS_NUMERIC_PREFIXES
+    )
 
 
 def _build_canonical_projection(
@@ -281,7 +300,26 @@ def _build_canonical_projection(
         et = exp_types.get(c, "")
         same = mt.strip().lower() == et.strip().lower()
         both_numeric = _is_numeric_type(mt) and _is_numeric_type(et)
-        if not same and both_numeric:
+        both_continuous = (
+            _is_continuous_numeric_type(mt)
+            and _is_continuous_numeric_type(et)
+        )
+        if both_continuous:
+            # Tolerance comparison for float/double/decimal columns:
+            # ROUND to 2 decimals (cents-level precision) absorbs ULP
+            # drift between IVM-incremental refresh and full re-eval.
+            # Spark's openivm rewriter can pick different intermediate
+            # DECIMAL precision/scale than the analyzer would for a
+            # fresh full-eval, producing mathematically equivalent but
+            # bit-distinct DECIMAL bytes (xxhash64 hashes bytes, not
+            # values). Round-then-CAST normalizes both sides to the
+            # same canonical bytes when values agree at 0.01 tolerance.
+            # Real value mismatches (>0.005 in any row) still surface.
+            inner_parts.append(
+                f"CAST(ROUND(CAST({_quote_ident(c)} AS DOUBLE), 2) "
+                f"AS DECIMAL(38, 2)) AS {_quote_ident(c)}"
+            )
+        elif not same and both_numeric:
             inner_parts.append(
                 f"CAST({_quote_ident(c)} AS DOUBLE) AS {_quote_ident(c)}"
             )

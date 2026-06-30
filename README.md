@@ -108,17 +108,43 @@ Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, RESULTS.
 - Docker is NOT very good at resource isolation, the screenshots below must be generated with `PARALLEL=0`
 - The PNGs below are illustrative snapshots from prior runs. Current OAT runs emit `chart-oat.png` + `chart-per-model.png` into `mount/oat-state/<run_id>/` instead.
 
+### Resource allocation
+
+- The OSS engines run under an Azure VM at `Standard_E32as_v4` (32 cores).
+- For closed source engines such as Databricks Enzyme with abstraction layers such as DBU, we use a:
+  
+  - [Heuristic UDF](https://github.com/mdrakiburrahman/ivm-bench/issues/22) `SELECT detect_cpu_and_ram()`
+  - [VM mapping](https://docs.databricks.com/aws/en/compute/sql-warehouse/warehouse-behavior)
+
+  To land on a `Small` SQL Warehouse resource to ~roughly match our 32 core machine (keeping in mind Databricks runs Drivers/Executors on seperate hosts).
+
+### Query Heuristics
+
+- Databricks Enzyme fails incrementalization for queries it cannot incrementalize with [`REFRESH POLICY INCREMENTAL STRICT`](https://community.databricks.com/t5/technical-blog/from-surprise-full-refreshes-to-predictable-bills-refresh-policy/ba-p/157365). It is possible that the other engines are either:
+   
+  1. Superior at incrementalizing a class of queries that Enzyme cannot
+  2. Are incorrectly incrementalizing queries and failing silently
+
+  In order to keep all IVM engine benchmarks in relative lockstep, we go ahead and write all queries to have similar IVM semantics with the lowest common denominator.
+
+  In future, as per engine can expose an "incrementalizable dry run" similar to [`EXPLAIN CREATE MATERIALIZED VIEW`](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-qry-explain-materialized-view), we can dynamically set the refresh type to `auto` per engine or when an engine complains, make it run `full`. This way,
+  engines that **can** incrementalize a query performantly will, and beat the competitor fairly.
+
 ### Benchmark Heuristics
 
 ![Heuristics](imgs/benchmark-heuristics.png)
 
-### Scale Factor: 25 (100%, 1%, 1%)
+### Scale Factor: 3 (100%, 1%, 2%)
 
-![Results](imgs/scale-factor-25-100-1-1.png)
+![Results](imgs/scale-factor-3-100-1-2.png)
 
-### Scale Factor: 100 (100%, 1%, 1%)
+### Scale Factor: 25 (100%, 1%, 2%)
 
-![Results](imgs/scale-factor-100-100-1-1.png)
+![Results](imgs/scale-factor-25-100-1-2.png)
+
+### Scale Factor: 100 (100%, 1%, 2%)
+
+![Results](imgs/scale-factor-100-100-1-2.png)
 
 ### OAT sweeps (one-at-a-time)
 
@@ -164,6 +190,10 @@ set inherits from the file's `baseline` block.
 ## Disclaimer
 
 > Before adding a non-OSS engine here, be sure to check the [DeWitt clause](https://cube.dev/blog/dewitt-clause-or-can-you-benchmark-a-database).
+
+* Databricks: [Eliminating the Anti-competitive DeWitt Clause for Database Benchmarking](https://www.databricks.com/blog/2021/11/08/eliminating-the-dewitt-clause-for-database-benchmarking.html)
+
+---
 
 As this repo's implementation of the TPC-DI is an unpublished and unofficial TPC Benchmark, the following is required legalese per TPC Fair Use Policy:
 

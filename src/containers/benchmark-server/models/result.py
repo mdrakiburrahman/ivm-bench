@@ -1,7 +1,7 @@
 """Result models for benchmark runs."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -11,6 +11,10 @@ class BatchResult:
     duration_s: float = 0.0
     status: str = "pending"  # pending, running, completed, failed
     error: Optional[str] = None
+    # Forensics-only extras (e.g. databricks-enzyme pure-compute breakdown).
+    # Chart consumers ignore this; it's serialized into benchmark-results.json
+    # so reviewers can audit the swap between wall-clock and pure-compute.
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -42,6 +46,7 @@ class EngineResult:
                     "duration_s": b.duration_s,
                     "status": b.status,
                     "error": b.error,
+                    **({"extra": b.extra} if b.extra else {}),
                 }
                 for b in self.batches
             ],

@@ -21,7 +21,11 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Anchor REPO_ROOT to the script's own location (src/.scripts/) rather than
+# `git rev-parse --show-toplevel`, which picks up an outer git repo when this
+# checkout is nested inside one (e.g. ~/openivm-spark/.temp/ivm-bench).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
 cd "$REPO_ROOT"
 
 if [[ ! -f "$REPO_ROOT/.env" ]]; then
@@ -106,7 +110,13 @@ fi
 SSH_PUBLIC_KEY="$(cat "$SSH_PUB_PATH")"
 
 TF_DIR="$REPO_ROOT/src/infra/terraform/github-runner"
-STATE_KEY="github-runner.tfstate"
+STATE_KEY="github-runner-ivm-bench.tfstate"
+
+# Refresh the upstream module pinned via `git::` source in main.tf before
+# init/plan/apply. Cheap when the ref is a commit SHA (cached after first
+# fetch); ensures upstream changes are picked up if the ref is moved.
+echo "=== terraform get -update (refresh pinned KangarooKube module) ==="
+terraform -chdir="$TF_DIR" get -update
 
 echo "=== terraform init (backend: $TF_STATE_STORAGE_ACCOUNT_NAME / $TF_STATE_STORAGE_ACCOUNT_CONTAINER / $STATE_KEY) ==="
 terraform -chdir="$TF_DIR" init -reconfigure \

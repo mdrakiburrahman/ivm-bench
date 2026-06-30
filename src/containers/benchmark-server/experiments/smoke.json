@@ -2,8 +2,7 @@
   "_comment": [
     "Minimal smoke run for the OAT harness.",
     "Cheapest possible config: SF=3, 1% batch 1, 0.001% batch 2, 0.002% batch 3,",
-    "two engines (spark + spark-openivm). Used by developers and CI dry-runs to",
-    "exercise the OAT loop, per-experiment cleanup, and artifact emission end-to-end",
+    "Used to exercise the OAT loop, per-experiment cleanup, and artifact emission end-to-end",
     "(results / logs / mount/oat-state/) without paying the full sf-sweep cost.",
     "",
     "Usage (host):",
@@ -11,7 +10,7 @@
     "    bash src/.scripts/benchmark.sh"
   ],
   "baseline": {
-    "engines": ["spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera"],
+    "engines": ["databricks-enzyme", "spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera"],
     "parallel": false,
     "feature_flags": {
       "openivm_validate": true,
