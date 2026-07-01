@@ -49,6 +49,7 @@ class FeatureFlags:
     openivm_query_log: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
     spark_metrics_capture: bool = True
+    openivm_extra_conf: str = ""
 
     def to_compose_env(self) -> Dict[str, str]:
         return {
@@ -57,6 +58,7 @@ class FeatureFlags:
             "OPENIVM_QUERY_LOG": "1" if self.openivm_query_log else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
             "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
+            "OPENIVM_EXTRA_CONF": self.openivm_extra_conf,
         }
 
 
@@ -177,7 +179,8 @@ class ExperimentInputs:
             "parallel": int(self.parallel),
         }
         for f in fields(FeatureFlags):
-            out[f"feature_flags.{f.name}"] = int(getattr(self.feature_flags, f.name))
+            v = getattr(self.feature_flags, f.name)
+            out[f"feature_flags.{f.name}"] = int(v) if isinstance(v, bool) else v
         for f in fields(SparkTunables):
             v = getattr(self.spark_tunables, f.name)
             out[f"spark_tunables.{f.name}"] = "" if v is None else v
@@ -225,6 +228,7 @@ class ExperimentInputs:
             openivm_query_log=bool(ff_d.get("openivm_query_log", base.feature_flags.openivm_query_log)),
             preserve_raw=bool(ff_d.get("preserve_raw", base.feature_flags.preserve_raw)),
             spark_metrics_capture=bool(ff_d.get("spark_metrics_capture", base.feature_flags.spark_metrics_capture)),
+            openivm_extra_conf=str(ff_d.get("openivm_extra_conf", base.feature_flags.openivm_extra_conf)),
         )
 
         st_d = d.get("spark_tunables") or {}

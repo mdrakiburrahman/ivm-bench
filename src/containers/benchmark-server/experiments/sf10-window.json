@@ -1,0 +1,41 @@
+{
+  "_design_notes": [
+    "R0.2 issue #15: SF10 window-focused OAT sweep for ranking running-window openivm-spark levers without rebuilding the runtime image.",
+    "The baseline runs both spark and spark-openivm with all experimental window levers OFF so metrics can compare against vanilla full refresh.",
+    "The lever rows run spark-openivm only and inject per-experiment Spark conf through feature_flags.openivm_extra_conf."
+  ],
+  "baseline": {
+    "scale_factor": 10,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "2",
+    "parallel": false,
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "d15-baseline-off",
+      "engines": ["spark", "spark-openivm"]
+    },
+    {
+      "label": "rw-rocksdb",
+      "engines": ["spark-openivm"],
+      "feature_flags": {
+        "openivm_extra_conf": "spark.openivm.refresh.windowRunningIncremental.enabled=true spark.openivm.window.rocksdbState.enabled=true"
+      }
+    },
+    {
+      "label": "rw-nostate",
+      "engines": ["spark-openivm"],
+      "feature_flags": {
+        "openivm_extra_conf": "spark.openivm.refresh.windowRunningIncremental.enabled=true"
+      }
+    }
+  ]
+}

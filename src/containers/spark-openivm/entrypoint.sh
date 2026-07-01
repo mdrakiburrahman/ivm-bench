@@ -85,6 +85,12 @@ esac
 
 mkdir -p /opt/spark/conf
 process_template "$CONFIG_DIR/spark-defaults.conf.tmpl" "/opt/spark/conf/spark-defaults.conf"
+# issue #15: append per-experiment openivm-spark levers (space-separated key=value)
+if [[ -n "${OPENIVM_EXTRA_CONF:-}" ]]; then
+  for kv in ${OPENIVM_EXTRA_CONF}; do
+    echo "${kv}" >> /opt/spark/conf/spark-defaults.conf
+  done
+fi
 process_template "$CONFIG_DIR/hive-site.xml.tmpl" "/opt/spark/conf/hive-site.xml"
 
 mkdir -p /opt/livy/conf
