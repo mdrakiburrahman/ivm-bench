@@ -36,10 +36,10 @@ FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
-ARG OPENIVM_BRANCH=wt/p52-running-agg
-ARG OPENIVM_COMMIT=315dd55373a32a52a718bd195233f9f033cdca4a
-ARG LPTS_REPO=https://github.com/ila/lpts.git
-ARG LPTS_BRANCH=main
+ARG OPENIVM_BRANCH=dev/mdrrahman/perf-tuning
+ARG OPENIVM_COMMIT=0a7f3e4905a6f853d8ef1326f8345308816be29c
+ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
+ARG LPTS_BRANCH=dev/mdrrahman/perf-tuning
 ARG LPTS_COMMIT=9019277d27b27d791f9112667ad9099ab034c8df
 
 ENV DEBIAN_FRONTEND=noninteractive
