@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "SF10 Enzyme-vs-openivm study run.",
+    "Engines: databricks-enzyme (live SQL warehouse), spark-openivm, vanilla spark.",
+    "Batches 100/1/2 to match full.json / PR #10 SF-scale reference mix.",
+    "Purpose: capture per-engine per-batch query plans + per-model metrics parquet",
+    "for the enzyme-based-inspiration-todos.md analysis (openivm-spark).",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/sf10-enzyme.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["databricks-enzyme", "spark-openivm", "spark"],
+    "parallel": false,
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "sf10-enzyme",
+      "scale_factor": 10,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "2"
+    }
+  ]
+}

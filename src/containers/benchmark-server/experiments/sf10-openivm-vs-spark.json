@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "SF10 openivm-spark-vs-vanilla iteration loop for the enzyme-perf-tuning branch.",
+    "Engines: spark-openivm, vanilla spark (Enzyme excluded — costs Databricks $ and",
+    "runs on separate hw; the per-milestone loop only needs the deterministic per-MV",
+    "records_read ratchet between openivm-spark and vanilla).",
+    "Batches 100/1/2 to match full.json / PR #10 SF-scale reference mix.",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/sf10-openivm-vs-spark.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["spark-openivm", "spark"],
+    "parallel": false,
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "sf10-openivm-vs-spark",
+      "scale_factor": 10,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "2"
+    }
+  ]
+}
