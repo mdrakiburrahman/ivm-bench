@@ -37,7 +37,7 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
 ARG OPENIVM_BRANCH=dev/mdrrahman/enzyme-perf-tuning
-ARG OPENIVM_COMMIT=a5173b21216e35383107f86072f89cc9c44102a2
+ARG OPENIVM_COMMIT=8b94f5d00adf1da972ebf8f461e5c2d9d275c80b
 ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
 ARG LPTS_BRANCH=dev/mdrrahman/enzyme-perf-tuning
 ARG LPTS_COMMIT=5291ffcb0c6d446f4fbaf0b48bc907378ef7d1e6
@@ -94,7 +94,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/enzyme-perf-tuning
-ARG OPENIVM_SPARK_COMMIT=eeb950d
+ARG OPENIVM_SPARK_COMMIT=d788f07
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,7 +139,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=eeb950d
+ARG OPENIVM_SPARK_COMMIT=d788f07
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
