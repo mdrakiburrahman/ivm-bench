@@ -36,8 +36,8 @@ FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
-ARG OPENIVM_BRANCH=dev/mdrrahman/perf-tuning
-ARG OPENIVM_COMMIT=0a7f3e4905a6f853d8ef1326f8345308816be29c
+ARG OPENIVM_BRANCH=dev/mdrrahman/rocksdb-perf-tuning
+ARG OPENIVM_COMMIT=e1a6b06755c9ee65427db9079f74db8ce729d8ac
 ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
 ARG LPTS_BRANCH=dev/mdrrahman/perf-tuning
 ARG LPTS_COMMIT=9019277d27b27d791f9112667ad9099ab034c8df
@@ -93,8 +93,8 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/perf-tuning
-ARG OPENIVM_SPARK_COMMIT=f3a60de
+ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/rocksdb-perf-tuning
+ARG OPENIVM_SPARK_COMMIT=dccbc8b6de847405476a9d1facd4f20e46eb3f4e
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,7 +139,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=f3a60de
+ARG OPENIVM_SPARK_COMMIT=dccbc8b6de847405476a9d1facd4f20e46eb3f4e
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
