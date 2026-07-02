@@ -37,10 +37,10 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
 ARG OPENIVM_BRANCH=dev/mdrrahman/enzyme-perf-tuning
-ARG OPENIVM_COMMIT=781408368abb3719e4f62bdb1476d2d02a219782
+ARG OPENIVM_COMMIT=a5173b21216e35383107f86072f89cc9c44102a2
 ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
 ARG LPTS_BRANCH=dev/mdrrahman/enzyme-perf-tuning
-ARG LPTS_COMMIT=43d3d2551f9c2afa1b4941db9ffceb39df8ef62a
+ARG LPTS_COMMIT=5291ffcb0c6d446f4fbaf0b48bc907378ef7d1e6
 
 ENV DEBIAN_FRONTEND=noninteractive
 
