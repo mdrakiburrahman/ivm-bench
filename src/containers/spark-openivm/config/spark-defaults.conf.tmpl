@@ -107,6 +107,13 @@ spark.openivm.refresh.scd2RangeAccel.enabled=true
 spark.openivm.refresh.windowRunningIncremental.enabled=false
 spark.openivm.refresh.windowClusterPrune.enabled=false
 
+# E5a (enzyme): cache the compiled openivm refresh program per
+# (source-schema fingerprint, facts tier) so batches 2/3 skip the DuckDB
+# compile round-trip. Cached SQL is byte-identical to the freshly-compiled
+# SQL, so records_read/records_written are unchanged; only per-MV compile
+# wall drops. Invalidates on source-schema change via the fingerprint.
+spark.openivm.compile.classificationCache.enabled=true
+
 # Resource allocation (computed from spark-defaults-breakdown.yaml; we
 # additionally enforce a 10g floor on the driver heap because Catalyst
 # planning, MvCatalog operations, and the OpenIvmCompiler DuckDB subprocess
