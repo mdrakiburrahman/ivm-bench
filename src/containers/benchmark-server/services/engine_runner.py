@@ -96,6 +96,10 @@ DATABRICKS_TRANSIENT_SIGNATURES = (
     "PIPELINE_INTERNAL_ERROR",
     "SERVICE_UNAVAILABLE",
     "TEMPORARILY_UNAVAILABLE",
+    # DLT pipeline service failed to start on the cluster (startup race /
+    # transient cluster-side infra), e.g. "Failed to initialize the pipeline
+    # service on cluster <id>. Check the cluster driver logs for more details."
+    "Failed to initialize the pipeline service",
 )
 
 
