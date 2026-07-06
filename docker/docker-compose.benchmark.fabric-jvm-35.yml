@@ -1,0 +1,53 @@
+services:
+  # Brokers `az login --identity` inside dbt-server to a fake UAMI over Azure
+  # Relay (no Service Principals). dbt-server's IDENTITY_ENDPOINT points here.
+  imds-router:
+    build:
+      context: ../src/containers/imds-router
+    environment:
+      IMDS_ROUTER_PORT: "${IMDS_ROUTER_PORT:-8080}"
+      IMDS_RELAY_URL: "${IMDS_RELAY_URL}"
+      IMDS_RELAY_SENDER_KEY: "${IMDS_RELAY_SENDER_KEY}"
+      IMDS_RELAY_KEY_NAME: "${IMDS_RELAY_KEY_NAME:-Send}"
+      IDENTITY_HEADER: "${IDENTITY_HEADER:-local-dev-secret}"
+      IMDS_SUBSCRIPTION_ID: "${UAMI_SUBSCRIPTION:-}"
+    healthcheck:
+      test: curl -sf "http://localhost:${IMDS_ROUTER_PORT:-8080}/healthz" || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    cpus: ${FABRIC_JVM_35_CPUS:-4}
+    mem_limit: ${FABRIC_JVM_35_MEM:-8g}
+    depends_on:
+      imds-router:
+        condition: service_healthy
+    environment:
+      # ── Fabric target: the compute Lakehouse + Environment are provisioned
+      #    FRESH per run (<base>_<run_id>) and torn down after; only the shared
+      #    cache lakehouse (raw sources) persists. Compute IDs are resolved at
+      #    runtime by fabric.provision_run, not pinned here. ──
+      FABRIC_API_BASE: "${FABRIC_API_BASE:-https://api.fabric.microsoft.com}"
+      FABRIC_WORKSPACE_ID: "${FABRIC_WORKSPACE_ID}"
+      FABRIC_ONELAKE_HOST: "${FABRIC_ONELAKE_HOST:-msit-onelake.dfs.fabric.microsoft.com}"
+      FABRIC_BASE_NAME: "${FABRIC_JVM_35_BASE_NAME:-jvm_35}"
+      FABRIC_CACHE_LAKEHOUSE_NAME: "${FABRIC_CACHE_LAKEHOUSE_NAME:-ivmbench_cache}"
+      FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS: "${FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS:-86400}"
+      FABRIC_RUN_ID: "${FABRIC_RUN_ID:-}"
+      # ── az login --identity via the imds-router sidecar (App Service MSI) ──
+      IDENTITY_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/identity/oauth2/token"
+      IMDS_METADATA_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/instance?api-version=2021-02-01"
+      IDENTITY_HEADER: "${IDENTITY_HEADER:-local-dev-secret}"
+      UAMI_CLIENT_ID: "${UAMI_CLIENT_ID}"
+      UAMI_SUBSCRIPTION: "${UAMI_SUBSCRIPTION:-}"
+      # Locally-generated Delta dirs to stage into the OneLake Files cache.
+      RAW_DELTA_DIR: /data/raw/delta
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/fabric-jvm-35:/data/processed/fabric-jvm-35
+      - ../mount/stats/${SCALE_FACTOR:-3}/fabric-jvm-35:/data/stats

@@ -1,0 +1,36 @@
+tpcdi:
+  target: fabric-openivm-jvm-35
+  outputs:
+    fabric-openivm-jvm-35:
+      type: fabricspark
+      method: livy
+      livy_mode: fabric
+      endpoint: "{{ env_var('FABRIC_API_BASE', 'https://api.fabric.microsoft.com') }}/v1"
+      workspaceid: "{{ env_var('FABRIC_WORKSPACE_ID', 'b161bf3f-2f28-451f-8a5d-420c47164f2e') }}"
+      lakehouseid: "{{ env_var('FABRIC_LAKEHOUSE_ID', '') }}"
+      lakehouse: "{{ env_var('FABRIC_LAKEHOUSE_NAME', '') }}"
+      schema: "{{ env_var('FABRIC_LAKEHOUSE_NAME', '') }}"
+      authentication: CLI
+      high_concurrency: false
+      reuse_session: true
+      session_id_file: /tmp/fabric-openivm-jvm-35-livy.session-id
+      connect_retries: 25
+      connect_timeout: 10
+      session_start_timeout: 900
+      statement_timeout: 43200
+      retry_all: false
+      threads: "{{ (env_var('SPARK_DBT_THREADS', '') or '30') | int }}"
+      spark_config:
+        name: dbt-tpcdi-fabric-openivm-jvm-35
+        conf:
+          # Attach this run's freshly-provisioned openivm Fabric Environment
+          # (spark.openivm.* config + spark.sql.extensions). Fabric's Livy API
+          # uses `spark.fabric.environmentDetails`, NOT the
+          # `spark.fabric.environment.id` key dbt-fabricspark's environmentId
+          # sets. Compute env id is injected per run by dbt_runner.
+          spark.fabric.environmentDetails: '{"id": "{{ env_var(''FABRIC_ENVIRONMENT_ID'', '''') }}"}'
+          # Fabric attaches env JAR libraries to executors only; openivm runs
+          # driver-side, so spark.jars puts the JAR (DuckDB compile assets baked
+          # in) on the DRIVER classpath. fabric.py stages it into THIS run's
+          # compute lakehouse Files/_openivm-lib.
+          spark.jars: "abfss://{{ env_var('FABRIC_WORKSPACE_ID', '') }}@{{ env_var('FABRIC_ONELAKE_HOST', 'msit-onelake.dfs.fabric.microsoft.com') }}/{{ env_var('FABRIC_LAKEHOUSE_ID', '') }}/Files/_openivm-lib/openivm-extension.jar"

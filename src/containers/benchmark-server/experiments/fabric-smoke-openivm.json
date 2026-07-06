@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Fastest openivm-on-Fabric validation: ONE experiment, ONLY the openivm",
+    "engine, SF=3. Validates the batch-loader -> azcopy cache -> Fabric Livy ->",
+    "openivm MV creation (RocksDB on the OneLake FUSE statePath) path before",
+    "committing to the full fabric-sf3.json 2x A/B sweep.",
+    "",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/fabric-smoke-openivm.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["fabric-openivm-jvm-35"],
+    "parallel": false,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "1",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": false,
+      "preserve_raw": false,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    { "label": "fabric-smoke-openivm", "scale_factor": 3 }
+  ]
+}

@@ -4,6 +4,7 @@ services:
       context: ../src/containers/duckdb-openivm
       args:
         UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
+        DUCKDB_OPENIVM_DOCKERFILE_HASH: "${DUCKDB_OPENIVM_DOCKERFILE_HASH:-}"
     volumes:
       - ../mount/bin/duckdb-openivm:/output
     environment:

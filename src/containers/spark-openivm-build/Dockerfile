@@ -93,8 +93,8 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/perf-tuning
-ARG OPENIVM_SPARK_COMMIT=58585e25961152791dadb5bf1b6dddc454126875
+ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/fabric-scheduling
+ARG OPENIVM_SPARK_COMMIT=e6430232a15cc33b1d91c3865020895c5418b291
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -124,6 +124,15 @@ WORKDIR /src/spark-ext
 
 ENV SBT_OPTS="-Xmx4g -XX:+UseG1GC"
 
+# Bake the DuckDB CLI + OpenIVM extension (built in stage 1) into the assembly
+# JAR under `openivm-native/`. build.sbt's resourceGenerator reads
+# OPENIVM_NATIVE_DIR and embeds both binaries so managed Fabric Spark — which
+# has neither on local disk — can extract them from the driver classpath at
+# runtime (see MaterializedViewCommands.extractBundledAssets). No OneLake upload.
+COPY --from=openivm-builder /artifacts/duckdb                 /native/duckdb
+COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.duckdb_extension
+ENV OPENIVM_NATIVE_DIR=/native
+
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
 # orchestrator's plain `docker compose build` invocation, so we accept a
 # slower cold cache here — sbt will re-fetch deps each rebuild. Acceptable
@@ -139,7 +148,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=58585e25961152791dadb5bf1b6dddc454126875
+ARG OPENIVM_SPARK_COMMIT=e6430232a15cc33b1d91c3865020895c5418b291
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
