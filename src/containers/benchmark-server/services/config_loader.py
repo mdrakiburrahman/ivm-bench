@@ -9,6 +9,7 @@ def load_config() -> BenchmarkConfig:
     """Build a BenchmarkConfig from environment variables."""
     return BenchmarkConfig(
         scale_factor=int(os.environ.get("SCALE_FACTOR", "3")),
+        benchmark_runs=int(os.environ.get("BENCHMARK_RUNS", "1")),
         batch_1_pct=os.environ.get("BATCH_1_PCT", "1"),
         batch_2_pct=os.environ.get("BATCH_2_PCT", "0.001"),
         batch_3_pct=os.environ.get("BATCH_3_PCT", "0.002"),

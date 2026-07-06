@@ -5,6 +5,8 @@
 #
 # Environment variables:
 #   SCALE_FACTOR   — TPC-DI scale factor (default: 3)
+#   BENCHMARK_RUNS — repeat the full 3-batch benchmark N times and average
+#                    the per-engine batch timings (default: 1)
 #   BATCH_1_PCT    — % of batch 1 data (required)
 #   BATCH_2_PCT    — % of batch 2 data (required)
 #   BATCH_3_PCT    — % of batch 3 data (required)
@@ -26,6 +28,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 export SCALE_FACTOR="${SCALE_FACTOR:-3}"
+export BENCHMARK_RUNS="${BENCHMARK_RUNS:-1}"
 
 if [[ -z "${BATCH_1_PCT:-}" || -z "${BATCH_2_PCT:-}" || -z "${BATCH_3_PCT:-}" ]]; then
   echo "ERROR: BATCH_1_PCT, BATCH_2_PCT, and BATCH_3_PCT must all be set."
@@ -80,9 +83,15 @@ print_results() {
   local json="$1"
   local status
   status=$(echo "$json" | jq -r '.status')
+  local benchmark_runs
+  benchmark_runs=$(echo "$json" | jq -r '.repetition_count // 1')
 
   if [[ "$status" == "completed" ]]; then
-    echo "=== All benchmarks completed successfully ==="
+    if [[ "$benchmark_runs" -gt 1 ]]; then
+      echo "=== Average benchmark results over ${benchmark_runs} runs ==="
+    else
+      echo "=== All benchmarks completed successfully ==="
+    fi
   else
     echo "=== Benchmark finished with status: ${status} ==="
   fi

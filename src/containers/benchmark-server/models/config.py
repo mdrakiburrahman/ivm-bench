@@ -95,6 +95,7 @@ ENGINE_MAIN_SERVICES = {
 class BenchmarkConfig:
     """Top-level benchmark configuration."""
     scale_factor: int = 3
+    benchmark_runs: int = 1
     batch_1_pct: str = "1"
     batch_2_pct: str = "0.001"
     batch_3_pct: str = "0.002"
@@ -104,10 +105,14 @@ class BenchmarkConfig:
     host_memory_gb: Optional[int] = None
     repo_dir: str = "/repo"
 
+    def __post_init__(self):
+        self.benchmark_runs = max(1, int(self.benchmark_runs))
+
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
         return {
             "SCALE_FACTOR": str(self.scale_factor),
+            "BENCHMARK_RUNS": str(self.benchmark_runs),
             "BATCH_1_PCT": self.batch_1_pct,
             "BATCH_2_PCT": self.batch_2_pct,
             "BATCH_3_PCT": self.batch_3_pct,

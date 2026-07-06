@@ -11,7 +11,7 @@
 #   GITHUB_RUN_ID      — Workflow run ID (for artifact link)
 #
 # Optional env vars:
-#   BATCH_1_PCT, BATCH_2_PCT, BATCH_3_PCT, ENGINES, PARALLEL
+#   BENCHMARK_RUNS, BATCH_1_PCT, BATCH_2_PCT, BATCH_3_PCT, ENGINES, PARALLEL
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -29,6 +29,7 @@ if [[ ! -f "$RESULTS_FILE" ]]; then
 else
   STATUS=$(jq -r '.status // "unknown"' "$RESULTS_FILE")
   TOTAL=$(jq -r '.total_duration_s // 0' "$RESULTS_FILE")
+  BENCHMARK_RUNS_RESULT=$(jq -r '.repetition_count // 1' "$RESULTS_FILE")
 
   fmt_duration() {
     local secs="$1"
@@ -77,6 +78,7 @@ ${STATUS_ICON} **${STATUS_TEXT}**
 | Parameter | Value |
 |---|---|
 | Scale Factor | \`${SCALE_FACTOR}\` |
+| Benchmark Runs | \`${BENCHMARK_RUNS_RESULT}\` |
 | Batches | \`${BATCH_1_PCT:-?}%\` / \`${BATCH_2_PCT:-?}%\` / \`${BATCH_3_PCT:-?}%\` |
 | Engines | \`${ENGINES:-all}\` |
 | Parallel | \`${PARALLEL:-0}\` |

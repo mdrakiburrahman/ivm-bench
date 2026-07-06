@@ -22,7 +22,10 @@ def start_benchmark():
     body = request.get_json(silent=True) or {}
     if body:
         logger.info("POST /benchmark body=%s", body)
-        orch.update_config(**{k: v for k, v in body.items() if k in ("parallel", "engines")})
+        orch.update_config(**{
+            k: v for k, v in body.items()
+            if k in ("parallel", "engines", "benchmark_runs")
+        })
 
     orch.start()
     return jsonify({"status": "started", "config": _config_summary(orch)}), 202
@@ -75,6 +78,7 @@ def _config_summary(orch) -> dict:
     cfg = orch.config
     return {
         "scale_factor": cfg.scale_factor,
+        "benchmark_runs": cfg.benchmark_runs,
         "engines": cfg.engines,
         "parallel": cfg.parallel,
     }
@@ -83,4 +87,3 @@ def _config_summary(orch) -> dict:
 class BenchmarkHandler(BaseHandler):
     def register(self, app: Flask) -> None:
         app.register_blueprint(bp)
-
