@@ -200,6 +200,8 @@ def build_per_experiment_dict(
           "error": null,
           "engines": { ... result.engines mirror ... },
           "dbt_run_files": { "spark": [path1, path2, path3], ... },
+          "storage_files": { "spark": [path1, path2, path3], ... },
+          "storage": { "spark": {"1": {...}, "2": {...}, "3": {...}}, ... },
           "inputs": { ... ExperimentInputs.to_dict() ... }
         }
     """
@@ -220,6 +222,27 @@ def build_per_experiment_dict(
             ))
         dbt_run_files[engine] = files
 
+    storage_files: Dict[str, List[str]] = {}
+    storage_out: Dict[str, Dict[str, Any]] = {}
+    for engine in inputs.engines:
+        files = []
+        for batch_num in (1, 2, 3):
+            files.append(os.path.join(
+                "mount", "results", str(inputs.scale_factor), "dbt-server",
+                f"storage-{engine}-batch{batch_num}.json",
+            ))
+        storage_files[engine] = files
+
+    if result is not None:
+        for engine, er in result.engines.items():
+            per_batch: Dict[str, Any] = {}
+            for batch in er.batches:
+                storage = (batch.extra or {}).get("storage")
+                if storage:
+                    per_batch[str(batch.batch_num)] = storage
+            if per_batch:
+                storage_out[engine] = per_batch
+
     return {
         "exp_idx": exp_idx,
         "label": inputs.label or f"exp-{exp_idx}",
@@ -234,6 +257,8 @@ def build_per_experiment_dict(
         "error": error,
         "engines": engines_out,
         "dbt_run_files": dbt_run_files,
+        "storage_files": storage_files,
+        "storage": storage_out,
         "inputs": inputs.to_dict(),
     }
 

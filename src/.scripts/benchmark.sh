@@ -48,6 +48,9 @@
 #                    CREATE/REFRESH MV (spark-openivm only). Writes a per-MV
 #                    per-refresh directory tree of `.sql` files under
 #                    mount/results/<sf>/spark-openivm/query-log/.
+#   STORAGE_METRICS — 1 = collect per-engine storage footprint artifacts after
+#                    each batch and surface aggregate storage overhead in OAT
+#                    outputs (default: 1)
 #   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -113,6 +116,7 @@ export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-1}"
 export OPENIVM_PROFILE_REFRESH="${OPENIVM_PROFILE_REFRESH:-0}"
 export OPENIVM_QUERY_LOG="${OPENIVM_QUERY_LOG:-1}"
+export STORAGE_METRICS="${STORAGE_METRICS:-1}"
 export REPO_HOST_PATH="$REPO_ROOT"
 
 detect_ec2_ubuntu_mirror() {

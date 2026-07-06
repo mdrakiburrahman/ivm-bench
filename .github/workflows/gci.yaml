@@ -80,6 +80,10 @@ on:
         description: "Export per-MV per-refresh SQL trace (spark-openivm only; 0 or 1)"
         default: "1"
         type: string
+      storage_metrics:
+        description: "Collect per-engine storage footprint after each batch (0 or 1)"
+        default: "1"
+        type: string
       oat_min_free_pct:
         description: "Skip remaining OAT experiments when free disk drops below this %"
         default: "10"
@@ -121,6 +125,7 @@ jobs:
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
       OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
+      STORAGE_METRICS: ${{ inputs.storage_metrics || '1' }}
       OAT_MIN_FREE_PCT: ${{ inputs.oat_min_free_pct || '10' }}
 
     steps:
@@ -159,6 +164,7 @@ jobs:
             openivm_validate_b=$([[ "$OPENIVM_VALIDATE" = "1" ]] && echo true || echo false)
             openivm_profile_refresh_b=$([[ "$OPENIVM_PROFILE_REFRESH" = "1" ]] && echo true || echo false)
             openivm_query_log_b=$([[ "$OPENIVM_QUERY_LOG" = "1" ]] && echo true || echo false)
+            storage_metrics_b=$([[ "$STORAGE_METRICS" = "1" ]] && echo true || echo false)
             jq -n \
               --argjson sf "$SCALE_FACTOR" \
               --arg b1 "$BATCH_1_PCT" \
@@ -175,6 +181,7 @@ jobs:
               --argjson openivm_validate "$openivm_validate_b" \
               --argjson openivm_profile_refresh "$openivm_profile_refresh_b" \
               --argjson openivm_query_log "$openivm_query_log_b" \
+              --argjson storage_metrics "$storage_metrics_b" \
               '{
                 _design_notes: ["Synthesised by .github/workflows/gci.yaml from per-knob inputs (1-row OAT sweep)."],
                 baseline: {
@@ -184,7 +191,8 @@ jobs:
                     preserve_raw: $preserve_raw,
                     openivm_validate: $openivm_validate,
                     openivm_profile_refresh: $openivm_profile_refresh,
-                    openivm_query_log: $openivm_query_log
+                    openivm_query_log: $openivm_query_log,
+                    storage_metrics: $storage_metrics
                   }
                 },
                 experiments: [

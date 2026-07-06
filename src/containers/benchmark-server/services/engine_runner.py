@@ -498,6 +498,7 @@ class EngineRunner:
             # Check status from the stream_progress result
             if batch.status != "failed":
                 self._save_openivm_ops_chart(name, batch_num)
+                self._capture_storage_metrics(batch_num, batch)
                 batch.status = "completed"
                 self._emit(
                     f"[{name}] Batch {batch_num} completed in {batch.duration_s:.1f}s"
@@ -2444,6 +2445,77 @@ class EngineRunner:
                 json.dump(resp.json(), f, indent=2)
         except Exception as e:
             logger.warning("Failed to capture delta stats: %s", e)
+
+    def _capture_storage_metrics(self, batch_num: int, batch) -> None:
+        """Capture post-batch storage metrics outside the timed window."""
+        if os.environ.get("STORAGE_METRICS", "1") == "0":
+            return
+
+        name = self._engine.name
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        out_path = os.path.join(results_dir, f"storage-{name}-batch{batch_num}.json")
+        try:
+            resp = requests.get(
+                f"{self._dbt_url}/storage/{name}",
+                params={"batch_num": batch_num},
+                timeout=120,
+            )
+            data = resp.json()
+            if resp.status_code >= 500:
+                data.setdefault("status", "error")
+            with open(out_path, "w") as f:
+                json.dump(data, f, indent=2)
+
+            totals = data.get("totals") or {}
+            batch.extra["storage"] = {
+                "status": data.get("status", "unknown"),
+                "artifact": os.path.join(
+                    "mount", "results", str(self._config.scale_factor), "dbt-server",
+                    f"storage-{name}-batch{batch_num}.json",
+                ),
+                "visible_output_bytes": totals.get("visible_output_bytes", 0),
+                "internal_state_bytes": totals.get("internal_state_bytes", 0),
+                "metadata_bytes": totals.get("metadata_bytes", 0),
+                "source_bytes": totals.get("source_bytes", 0),
+                "total_bytes": totals.get("total_bytes", 0),
+                "overhead_ratio_internal_to_visible": data.get(
+                    "overhead_ratio_internal_to_visible"
+                ),
+            }
+            self._emit(
+                f"[{name}] Storage metrics captured for batch {batch_num}: "
+                f"visible={totals.get('visible_output_bytes', 0)}B "
+                f"internal={totals.get('internal_state_bytes', 0)}B"
+            )
+        except Exception as e:
+            logger.warning("Failed to capture storage metrics for %s batch %d: %s", name, batch_num, e)
+            batch.extra["storage"] = {
+                "status": "error",
+                "artifact": os.path.join(
+                    "mount", "results", str(self._config.scale_factor), "dbt-server",
+                    f"storage-{name}-batch{batch_num}.json",
+                ),
+                "error": str(e),
+            }
+            try:
+                with open(out_path, "w") as f:
+                    json.dump({
+                        "status": "error",
+                        "engine": name,
+                        "batch_num": batch_num,
+                        "error": str(e),
+                    }, f, indent=2)
+            except Exception as write_error:
+                logger.warning(
+                    "Failed to write storage error artifact for %s batch %d: %s",
+                    name,
+                    batch_num,
+                    write_error,
+                )
 
     def _fetch_lineage(self) -> None:
         """Fetch dbt lineage."""

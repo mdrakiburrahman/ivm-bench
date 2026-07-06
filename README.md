@@ -46,6 +46,7 @@ export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/exp
 # Optional global knobs (apply to the OAT loop itself):
 export OAT_MIN_FREE_PCT=10   # skip remaining experiments when free disk < 10%
 export PRESERVE_RAW=1        # keep mount/bin/ across sweeps (raw/<SF>/ is always wiped between experiments)
+export STORAGE_METRICS=1     # collect per-engine storage artifacts after each batch (set 0 to disable)
 
 sudo rm -rf ${GIT_ROOT}/mount
 docker kill $(docker ps -q)
@@ -58,6 +59,8 @@ mixes, engines, parallel mode, OpenIVM feature flags, Spark tunables) live
 INSIDE the experiments JSON — each row inherits from a `baseline` block and
 overrides only what varies. See `smoke.json` for the schema and the
 [OAT sweeps](#oat-sweeps-one-at-a-time) section below for artifact layout.
+Storage metrics are enabled by default via `STORAGE_METRICS=1` and are captured
+outside the timed batch window.
 
 For append-only runs, `batch_N_pct` (or the alias `batch_N_insert_pct`) is the
 insert percentage; for mixed-DML batches, `batch_N_update_pct` and
@@ -176,9 +179,10 @@ Per-OAT artifacts land under `mount/oat-state/<oat_run_id>/` with a
 | `outputs.json`           | Per-experiment aggregated outputs (status, walls, per-batch durations…)  |
 | `chart-oat.png`          | Aggregate heatmap (rows = experiments, columns = batch × engine)         |
 | `chart-per-model.png`    | Per-dbt-model heatmap with log₂(openivm / spark) per batch               |
-| `RESULTS.md`             | Markdown overview + per-input/output tables + per-model break-even table |
+| `RESULTS.md`             | Markdown overview + timing/storage tables + per-model break-even table   |
 | `benchmark-server.log`   | Copy of the orchestrator log for that run                                |
 | `exp-<NNN>/outputs.json` | One per experiment — same shape as a per-experiment entry in master      |
+| `storage-<engine>-batch<N>.json` | Per-engine storage footprint artifacts in `mount/results/<SF>/dbt-server/` |
 
 To write your own sweep, copy `experiments/smoke.json` as a starting point
 and override `scale_factor` / `batch_*_pct` / `engines` / `parallel` /

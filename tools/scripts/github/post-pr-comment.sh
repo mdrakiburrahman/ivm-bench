@@ -11,7 +11,7 @@
 #   GITHUB_RUN_ID      — Workflow run ID (for artifact link)
 #
 # Optional env vars:
-#   BATCH_N_INSERT_PCT, BATCH_N_*_PCT, ENGINES, PARALLEL
+#   BATCH_N_INSERT_PCT, BATCH_N_*_PCT, ENGINES, PARALLEL, STORAGE_METRICS
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -82,6 +82,7 @@ ${STATUS_ICON} **${STATUS_TEXT}**
 | Batch 3 Mutations | update \`${BATCH_3_UPDATE_PCT:-0}%\`, delete \`${BATCH_3_DELETE_PCT:-0}%\` |
 | Engines | \`${ENGINES:-all}\` |
 | Parallel | \`${PARALLEL:-0}\` |
+| Storage Metrics | \`${STORAGE_METRICS:-1}\` |
 | Total | \`${TOTAL_FMT}\` |
 
 \`\`\`

@@ -32,6 +32,7 @@ services:
       OPENIVM_VALIDATE: "${OPENIVM_VALIDATE:-1}"
       OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
       OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
+      STORAGE_METRICS: "${STORAGE_METRICS:-1}"
       OPENIVM_UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-}"
       # OAT harness: experiments JSON file path + headroom config.
       # BENCHMARK_EXPERIMENTS_FILE is the in-container path of the JSON
