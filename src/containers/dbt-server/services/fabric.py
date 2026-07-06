@@ -562,9 +562,13 @@ def _warm_storage_token() -> None:
         logger.warning("[fabric] storage token warm failed: %s", e)
 
 
-def _run_azcopy(args: List[str], what: str, attempts: int = 4, backoff_s: float = 6.0) -> None:
-    """Run ``azcopy <args>`` with AZCLI auto-login, retrying transient auth
-    failures with backoff (see ``_AZCOPY_TRANSIENT_SIGNATURES``)."""
+def _run_azcopy(args: List[str], what: str, attempts: int = 5, backoff_s: float = 6.0) -> None:
+    """Run ``azcopy <args>`` with AZCLI auto-login, retrying on ANY failure with
+    exponential backoff. azcopy failures are almost always transient — either an
+    auth token killed under parallel token contention (see
+    ``_AZCOPY_TRANSIENT_SIGNATURES``) or a single flaky file transfer out of many
+    (more likely at high SF) — and the copy is idempotent (``--overwrite=true``),
+    so a whole-command retry is safe."""
     env = {
         **os.environ,
         "AZCOPY_AUTO_LOGIN_TYPE": "AZCLI",
@@ -572,6 +576,7 @@ def _run_azcopy(args: List[str], what: str, attempts: int = 4, backoff_s: float 
         "AZCOPY_JOB_PLAN_LOCATION": "/tmp/azcopy",
     }
     last = ""
+    delay = backoff_s
     for attempt in range(1, attempts + 1):
         ensure_az_login()
         _warm_storage_token()
@@ -579,14 +584,15 @@ def _run_azcopy(args: List[str], what: str, attempts: int = 4, backoff_s: float 
         if res.returncode == 0:
             return
         last = res.stderr or res.stdout or ""
-        transient = any(s in last.lower() for s in _AZCOPY_TRANSIENT_SIGNATURES)
-        if not transient or attempt == attempts:
+        if attempt == attempts:
             break
+        kind = "auth" if any(s in last.lower() for s in _AZCOPY_TRANSIENT_SIGNATURES) else "transfer"
         logger.warning(
-            "[fabric] azcopy %s transient auth failure (attempt %d/%d), retrying in %.0fs: %s",
-            what, attempt, attempts, backoff_s, last[-200:],
+            "[fabric] azcopy %s %s failure (attempt %d/%d), retrying in %.0fs: %s",
+            what, kind, attempt, attempts, delay, last[-200:],
         )
-        time.sleep(backoff_s)
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
     raise RuntimeError(f"azcopy {what} failed: {last[-500:]}")
 
 
