@@ -14,6 +14,7 @@ services:
       REPO_DIR: "${REPO_HOST_PATH:-.}"
       DOCKER_HOST_ADDRESS: "host.docker.internal"
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
+      BENCHMARK_RUNS: "${BENCHMARK_RUNS:-1}"
       BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
       BATCH_2_INSERT_PCT: "${BATCH_2_INSERT_PCT:-}"
       BATCH_3_INSERT_PCT: "${BATCH_3_INSERT_PCT:-}"

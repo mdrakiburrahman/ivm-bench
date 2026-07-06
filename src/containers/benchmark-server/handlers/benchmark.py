@@ -42,6 +42,10 @@ def start_benchmark():
     body = request.get_json(silent=True) or {}
     if body:
         logger.info("POST /benchmark body=%s", body)
+        orch.update_config(**{
+            k: v for k, v in body.items()
+            if k in ("parallel", "engines", "benchmark_runs")
+        })
 
     experiments_file = _resolve_experiments_file(body)
     if not experiments_file:
@@ -128,4 +132,3 @@ def benchmark_status():
 class BenchmarkHandler(BaseHandler):
     def register(self, app: Flask) -> None:
         app.register_blueprint(bp)
-

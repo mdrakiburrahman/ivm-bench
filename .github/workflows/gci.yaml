@@ -12,6 +12,10 @@ on:
         description: "TPC-DI scale factor"
         default: "10"
         type: string
+      benchmark_runs:
+        description: "Repeat the full benchmark N times and average timings"
+        default: "1"
+        type: string
       batch_1_pct:
         description: "% of batch 1 data"
         default: "100"
@@ -109,6 +113,7 @@ jobs:
 
     env:
       SCALE_FACTOR: ${{ inputs.scale_factor || '10' }}
+      BENCHMARK_RUNS: ${{ inputs.benchmark_runs || '1' }}
       BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
       BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
       BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}
