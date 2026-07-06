@@ -21,6 +21,7 @@ def trigger_run(engine):
     body = request.get_json(force=True, silent=True) or {}
     scale_factor = body.get("scale_factor", 3)
     full_refresh = body.get("full_refresh", False)
+    batch_num = body.get("batch_num", 1)
 
     run_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
@@ -34,7 +35,7 @@ def trigger_run(engine):
         conn.commit()
         conn.close()
 
-    t = threading.Thread(target=run_dbt, args=(run_id, engine, scale_factor, full_refresh), daemon=True)
+    t = threading.Thread(target=run_dbt, args=(run_id, engine, scale_factor, full_refresh, batch_num), daemon=True)
     t.start()
 
     return jsonify({"run_id": run_id, "status": "queued"}), 202

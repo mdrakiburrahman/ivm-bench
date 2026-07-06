@@ -252,7 +252,7 @@ class Orchestrator:
             ("docker/docker-compose.spark-openivm-build.yml", "spark-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm", "databricks-enzyme"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm", "databricks-enzyme", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:
@@ -364,7 +364,7 @@ class Orchestrator:
         callables.append(self._build_batch_loader)
         if "duckdb-openivm" in self._config.engines:
             callables.append(self._run_duckdb_openivm_build)
-        if "spark-openivm" in self._config.engines:
+        if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
             callables.append(self._run_spark_openivm_build)
 
         with ThreadPoolExecutor(max_workers=len(callables)) as pool:

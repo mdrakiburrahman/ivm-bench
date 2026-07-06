@@ -1,0 +1,56 @@
+services:
+  # Brokers `az login --identity` inside dbt-server to a fake UAMI over Azure
+  # Relay (no Service Principals). dbt-server's IDENTITY_ENDPOINT points here.
+  imds-router:
+    build:
+      context: ../src/containers/imds-router
+    environment:
+      IMDS_ROUTER_PORT: "${IMDS_ROUTER_PORT:-8080}"
+      IMDS_RELAY_URL: "${IMDS_RELAY_URL}"
+      IMDS_RELAY_SENDER_KEY: "${IMDS_RELAY_SENDER_KEY}"
+      IMDS_RELAY_KEY_NAME: "${IMDS_RELAY_KEY_NAME:-Send}"
+      IDENTITY_HEADER: "${IDENTITY_HEADER:-local-dev-secret}"
+      IMDS_SUBSCRIPTION_ID: "${UAMI_SUBSCRIPTION:-}"
+    healthcheck:
+      test: curl -sf "http://localhost:${IMDS_ROUTER_PORT:-8080}/healthz" || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    cpus: ${FABRIC_OPENIVM_JVM_35_CPUS:-4}
+    mem_limit: ${FABRIC_OPENIVM_JVM_35_MEM:-8g}
+    depends_on:
+      imds-router:
+        condition: service_healthy
+    environment:
+      # ── Fabric target (openivm flavor: own lakehouse + own environment) ──
+      FABRIC_API_BASE: "${FABRIC_API_BASE:-https://api.fabric.microsoft.com}"
+      FABRIC_WORKSPACE_ID: "${FABRIC_WORKSPACE_ID}"
+      FABRIC_LAKEHOUSE_ID: "${FABRIC_OPENIVM_JVM_35_LAKEHOUSE_ID}"
+      FABRIC_LAKEHOUSE_NAME: "${FABRIC_OPENIVM_JVM_35_LAKEHOUSE_NAME:-openivm_jvm_35}"
+      FABRIC_ONELAKE_HOST: "${FABRIC_ONELAKE_HOST:-msit-onelake.dfs.fabric.microsoft.com}"
+      # openivm environment holds the openivm spark.openivm.* config (the JAR is
+      # driver-only via the profile's spark.jars — NOT an environment library).
+      FABRIC_ENVIRONMENT_ID: "${FABRIC_OPENIVM_JVM_35_ENVIRONMENT_ID}"
+      FABRIC_ENVIRONMENT_NAME: "${FABRIC_OPENIVM_JVM_35_ENVIRONMENT_NAME:-openivm_jvm_35}"
+      # ── az login --identity via the imds-router sidecar (App Service MSI) ──
+      IDENTITY_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/identity/oauth2/token"
+      IMDS_METADATA_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/instance?api-version=2021-02-01"
+      IDENTITY_HEADER: "${IDENTITY_HEADER:-local-dev-secret}"
+      UAMI_CLIENT_ID: "${UAMI_CLIENT_ID}"
+      UAMI_SUBSCRIPTION: "${UAMI_SUBSCRIPTION:-}"
+      # openivm JAR (built by spark-openivm-build) — staged to OneLake for the
+      # driver classpath (spark.jars) with DuckDB compile assets baked in.
+      OPENIVM_JAR_PATH: /data/bin/openivm-extension.jar
+      # Locally-generated Delta dirs to stage into the OneLake Files cache.
+      RAW_DELTA_DIR: /data/raw/delta
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/fabric-openivm-jvm-35:/data/processed/fabric-openivm-jvm-35
+      - ../mount/stats/${SCALE_FACTOR:-3}/fabric-openivm-jvm-35:/data/stats
+      - ../mount/bin/spark-openivm:/data/bin:ro

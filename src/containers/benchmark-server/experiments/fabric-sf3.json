@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "Fabric A/B: baseline (fabric-jvm-35, plain dbt-fabricspark) vs openivm",
+    "(fabric-openivm-jvm-35). Each flavor has its OWN Fabric lakehouse +",
+    "environment (shared workspace) so the two run SHARED-NOTHING in PARALLEL.",
+    "Runs SF=3 end-to-end TWICE for repeatability / noise characterisation.",
+    "Both engines run against remote Fabric Spark via Livy; source data is",
+    "staged into each lakehouse's Files/ cache, and data state is blown away",
+    "between experiments (see the fabric engine_runner cleanup).",
+    "",
+    "Spark A/B event-log metrics (issue #36) do NOT apply to managed Fabric",
+    "Spark, so spark_metrics_capture is off; per-model dbt timings + PASS/FAIL",
+    "drive the standard OAT charts / RESULTS.md.",
+    "",
+    "Requires .env: IMDS_RELAY_URL, IMDS_RELAY_SENDER_KEY, UAMI_CLIENT_ID,",
+    "UAMI_SUBSCRIPTION (relay secrets) + the per-flavor FABRIC_*_JVM_35_* IDs.",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/fabric-sf3.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["fabric-jvm-35", "fabric-openivm-jvm-35"],
+    "parallel": true,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "1",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": false,
+      "preserve_raw": false,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    { "label": "fabric-sf3-run1", "scale_factor": 3 },
+    { "label": "fabric-sf3-run2", "scale_factor": 3 }
+  ]
+}

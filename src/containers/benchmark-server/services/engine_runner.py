@@ -335,6 +335,7 @@ class EngineRunner:
                 ("collect_feldera_debug", self._collect_feldera_debug),
                 ("capture_logs", self._capture_logs),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
+                ("fabric_cleanup", self._fabric_cleanup),
                 ("engine_mgr.down", self._engine_mgr.down),
                 ("cleanup_staging", self._cleanup_staging),
             ):
@@ -378,6 +379,147 @@ class EngineRunner:
                 )
         except Exception as e:
             self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
+
+    def _fabric_cleanup(self) -> None:
+        """End-of-run: blow up the lakehouse Tables/ + openivm state so no
+        experiment leaves stale tables/state behind in OneLake. No-op for any
+        non-fabric engine."""
+        if self._engine.name not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
+            return
+        try:
+            resp = requests.post(f"{self._dbt_url}/sources/fabric/cleanup", timeout=1200)
+            if resp.status_code == 200:
+                data = resp.json()
+                self._emit(
+                    f"[{self._engine.name}] Post-run cleanup OK "
+                    f"(dropped_tables={data.get('dropped_tables')} "
+                    f"state_deleted={data.get('state_deleted')})"
+                )
+            else:
+                self._emit(
+                    f"[{self._engine.name}] Post-run cleanup WARN: "
+                    f"HTTP {resp.status_code} {resp.text[:200]}"
+                )
+        except Exception as e:
+            self._emit(f"[{self._engine.name}] Post-run cleanup WARN: {e}")
+
+    def _run_fabric(self, batch_num: int) -> str:
+        """Fabric engine batch flow (mirrors _run_databricks_enzyme):
+
+        batch 1: (openivm) refresh Environment "35" with the JAR + config →
+                 blow up prior Tables/ + state → drop stale-SF cache → azcopy
+                 the batch-1 sources into the OneLake Files cache.
+        batch 2/3: azcopy the per-batch staging increment into the cache.
+
+        Then a dbt build against Fabric Spark (Livy). The source CREATE/INSERT
+        SQL runs inside the dbt session via the load_fabric_sources
+        on-run-start macro (batch-num aware). All wall-clock from the cache
+        staging through the dbt build is inside the measured batch latency,
+        matching the spark-openivm / databricks-enzyme convention.
+        """
+        name = self._engine.name
+        is_openivm = name == "fabric-openivm-jvm-35"
+        sf = self._config.scale_factor
+        full_refresh = batch_num == 1
+
+        if batch_num == 1:
+            if is_openivm:
+                self._emit(
+                    f"[{name}] Refreshing Fabric Environment '{os.environ.get('FABRIC_ENVIRONMENT_NAME', '35')}' "
+                    f"(openivm JAR + Spark config)"
+                )
+                resp = requests.post(
+                    f"{self._dbt_url}/environment/fabric/refresh", timeout=2400
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(
+                        f"fabric environment refresh failed: "
+                        f"HTTP {resp.status_code} {resp.text[:500]}"
+                    )
+                data = resp.json()
+                self._emit(
+                    f"[{name}] Environment published: jar={data.get('jar')} "
+                    f"spark_properties={data.get('spark_properties')} "
+                    f"state={data.get('publish_state')}"
+                )
+
+            self._emit(f"[{name}] Blowing up prior Tables/ + openivm state")
+            resp = requests.post(f"{self._dbt_url}/sources/fabric/cleanup", timeout=1200)
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"fabric cleanup failed: HTTP {resp.status_code} {resp.text[:500]}"
+                )
+
+            last_sf = self._read_last_sf()
+            if last_sf is not None and last_sf != sf:
+                self._emit(
+                    f"[{name}] SF changed {last_sf} -> {sf}; dropping cache sf={last_sf}"
+                )
+                try:
+                    requests.post(
+                        f"{self._dbt_url}/sources/fabric/cleanup-cache/{last_sf}",
+                        timeout=1200,
+                    )
+                except Exception as e:
+                    self._emit(f"[{name}] cleanup-cache/{last_sf} WARN: {e}")
+
+            self._emit(f"[{name}] Staging sources into OneLake cache (sf={sf})")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/fabric/init/{sf}", timeout=7200
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"fabric init/{sf} failed: HTTP {resp.status_code} {resp.text[:500]}"
+                )
+            data = resp.json()
+            self._emit(
+                f"[{name}] Cache init: files_uploaded={data.get('files_uploaded')} "
+                f"already_seeded={data.get('already_seeded')}"
+            )
+        else:
+            self._emit(
+                f"[{name}] Staging batch {batch_num} increment into OneLake cache (sf={sf})"
+            )
+            resp = requests.post(
+                f"{self._dbt_url}/sources/fabric/append/{batch_num}/{sf}", timeout=7200
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"fabric append/{batch_num}/{sf} failed: "
+                    f"HTTP {resp.status_code} {resp.text[:500]}"
+                )
+            data = resp.json()
+            self._emit(
+                f"[{name}] Cache batch {batch_num}: files_uploaded={data.get('files_uploaded')} "
+                f"already_seeded={data.get('already_seeded')}"
+            )
+
+        run_id = self._run_fabric_dbt(batch_num, full_refresh)
+        if batch_num == 1:
+            self._write_last_sf(sf)
+        return run_id
+
+    def _run_fabric_dbt(self, batch_num: int, full_refresh: bool) -> str:
+        """POST /run/<engine> with batch_num (for the source macro), stream
+        progress, check + save the result."""
+        name = self._engine.name
+        resp = requests.post(
+            f"{self._dbt_url}/run/{name}",
+            json={
+                "scale_factor": self._config.scale_factor,
+                "full_refresh": full_refresh,
+                "batch_num": batch_num,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        run_id = resp.json()["run_id"]
+        self._emit(f"[{name}] dbt run_id={run_id} (batch {batch_num})")
+
+        self._stream_dbt_progress(run_id, batch_num)
+        self._check_run_result(run_id, batch_num)
+        self._save_run_result(run_id, batch_num)
+        return run_id
 
     def _up_with_retry(self, max_attempts: int = 3, backoff_s: int = 30) -> None:
         """Start the compose stack, retrying on transient mssql startup crashes.
@@ -468,6 +610,8 @@ class EngineRunner:
                 run_id = self._run_spark_openivm(batch_num)
             elif name == "databricks-enzyme":
                 run_id = self._run_databricks_enzyme(batch_num)
+            elif name in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
+                run_id = self._run_fabric(batch_num)
             else:
                 run_id = self._run_dbt(batch_num)
 

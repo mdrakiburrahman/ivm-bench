@@ -13,7 +13,7 @@ from services.progress import cleanup_progress, init_progress, parse_log_line
 PROJECTS_DIR = "/app/dbt-projects"
 
 
-def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
+def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, batch_num: int = 1):
     """Execute a dbt build for the given engine and track results."""
     project_dir = os.path.join(PROJECTS_DIR, engine)
     if not os.path.isdir(project_dir):
@@ -50,6 +50,9 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool):
     env = os.environ.copy()
     env["DBT_PROFILES_DIR"] = project_dir
     env["SCALE_FACTOR"] = str(scale_factor)
+    # Consumed by the fabric-* projects' load_fabric_sources on-run-start macro
+    # to pick the batch-1 CREATE vs batch-2/3 staging INSERT.
+    env["FABRIC_BATCH_NUM"] = str(batch_num)
 
     start_ts = time.monotonic()
     stderr_buf = []

@@ -80,6 +80,8 @@ ENGINE_PORTS = {
     "feldera": 5004,
     "spark-openivm": 5005,
     "databricks-enzyme": 5006,
+    "fabric-openivm-jvm-35": 5007,
+    "fabric-jvm-35": 5008,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -89,9 +91,14 @@ ENGINE_COMPOSE_FILES = {
     "feldera": "docker/docker-compose.benchmark.feldera.yml",
     "spark-openivm": "docker/docker-compose.benchmark.spark-openivm.yml",
     "databricks-enzyme": "docker/docker-compose.benchmark.databricks-enzyme.yml",
+    "fabric-openivm-jvm-35": "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml",
+    "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
 }
 
-# Engine's primary service (None if dbt-server IS the engine)
+# Engine's primary service (None if dbt-server IS the engine).
+# Fabric engines run dbt against remote Fabric Spark (Livy) — like
+# databricks-enzyme, dbt-server IS the engine locally (plus the imds-router
+# sidecar that brokers `az login --identity`).
 ENGINE_MAIN_SERVICES = {
     "spark": "spark",
     "duckdb": None,
@@ -99,6 +106,8 @@ ENGINE_MAIN_SERVICES = {
     "feldera": "pipeline-manager",
     "spark-openivm": "spark-openivm",
     "databricks-enzyme": None,
+    "fabric-openivm-jvm-35": None,
+    "fabric-jvm-35": None,
 }
 
 
