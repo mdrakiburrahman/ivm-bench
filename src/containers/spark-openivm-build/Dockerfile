@@ -37,10 +37,10 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
 ARG OPENIVM_BRANCH=dev/mdrrahman/perf-tuning
-ARG OPENIVM_COMMIT=98d852e56854255412d4b243bdbd0755c1229a98
-ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
-ARG LPTS_BRANCH=dev/mdrrahman/spark-dialect-compat
-ARG LPTS_COMMIT=16574614b8ead0c1de5b0ead4ae5fed220951fb8
+ARG OPENIVM_COMMIT=62dfbef5dc26234a7d62f7bb70ee63a54c6422fe
+ARG LPTS_REPO=https://github.com/cwida/lpts.git
+ARG LPTS_BRANCH=main
+ARG LPTS_COMMIT=39a186cc59aa552ebf517c984784ebc9b48ca221
 
 ENV DEBIAN_FRONTEND=noninteractive
 
