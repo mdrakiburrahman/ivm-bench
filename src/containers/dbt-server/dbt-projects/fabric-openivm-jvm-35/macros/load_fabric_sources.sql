@@ -16,7 +16,7 @@
   {% set batch = (env_var('FABRIC_BATCH_NUM', '1')) | int %}
   {% set sf = env_var('SCALE_FACTOR', '3') %}
   {% set ws = env_var('FABRIC_WORKSPACE_ID', '') %}
-  {% set lh = env_var('FABRIC_LAKEHOUSE_ID', '') %}
+  {% set lh = env_var('FABRIC_CACHE_LAKEHOUSE_ID', '') %}
   {% set onelake = env_var('FABRIC_ONELAKE_HOST', 'msit-onelake.dfs.fabric.microsoft.com') %}
   {% set db = target.schema %}
   {% set cache = 'abfss://' ~ ws ~ '@' ~ onelake ~ '/' ~ lh ~ '/Files/_shared_cache/tpcdi_raw_cache/sf=' ~ sf %}

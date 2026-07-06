@@ -381,27 +381,27 @@ class EngineRunner:
             self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
 
     def _fabric_cleanup(self) -> None:
-        """End-of-run: blow up the lakehouse Tables/ + openivm state so no
-        experiment leaves stale tables/state behind in OneLake. No-op for any
-        non-fabric engine."""
+        """End-of-run: tear down this run's compute lakehouse + environment so no
+        experiment leaves stale resources behind (the shared cache lakehouse is
+        preserved). Orphan-sweep at the next run's provision is the backstop.
+        No-op for any non-fabric engine."""
         if self._engine.name not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
             return
         try:
-            resp = requests.post(f"{self._dbt_url}/sources/fabric/cleanup", timeout=1200)
+            resp = requests.post(f"{self._dbt_url}/environment/fabric/teardown", timeout=1200)
             if resp.status_code == 200:
                 data = resp.json()
                 self._emit(
-                    f"[{self._engine.name}] Post-run cleanup OK "
-                    f"(dropped_tables={data.get('dropped_tables')} "
-                    f"state_deleted={data.get('state_deleted')})"
+                    f"[{self._engine.name}] Post-run teardown OK "
+                    f"(deleted={data.get('deleted')})"
                 )
             else:
                 self._emit(
-                    f"[{self._engine.name}] Post-run cleanup WARN: "
+                    f"[{self._engine.name}] Post-run teardown WARN: "
                     f"HTTP {resp.status_code} {resp.text[:200]}"
                 )
         except Exception as e:
-            self._emit(f"[{self._engine.name}] Post-run cleanup WARN: {e}")
+            self._emit(f"[{self._engine.name}] Post-run teardown WARN: {e}")
 
     def _run_fabric(self, batch_num: int) -> str:
         """Fabric engine batch flow (mirrors _run_databricks_enzyme):
@@ -423,32 +423,26 @@ class EngineRunner:
         full_refresh = batch_num == 1
 
         if batch_num == 1:
-            if is_openivm:
-                self._emit(
-                    f"[{name}] Refreshing Fabric Environment '{os.environ.get('FABRIC_ENVIRONMENT_NAME', '35')}' "
-                    f"(openivm JAR + Spark config)"
-                )
-                resp = requests.post(
-                    f"{self._dbt_url}/environment/fabric/refresh", timeout=2400
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(
-                        f"fabric environment refresh failed: "
-                        f"HTTP {resp.status_code} {resp.text[:500]}"
-                    )
-                data = resp.json()
-                self._emit(
-                    f"[{name}] Environment published: jar={data.get('jar')} "
-                    f"spark_properties={data.get('spark_properties')} "
-                    f"state={data.get('publish_state')}"
-                )
-
-            self._emit(f"[{name}] Blowing up prior Tables/ + openivm state")
-            resp = requests.post(f"{self._dbt_url}/sources/fabric/cleanup", timeout=1200)
+            self._emit(
+                f"[{name}] Provisioning fresh Fabric compute lakehouse + environment"
+                f"{' (openivm JAR + Spark config)' if is_openivm else ''}"
+            )
+            resp = requests.post(
+                f"{self._dbt_url}/environment/fabric/provision",
+                json={"openivm": is_openivm}, timeout=2400,
+            )
             if resp.status_code != 200:
                 raise RuntimeError(
-                    f"fabric cleanup failed: HTTP {resp.status_code} {resp.text[:500]}"
+                    f"fabric provision failed: HTTP {resp.status_code} {resp.text[:500]}"
                 )
+            data = resp.json()
+            res = data.get("resolved", {})
+            self._emit(
+                f"[{name}] Provisioned {res.get('lakehouse_name')} "
+                f"(lakehouse={res.get('lakehouse_id')} environment={res.get('environment_id')}); "
+                f"swept {len(data.get('swept', []))} orphan(s); "
+                f"publish={(data.get('publish') or {}).get('publish_state')}"
+            )
 
             last_sf = self._read_last_sf()
             if last_sf is not None and last_sf != sf:

@@ -28,15 +28,17 @@ services:
       imds-router:
         condition: service_healthy
     environment:
-      # ── Fabric target (baseline flavor: own lakehouse + own environment,
-      #    attached read-only via the profile for shared-nothing isolation) ──
+      # ── Fabric target: the compute Lakehouse + Environment are provisioned
+      #    FRESH per run (<base>_<run_id>) and torn down after; only the shared
+      #    cache lakehouse (raw sources) persists. Compute IDs are resolved at
+      #    runtime by fabric.provision_run, not pinned here. ──
       FABRIC_API_BASE: "${FABRIC_API_BASE:-https://api.fabric.microsoft.com}"
       FABRIC_WORKSPACE_ID: "${FABRIC_WORKSPACE_ID}"
-      FABRIC_LAKEHOUSE_ID: "${FABRIC_JVM_35_LAKEHOUSE_ID}"
-      FABRIC_LAKEHOUSE_NAME: "${FABRIC_JVM_35_LAKEHOUSE_NAME:-jvm_35}"
       FABRIC_ONELAKE_HOST: "${FABRIC_ONELAKE_HOST:-msit-onelake.dfs.fabric.microsoft.com}"
-      FABRIC_ENVIRONMENT_ID: "${FABRIC_JVM_35_ENVIRONMENT_ID}"
-      FABRIC_ENVIRONMENT_NAME: "${FABRIC_JVM_35_ENVIRONMENT_NAME:-jvm_35}"
+      FABRIC_BASE_NAME: "${FABRIC_JVM_35_BASE_NAME:-jvm_35}"
+      FABRIC_CACHE_LAKEHOUSE_NAME: "${FABRIC_CACHE_LAKEHOUSE_NAME:-ivmbench_cache}"
+      FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS: "${FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS:-86400}"
+      FABRIC_RUN_ID: "${FABRIC_RUN_ID:-}"
       # ── az login --identity via the imds-router sidecar (App Service MSI) ──
       IDENTITY_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/identity/oauth2/token"
       IMDS_METADATA_ENDPOINT: "http://imds-router:${IMDS_ROUTER_PORT:-8080}/metadata/instance?api-version=2021-02-01"

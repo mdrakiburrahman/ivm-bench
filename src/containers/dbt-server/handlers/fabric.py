@@ -24,7 +24,7 @@ route handles the dbt build.
 
 import logging
 
-from flask import Blueprint, Flask, jsonify
+from flask import Blueprint, Flask, jsonify, request
 
 from handlers.base import BaseHandler
 from services import fabric
@@ -32,6 +32,38 @@ from services import fabric
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("fabric", __name__)
+
+
+@bp.route("/environment/fabric/provision", methods=["POST"])
+def provision():
+    """Batch-1: sweep orphaned resources, resolve the shared cache lakehouse,
+    create a fresh compute lakehouse + environment, and (openivm) publish the
+    JAR + config. Body: ``{"openivm": bool}``."""
+    body = request.get_json(silent=True) or {}
+    openivm = bool(body.get("openivm", False))
+    try:
+        return jsonify(fabric.provision_run(openivm)), 200
+    except Exception as e:
+        logger.exception("[fabric] provision failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/environment/fabric/teardown", methods=["POST"])
+def teardown():
+    try:
+        return jsonify(fabric.teardown_run()), 200
+    except Exception as e:
+        logger.exception("[fabric] teardown failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/environment/fabric/sweep-stale", methods=["POST"])
+def sweep_stale():
+    try:
+        return jsonify(fabric.sweep_stale_resources()), 200
+    except Exception as e:
+        logger.exception("[fabric] sweep-stale failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 @bp.route("/environment/fabric/refresh", methods=["POST"])

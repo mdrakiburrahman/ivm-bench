@@ -1129,6 +1129,11 @@ class Orchestrator:
         experiment_id = str(int(time.time() * 1_000_000))
         os.environ["DATABRICKS_EXPERIMENT_ID"] = experiment_id
         self._databricks_experiment_id = experiment_id
+        # Fabric per-run id (mirrors the Databricks pattern): the compute
+        # lakehouse + environment are created as <base>_<FABRIC_RUN_ID> and torn
+        # down / swept by it. The short random suffix guards against multi-runner
+        # same-microsecond collisions on the shared workspace.
+        os.environ["FABRIC_RUN_ID"] = f"{experiment_id}_{uuid.uuid4().hex[:4]}"
 
         dml_extras = []
         for ix, (u, d) in enumerate(((inputs.batch_2_update_pct, inputs.batch_2_delete_pct),

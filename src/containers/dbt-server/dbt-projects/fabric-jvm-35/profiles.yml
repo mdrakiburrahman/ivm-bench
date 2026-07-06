@@ -7,9 +7,9 @@ tpcdi:
       livy_mode: fabric
       endpoint: "{{ env_var('FABRIC_API_BASE', 'https://api.fabric.microsoft.com') }}/v1"
       workspaceid: "{{ env_var('FABRIC_WORKSPACE_ID', 'b161bf3f-2f28-451f-8a5d-420c47164f2e') }}"
-      lakehouseid: "{{ env_var('FABRIC_LAKEHOUSE_ID', '8fbe7e88-389c-414e-90fa-982c6bbde39c') }}"
-      lakehouse: "{{ env_var('FABRIC_LAKEHOUSE_NAME', 'jvm_35') }}"
-      schema: "{{ env_var('FABRIC_LAKEHOUSE_NAME', 'jvm_35') }}"
+      lakehouseid: "{{ env_var('FABRIC_LAKEHOUSE_ID', '') }}"
+      lakehouse: "{{ env_var('FABRIC_LAKEHOUSE_NAME', '') }}"
+      schema: "{{ env_var('FABRIC_LAKEHOUSE_NAME', '') }}"
       authentication: CLI
       high_concurrency: false
       reuse_session: true
@@ -23,7 +23,8 @@ tpcdi:
       spark_config:
         name: dbt-tpcdi-fabric-jvm-35
         conf:
-          # Bind the baseline Fabric Environment for shared-nothing isolation
-          # (its own Spark pool/runtime). Attach-only: the dbt-server pushes no
-          # JAR and no config to it — you own its config in the Fabric UI.
-          spark.fabric.environmentDetails: '{"id": "{{ env_var(''FABRIC_ENVIRONMENT_ID'', ''32f913be-0ebc-4cf6-872f-4dc7ab383aca'') }}"}'
+          # Bind this run's freshly-provisioned baseline Fabric Environment for
+          # shared-nothing compute isolation. The compute lakehouse + environment
+          # are created per run (fabric.provision_run) and their IDs are injected
+          # into this dbt process by dbt_runner from /tmp/fabric-resolved.json.
+          spark.fabric.environmentDetails: '{"id": "{{ env_var(''FABRIC_ENVIRONMENT_ID'', '''') }}"}'

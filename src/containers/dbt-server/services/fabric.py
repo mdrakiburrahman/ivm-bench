@@ -19,6 +19,7 @@ extension + RocksDB state); this module only moves bytes and manages the
 Environment.
 """
 
+import json
 import logging
 import os
 import subprocess
@@ -37,13 +38,26 @@ logger = logging.getLogger(__name__)
 
 FABRIC_API_BASE = os.environ.get("FABRIC_API_BASE", "https://api.fabric.microsoft.com").rstrip("/")
 WORKSPACE_ID = os.environ.get("FABRIC_WORKSPACE_ID", "")
-LAKEHOUSE_ID = os.environ.get("FABRIC_LAKEHOUSE_ID", "")
-LAKEHOUSE_NAME = os.environ.get("FABRIC_LAKEHOUSE_NAME", "ivmbenchfabric")
 ONELAKE_HOST = os.environ.get("FABRIC_ONELAKE_HOST", "msit-onelake.dfs.fabric.microsoft.com")
-ENVIRONMENT_ID = os.environ.get("FABRIC_ENVIRONMENT_ID", "")
 UAMI_CLIENT_ID = os.environ.get("UAMI_CLIENT_ID", "")
 OPENIVM_JAR_PATH = os.environ.get("OPENIVM_JAR_PATH", "/data/bin/openivm-extension.jar")
 RAW_DELTA_DIR = os.environ.get("RAW_DELTA_DIR", "/data/raw/delta")
+
+# ── Dynamic per-run provisioning ────────────────────────────────────────────
+# The compute Lakehouse + Environment are created FRESH per run (named
+# ``<BASE_NAME>_<RUN_ID>``) and torn down at the end; orphaned ones (from crashed
+# runs) are swept by age. Only the shared CACHE lakehouse (raw TPC-DI sources) is
+# persistent — resolved find-or-create by a stable name so nothing but the
+# workspace needs to be pinned in ``.env``.
+CACHE_LAKEHOUSE_NAME = os.environ.get("FABRIC_CACHE_LAKEHOUSE_NAME", "ivmbench_cache")
+# Per-flavor compute base name; the compose files map the per-flavor .env value.
+BASE_NAME = os.environ.get("FABRIC_BASE_NAME", "openivm_jvm_35")
+# Minted per-experiment by the orchestrator (mirrors DATABRICKS_EXPERIMENT_ID).
+RUN_ID = os.environ.get("FABRIC_RUN_ID", "")
+STALE_MAX_AGE_S = int(os.environ.get("FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS", "") or "86400")
+# Per-run resolved IDs (compute + cache), persisted so dbt_runner can inject them
+# into the dbt subprocess env and teardown can find what to delete.
+_RESOLVED_PATH = os.environ.get("FABRIC_RESOLVED_PATH", "/tmp/fabric-resolved.json")
 
 # Token audiences.
 FABRIC_RESOURCE = "https://api.fabric.microsoft.com"
@@ -181,36 +195,305 @@ def _storage_headers() -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Per-run resolved IDs (compute lakehouse/env + shared cache lakehouse)
+# ---------------------------------------------------------------------------
+
+_resolved_cache: Dict[str, object] = {}
+
+
+def _load_resolved() -> Dict[str, object]:
+    global _resolved_cache
+    if _resolved_cache:
+        return _resolved_cache
+    try:
+        with open(_RESOLVED_PATH) as f:
+            _resolved_cache = json.load(f)
+    except (OSError, ValueError):
+        _resolved_cache = {}
+    return _resolved_cache
+
+
+def _save_resolved(d: Dict[str, object]) -> None:
+    global _resolved_cache
+    _resolved_cache = dict(d)
+    with open(_RESOLVED_PATH, "w") as f:
+        json.dump(_resolved_cache, f)
+
+
+def _compute_lakehouse_id() -> str:
+    lid = str(_load_resolved().get("lakehouse_id", "") or "")
+    if not lid:
+        raise RuntimeError(
+            "compute lakehouse not provisioned — call POST /environment/fabric/provision first"
+        )
+    return lid
+
+
+def _compute_environment_id() -> str:
+    eid = str(_load_resolved().get("environment_id", "") or "")
+    if not eid:
+        raise RuntimeError(
+            "compute environment not provisioned — call POST /environment/fabric/provision first"
+        )
+    return eid
+
+
+# ---------------------------------------------------------------------------
+# Fabric Items REST — create / list / delete lakehouses + environments
+# ---------------------------------------------------------------------------
+
+def _workspace_base() -> str:
+    return f"{FABRIC_API_BASE}/v1/workspaces/{WORKSPACE_ID}"
+
+
+def _fabric_json_headers() -> Dict[str, str]:
+    return {**_fabric_headers(), "Content-Type": "application/json"}
+
+
+def _fabric_req(method: str, url: str, *, retries: int = 8, **kwargs) -> requests.Response:
+    """Fabric REST call with 429/503 retry honoring ``Retry-After``. Fabric
+    throttles bursts of item/environment operations, so provisioning (which fires
+    create + list + publish + poll in quick succession) would otherwise 429."""
+    kwargs.setdefault("timeout", 120)
+    backoff = 5.0
+    r = requests.request(method, url, **kwargs)
+    for attempt in range(1, retries + 1):
+        if r.status_code not in (429, 503) or attempt == retries:
+            return r
+        try:
+            wait = float(r.headers.get("Retry-After", ""))
+        except ValueError:
+            wait = backoff
+        logger.warning(
+            "[fabric] %s ...%s -> HTTP %s, retry %d/%d in %.0fs",
+            method, url[-48:], r.status_code, attempt, retries, min(max(wait, 1.0), 60),
+        )
+        time.sleep(min(max(wait, 1.0), 60))
+        backoff = min(backoff * 2, 60)
+        r = requests.request(method, url, **kwargs)
+    return r
+
+
+def _lro_poll(location: str, timeout_s: int = 900, interval_s: int = 10) -> None:
+    """Poll a Fabric long-running-operation Location URL until it succeeds."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        r = _fabric_req("GET", location, headers=_fabric_headers())
+        r.raise_for_status()
+        status = (r.json() or {}).get("status", "").lower()
+        if status == "succeeded":
+            return
+        if status in ("failed", "cancelled"):
+            raise RuntimeError(f"Fabric operation {status}: {r.text[:300]}")
+        time.sleep(interval_s)
+    raise RuntimeError("Fabric operation timed out")
+
+
+def _create_item(item_type: str, name: str) -> str:
+    """Create a workspace item (``lakehouses`` | ``environments``); return its id.
+
+    Handles the sync (201) and async LRO (202 + Location poll) responses; the id
+    is resolved by re-listing by displayName (robust across both paths)."""
+    r = _fabric_req(
+        "POST",
+        f"{_workspace_base()}/{item_type}",
+        headers=_fabric_json_headers(),
+        json={"displayName": name},
+        timeout=180,
+    )
+    if r.status_code in (200, 201):
+        body = r.json() if r.text else {}
+        if body.get("id"):
+            return str(body["id"])
+    elif r.status_code == 202:
+        loc = r.headers.get("Location")
+        if loc:
+            _lro_poll(loc)
+    else:
+        raise RuntimeError(
+            f"create {item_type} '{name}' failed: HTTP {r.status_code} {r.text[:300]}"
+        )
+    found = _find_item_by_name(item_type, name)
+    if not found:
+        raise RuntimeError(f"create {item_type} '{name}' — item not found after create")
+    return found["id"]
+
+
+def _list_items(item_type: str) -> List[Dict[str, str]]:
+    """List all workspace items of a type, following continuation tokens."""
+    items: List[Dict[str, str]] = []
+    url = f"{_workspace_base()}/{item_type}"
+    params: Dict[str, str] = {}
+    for _ in range(50):  # hard page cap
+        r = _fabric_req("GET", url, headers=_fabric_headers(), params=params)
+        if r.status_code != 200:
+            break
+        body = r.json() or {}
+        items += [
+            {"id": str(it.get("id", "")), "displayName": str(it.get("displayName", ""))}
+            for it in (body.get("value") or [])
+            if it.get("id")
+        ]
+        token = body.get("continuationToken")
+        if not token:
+            break
+        params = {"continuationToken": token}
+    return items
+
+
+def _find_item_by_name(item_type: str, name: str) -> Optional[Dict[str, str]]:
+    for it in _list_items(item_type):
+        if it["displayName"] == name:
+            return it
+    return None
+
+
+def _delete_item(item_type: str, item_id: str) -> bool:
+    r = _fabric_req(
+        "DELETE", f"{_workspace_base()}/{item_type}/{item_id}", headers=_fabric_headers(), timeout=180
+    )
+    return r.status_code in (200, 202, 404)
+
+
+def resolve_cache_lakehouse() -> str:
+    """Find-or-create the persistent shared cache lakehouse by name; return id."""
+    cached = str(_load_resolved().get("cache_lakehouse_id", "") or "")
+    if cached:
+        return cached
+    found = _find_item_by_name("lakehouses", CACHE_LAKEHOUSE_NAME)
+    lid = found["id"] if found else _create_item("lakehouses", CACHE_LAKEHOUSE_NAME)
+    logger.info("[fabric] cache lakehouse '%s' id=%s", CACHE_LAKEHOUSE_NAME, lid)
+    return lid
+
+
+# ---------------------------------------------------------------------------
+# Per-run provisioning + orphan sweep
+# ---------------------------------------------------------------------------
+
+def _run_ts_us(name: str, base: str) -> Optional[float]:
+    """Extract the microsecond epoch from a ``<base>_<microsec>_<rand>`` item name."""
+    prefix = f"{base}_"
+    if not name.startswith(prefix):
+        return None
+    ts_str = name[len(prefix):].split("_", 1)[0]
+    if not ts_str.isdigit() or len(ts_str) < 15:
+        return None
+    return float(ts_str)
+
+
+def sweep_stale_resources(max_age_s: Optional[int] = None) -> dict:
+    """Delete this flavor's compute lakehouses + environments (named
+    ``<BASE_NAME>_<microsec>_<rand>``) whose run-id timestamp is older than
+    ``max_age_s`` (default ``FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS``). The age
+    guard keeps a concurrent runner's live resources (< threshold) safe."""
+    max_age = max_age_s if max_age_s is not None else STALE_MAX_AGE_S
+    now_us = time.time() * 1_000_000
+    deleted: List[str] = []
+    for item_type in ("lakehouses", "environments"):
+        for it in _list_items(item_type):
+            name = it["displayName"]
+            ts = _run_ts_us(name, BASE_NAME)
+            if ts is None:
+                continue
+            if RUN_ID and name == f"{BASE_NAME}_{RUN_ID}":
+                continue  # never sweep our own
+            if (now_us - ts) / 1_000_000 <= max_age:
+                continue
+            if _delete_item(item_type, it["id"]):
+                deleted.append(f"{item_type}/{name}")
+    if deleted:
+        logger.info("[fabric] swept %d stale resource(s): %s", len(deleted), deleted)
+    return {"status": "ok", "deleted": deleted, "max_age_s": max_age}
+
+
+def provision_run(openivm: bool) -> dict:
+    """Batch-1 provisioning: sweep orphans -> resolve the shared cache lakehouse
+    -> create a FRESH compute lakehouse + environment named ``<BASE_NAME>_<RUN_ID>``
+    -> (openivm) publish the JAR + Spark config into that environment; (baseline)
+    publish the empty environment so it is attachable. Persists the resolved IDs
+    for the dbt run + teardown."""
+    if not RUN_ID:
+        raise RuntimeError("FABRIC_RUN_ID not set (the orchestrator must mint it per experiment)")
+    swept = sweep_stale_resources()
+    cache_id = resolve_cache_lakehouse()
+    name = f"{BASE_NAME}_{RUN_ID}"
+    lakehouse_id = _create_item("lakehouses", name)
+    environment_id = _create_item("environments", name)
+    resolved = {
+        "run_id": RUN_ID,
+        "cache_lakehouse_id": cache_id,
+        "cache_lakehouse_name": CACHE_LAKEHOUSE_NAME,
+        "lakehouse_id": lakehouse_id,
+        "lakehouse_name": name,
+        "environment_id": environment_id,
+        "environment_name": name,
+        "openivm": bool(openivm),
+    }
+    _save_resolved(resolved)
+    logger.info(
+        "[fabric] provisioned %s: lakehouse=%s environment=%s (cache=%s)",
+        name, lakehouse_id, environment_id, cache_id,
+    )
+    publish = refresh_environment() if openivm else publish_empty_environment()
+    return {"status": "ok", "resolved": resolved, "swept": swept["deleted"], "publish": publish}
+
+
+def teardown_run() -> dict:
+    """End-of-run: delete this run's compute lakehouse + environment (the shared
+    cache lakehouse is preserved). Best-effort; orphan-sweep is the backstop."""
+    r = _load_resolved()
+    deleted: List[str] = []
+    for item_type, id_key, name_key in (
+        ("environments", "environment_id", "environment_name"),
+        ("lakehouses", "lakehouse_id", "lakehouse_name"),
+    ):
+        iid = str(r.get(id_key, "") or "")
+        if iid and _delete_item(item_type, iid):
+            deleted.append(f"{item_type}/{r.get(name_key, iid)}")
+    try:
+        if os.path.exists(_RESOLVED_PATH):
+            os.unlink(_RESOLVED_PATH)
+    except OSError:
+        pass
+    global _resolved_cache
+    _resolved_cache = {}
+    logger.info("[fabric] torn down: %s", deleted)
+    return {"status": "ok", "deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
 # OneLake path helpers
 # ---------------------------------------------------------------------------
 
-def onelake_dfs_url(rel_path: str) -> str:
-    """HTTPS DFS URL for a path under the lakehouse (e.g. ``Files/x`` or ``Tables``)."""
-    return f"https://{ONELAKE_HOST}/{WORKSPACE_ID}/{LAKEHOUSE_ID}/{rel_path.lstrip('/')}"
+def onelake_dfs_url(rel_path: str, lakehouse_id: Optional[str] = None) -> str:
+    """HTTPS DFS URL for a path under a lakehouse (defaults to the compute one)."""
+    lid = lakehouse_id or _compute_lakehouse_id()
+    return f"https://{ONELAKE_HOST}/{WORKSPACE_ID}/{lid}/{rel_path.lstrip('/')}"
 
 
-def onelake_abfss(rel_path: str) -> str:
-    """ABFSS URI (for Spark ``delta.`...``` reads) for a path under the lakehouse."""
-    return f"abfss://{WORKSPACE_ID}@{ONELAKE_HOST}/{LAKEHOUSE_ID}/{rel_path.lstrip('/')}"
+def onelake_abfss(rel_path: str, lakehouse_id: Optional[str] = None) -> str:
+    """ABFSS URI (for Spark ``delta.`...``` reads) for a path under a lakehouse."""
+    lid = lakehouse_id or _compute_lakehouse_id()
+    return f"abfss://{WORKSPACE_ID}@{ONELAKE_HOST}/{lid}/{rel_path.lstrip('/')}"
 
 
 def cache_section_abfss(sf: int, section: str) -> str:
     """ABFSS URI of a cache section (``batch1/<t>``, ``staging/<t>``,
-    ``staging_batch<N>/<t>``, ``audit``) — what the dbt macro reads from."""
-    return onelake_abfss(f"{CACHE_ROOT}/sf={sf}/{section}")
+    ``staging_batch<N>/<t>``, ``audit``) — read from the shared CACHE lakehouse."""
+    return onelake_abfss(f"{CACHE_ROOT}/sf={sf}/{section}", lakehouse_id=resolve_cache_lakehouse())
 
 
 # ---------------------------------------------------------------------------
 # OneLake DFS (marker checks + blow-up)
 # ---------------------------------------------------------------------------
 
-def _dfs_exists(rel_path: str) -> bool:
-    r = requests.head(onelake_dfs_url(rel_path), headers=_storage_headers(), timeout=60)
+def _dfs_exists(rel_path: str, lakehouse_id: Optional[str] = None) -> bool:
+    r = requests.head(onelake_dfs_url(rel_path, lakehouse_id), headers=_storage_headers(), timeout=60)
     return r.status_code == 200
 
 
-def _dfs_put_marker(rel_path: str) -> None:
-    url = onelake_dfs_url(rel_path)
+def _dfs_put_marker(rel_path: str, lakehouse_id: Optional[str] = None) -> None:
+    url = onelake_dfs_url(rel_path, lakehouse_id)
     hdr = _storage_headers()
     requests.put(f"{url}?resource=file", headers=hdr, timeout=60)
     requests.patch(
@@ -224,21 +507,22 @@ def _dfs_put_marker(rel_path: str) -> None:
     )
 
 
-def _dfs_delete(rel_path: str, recursive: bool = True) -> bool:
+def _dfs_delete(rel_path: str, recursive: bool = True, lakehouse_id: Optional[str] = None) -> bool:
     r = requests.delete(
-        f"{onelake_dfs_url(rel_path)}?recursive={'true' if recursive else 'false'}",
+        f"{onelake_dfs_url(rel_path, lakehouse_id)}?recursive={'true' if recursive else 'false'}",
         headers=_storage_headers(), timeout=_HTTP_TIMEOUT,
     )
     return r.status_code in (200, 202, 404)
 
 
-def _dfs_list(rel_dir: str) -> List[str]:
+def _dfs_list(rel_dir: str, lakehouse_id: Optional[str] = None) -> List[str]:
     """List immediate paths under a lakehouse directory (relative paths)."""
+    lid = lakehouse_id or _compute_lakehouse_id()
     url = f"https://{ONELAKE_HOST}/{WORKSPACE_ID}"
     params = {
         "resource": "filesystem",
         "recursive": "false",
-        "directory": f"{LAKEHOUSE_ID}/{rel_dir.lstrip('/')}",
+        "directory": f"{lid}/{rel_dir.lstrip('/')}",
     }
     r = requests.get(url, headers=_storage_headers(), params=params, timeout=_HTTP_TIMEOUT)
     if r.status_code != 200:
@@ -306,7 +590,7 @@ def _run_azcopy(args: List[str], what: str, attempts: int = 4, backoff_s: float 
     raise RuntimeError(f"azcopy {what} failed: {last[-500:]}")
 
 
-def _azcopy(local_dir: Path, dest_rel: str) -> int:
+def _azcopy(local_dir: Path, dest_rel: str, lakehouse_id: Optional[str] = None) -> int:
     """Copy a local Delta dir into the lakehouse so it lands exactly at
     ``dest_rel`` (whose last segment must equal ``local_dir.name``). Returns
     file count.
@@ -315,7 +599,7 @@ def _azcopy(local_dir: Path, dest_rel: str) -> int:
     so we target the PARENT of ``dest_rel`` and let azcopy recreate the leaf.
     """
     files = sum(1 for _ in local_dir.rglob("*") if _.is_file())
-    parent_url = onelake_dfs_url(dest_rel).rsplit("/", 1)[0]
+    parent_url = onelake_dfs_url(dest_rel, lakehouse_id).rsplit("/", 1)[0]
     _run_azcopy(
         ["copy", str(local_dir), f"{parent_url}/",
          "--recursive", "--overwrite=true", "--output-type=text",
@@ -335,27 +619,30 @@ def _all_init_sections() -> List[Tuple[str, str]]:
 
 def seed_cache_init(sf: int) -> dict:
     """Idempotently stage the batch-1 + initial-staging + audit Delta dirs into
-    ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/``. Marker-guarded."""
+    the shared CACHE lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/``.
+    Marker-guarded (reused across same-SF runs)."""
+    cache_lh = resolve_cache_lakehouse()
     marker = f"{CACHE_ROOT}/sf={sf}/_UPLOADED_INIT"
-    if _dfs_exists(marker):
+    if _dfs_exists(marker, lakehouse_id=cache_lh):
         return {"status": "ok", "files_uploaded": 0, "already_seeded": True}
     total = 0
     for subdir, section in _all_init_sections():
         local = Path(RAW_DELTA_DIR) / subdir
         if not local.is_dir():
             continue
-        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/{section}")
-    _dfs_put_marker(marker)
+        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/{section}", lakehouse_id=cache_lh)
+    _dfs_put_marker(marker, lakehouse_id=cache_lh)
     return {"status": "ok", "files_uploaded": total, "already_seeded": False}
 
 
 def seed_cache_batch(sf: int, batch_num: int) -> dict:
-    """Idempotently stage the per-batch staging Delta into
-    ``sf=<N>/staging_batch<N>/``. Marker-guarded."""
+    """Idempotently stage the per-batch staging Delta into the shared CACHE
+    lakehouse ``sf=<N>/staging_batch<N>/``. Marker-guarded."""
     if batch_num not in (2, 3):
         raise ValueError(f"seed_cache_batch supports batch 2/3, got {batch_num}")
+    cache_lh = resolve_cache_lakehouse()
     marker = f"{CACHE_ROOT}/sf={sf}/_UPLOADED_BATCH{batch_num}"
-    if _dfs_exists(marker):
+    if _dfs_exists(marker, lakehouse_id=cache_lh):
         return {"status": "ok", "files_uploaded": 0, "already_seeded": True}
     total = 0
     for t in STAGING_TABLES:
@@ -363,8 +650,8 @@ def seed_cache_batch(sf: int, batch_num: int) -> dict:
         local = local_batch if local_batch.is_dir() else Path(RAW_DELTA_DIR) / "staging" / t
         if not local.is_dir():
             continue
-        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/staging_batch{batch_num}/{t}")
-    _dfs_put_marker(marker)
+        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/staging_batch{batch_num}/{t}", lakehouse_id=cache_lh)
+    _dfs_put_marker(marker, lakehouse_id=cache_lh)
     return {"status": "ok", "files_uploaded": total, "already_seeded": False}
 
 
@@ -394,7 +681,7 @@ def cleanup_tables_and_state() -> dict:
 
 
 def cleanup_cache_for_sf(sf: int) -> dict:
-    ok = _dfs_delete(f"{CACHE_ROOT}/sf={sf}")
+    ok = _dfs_delete(f"{CACHE_ROOT}/sf={sf}", lakehouse_id=resolve_cache_lakehouse())
     return {"status": "ok", "sf": sf, "deleted": ok}
 
 
@@ -460,11 +747,25 @@ def default_openivm_spark_properties() -> Dict[str, str]:
 
 
 def _env_base() -> str:
-    return f"{FABRIC_API_BASE}/v1/workspaces/{WORKSPACE_ID}/environments/{ENVIRONMENT_ID}"
+    return f"{FABRIC_API_BASE}/v1/workspaces/{WORKSPACE_ID}/environments/{_compute_environment_id()}"
+
+
+def publish_empty_environment() -> dict:
+    """Publish the freshly-created (empty) compute Environment so the baseline
+    Livy session can attach it. A brand-new env may have nothing to publish; a
+    non-2xx here is treated as already-usable (no-op)."""
+    pub = _fabric_req("POST", f"{_env_base()}/staging/publish", headers=_fabric_headers())
+    if pub.status_code in (200, 202):
+        return {"publish_state": _poll_publish()}
+    logger.info(
+        "[fabric] empty env publish HTTP %s (treating as no-op): %s",
+        pub.status_code, pub.text[:200],
+    )
+    return {"publish_state": "skipped"}
 
 
 def _staged_library_names(hdr: Dict[str, str]) -> List[str]:
-    r = requests.get(f"{_env_base()}/staging/libraries", headers=hdr, timeout=120)
+    r = _fabric_req("GET", f"{_env_base()}/staging/libraries", headers=hdr)
     if r.status_code != 200:
         return []
     names: List[str] = []
@@ -478,9 +779,9 @@ def _staged_library_names(hdr: Dict[str, str]) -> List[str]:
 def _delete_staged_libraries(hdr: Dict[str, str]) -> List[str]:
     names = _staged_library_names(hdr)
     for name in names:
-        requests.delete(
-            f"{_env_base()}/staging/libraries",
-            headers=hdr, params={"libraryToDelete": name}, timeout=120,
+        _fabric_req(
+            "DELETE", f"{_env_base()}/staging/libraries",
+            headers=hdr, params={"libraryToDelete": name},
         )
     return names
 
@@ -489,7 +790,7 @@ def _poll_publish(timeout_s: int = 1800, interval_s: int = 15) -> str:
     import time
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        r = requests.get(_env_base(), headers=_fabric_headers(), timeout=120)
+        r = _fabric_req("GET", _env_base(), headers=_fabric_headers())
         r.raise_for_status()
         state = (
             (r.json().get("properties") or {})
@@ -536,8 +837,7 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
     (plan rewrite + RocksDB catalog + DuckDB compile bridge) — executors run
     vanilla Spark/Delta. The driver loads the JAR via the profile's
     ``spark.jars`` (the OneLake copy staged here)."""
-    if not ENVIRONMENT_ID:
-        raise RuntimeError("FABRIC_ENVIRONMENT_ID not set")
+    _compute_environment_id()  # raises if not provisioned
     jar = Path(OPENIVM_JAR_PATH)
     if not jar.exists():
         raise RuntimeError(f"openivm JAR not found at {OPENIVM_JAR_PATH}")
@@ -561,18 +861,18 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
     jar_abfss = upload_jar_to_lib()
 
     props = spark_properties or default_openivm_spark_properties()
-    patch = requests.patch(
+    patch = _fabric_req(
+        "PATCH",
         f"{base}/staging/sparkcompute",
         headers={**hdr, "Content-Type": "application/json"},
         json={"sparkProperties": props},
-        timeout=120,
     )
     if patch.status_code not in (200, 202):
         raise RuntimeError(
             f"sparkcompute PATCH failed: HTTP {patch.status_code} {patch.text[:300]}"
         )
 
-    pub = requests.post(f"{base}/staging/publish", headers=hdr, timeout=120)
+    pub = _fabric_req("POST", f"{base}/staging/publish", headers=hdr)
     if pub.status_code not in (200, 202):
         raise RuntimeError(f"publish failed: HTTP {pub.status_code} {pub.text[:300]}")
 

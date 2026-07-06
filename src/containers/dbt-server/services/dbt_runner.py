@@ -13,6 +13,29 @@ from services.progress import cleanup_progress, init_progress, parse_log_line
 PROJECTS_DIR = "/app/dbt-projects"
 
 
+def _inject_fabric_resolved(env: dict) -> None:
+    """Inject the per-run resolved Fabric IDs (compute lakehouse/env + shared
+    cache lakehouse) written by ``fabric.provision_run`` so the profile's
+    ``env_var()`` lookups + the ``load_fabric_sources`` macro target the dynamic
+    resources. No-op for non-fabric engines (resolved file absent)."""
+    path = os.environ.get("FABRIC_RESOLVED_PATH", "/tmp/fabric-resolved.json")
+    try:
+        with open(path) as f:
+            r = json.load(f)
+    except (OSError, ValueError):
+        return
+    for env_key, resolved_key in (
+        ("FABRIC_LAKEHOUSE_ID", "lakehouse_id"),
+        ("FABRIC_LAKEHOUSE_NAME", "lakehouse_name"),
+        ("FABRIC_ENVIRONMENT_ID", "environment_id"),
+        ("FABRIC_ENVIRONMENT_NAME", "environment_name"),
+        ("FABRIC_CACHE_LAKEHOUSE_ID", "cache_lakehouse_id"),
+    ):
+        val = r.get(resolved_key)
+        if val:
+            env[env_key] = str(val)
+
+
 def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, batch_num: int = 1):
     """Execute a dbt build for the given engine and track results."""
     project_dir = os.path.join(PROJECTS_DIR, engine)
@@ -53,6 +76,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
     # Consumed by the fabric-* projects' load_fabric_sources on-run-start macro
     # to pick the batch-1 CREATE vs batch-2/3 staging INSERT.
     env["FABRIC_BATCH_NUM"] = str(batch_num)
+    _inject_fabric_resolved(env)
 
     start_ts = time.monotonic()
     stderr_buf = []
