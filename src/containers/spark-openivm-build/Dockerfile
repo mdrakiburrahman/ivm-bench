@@ -35,9 +35,9 @@
 FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
-ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
-ARG OPENIVM_BRANCH=dev/mdrrahman/perf-tuning
-ARG OPENIVM_COMMIT=62dfbef5dc26234a7d62f7bb70ee63a54c6422fe
+ARG OPENIVM_REPO=https://github.com/ila/openivm.git
+ARG OPENIVM_BRANCH=main
+ARG OPENIVM_COMMIT=909a106364427844c6e8a0a891ba2ed6de4127e1
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
 ARG LPTS_COMMIT=39a186cc59aa552ebf517c984784ebc9b48ca221
