@@ -12,10 +12,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional
 
-from models.config import BenchmarkConfig
+from models.config import BenchmarkConfig, is_cloud_engine
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BenchmarkResult, EngineResult
 from services import oat_runner
@@ -573,17 +574,58 @@ class Orchestrator:
         # dirs (e.g. staging-spark-openivm) regardless of engine count.
         # Init staging before any engine starts so the host directories and
         # container mountpoints exist for the compose override mounts.
-        if self._config.parallel:
-            self._init_parallel_staging(engine_configs)
-
-        if self._config.parallel and len(engines) > 1:
-            self.emit(f"  Running {len(engines)} engines in PARALLEL")
-            self._run_engines_parallel(engine_configs)
+        if self._config.schedule == "serial-host-parallel-cloud":
+            self._run_serial_host_parallel_cloud()
         else:
-            self.emit(f"  Running {len(engines)} engines SERIALLY")
-            self._run_engines_serial(engine_configs)
+            if self._config.parallel:
+                self._init_parallel_staging(engine_configs)
+
+            if self._config.parallel and len(engines) > 1:
+                self.emit(f"  Running {len(engines)} engines in PARALLEL")
+                self._run_engines_parallel(engine_configs)
+            else:
+                self.emit(f"  Running {len(engines)} engines SERIALLY")
+                self._run_engines_serial(engine_configs)
 
         self.emit("=== Phase 2: Complete ===")
+
+    def _run_serial_host_parallel_cloud(self) -> None:
+        """Run host-consuming engines serially (each with full host resources),
+        then all cloud-consuming engines in ONE parallel wave.
+
+        Cloud engines offload their compute to a remote service, so their host
+        footprint is just the light dbt-server (+ imds-router) orchestration —
+        running them concurrently barely touches the host. Host engines keep the
+        serial full-host allocation. This reuses the proven serial and
+        parallel-wave machinery by swapping ``self._config`` per phase (each
+        phase needs its own resource split + port/staging assignment)."""
+        host = [e for e in self._config.engines if not is_cloud_engine(e)]
+        cloud = [e for e in self._config.engines if is_cloud_engine(e)]
+        self.emit(
+            f"  serial-host-parallel-cloud: host(serial)=[{', '.join(host) or '-'}] "
+            f"cloud(parallel)=[{', '.join(cloud) or '-'}]"
+        )
+        orig = self._config
+        try:
+            if host:
+                self._config = replace(orig, engines=host, parallel=False, schedule="serial")
+                host_configs = compute_engine_configs(self._config)
+                self.emit(f"  Running {len(host)} host engine(s) SERIALLY")
+                self._run_engines_serial(host_configs)
+            if cloud:
+                self._config = replace(orig, engines=cloud, parallel=True, schedule="parallel")
+                cloud_configs = compute_engine_configs(self._config)
+                self._init_parallel_staging(cloud_configs)
+                self.emit(f"  Running {len(cloud)} cloud engine(s) in PARALLEL")
+                self._run_engine_wave(cloud, cloud_configs)
+                failed = [
+                    n for n in cloud
+                    if n in self._result.engines and self._result.engines[n].status == "failed"
+                ]
+                if failed:
+                    raise RuntimeError(f"Cloud engines failed: {', '.join(failed)}")
+        finally:
+            self._config = orig
 
     def _build_engine_images(self) -> None:
         """Build Docker images for all selected engines."""
@@ -1124,6 +1166,7 @@ class Orchestrator:
         self._config.batch_3_delete_pct = inputs.batch_3_delete_pct
         self._config.engines = list(inputs.engines)
         self._config.parallel = inputs.parallel
+        self._config.schedule = inputs.schedule
         oat_runner.apply_experiment_env(inputs)
 
         experiment_id = str(int(time.time() * 1_000_000))

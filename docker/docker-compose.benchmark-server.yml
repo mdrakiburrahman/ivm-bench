@@ -25,6 +25,7 @@ services:
       BATCH_3_UPDATE_PCT: "${BATCH_3_UPDATE_PCT:-0}"
       BATCH_3_DELETE_PCT: "${BATCH_3_DELETE_PCT:-0}"
       PARALLEL: "${PARALLEL:-0}"
+      SCHEDULE: "${SCHEDULE:-serial}"
       ENGINES: "${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
       HOST_CORES: "${HOST_CORES:-}"
       HOST_MEMORY: "${HOST_MEMORY:-}"

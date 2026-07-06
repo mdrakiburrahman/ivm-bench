@@ -110,6 +110,23 @@ ENGINE_MAIN_SERVICES = {
     "fabric-jvm-35": None,
 }
 
+# Cloud-consuming engines: the heavy query compute is offloaded to a remote
+# service (Databricks Serverless SQL / Fabric Spark Livy), so their host
+# footprint is just the light dbt-server (+ imds-router) orchestration
+# container. Everything else is host-consuming (local Spark/DuckDB/Feldera).
+# The ``serial-host-parallel-cloud`` schedule serialises host engines (they
+# contend for host CPU/RAM/disk) and runs cloud engines in one parallel wave.
+CLOUD_ENGINES = {
+    "databricks-enzyme",
+    "fabric-openivm-jvm-35",
+    "fabric-jvm-35",
+}
+
+
+def is_cloud_engine(name: str) -> bool:
+    """True if the engine offloads its compute to a remote cloud service."""
+    return name in CLOUD_ENGINES
+
 
 @dataclass
 class BenchmarkConfig:
@@ -123,6 +140,11 @@ class BenchmarkConfig:
     batch_3_update_pct: str = "0"
     batch_3_delete_pct: str = "0"
     parallel: bool = False
+    # Scheduling mode: "serial" (all engines one-at-a-time), "parallel" (all in
+    # one wave), or "serial-host-parallel-cloud" (host engines serial, cloud
+    # engines in one parallel wave). ``parallel=True`` maps to "parallel" for
+    # back-compat when ``schedule`` is left at its default.
+    schedule: str = "serial"
     engines: List[str] = field(
         default_factory=lambda: [
             "spark",
