@@ -46,6 +46,7 @@ export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/exp
 # Optional global knobs (apply to the OAT loop itself):
 export OAT_MIN_FREE_PCT=10   # skip remaining experiments when free disk < 10%
 export PRESERVE_RAW=1        # keep mount/bin/ across sweeps (raw/<SF>/ is always wiped between experiments)
+export BENCHMARK_RUNS=1      # repeat the full benchmark N times and average per-engine timings
 
 sudo rm -rf ${GIT_ROOT}/mount
 docker kill $(docker ps -q)
@@ -75,6 +76,10 @@ At the end, `benchmark.sh` cats `mount/oat-state/latest/RESULTS.md`:
 ```
 
 Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, RESULTS.md, outputs.json}`
+
+Each experiment runs 3 batches per engine (full load `batch1` → append `batch2` →
+append `batch3`). Set `BENCHMARK_RUNS` greater than 1 to repeat the full 3-batch
+benchmark from clean engine state and report averaged per-engine batch timings.
 
 ### Engines
 

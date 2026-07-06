@@ -1,5 +1,6 @@
 """Main benchmark orchestrator — coordinates all phases."""
 
+import copy
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ from typing import Dict, Iterator, List, Optional
 
 from models.config import BenchmarkConfig
 from models.experiments import ExperimentInputs, parse_experiments_json
-from models.result import BenchmarkResult, EngineResult
+from models.result import BatchResult, BenchmarkResult, EngineResult
 from services import oat_runner
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
@@ -59,6 +60,16 @@ class Orchestrator:
     @property
     def config(self) -> BenchmarkConfig:
         return self._config
+
+    def update_config(self, **overrides) -> None:
+        """Update config fields. Only allowed when not running."""
+        if self._running:
+            raise RuntimeError("Cannot update config while running")
+        for key, value in overrides.items():
+            if hasattr(self._config, key):
+                if key == "benchmark_runs":
+                    value = max(1, int(value))
+                setattr(self._config, key, value)
 
     @property
     def result(self) -> BenchmarkResult:
@@ -123,7 +134,10 @@ class Orchestrator:
             if not experiments_file:
                 raise ValueError("experiments_file is required (OAT-only mode)")
             self._running = True
-            self._result = BenchmarkResult(status="running")
+            self._result = BenchmarkResult(
+                status="running",
+                repetition_count=self._config.benchmark_runs,
+            )
             self._experiments_file = experiments_file
             self._experiments = []
             self._oat_run_id = None
@@ -163,6 +177,7 @@ class Orchestrator:
         now_iso = datetime.now(timezone.utc).isoformat()
         config_json = json.dumps({
             "scale_factor": self._config.scale_factor,
+            "benchmark_runs": self._config.benchmark_runs,
             "engines": self._config.engines,
             "parallel": self._config.parallel,
             "batch_1_pct": self._config.batch_1_pct,
@@ -342,6 +357,33 @@ class Orchestrator:
             full = os.path.join(repo, d)
             os.makedirs(full, exist_ok=True)
             os.chmod(full, 0o777)
+
+    def _clean_benchmark_outputs(self) -> None:
+        """Clean per-repetition outputs while preserving generated input data."""
+        sf = str(self._config.scale_factor)
+        repo = self._config.repo_dir
+        paths = []
+        for engine in self._config.engines:
+            paths.extend([
+                os.path.join(repo, "mount", "results", sf, engine),
+                os.path.join(repo, "mount", "logs", sf, engine),
+                os.path.join(repo, "mount", "stats", sf, engine),
+            ])
+            if engine == "feldera":
+                paths.append(os.path.join(repo, "mount", "debug", sf, "feldera"))
+
+        dbt_results = os.path.join(repo, "mount", "results", sf, "dbt-server")
+        if os.path.isdir(dbt_results):
+            for entry in os.listdir(dbt_results):
+                if entry.startswith("repetition-"):
+                    continue
+                paths.append(os.path.join(dbt_results, entry))
+
+        for path in paths:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            elif os.path.exists(path):
+                os.remove(path)
 
     def _phase1_prep(self, include_datagen: bool = True) -> None:
         """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
@@ -555,6 +597,114 @@ class Orchestrator:
         with self._heartbeat("batch-loader/build"):
             mgr.build()
         self.emit("  [batch-loader] Build complete")
+
+    def _run_benchmark_repetitions(self) -> None:
+        """Run the full engine benchmark one or more times and average results."""
+        run_count = max(1, self._config.benchmark_runs)
+        self._config.benchmark_runs = run_count
+        self._result.repetition_count = run_count
+
+        if run_count == 1:
+            self._phase2_benchmark()
+            return
+
+        repetitions: List[Dict[str, EngineResult]] = []
+        for run_idx in range(1, run_count + 1):
+            self.emit("")
+            self.emit(f"=== Benchmark repetition {run_idx}/{run_count} ===")
+            self._teardown_existing()
+            self._clean_benchmark_outputs()
+            self._pre_create_dirs()
+
+            self._result.engines = {}
+            self._phase2_benchmark()
+            repetition_engines = copy.deepcopy(self._result.engines)
+            repetitions.append(repetition_engines)
+            self._save_repetition_result(run_idx, repetition_engines)
+            self._archive_repetition_outputs(run_idx)
+
+        self._result.repetitions = repetitions
+        self._result.engines = self._average_repetition_results(repetitions)
+        self._result.total_duration_s = sum(
+            er.total_duration_s for er in self._result.engines.values()
+        )
+        self._save_benchmark_results()
+
+    def _average_repetition_results(
+        self, repetitions: List[Dict[str, EngineResult]],
+    ) -> Dict[str, EngineResult]:
+        """Average per-engine, per-batch durations across repetitions."""
+        averaged: Dict[str, EngineResult] = {}
+        for engine in self._config.engines:
+            engine_runs = [rep[engine] for rep in repetitions if engine in rep]
+            if len(engine_runs) != len(repetitions):
+                raise RuntimeError(f"Missing repetition result for engine {engine}")
+
+            batch_nums = [b.batch_num for b in engine_runs[0].batches]
+            batches = []
+            for idx, batch_num in enumerate(batch_nums):
+                durations = [er.batches[idx].duration_s for er in engine_runs]
+                statuses = [er.batches[idx].status for er in engine_runs]
+                errors = [er.batches[idx].error for er in engine_runs if er.batches[idx].error]
+                batches.append(BatchResult(
+                    batch_num=batch_num,
+                    duration_s=sum(durations) / len(durations),
+                    status="completed" if all(s == "completed" for s in statuses) else "failed",
+                    error="; ".join(errors) if errors else None,
+                ))
+
+            extra = {}
+            extra_keys = set().union(*(er.extra.keys() for er in engine_runs))
+            for key in extra_keys:
+                values = [er.extra.get(key) for er in engine_runs]
+                if all(isinstance(v, (int, float)) for v in values):
+                    extra[key] = sum(values) / len(values)
+
+            statuses = [er.status for er in engine_runs]
+            errors = [er.error for er in engine_runs if er.error]
+            averaged[engine] = EngineResult(
+                engine=engine,
+                batches=batches,
+                status="completed" if all(s == "completed" for s in statuses) else "failed",
+                error="; ".join(errors) if errors else None,
+                extra=extra,
+            )
+
+        return averaged
+
+    def _save_repetition_result(
+        self, run_idx: int, engines: Dict[str, EngineResult],
+    ) -> None:
+        """Write a compact JSON result for one benchmark repetition."""
+        sf = str(self._config.scale_factor)
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", sf, "dbt-server", f"repetition-{run_idx}",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        result = BenchmarkResult(
+            status="completed",
+            engines=engines,
+            repetition_count=1,
+            total_duration_s=sum(er.total_duration_s for er in engines.values()),
+        )
+        with open(os.path.join(results_dir, "benchmark-results.json"), "w") as f:
+            json.dump(result.to_dict(), f, indent=2)
+
+    def _archive_repetition_outputs(self, run_idx: int) -> None:
+        """Copy dbt-server output files for one repetition before the next clean."""
+        sf = str(self._config.scale_factor)
+        results_dir = os.path.join(
+            self._config.repo_dir, "mount", "results", sf, "dbt-server",
+        )
+        archive_dir = os.path.join(results_dir, f"repetition-{run_idx}")
+        os.makedirs(archive_dir, exist_ok=True)
+
+        for entry in os.listdir(results_dir):
+            src = os.path.join(results_dir, entry)
+            if entry.startswith("repetition-") or os.path.isdir(src):
+                continue
+            shutil.copy2(src, os.path.join(archive_dir, entry))
 
     # ----- Phase 2: Benchmarks -----
 
@@ -1010,7 +1160,10 @@ class Orchestrator:
                     f"aborting experiment to keep host alive"
                 )
 
-            self._phase2_benchmark()
+            # Repeat the full engine benchmark BENCHMARK_RUNS times and average
+            # the per-engine/per-batch timings. With BENCHMARK_RUNS=1 this is a
+            # single _phase2_benchmark() call — identical to the original path.
+            self._run_benchmark_repetitions()
 
         except OpenIvmValidationError as e:
             # FAIL-FAST: a correctness diff means the MV definition or refresh
