@@ -1,5 +1,6 @@
 """Main benchmark orchestrator — coordinates all phases."""
 
+import hashlib
 import json
 import logging
 import os
@@ -423,32 +424,29 @@ class Orchestrator:
         """Build DuckDB-OpenIVM binary (idempotent)."""
         self.emit("  [duckdb-openivm-build] Building")
         repo = self._config.repo_dir
+        dockerfile = os.path.join(repo, "src/containers/duckdb-openivm/Dockerfile")
+        # The OpenIVM binary is expensive to rebuild. Key the reuse on a hash of
+        # the WHOLE Dockerfile (baked into the builder image as a label), not just
+        # the OPENIVM_COMMIT — so a base-image / glibc change forces a rebuild too.
+        with open(dockerfile, "r", encoding="utf-8") as f:
+            dockerfile_hash = hashlib.sha256(f.read().encode("utf-8")).hexdigest()
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.duckdb-openivm-build.yml"),
             project_name="duckdb-openivm-build",
+            env={"DUCKDB_OPENIVM_DOCKERFILE_HASH": dockerfile_hash},
             cwd=repo,
         )
-        dockerfile = os.path.join(repo, "src/containers/duckdb-openivm/Dockerfile")
-        pinned_commit = None
-        with open(dockerfile, "r", encoding="utf-8") as f:
-            # The OpenIVM binary is expensive to rebuild. The Dockerfile records
-            # the pinned OpenIVM commit as both a build ARG and an image label, so
-            # we can reuse the existing builder image when its label still matches
-            # the current pin and rebuild only when the pin changes.
-            match = re.search(r"^ARG OPENIVM_COMMIT=([0-9a-f]+)$", f.read(), re.MULTILINE)
-            if match:
-                pinned_commit = match.group(1)
-        image_commit = subprocess.run(
+        image_hash = subprocess.run(
             [
                 "docker", "image", "inspect",
                 "duckdb-openivm-build-duckdb-openivm-builder:latest",
-                "--format", "{{ index .Config.Labels \"org.openivm.commit\" }}",
+                "--format", "{{ index .Config.Labels \"org.openivm.duckdb.dockerfile_hash\" }}",
             ],
             capture_output=True,
             text=True,
             cwd=repo,
         )
-        if not pinned_commit or image_commit.returncode != 0 or image_commit.stdout.strip() != pinned_commit:
+        if image_hash.returncode != 0 or image_hash.stdout.strip() != dockerfile_hash:
             self.emit(
                 "  [duckdb-openivm-build] Cold cache: compiling DuckDB+OpenIVM "
                 "from source (~5-10 min)"
@@ -456,7 +454,7 @@ class Orchestrator:
             with self._heartbeat("duckdb-openivm-build/build"):
                 mgr.build()
         else:
-            self.emit(f"  [duckdb-openivm-build] Reusing image for OpenIVM {pinned_commit[:7]}")
+            self.emit(f"  [duckdb-openivm-build] Reusing image (dockerfile {dockerfile_hash[:7]})")
         with self._heartbeat("duckdb-openivm-build/run"):
             mgr.up(
                 services=["duckdb-openivm-builder"],

@@ -27,6 +27,13 @@ FROM debian:bookworm-slim
 ARG OPENIVM_COMMIT=cec35ae41e930a607db774673310e6cc263775bd
 LABEL org.openivm.commit="${OPENIVM_COMMIT}"
 
+# Hash of THIS Dockerfile, injected by the orchestrator. The Phase-1 build reuses
+# the cached builder image only when this label matches, so any Dockerfile change
+# (e.g. the base image / glibc) forces a rebuild even when OPENIVM_COMMIT is
+# unchanged.
+ARG DUCKDB_OPENIVM_DOCKERFILE_HASH=""
+LABEL org.openivm.duckdb.dockerfile_hash="${DUCKDB_OPENIVM_DOCKERFILE_HASH}"
+
 RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && \
     apt-get install -y --no-install-recommends \
         ca-certificates && \
