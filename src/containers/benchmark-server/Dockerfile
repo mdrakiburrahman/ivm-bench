@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY handlers/ /app/handlers/
 COPY services/ /app/services/
 COPY models/ /app/models/
+COPY experiments/ /app/experiments/
 COPY app.py /app/app.py
 
 EXPOSE 9000

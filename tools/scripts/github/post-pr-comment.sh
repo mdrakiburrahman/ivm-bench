@@ -11,7 +11,7 @@
 #   GITHUB_RUN_ID      — Workflow run ID (for artifact link)
 #
 # Optional env vars:
-#   BENCHMARK_RUNS, BATCH_1_PCT, BATCH_2_PCT, BATCH_3_PCT, ENGINES, PARALLEL
+#   BENCHMARK_RUNS, BATCH_N_INSERT_PCT, BATCH_N_*_PCT, ENGINES, PARALLEL
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -79,7 +79,9 @@ ${STATUS_ICON} **${STATUS_TEXT}**
 |---|---|
 | Scale Factor | \`${SCALE_FACTOR}\` |
 | Benchmark Runs | \`${BENCHMARK_RUNS_RESULT}\` |
-| Batches | \`${BATCH_1_PCT:-?}%\` / \`${BATCH_2_PCT:-?}%\` / \`${BATCH_3_PCT:-?}%\` |
+| Insert Batches | \`${BATCH_1_INSERT_PCT:-${BATCH_1_PCT:-?}}%\` / \`${BATCH_2_INSERT_PCT:-${BATCH_2_PCT:-?}}%\` / \`${BATCH_3_INSERT_PCT:-${BATCH_3_PCT:-?}}%\` |
+| Batch 2 Mutations | update \`${BATCH_2_UPDATE_PCT:-0}%\`, delete \`${BATCH_2_DELETE_PCT:-0}%\` |
+| Batch 3 Mutations | update \`${BATCH_3_UPDATE_PCT:-0}%\`, delete \`${BATCH_3_DELETE_PCT:-0}%\` |
 | Engines | \`${ENGINES:-all}\` |
 | Parallel | \`${PARALLEL:-0}\` |
 | Total | \`${TOTAL_FMT}\` |

@@ -1,0 +1,88 @@
+services:
+  mssql-metastore:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: on-failure:3
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Hive@Pass123"
+      # Cap SQL Server's internal memory at ~75% of mem_limit so it stays
+      # inside its cgroup limit under heavy sustained load (same pattern
+      # as docker-compose.benchmark.spark.yml).
+      #
+      # Resources tuned for SF=400+ scale: validation's ThreadPoolExecutor
+      # fans out 30 concurrent Livy stmts → ~150+ concurrent Hive metastore
+      # RPCs. With cpus=4 the SOS scheduler hit
+      # ASSERT(seenByMonitor < NonYieldThreshold) (sosschedmon.cpp:202) at
+      # ~7h into a 26k-second SF=400 run, crashed the metastore, and
+      # downstream batch-3 source-append failed with TABLE_OR_VIEW_NOT_FOUND
+      # while mssql was mid-restart.
+      MSSQL_MEMORY_LIMIT_MB: "12000"
+    cpus: ${MSSQL_CPUS:-8}
+    mem_limit: ${MSSQL_MEM:-16g}
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Hive@Pass123" -C -Q "SELECT 1" -b
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  spark-openivm:
+    build:
+      context: ../src/containers/spark-openivm
+    depends_on:
+      mssql-metastore:
+        condition: service_healthy
+    cpus: ${SPARK_OPENIVM_CPUS:-32}
+    mem_limit: ${SPARK_OPENIVM_MEM:-120g}
+    environment:
+      METASTORE_HOST: mssql-metastore
+      METASTORE_PORT: "1433"
+      OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
+      OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
+      SPARK_DRIVER_PCT_RAM: "${SPARK_DRIVER_PCT_RAM:-}"
+      SPARK_EXECUTOR_PCT_RAM: "${SPARK_EXECUTOR_PCT_RAM:-}"
+      SPARK_SUBMIT_SHUFFLE_PARTITIONS: "${SPARK_SUBMIT_SHUFFLE_PARTITIONS:-}"
+      SPARK_SUBMIT_DEFAULT_PARALLELISM: "${SPARK_SUBMIT_DEFAULT_PARALLELISM:-}"
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm
+      # All 3 openivm runtime artifacts: assembly jar + duckdb extension + duckdb CLI.
+      # Produced by docker/docker-compose.spark-openivm-build.yml.
+      - ../mount/bin/spark-openivm:/opt/spark-openivm:ro
+      # Surface Livy spark-session log4j output (where openivm-spark's
+      # [openivm-mv] telemetry lands at logInfo/logError) onto the host so
+      # post-mortem analysis can grep per-MV `compiled_refresh_type=` and
+      # `reason='...'` tokens after teardown.
+      - ../mount/logs/${SCALE_FACTOR:-3}/spark-openivm/livy-logs:/tmp/livy-logs
+    healthcheck:
+      test: |
+        curl -sf http://localhost:8998/sessions \
+          && test -f /opt/spark-openivm/openivm-extension.jar \
+          && test -f /opt/spark-openivm/openivm.duckdb_extension \
+          && test -f /opt/spark-openivm/duckdb \
+          || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    depends_on:
+      spark-openivm:
+        condition: service_healthy
+    cpus: ${DBT_SERVER_CPUS:-4}
+    mem_limit: ${DBT_SERVER_MEM:-8g}
+    environment:
+      # Throttle EXCEPT ALL validation fan-out (default 30) to reduce peak
+      # concurrent Hive metastore RPCs. At SF=400+ the full 30-thread
+      # validation pool was overwhelming SQL Server's SOS scheduler and
+      # tripping ASSERT(seenByMonitor < NonYieldThreshold). 10 threads is
+      # ~3x slower per-batch but bounded enough to avoid the crash.
+      SPARK_OPENIVM_VALIDATE_THREADS: "${SPARK_OPENIVM_VALIDATE_THREADS:-10}"
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm
+      - ../mount/stats/${SCALE_FACTOR:-3}/spark-openivm:/data/stats

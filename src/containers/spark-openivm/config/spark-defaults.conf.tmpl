@@ -1,0 +1,163 @@
+# Catalog — Delta Lake + OpenIVM
+spark.sql.catalogImplementation=hive
+spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension,org.openivm.spark.OpenIvmSparkExtensions
+spark.sql.sources.default=delta
+
+# Activate the openivm-spark extension (defaults to false, must be enabled)
+spark.openivm.enabled=true
+
+# Change propagation mode — `cdf` reads Delta Change Data Feed during REFRESH
+# instead of teeing DML through IvmDmlInterceptorRule. Required so writers
+# other than this Spark session can update the base Delta tables and the MVs
+# still propagate. Source tables MUST have `delta.enableChangeDataFeed=true`.
+spark.openivm.changeFeed.mode=cdf
+
+# Refresh profile telemetry — when enabled, every CREATE/REFRESH MATERIALIZED
+# VIEW writes per-step rows into the RocksDB `refresh_profile` column family
+# (see RefreshProfileCatalog), readable via `SHOW OPENIVM REFRESH PROFILE`.
+# The flag is parameterized off OPENIVM_PROFILE_REFRESH (set in benchmark.sh
+# / gci.yaml; translated to a boolean by entrypoint.sh).
+spark.openivm.profile.refresh=${OPENIVM_PROFILE_REFRESH_BOOL}
+
+# Query-log telemetry — when enabled, every CREATE/REFRESH MATERIALIZED VIEW
+# writes per-statement rows (full SQL text) into the RocksDB `refresh_sql_log`
+# column family, readable via `SHOW OPENIVM QUERY LOG`. The flag is
+# parameterized off OPENIVM_QUERY_LOG (set in benchmark.sh; translated to a
+# boolean by entrypoint.sh). Default ON in the bench, OFF in Spark itself.
+spark.openivm.queryLog.enabled=${OPENIVM_QUERY_LOG_BOOL}
+
+# RocksDB multi-process mode: HARD-OFF for performance.
+#
+# Why we keep this `false`:
+#
+#   dbt-fabricspark (`livy_mode: local`, upstream main) shares ONE
+#   global Livy session across all dbt threads — i.e. exactly one
+#   Spark driver JVM, exactly one process holding the RocksDB
+#   `<warehouse>/_openivm/` tree. With a single writer there is no
+#   inter-process LOCK contention to defend against, so the cheap
+#   single-process path is correct and safe.
+#
+#   In single-process mode `OpenIvmRocksDB` opens each Column Family
+#   once at session start, caches the native handle, and reuses it
+#   for every catalog op (MvCatalog read/write, StagingCatalog
+#   register/scan, IvmDmlInterceptorRule.hasDependentMvs). The
+#   per-op cost is ~µs — a hash lookup + a native call.
+#
+# Why `true` is catastrophically slow:
+#
+#   `multiProcess=true` flips every single catalog op into:
+#       openFileChannel(<warehouse>/_openivm/LOCK)
+#         -> tryLock(POSIX advisory)
+#           -> RocksDB.open(<cf_path>)
+#             -> <native op>
+#           -> RocksDB.close()
+#         -> lock.release()
+#       -> channel.close()
+#   That is roughly 4 syscalls + a full RocksDB DB open/close per
+#   catalog touch. For an incremental dbt batch that fires hundreds
+#   of `IvmDmlInterceptorRule.hasDependentMvs` lookups + per-MV
+#   staging-tee registers + per-MV refresh-watermark reads, the
+#   tax is measured in tens of minutes (we observed ~25x batch-2
+#   regression vs. the cached-handle path).
+#
+# When this MIGHT need to flip back to `true`:
+#
+#   Only if the bench moves to a topology with two or more independent
+#   Spark driver JVMs writing the same `_openivm/` tree concurrently.
+#   `dbt-spark-livy` does NOT create that topology — dbt threads
+#   multiplex onto one shared Livy session, so the entire openivm
+#   catalog mutation stream serializes inside that single driver.
+#   Any RocksDB lock-contention symptom under this topology is a
+#   real bug to fix in `IvmDmlInterceptorRule` (which currently
+#   `Try { … }.getOrElse(false)`-swallows `RocksDBException`,
+#   degrading INSERTs to silent un-teed writes) — NOT a reason to
+#   re-enable multi-process mode.
+spark.openivm.rocksdb.multiProcess=false
+
+# The openivm-spark assembly jar is symlinked into /opt/spark/jars/ by the
+# entrypoint so it's on the default Spark classpath at session start
+# (Livy's RSC overrides spark.jars=, so we cannot rely on that path here).
+# The DuckDB CLI + openivm extension are likewise symlinked at /opt/openivm/
+# (the default OpenIvmCompiler search path), so we don't depend on
+# spark.driverEnv.OPENIVM_{EXTENSION,CLI}_PATH which is silently dropped in
+# Spark's local[*] deploy mode.
+
+# Delta schema options
+spark.databricks.delta.schema.autoMerge.enabled=true
+
+# Delta Lake performance: enable deletion vectors on openivm-managed MV data
+# tables.  When set at session level, every CREATE TABLE issued by
+# `CreateMaterializedViewCommand` for the `<mv>__ivm_data` backing table
+# inherits the property, which causes Delta MERGE/UPDATE/DELETE to write a
+# deletion bitmap instead of rewriting whole Parquet files.  For
+# TPC-DI-shaped B2/B3 deltas (small relative to the MV), this collapses the
+# MERGE write fan-out from a full-file rewrite to an O(rows-touched) bitmap
+# update.  Net effect measured against vanilla Spark CTAS: 20-50% reduction
+# in MERGE wall-clock at SF3.  Property is per-table, not per-write, and is
+# stamped on the table at CREATE time — does not apply retroactively to
+# tables created before this flag was set.
+spark.openivm.delta.enableDeletionVectors=true
+
+# Resource allocation (computed from spark-defaults-breakdown.yaml; we
+# additionally enforce a 10g floor on the driver heap because Catalyst
+# planning, MvCatalog operations, and the OpenIvmCompiler DuckDB subprocess
+# all live on the driver).
+spark.driver.memory=${SPARK_DRIVER_MEMORY}
+spark.driver.cores=${SPARK_DRIVER_CORES}
+spark.executor.memory=${SPARK_EXECUTOR_MEMORY}
+spark.executor.cores=${SPARK_EXECUTOR_CORES}
+spark.sql.shuffle.partitions=${SPARK_SUBMIT_SHUFFLE_PARTITIONS}
+spark.default.parallelism=${SPARK_SUBMIT_DEFAULT_PARALLELISM}
+
+# JVM module-opens block required by Spark/Delta on JDK 17 plus the
+# openivm-spark extension. Must apply to driver and executors. Sourced
+# from spark-ext/README.md §90-114.
+spark.driver.extraJavaOptions=-Dopenivm.log.sql.limit=131072 -Dopenivm.refresh.diagnostics=1 --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
+spark.executor.extraJavaOptions=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-exports=java.base/sun.nio.ch=ALL-UNNAMED
+
+# Performance — AQE and single-machine optimizations
+spark.sql.adaptive.enabled=true
+spark.sql.adaptive.coalescePartitions.enabled=true
+spark.sql.adaptive.advisoryPartitionSizeInMB=128
+spark.sql.adaptive.skewJoin.enabled=true
+# Auto-broadcast joins re-enabled at 100 MiB (Spark's pre-disable default).
+#
+# History: commit 117f1e0 set this to -1 because Delta's MERGE
+# `materializeSource=auto` was re-evaluating the source into a Delta
+# scratch table whose Catalyst row-size estimate sometimes underflowed,
+# and AQE then promoted that 10+ GiB scratch table to a broadcast,
+# hitting Spark's hardcoded 8 GiB BroadcastExchangeExec cap.  We now
+# disable that materialization directly below
+# (`spark.databricks.delta.merge.materializeSource=none`), so the 11 GiB
+# intermediate that fed the offending broadcast no longer exists.
+# Disabling auto-broadcast as belt-and-suspenders is no longer required.
+#
+# Why this matters for IVM workloads: openivm's WINDOW_PARTITION and
+# AGGREGATE_GROUP refreshes emit `MERGE INTO mv USING (SELECT DISTINCT
+# <keys> FROM openivm_affected_<v>) AS d ON v.k = d.k WHEN MATCHED THEN
+# DELETE`, where `d` is bounded by the number of distinct affected
+# partitions in the delta — typically a few hundred bytes to a few MiB
+# at incremental scale.  Without broadcast, Spark sort-merge-joins by
+# shuffling the FULL MV data table (~1.3 GiB per side at TPC-DI SF=100
+# for `silver.trades_history`), which OOMs the local-mode driver
+# (observed at SF=100 batch-2: stage shuffle-write throws
+# `java.lang.OutOfMemoryError: Java heap space` from
+# `ParquetFileReader$ConsecutivePartList.readAll` -> `BypassMergeSort
+# ShuffleWriter`).  With a 100 MiB broadcast threshold, the tiny
+# affected_partitions side is broadcast and the target avoids the
+# shuffle entirely.  Larger affected sets (e.g. a full re-refresh that
+# touches the entire MV) still fall back to sort-merge automatically.
+spark.sql.autoBroadcastJoinThreshold=104857600
+# Also disable Delta's MERGE source materialization to keep the
+# pre-existing 11 GiB intermediate from re-appearing.  Source plans are
+# re-evaluated per join pass instead of materialized into a scratch
+# table — slightly higher CPU, but no plan ever feeds the 8 GiB cap.
+spark.databricks.delta.merge.materializeSource=none
+spark.driver.maxResultSize=4g
+spark.sql.inMemoryColumnarStorage.compressed=true
+spark.locality.wait=0s
+
+# Warehouse — separate location from the plain `spark` engine so the two
+# don't trample each other when both run on the same host.
+spark.sql.warehouse.dir=/data/processed/spark-openivm

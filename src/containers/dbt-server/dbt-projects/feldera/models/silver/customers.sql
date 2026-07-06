@@ -38,7 +38,7 @@ select
     coalesce(
         lag(action_ts) over (
             partition by c_id
-            order by action_ts desc
+            order by action_ts desc, action_type, ca_id, c_tax_id
         ) - INTERVAL '0.001' SECOND,
         TIMESTAMP '9999-12-31 23:59:59.999'
     ) as end_timestamp,

@@ -1,6 +1,9 @@
 """Shared DuckLake source table management for DuckDB-based engines."""
 
+import os
 import shutil
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Callable
 
@@ -47,6 +50,59 @@ CATEGORY_B_SCHEMAS: dict[str, list[tuple[str, str]]] = {
     "batch_date": [("batchdate", "DATE")],
 }
 
+SCORE_MODULUS = 1_000_000
+
+
+@dataclass(frozen=True)
+class MutationSpec:
+    table: str
+    score_expr: str
+    update_assignments: str
+
+
+MUTATION_SPECS = [
+    MutationSpec(
+        "cash_transaction",
+        "(coalesce(ct_ca_id, 0) % 1000000) * 2654435761",
+        "ct_amt = coalesce(ct_amt, 0) + 0.01",
+    ),
+    MutationSpec(
+        "daily_market",
+        "date_diff('day', DATE '1970-01-01', dm_date) * 2654435761 + coalesce(ascii(substr(dm_s_symb, 1, 1)), 0) * 9176 + coalesce(ascii(substr(dm_s_symb, 2, 1)), 0)",
+        "dm_close = dm_close + 0.01, dm_high = dm_high + 0.01, dm_vol = dm_vol + 1",
+    ),
+    MutationSpec(
+        "holding_history",
+        "(coalesce(hh_h_t_id, 0) % 1000000) * 2654435761 + (coalesce(hh_t_id, 0) % 1000000)",
+        "hh_after_qty = hh_after_qty + 1",
+    ),
+    MutationSpec(
+        "prospect",
+        "coalesce(age, 0) * 2654435761 + coalesce(creditrating, 0) * 9176 + coalesce(numbercars, 0) * 271 + coalesce(numberchildren, 0)",
+        "networth = networth + 1",
+    ),
+    MutationSpec(
+        "trade",
+        "(coalesce(t_id, 0) % 1000000) * 2654435761",
+        "t_qty = t_qty + 1",
+    ),
+    MutationSpec(
+        "watch_history",
+        "(coalesce(w_c_id, 0) % 1000000) * 2654435761",
+        "w_dts = w_dts + INTERVAL 1 SECOND",
+    ),
+    MutationSpec(
+        "account",
+        "(coalesce(accountid, 0) % 1000000) * 2654435761",
+        "accountdesc = accountdesc || ' upd'",
+    ),
+    MutationSpec(
+        "customer",
+        "(coalesce(customerid, 0) % 1000000) * 2654435761",
+        "tier = CASE WHEN tier IS NULL THEN NULL ELSE CAST(((CAST(tier AS INTEGER) + 1) % 100) AS TINYINT) END",
+    ),
+]
+
 
 def quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
@@ -88,6 +144,77 @@ def _reset_work_dir(work_dir: Path) -> None:
                 child.unlink()
     work_dir.mkdir(parents=True, exist_ok=True)
     (work_dir / "data").mkdir(exist_ok=True)
+
+
+def _mutation_pct(batch_num: int, op: str) -> Decimal:
+    raw = os.environ.get(f"BATCH_{batch_num}_{op.upper()}_PCT", "0")
+    try:
+        value = Decimal(raw)
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid BATCH_{batch_num}_{op.upper()}_PCT={raw!r}") from exc
+    if value < 0 or value > 100:
+        raise ValueError(f"BATCH_{batch_num}_{op.upper()}_PCT must be between 0 and 100")
+    return value
+
+
+def _mutation_buckets(batch_num: int) -> dict[str, tuple[int, int, Decimal]]:
+    if batch_num == 1:
+        return {}
+
+    pcts = {
+        "update": _mutation_pct(batch_num, "update"),
+        "delete": _mutation_pct(batch_num, "delete"),
+    }
+    total = sum(pcts.values(), Decimal("0"))
+    if total > 100:
+        raise ValueError(f"Batch {batch_num} mutation percentages sum to {total}; max is 100")
+
+    start = 0
+    buckets = {}
+    for op in ("update", "delete"):
+        width = int(
+            (pcts[op] * SCORE_MODULUS / Decimal("100")).to_integral_value(
+                rounding=ROUND_HALF_UP
+            )
+        )
+        buckets[op] = (start, start + width, pcts[op])
+        start += width
+    return buckets
+
+
+def _score_predicate(spec: MutationSpec, batch_num: int, start: int, end: int) -> str:
+    if start == end:
+        return "false"
+    score = f"abs(({spec.score_expr} + {batch_num * 7919}) % {SCORE_MODULUS})"
+    return f"{score} >= {start} AND {score} < {end}"
+
+
+def _mutation_sql(batch_num: int) -> tuple[list[str], list[dict]]:
+    buckets = _mutation_buckets(batch_num)
+    if not buckets or all(start == end for start, end, _ in buckets.values()):
+        return [], []
+
+    stmts: list[str] = []
+    summaries: list[dict] = []
+    for spec in MUTATION_SPECS:
+        table_rel = relation("ducklake", "tpcdi", f"staging_{spec.table}")
+        update_start, update_end, update_pct = buckets["update"]
+        delete_start, delete_end, delete_pct = buckets["delete"]
+
+        if update_start != update_end:
+            pred = _score_predicate(spec, batch_num, update_start, update_end)
+            stmts.append(f"UPDATE {table_rel} SET {spec.update_assignments} WHERE {pred};")
+        if delete_start != delete_end:
+            pred = _score_predicate(spec, batch_num, delete_start, delete_end)
+            stmts.append(f"DELETE FROM {table_rel} WHERE {pred};")
+
+        summaries.append({
+            "table": f"staging_{spec.table}",
+            "update_pct": str(update_pct),
+            "delete_pct": str(delete_pct),
+        })
+
+    return stmts, summaries
 
 
 def init_sources(
@@ -161,11 +288,14 @@ def append_sources(
     label: str,
     state_files: tuple[Path, ...],
 ) -> dict:
-    """Append batch data into DuckLake staging source tables."""
+    """Mutate existing staging rows, then append batch data into DuckLake tables."""
     if state_files and not any(path.exists() for path in state_files):
         raise RuntimeError("No DuckLake state found. Run source init first.")
 
     stmts = []
+    mutation_stmts, mutations = _mutation_sql(batch_num)
+    stmts.extend(mutation_stmts)
+
     appended = []
     for table in STAGING_CATEGORY_A + STAGING_CATEGORY_B:
         path = _source_path(raw_delta_dir, batch_num, table)
@@ -179,4 +309,10 @@ def append_sources(
 
     if stmts:
         execute_sql("\n".join(stmts), f"{label} source append batch {batch_num}")
-    return {"status": "ok", "batch_num": batch_num, "tables_appended": len(appended), "tables": appended}
+    return {
+        "status": "ok",
+        "batch_num": batch_num,
+        "tables_appended": len(appended),
+        "tables": appended,
+        "mutations": mutations,
+    }

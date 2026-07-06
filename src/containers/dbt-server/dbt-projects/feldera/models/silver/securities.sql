@@ -18,7 +18,7 @@ select
     coalesce(
         lag(pts) over (
             partition by symbol
-            order by pts desc
+            order by pts desc, s.issue_type, s.ex_id, s.sh_out, s.status
         ) - INTERVAL '0.001' SECOND,
         TIMESTAMP '9999-12-31 23:59:59.999'
     ) as end_timestamp,

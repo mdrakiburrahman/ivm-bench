@@ -11,7 +11,7 @@ tpcdi:
       connect_timeout: 10
       lakehouse: tpcdi
       schema: tpcdi
-      threads: 30
+      threads: "{{ (env_var('SPARK_DBT_THREADS', '') or '30') | int }}"
       retry_all: true
       spark_config:
         name: dbt-tpcdi-benchmark

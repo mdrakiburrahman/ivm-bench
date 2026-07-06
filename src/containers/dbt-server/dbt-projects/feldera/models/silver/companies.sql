@@ -18,7 +18,7 @@ select
     coalesce(
         lag(pts) over (
             partition by cik
-            order by pts desc
+            order by pts desc, company_name, status, industry_id, ceo_name
         ) - INTERVAL '0.001' SECOND,
         TIMESTAMP '9999-12-31 23:59:59.999'
     ) as end_timestamp,
