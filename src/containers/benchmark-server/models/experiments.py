@@ -48,6 +48,7 @@ class FeatureFlags:
     openivm_profile_refresh: bool = True
     openivm_query_log: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
+    spark_metrics_capture: bool = True
 
     def to_compose_env(self) -> Dict[str, str]:
         return {
@@ -55,6 +56,7 @@ class FeatureFlags:
             "OPENIVM_PROFILE_REFRESH": "1" if self.openivm_profile_refresh else "0",
             "OPENIVM_QUERY_LOG": "1" if self.openivm_query_log else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
+            "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
         }
 
 
@@ -117,6 +119,9 @@ class ExperimentInputs:
     batch_3_delete_pct: str = "0"
     engines: List[str] = field(default_factory=lambda: ["spark", "spark-openivm"])
     parallel: bool = False
+    # "serial" | "parallel" | "serial-host-parallel-cloud". Legacy `parallel:true`
+    # maps to "parallel"; see from_dict.
+    schedule: str = "serial"
     feature_flags: FeatureFlags = field(default_factory=FeatureFlags)
     spark_tunables: SparkTunables = field(default_factory=SparkTunables)
     label: Optional[str] = None
@@ -136,7 +141,8 @@ class ExperimentInputs:
             "BATCH_2_DELETE_PCT": str(self.batch_2_delete_pct),
             "BATCH_3_UPDATE_PCT": str(self.batch_3_update_pct),
             "BATCH_3_DELETE_PCT": str(self.batch_3_delete_pct),
-            "PARALLEL": "1" if self.parallel else "0",
+            "PARALLEL": "1" if self.schedule == "parallel" else "0",
+            "SCHEDULE": self.schedule,
             "ENGINES": ",".join(self.engines),
         }
         env.update(self.feature_flags.to_compose_env())
@@ -156,6 +162,7 @@ class ExperimentInputs:
             "batch_3_delete_pct": self.batch_3_delete_pct,
             "engines": list(self.engines),
             "parallel": self.parallel,
+            "schedule": self.schedule,
             "feature_flags": asdict(self.feature_flags),
             "spark_tunables": asdict(self.spark_tunables),
         }
@@ -173,6 +180,7 @@ class ExperimentInputs:
             "batch_3_delete_pct": self.batch_3_delete_pct,
             "engines": ",".join(self.engines),
             "parallel": int(self.parallel),
+            "schedule": self.schedule,
         }
         for f in fields(FeatureFlags):
             out[f"feature_flags.{f.name}"] = int(getattr(self.feature_flags, f.name))
@@ -195,6 +203,7 @@ class ExperimentInputs:
             "batch_3_delete_pct": "b3d%",
             "engines": "engines",
             "parallel": "parallel",
+            "schedule": "schedule",
         }
         for f in fields(FeatureFlags):
             headers[f"feature_flags.{f.name}"] = f.name
@@ -222,6 +231,7 @@ class ExperimentInputs:
             openivm_profile_refresh=bool(ff_d.get("openivm_profile_refresh", base.feature_flags.openivm_profile_refresh)),
             openivm_query_log=bool(ff_d.get("openivm_query_log", base.feature_flags.openivm_query_log)),
             preserve_raw=bool(ff_d.get("preserve_raw", base.feature_flags.preserve_raw)),
+            spark_metrics_capture=bool(ff_d.get("spark_metrics_capture", base.feature_flags.spark_metrics_capture)),
         )
 
         st_d = d.get("spark_tunables") or {}
@@ -238,6 +248,15 @@ class ExperimentInputs:
         def _pct(key: str, base_v: str) -> str:
             return str(d.get(key, d.get(key.replace("_pct", "_insert_pct"), base_v)))
 
+        # Scheduling: an explicit `schedule` wins; else the legacy `parallel`
+        # bool maps to "parallel"/"serial"; else inherit the baseline's schedule.
+        if "schedule" in d:
+            schedule = str(d["schedule"])
+        elif "parallel" in d:
+            schedule = "parallel" if bool(d["parallel"]) else "serial"
+        else:
+            schedule = base.schedule
+
         return cls(
             scale_factor=int(d.get("scale_factor", base.scale_factor)),
             batch_1_pct=_pct("batch_1_pct", base.batch_1_pct),
@@ -248,7 +267,8 @@ class ExperimentInputs:
             batch_3_update_pct=str(d.get("batch_3_update_pct", base.batch_3_update_pct)),
             batch_3_delete_pct=str(d.get("batch_3_delete_pct", base.batch_3_delete_pct)),
             engines=engines,
-            parallel=bool(d.get("parallel", base.parallel)),
+            parallel=(schedule == "parallel"),
+            schedule=schedule,
             feature_flags=ff,
             spark_tunables=st,
             label=d.get("label"),

@@ -110,6 +110,9 @@ export BATCH_2_DELETE_PCT="${BATCH_2_DELETE_PCT:-0}"
 export BATCH_3_UPDATE_PCT="${BATCH_3_UPDATE_PCT:-0}"
 export BATCH_3_DELETE_PCT="${BATCH_3_DELETE_PCT:-0}"
 export PARALLEL="${PARALLEL:-0}"
+# Scheduling mode: serial | parallel | serial-host-parallel-cloud. The OAT JSON's
+# per-experiment `schedule` overrides this default.
+export SCHEDULE="${SCHEDULE:-serial}"
 export ENGINES="${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"

@@ -1,6 +1,7 @@
 """Main benchmark orchestrator — coordinates all phases."""
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -13,10 +14,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Dict, Iterator, List, Optional
 
-from models.config import BenchmarkConfig
+from models.config import BenchmarkConfig, is_cloud_engine
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BatchResult, BenchmarkResult, EngineResult
 from services import oat_runner
@@ -267,7 +269,7 @@ class Orchestrator:
             ("docker/docker-compose.spark-openivm-build.yml", "spark-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm", "databricks-enzyme"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm", "databricks-enzyme", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:
@@ -348,6 +350,8 @@ class Orchestrator:
             ])
             if engine == "feldera":
                 dirs.append(f"mount/debug/{sf}/feldera")
+            if engine in ("spark", "spark-openivm"):
+                dirs.append(f"mount/metrics/{sf}/{engine}/spark-events")
         dirs.extend([
             f"mount/results/{sf}/dbt-server",
             f"mount/bin/duckdb-openivm",
@@ -404,7 +408,7 @@ class Orchestrator:
         callables.append(self._build_batch_loader)
         if "duckdb-openivm" in self._config.engines:
             callables.append(self._run_duckdb_openivm_build)
-        if "spark-openivm" in self._config.engines:
+        if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
             callables.append(self._run_spark_openivm_build)
 
         with ThreadPoolExecutor(max_workers=len(callables)) as pool:
@@ -462,32 +466,29 @@ class Orchestrator:
         """Build DuckDB-OpenIVM binary (idempotent)."""
         self.emit("  [duckdb-openivm-build] Building")
         repo = self._config.repo_dir
+        dockerfile = os.path.join(repo, "src/containers/duckdb-openivm/Dockerfile")
+        # The OpenIVM binary is expensive to rebuild. Key the reuse on a hash of
+        # the WHOLE Dockerfile (baked into the builder image as a label), not just
+        # the OPENIVM_COMMIT — so a base-image / glibc change forces a rebuild too.
+        with open(dockerfile, "r", encoding="utf-8") as f:
+            dockerfile_hash = hashlib.sha256(f.read().encode("utf-8")).hexdigest()
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.duckdb-openivm-build.yml"),
             project_name="duckdb-openivm-build",
+            env={"DUCKDB_OPENIVM_DOCKERFILE_HASH": dockerfile_hash},
             cwd=repo,
         )
-        dockerfile = os.path.join(repo, "src/containers/duckdb-openivm/Dockerfile")
-        pinned_commit = None
-        with open(dockerfile, "r", encoding="utf-8") as f:
-            # The OpenIVM binary is expensive to rebuild. The Dockerfile records
-            # the pinned OpenIVM commit as both a build ARG and an image label, so
-            # we can reuse the existing builder image when its label still matches
-            # the current pin and rebuild only when the pin changes.
-            match = re.search(r"^ARG OPENIVM_COMMIT=([0-9a-f]+)$", f.read(), re.MULTILINE)
-            if match:
-                pinned_commit = match.group(1)
-        image_commit = subprocess.run(
+        image_hash = subprocess.run(
             [
                 "docker", "image", "inspect",
                 "duckdb-openivm-build-duckdb-openivm-builder:latest",
-                "--format", "{{ index .Config.Labels \"org.openivm.commit\" }}",
+                "--format", "{{ index .Config.Labels \"org.openivm.duckdb.dockerfile_hash\" }}",
             ],
             capture_output=True,
             text=True,
             cwd=repo,
         )
-        if not pinned_commit or image_commit.returncode != 0 or image_commit.stdout.strip() != pinned_commit:
+        if image_hash.returncode != 0 or image_hash.stdout.strip() != dockerfile_hash:
             self.emit(
                 "  [duckdb-openivm-build] Cold cache: compiling DuckDB+OpenIVM "
                 "from source (~5-10 min)"
@@ -495,7 +496,7 @@ class Orchestrator:
             with self._heartbeat("duckdb-openivm-build/build"):
                 mgr.build()
         else:
-            self.emit(f"  [duckdb-openivm-build] Reusing image for OpenIVM {pinned_commit[:7]}")
+            self.emit(f"  [duckdb-openivm-build] Reusing image (dockerfile {dockerfile_hash[:7]})")
         with self._heartbeat("duckdb-openivm-build/run"):
             mgr.up(
                 services=["duckdb-openivm-builder"],
@@ -721,17 +722,58 @@ class Orchestrator:
         # dirs (e.g. staging-spark-openivm) regardless of engine count.
         # Init staging before any engine starts so the host directories and
         # container mountpoints exist for the compose override mounts.
-        if self._config.parallel:
-            self._init_parallel_staging(engine_configs)
-
-        if self._config.parallel and len(engines) > 1:
-            self.emit(f"  Running {len(engines)} engines in PARALLEL")
-            self._run_engines_parallel(engine_configs)
+        if self._config.schedule == "serial-host-parallel-cloud":
+            self._run_serial_host_parallel_cloud()
         else:
-            self.emit(f"  Running {len(engines)} engines SERIALLY")
-            self._run_engines_serial(engine_configs)
+            if self._config.parallel:
+                self._init_parallel_staging(engine_configs)
+
+            if self._config.parallel and len(engines) > 1:
+                self.emit(f"  Running {len(engines)} engines in PARALLEL")
+                self._run_engines_parallel(engine_configs)
+            else:
+                self.emit(f"  Running {len(engines)} engines SERIALLY")
+                self._run_engines_serial(engine_configs)
 
         self.emit("=== Phase 2: Complete ===")
+
+    def _run_serial_host_parallel_cloud(self) -> None:
+        """Run host-consuming engines serially (each with full host resources),
+        then all cloud-consuming engines in ONE parallel wave.
+
+        Cloud engines offload their compute to a remote service, so their host
+        footprint is just the light dbt-server (+ imds-router) orchestration —
+        running them concurrently barely touches the host. Host engines keep the
+        serial full-host allocation. This reuses the proven serial and
+        parallel-wave machinery by swapping ``self._config`` per phase (each
+        phase needs its own resource split + port/staging assignment)."""
+        host = [e for e in self._config.engines if not is_cloud_engine(e)]
+        cloud = [e for e in self._config.engines if is_cloud_engine(e)]
+        self.emit(
+            f"  serial-host-parallel-cloud: host(serial)=[{', '.join(host) or '-'}] "
+            f"cloud(parallel)=[{', '.join(cloud) or '-'}]"
+        )
+        orig = self._config
+        try:
+            if host:
+                self._config = replace(orig, engines=host, parallel=False, schedule="serial")
+                host_configs = compute_engine_configs(self._config)
+                self.emit(f"  Running {len(host)} host engine(s) SERIALLY")
+                self._run_engines_serial(host_configs)
+            if cloud:
+                self._config = replace(orig, engines=cloud, parallel=True, schedule="parallel")
+                cloud_configs = compute_engine_configs(self._config)
+                self._init_parallel_staging(cloud_configs)
+                self.emit(f"  Running {len(cloud)} cloud engine(s) in PARALLEL")
+                self._run_engine_wave(cloud, cloud_configs)
+                failed = [
+                    n for n in cloud
+                    if n in self._result.engines and self._result.engines[n].status == "failed"
+                ]
+                if failed:
+                    raise RuntimeError(f"Cloud engines failed: {', '.join(failed)}")
+        finally:
+            self._config = orig
 
     def _build_engine_images(self) -> None:
         """Build Docker images for all selected engines."""
@@ -1197,6 +1239,7 @@ class Orchestrator:
                     repo, "mount", "oat-state", self._oat_run_id,
                     f"exp-{exp_idx:03d}", "forensics",
                 )
+            self._emit_spark_metrics(exp_idx, inputs)
             try:
                 oat_runner.disk_cleanup_after_experiment(
                     repo_dir=repo, scale_factor=inputs.scale_factor,
@@ -1274,11 +1317,17 @@ class Orchestrator:
         self._config.batch_3_delete_pct = inputs.batch_3_delete_pct
         self._config.engines = list(inputs.engines)
         self._config.parallel = inputs.parallel
+        self._config.schedule = inputs.schedule
         oat_runner.apply_experiment_env(inputs)
 
         experiment_id = str(int(time.time() * 1_000_000))
         os.environ["DATABRICKS_EXPERIMENT_ID"] = experiment_id
         self._databricks_experiment_id = experiment_id
+        # Fabric per-run id (mirrors the Databricks pattern): the compute
+        # lakehouse + environment are created as <base>_<FABRIC_RUN_ID> and torn
+        # down / swept by it. The short random suffix guards against multi-runner
+        # same-microsecond collisions on the shared workspace.
+        os.environ["FABRIC_RUN_ID"] = f"{experiment_id}_{uuid.uuid4().hex[:4]}"
 
         dml_extras = []
         for ix, (u, d) in enumerate(((inputs.batch_2_update_pct, inputs.batch_2_delete_pct),
@@ -1296,32 +1345,46 @@ class Orchestrator:
     def _persist_oat_experiment_row(
         self, exp_idx: int, inputs: ExperimentInputs, exp_dict: dict,
     ) -> None:
-        """UPSERT one row into ``oat_experiments``."""
-        with DB_LOCK:
-            conn = get_db()
-            conn.execute(
-                "INSERT OR REPLACE INTO oat_experiments "
-                "(oat_run_id, exp_idx, benchmark_id, label, status, "
-                " started_at, ended_at, wall_clock_s, disk_free_pct, "
-                " inputs_json, outputs_json, error) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    self._oat_run_id,
-                    exp_idx,
-                    exp_dict.get("benchmark_id"),
-                    exp_dict.get("label"),
-                    exp_dict.get("status"),
-                    exp_dict.get("started_at"),
-                    exp_dict.get("ended_at"),
-                    exp_dict.get("wall_clock_s"),
-                    exp_dict.get("disk_free_pct"),
-                    json.dumps(inputs.to_dict()),
-                    json.dumps(exp_dict),
-                    exp_dict.get("error"),
-                ),
+        """UPSERT one row into ``oat_experiments`` (best-effort).
+
+        A SQLite failure here (e.g. the bind-mounted state dir vanished
+        mid-sweep) must never abort the sweep — the filesystem outputs.json /
+        RESULTS.md are the real deliverables. Degrade to a WARN.
+        """
+        try:
+            with DB_LOCK:
+                conn = get_db()
+                conn.execute(
+                    "INSERT OR REPLACE INTO oat_experiments "
+                    "(oat_run_id, exp_idx, benchmark_id, label, status, "
+                    " started_at, ended_at, wall_clock_s, disk_free_pct, "
+                    " inputs_json, outputs_json, error) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        self._oat_run_id,
+                        exp_idx,
+                        exp_dict.get("benchmark_id"),
+                        exp_dict.get("label"),
+                        exp_dict.get("status"),
+                        exp_dict.get("started_at"),
+                        exp_dict.get("ended_at"),
+                        exp_dict.get("wall_clock_s"),
+                        exp_dict.get("disk_free_pct"),
+                        json.dumps(inputs.to_dict()),
+                        json.dumps(exp_dict),
+                        exp_dict.get("error"),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            self.emit(
+                f"  [oat-db] WARN: failed to persist oat_experiments row "
+                f"exp={exp_idx}: {e}"
             )
-            conn.commit()
-            conn.close()
+            logger.warning(
+                "Failed to persist oat_experiments row for exp %d: %s", exp_idx, e
+            )
 
     def _finalize_oat(
         self, status: str, oat_t0: float, error: Optional[str] = None,
@@ -1340,14 +1403,20 @@ class Orchestrator:
             error=error,
         )
 
-        with DB_LOCK:
-            conn = get_db()
-            conn.execute(
-                "UPDATE oat_runs SET status=?, completed_at=?, total_duration_s=?, error=? WHERE id=?",
-                (status, completed_at, total, error, self._oat_run_id),
-            )
-            conn.commit()
-            conn.close()
+        # Best-effort: a SQLite failure (e.g. vanished state dir) must not
+        # block the chart / RESULTS.md / server-log artifacts written below.
+        try:
+            with DB_LOCK:
+                conn = get_db()
+                conn.execute(
+                    "UPDATE oat_runs SET status=?, completed_at=?, total_duration_s=?, error=? WHERE id=?",
+                    (status, completed_at, total, error, self._oat_run_id),
+                )
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            self.emit(f"  [oat-db] WARN: failed to update oat_runs row: {e}")
+            logger.warning("Failed to update oat_runs row %s: %s", self._oat_run_id, e)
 
         # Chart + RESULTS.md generation (best-effort — never fail the run).
         self._phase3_oat_chart()
@@ -1422,6 +1491,64 @@ class Orchestrator:
             if not silent:
                 self.emit(f"  [oat-chart] WARN: RESULTS.md render failed: {e}")
             logger.warning("OAT RESULTS.md render failed: %s", e)
+
+    def _emit_spark_metrics(self, exp_idx: int, inputs: ExperimentInputs) -> None:
+        """Parse Spark event logs → A/B Parquet + PNG + RESULTS.md + zip (issue #36).
+
+        Runs at the end of each experiment, BEFORE disk_cleanup wipes the raw
+        spark-events. Persists the bundle into mount/oat-state/<run>/exp-NNN/
+        metrics/ so it survives cleanup and is visible under oat-state/latest.
+        Best-effort — never aborts the sweep.
+        """
+        spark_engines = [e for e in inputs.engines if e in ("spark", "spark-openivm")]
+        if not spark_engines:
+            return
+        if not inputs.feature_flags.spark_metrics_capture:
+            self.emit("  [spark-metrics] capture disabled for this experiment — skipping")
+            return
+
+        repo = self._config.repo_dir
+        sf = str(inputs.scale_factor)
+        run_id = self._benchmark_id or f"exp-{exp_idx:03d}"
+        try:
+            from services import spark_metrics
+
+            summary = spark_metrics.process(
+                repo_dir=repo, sf=sf, benchmark_id=self._benchmark_id or "",
+                run_id=run_id, engines=spark_engines, emit=self.emit,
+            )
+        except Exception as e:
+            self.emit(f"  [spark-metrics] post-processing failed: {e}")
+            logger.exception("spark-metrics post-processing failed for exp %d", exp_idx)
+            return
+
+        if summary.get("status") != "ok":
+            return
+
+        if self._oat_run_id is None:
+            return
+        try:
+            processed_dir = summary.get("processed_dir")
+            dest = os.path.join(
+                repo, "mount", "oat-state", self._oat_run_id,
+                f"exp-{exp_idx:03d}", "metrics",
+            )
+            if processed_dir and os.path.isdir(processed_dir):
+                dest_processed = os.path.join(dest, "processed")
+                if os.path.isdir(dest_processed):
+                    shutil.rmtree(dest_processed)
+                shutil.copytree(processed_dir, dest_processed)
+            zip_path = summary.get("zip")
+            if zip_path and os.path.exists(zip_path):
+                os.makedirs(dest, exist_ok=True)
+                shutil.copy2(zip_path, os.path.join(dest, os.path.basename(zip_path)))
+            self.emit(
+                f"  [spark-metrics] bundle persisted to oat-state/exp-{exp_idx:03d}/metrics/ "
+                f"(engines={summary.get('engines')}, both={summary.get('both_engines')})"
+            )
+        except Exception as e:
+            self.emit(f"  [spark-metrics] oat-state copy failed: {e}")
+            logger.exception("spark-metrics oat-state copy failed for exp %d", exp_idx)
 
     def _oat_write_per_experiment_imgs(self, inputs: ExperimentInputs) -> None:
         """Write imgs/scale-factor-<sf>-<b1>-<b2>-<b3>.png + imgs/benchmark-heuristics.png.

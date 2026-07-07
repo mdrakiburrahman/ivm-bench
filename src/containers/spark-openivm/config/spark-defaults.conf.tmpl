@@ -99,6 +99,14 @@ spark.databricks.delta.schema.autoMerge.enabled=true
 # tables created before this flag was set.
 spark.openivm.delta.enableDeletionVectors=true
 
+# Prune the FULL_SOURCE scan in JOIN_DELTA / range-join
+# MVs via a semi-join pre-filter on the delta key domain, and accelerate the
+# SCD-2 BETWEEN range join.
+spark.openivm.refresh.semiJoinPrune.enabled=true
+spark.openivm.refresh.scd2RangeAccel.enabled=true
+spark.openivm.refresh.windowRunningIncremental.enabled=false
+spark.openivm.refresh.windowClusterPrune.enabled=false
+
 # Resource allocation (computed from spark-defaults-breakdown.yaml; we
 # additionally enforce a 10g floor on the driver heap because Catalyst
 # planning, MvCatalog operations, and the OpenIvmCompiler DuckDB subprocess
@@ -161,3 +169,10 @@ spark.locality.wait=0s
 # Warehouse — separate location from the plain `spark` engine so the two
 # don't trample each other when both run on the same host.
 spark.sql.warehouse.dir=/data/processed/spark-openivm
+
+# Spark-native event log
+spark.eventLog.enabled=${SPARK_EVENTLOG_ENABLED_BOOL}
+spark.eventLog.dir=file:/data/metrics/spark-events
+spark.eventLog.rolling.enabled=true
+spark.eventLog.rolling.maxFileSize=128m
+spark.eventLog.logStageExecutorMetrics=true

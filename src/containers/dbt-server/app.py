@@ -19,6 +19,7 @@ from handlers.chart import ChartHandler
 from handlers.container_stats import ContainerStatsHandler
 from handlers.databricks_enzyme import DatabricksEnzymeHandler
 from handlers.delta_stats import DeltaStatsHandler
+from handlers.fabric import FabricHandler
 from handlers.feldera import FelderaHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
@@ -69,6 +70,7 @@ def register_handlers(flask_app: Flask) -> None:
         DuckDBOpenIVMHandler(),
         SparkOpenIVMHandler(),
         DatabricksEnzymeHandler(),
+        FabricHandler(),
         RunsHandler(),
         FelderaHandler(),
         ChartHandler(),

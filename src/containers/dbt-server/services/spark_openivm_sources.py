@@ -43,6 +43,9 @@ LIVY_STMT_POLL_INTERVAL_S = float(
 LIVY_STATE_POLL_INTERVAL_S = float(
     os.environ.get("SPARK_OPENIVM_LIVY_STATE_POLL_INTERVAL", "0.25")
 )
+LIVY_STMT_TIMEOUT_S = float(
+    os.environ.get("SPARK_OPENIVM_LIVY_STATEMENT_TIMEOUT_S", "1800")
+)
 
 # Tracked base tables in three categories:
 #
@@ -263,9 +266,11 @@ class LivyClient:
     def _wait_for_statement(self, stmt_id: int, sql: str) -> dict:
         """Poll a statement until it succeeds; surface errors verbatim."""
         url = f"{self.base_url}/sessions/{self.session_id}/statements/{stmt_id}"
-        # No fixed deadline — long INSERT INTO ... SELECT FROM delta.`path` for
-        # the full staging may take minutes at SF=100. Statements that
-        # genuinely hang are caught by the caller's request timeout.
+        deadline = (
+            time.monotonic() + LIVY_STMT_TIMEOUT_S
+            if LIVY_STMT_TIMEOUT_S > 0
+            else None
+        )
         while True:
             resp = requests.get(url, timeout=self.timeout_s)
             resp.raise_for_status()
@@ -289,6 +294,19 @@ class LivyClient:
             if state in ("cancelled", "cancelling"):
                 raise RuntimeError(
                     f"Livy statement cancelled.\nSQL: {sql[:500]}"
+                )
+            if deadline is not None and time.monotonic() >= deadline:
+                try:
+                    requests.delete(url, timeout=min(self.timeout_s, 10.0))
+                except requests.RequestException:
+                    logger.warning(
+                        "[spark-openivm] failed to cancel timed-out Livy statement %s",
+                        stmt_id,
+                        exc_info=True,
+                    )
+                raise TimeoutError(
+                    f"Livy statement {stmt_id} did not finish within "
+                    f"{LIVY_STMT_TIMEOUT_S:.0f}s.\nSQL: {sql[:1000]}"
                 )
             time.sleep(LIVY_STMT_POLL_INTERVAL_S)
 

@@ -93,14 +93,35 @@ benchmark from clean engine state and report averaged per-engine batch timings.
 
 ## Mount layout
 
-| Path                                                                              | Description                                          |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `mount/raw/<SF>/delta/batch{1,2,3}/`                                              | Source Delta tables per batch                        |
-| `mount/raw/<SF>/delta/staging/`                                                   | Unified staging (grows via `spark-batch-loader`)     |
-| `mount/results/<SF>/<engine>/`                                                    | Engine output and engine-local state                 |
-| `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json`                        | Per-batch benchmark results                          |
-| `mount/bin/duckdb-openivm/duckdb`                                                 | DuckDB-OpenIVM binary (built by container)           |
-| `mount/bin/spark-openivm/{openivm-extension.jar,openivm.duckdb_extension,duckdb}` | spark-openivm runtime artifacts (built by container) |
+| Path                                                                              | Description                                              |
+| --------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `mount/raw/<SF>/delta/batch{1,2,3}/`                                              | Source Delta tables per batch                            |
+| `mount/raw/<SF>/delta/staging/`                                                   | Unified staging (grows via `spark-batch-loader`)         |
+| `mount/results/<SF>/<engine>/`                                                    | Engine output and engine-local state                     |
+| `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json`                        | Per-batch benchmark results                              |
+| `mount/bin/duckdb-openivm/duckdb`                                                 | DuckDB-OpenIVM binary (built by container)               |
+| `mount/bin/spark-openivm/{openivm-extension.jar,openivm.duckdb_extension,duckdb}` | spark-openivm runtime artifacts (built by container)     |
+| `mount/metrics/<SF>/<engine>/spark-events/`                                       | Raw Spark event log                                      |
+| `mount/metrics/<SF>/<engine>/executions.jsonl`                                    | Per-SQL-execution → dbt model/batch sidecar              |
+| `mount/metrics/<SF>/processed/`                                                   | A/B Parquet + `spark-ab-diff.png` + `RESULTS.md`         |
+| `mount/metrics/<SF>/spark-metrics-<run_id>.zip`                                   | Bundled A/B artifacts (+ `…-latest.zip`)                 |
+
+### Spark metrics A/B
+
+Both `spark` and `spark-openivm` capture homogeneous, Spark-native per-query
+metrics via Spark's built-in **event log** (gated by the `spark_metrics_capture`
+feature flag, default on). At the end of every experiment `benchmark-server`
+parses both engines' logs (pandas + DuckDB), maps each Spark execution → dbt
+model (from the physical-plan write target) and → batch (wall-clock windows),
+and emits query-aligned Parquet (`metrics_long` / `metrics_by_model` /
+`timeseries`), a **per-query lifecycle** A/B diff PNG (cumulative resource over
+each query's runtime, `spark` vs `spark-openivm`), `RESULTS.md`, and a per-run
+zip under `mount/metrics/<SF>/` (also copied to
+`mount/oat-state/<run_id>/exp-NNN/metrics/`).
+Query it via the DuckDB-backed `benchmark-server` routes
+(`GET /metrics/kpis`, `GET /metrics/diff`, `POST /metrics/query`,
+`GET /metrics/artifact`) or by reading the Parquet directly — both are a stable
+contract for downstream (`openivm-spark`) consumption.
 
 ## Results
 
@@ -117,7 +138,7 @@ benchmark from clean engine state and report averaged per-engine batch timings.
 
 - The OSS engines run under an Azure VM at `Standard_E32as_v4` (32 cores).
 - For closed source engines such as Databricks Enzyme with abstraction layers such as DBU, we use a:
-  
+
   - [Heuristic UDF](https://github.com/mdrakiburrahman/ivm-bench/issues/22) `SELECT detect_cpu_and_ram()`
   - [VM mapping](https://docs.databricks.com/aws/en/compute/sql-warehouse/warehouse-behavior)
 
@@ -126,7 +147,7 @@ benchmark from clean engine state and report averaged per-engine batch timings.
 ### Query Heuristics
 
 - Databricks Enzyme fails incrementalization for queries it cannot incrementalize with [`REFRESH POLICY INCREMENTAL STRICT`](https://community.databricks.com/t5/technical-blog/from-surprise-full-refreshes-to-predictable-bills-refresh-policy/ba-p/157365). It is possible that the other engines are either:
-   
+
   1. Superior at incrementalizing a class of queries that Enzyme cannot
   2. Are incorrectly incrementalizing queries and failing silently
 
@@ -196,7 +217,7 @@ set inherits from the file's `baseline` block.
 
 > Before adding a non-OSS engine here, be sure to check the [DeWitt clause](https://cube.dev/blog/dewitt-clause-or-can-you-benchmark-a-database).
 
-* Databricks: [Eliminating the Anti-competitive DeWitt Clause for Database Benchmarking](https://www.databricks.com/blog/2021/11/08/eliminating-the-dewitt-clause-for-database-benchmarking.html)
+- Databricks: [Eliminating the Anti-competitive DeWitt Clause for Database Benchmarking](https://www.databricks.com/blog/2021/11/08/eliminating-the-dewitt-clause-for-database-benchmarking.html)
 
 ---
 

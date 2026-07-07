@@ -63,11 +63,22 @@ All data flows through `mount/` which is gitignored:
 - `mount/results/<SF>/dbt-server/` — Benchmark metadata per engine: run results, delta stats, lineage, SQL analysis (consumed by chart generation)
 - `mount/logs/<SF>/` — dbt-server logs per scale factor
 - `mount/stats/<SF>/<engine>/` — Container resource stats (CPU, memory)
+- `mount/metrics/<SF>/<engine>/{spark-events,executions.jsonl}` — Spark-native event log + per-execution→model/batch sidecar (`spark`/`spark-openivm` only, issue #36)
+- `mount/metrics/<SF>/{processed/,spark-metrics-<run_id>.zip}` — A/B Parquet (`metrics_long`/`metrics_by_model`/`timeseries`) + `spark-ab-diff.png` + `RESULTS.md`, bundled per run
 - `mount/benchmark-state/` — Persistent benchmark-server SQLite database
 
 Each benchmark run cleans `mount/` except `mount/benchmark-state/`. See `services/orchestrator.py`.
 
-## Debugging failures
+### Spark metrics A/B (issue #36)
+
+Homogeneous Spark-native metrics for `spark` + `spark-openivm` are captured via
+Spark's event log (gated by the `spark_metrics_capture` feature flag, default on)
+and post-processed by `benchmark-server` at the end of every experiment
+(`services/spark_metrics.py`, wired in `orchestrator._emit_spark_metrics`). The
+Parquet paths/schemas above and the DuckDB-backed routes — `GET /metrics/kpis`,
+`GET /metrics/diff`, `POST /metrics/query` (read-only), `GET /metrics/artifact`
+(`handlers/metrics.py`) — are a **stable contract** for `openivm-spark`, which
+consumes results via REST or by reading the Parquet directly from the mount.
 
 All engines included in the benchmark must report successful metrics.
 

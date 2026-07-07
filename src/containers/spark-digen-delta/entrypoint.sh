@@ -2,7 +2,11 @@
 set -euo pipefail
 
 echo "=== Spark: Converting DIGen output to Delta Lake tables ==="
-java \
+# Preserve real stderr (Spark/Delta exceptions + log4j ERROR, which
+# log4j2.properties routes to SYSTEM_ERR) so failures are diagnosable; filter
+# only the harmless JDK launcher "WARNING:" lines. `exec` makes java's real exit
+# code the container's. Do NOT re-add `2>/dev/null` — it silently hid errors.
+exec java \
   -Dlog4j2.configurationFile=file:/opt/log4j2.properties \
   -Dio.netty.tryReflectionSetAccessible=true \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
@@ -19,5 +23,5 @@ java \
   --add-opens=java.base/sun.security.action=ALL-UNNAMED \
   --add-opens=java.base/sun.util.calendar=ALL-UNNAMED \
   --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
-  -cp /opt/datagen.jar datagen.TpcdiToDelta 2>/dev/null \
-  | grep -v "^WARNING: sun.reflect"
+  -cp /opt/datagen.jar datagen.TpcdiToDelta \
+  2> >(grep --line-buffered -v '^WARNING: ' >&2)

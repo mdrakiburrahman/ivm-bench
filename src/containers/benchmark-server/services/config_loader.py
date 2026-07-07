@@ -12,6 +12,15 @@ def _insert_pct(batch_num: int, default: str) -> str:
     return os.environ.get(f"BATCH_{batch_num}_PCT", default)
 
 
+def _load_schedule() -> str:
+    """Resolve the scheduling mode: explicit ``SCHEDULE`` wins, else the legacy
+    ``PARALLEL`` flag maps to serial/parallel."""
+    sched = os.environ.get("SCHEDULE", "").strip()
+    if sched:
+        return sched
+    return "parallel" if os.environ.get("PARALLEL", "0") == "1" else "serial"
+
+
 def load_config() -> BenchmarkConfig:
     """Build a BenchmarkConfig from environment variables."""
     return BenchmarkConfig(
@@ -25,6 +34,7 @@ def load_config() -> BenchmarkConfig:
         batch_3_update_pct=os.environ.get("BATCH_3_UPDATE_PCT", "0"),
         batch_3_delete_pct=os.environ.get("BATCH_3_DELETE_PCT", "0"),
         parallel=os.environ.get("PARALLEL", "0") == "1",
+        schedule=_load_schedule(),
         engines=[
             e.strip()
             for e in os.environ.get("ENGINES", "spark,spark-openivm,duckdb,duckdb-openivm,feldera").split(",")
