@@ -1,4 +1,4 @@
-"""Homogeneous Spark-native metrics A/B (issue #36).
+"""Homogeneous Spark-native metrics A/B.
 
 Single consolidated module that:
 

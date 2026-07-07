@@ -5,9 +5,6 @@ Serves the App Service / IMDS managed-identity contract on localhost so that a
 container whose `IDENTITY_ENDPOINT` points here can `az login --identity` and
 fetch real tokens for a fake UAMI. Token requests are relayed (SAS-signed) over
 an Azure Relay hybrid connection to the identity that actually holds the UAMI.
-
-Adapted from github.com/mdrakiburrahman/spark-sandbox
-(.github/scripts/imds_relay_router.py).
 """
 
 import base64

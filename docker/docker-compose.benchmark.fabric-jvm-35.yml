@@ -1,6 +1,4 @@
 services:
-  # Brokers `az login --identity` inside dbt-server to a fake UAMI over Azure
-  # Relay (no Service Principals). dbt-server's IDENTITY_ENDPOINT points here.
   imds-router:
     build:
       context: ../src/containers/imds-router

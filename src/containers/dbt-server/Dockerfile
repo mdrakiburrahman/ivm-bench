@@ -4,9 +4,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl git ca-certificates gnupg lsb-release && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Azure CLI — dbt-fabricspark `authentication: CLI` shells out to
-# `az account get-access-token`; `az login --identity` is brokered by the
-# imds-router sidecar (IDENTITY_ENDPOINT). Also used by azcopy AZCLI auth.
 RUN mkdir -p /etc/apt/keyrings && \
     curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg && \
     chmod go+r /etc/apt/keyrings/microsoft.gpg && \
@@ -35,8 +32,7 @@ RUN pip install --no-cache-dir /tmp/dbt-duckdb-openivm && rm -rf /tmp/dbt-duckdb
 # 10s subprocess timeout. Under a 30-thread build the token-refresh storm in the
 # token's last 5 min spawns many concurrent `az` calls; occasional host CPU
 # contention or relay latency pushes one past 10s → "Failed to invoke the Azure
-# CLI" fails a node. Bump it to 60s (belt-and-suspenders alongside the
-# imds-router keep-warm + proactive refresh). The grep guards against a silent
+# CLI" fails a node. Bump it to 60s. The grep guards against a silent
 # no-op if a future dbt-fabricspark version changes the call site.
 RUN LIVY=$(python -c "import dbt.adapters.fabricspark as m,os;print(os.path.join(os.path.dirname(m.__file__),'livysession.py'))") && \
     sed -i 's/AzureCliCredential()\.get_token/AzureCliCredential(process_timeout=60).get_token/g' "$LIVY" && \

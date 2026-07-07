@@ -1,4 +1,4 @@
-"""DuckDB-backed REST routes for the Spark metrics A/B (issue #36 §4).
+"""DuckDB-backed REST routes for the Spark metrics A/B.
 
 Runs DuckDB over the Parquet emitted by ``services/spark_metrics.py`` under
 ``mount/metrics/<sf>/processed/``. The route signatures + response shape are a

@@ -124,11 +124,6 @@ WORKDIR /src/spark-ext
 
 ENV SBT_OPTS="-Xmx4g -XX:+UseG1GC"
 
-# Bake the DuckDB CLI + OpenIVM extension (built in stage 1) into the assembly
-# JAR under `openivm-native/`. build.sbt's resourceGenerator reads
-# OPENIVM_NATIVE_DIR and embeds both binaries so managed Fabric Spark — which
-# has neither on local disk — can extract them from the driver classpath at
-# runtime (see MaterializedViewCommands.extractBundledAssets). No OneLake upload.
 COPY --from=openivm-builder /artifacts/duckdb                 /native/duckdb
 COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.duckdb_extension
 ENV OPENIVM_NATIVE_DIR=/native

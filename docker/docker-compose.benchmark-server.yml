@@ -55,14 +55,6 @@ services:
       # bringing up the databricks-enzyme engine stack. Empty default
       # is intentional — non-databricks experiments don't need it.
       DATABRICKS_EXPERIMENT_ID: "${DATABRICKS_EXPERIMENT_ID:-}"
-      # Microsoft Fabric target + IMDS relay for the fabric-* engines. The
-      # orchestrator forwards these into each per-engine compose invocation
-      # (docker-compose.benchmark.fabric-*.yml + the imds-router sidecar). The
-      # compute Lakehouse/Environment are provisioned FRESH per run by the
-      # dbt-server (fabric.provision_run); only the base names + shared cache
-      # name + orphan-sweep age are pinned. FABRIC_RUN_ID is minted per
-      # experiment into os.environ by the orchestrator (inherited by the nested
-      # compose), so it is not declared here.
       FABRIC_API_BASE: "${FABRIC_API_BASE:-https://api.fabric.microsoft.com}"
       FABRIC_WORKSPACE_ID: "${FABRIC_WORKSPACE_ID:-}"
       FABRIC_ONELAKE_HOST: "${FABRIC_ONELAKE_HOST:-msit-onelake.dfs.fabric.microsoft.com}"
