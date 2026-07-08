@@ -32,15 +32,15 @@
 # -----------------------------------------------------------------------------
 # Stage 1: openivm-builder (verbatim from spark-ext/dev/docker/Dockerfile)
 # -----------------------------------------------------------------------------
-FROM ubuntu:22.04 AS openivm-builder
+FROM ubuntu:24.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=909a106364427844c6e8a0a891ba2ed6de4127e1
+ARG OPENIVM_COMMIT=fa500813cc774375c1cf49f0b6c683cbaafd1105
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
-ARG LPTS_COMMIT=39a186cc59aa552ebf517c984784ebc9b48ca221
+ARG LPTS_COMMIT=13786cbd8f32216aa5d92c99f8bf53c7cc52c9fb
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -69,6 +69,8 @@ RUN git clone --branch "${OPENIVM_BRANCH}" --depth 50 "${OPENIVM_REPO}" . && \
     git config -f .gitmodules submodule.third_party/lpts.url "${LPTS_REPO}" && \
     git submodule sync --recursive && \
     git submodule update --init --recursive --depth 1 duckdb extension-ci-tools && \
+    (cd duckdb && git fetch --depth 1 origin 08e34c447bae34eaee3723cac61f2878b6bdf787 && git checkout FETCH_HEAD) && \
+    (cd extension-ci-tools && git fetch --depth 1 origin 72e76e99cd7fee45a99739cd118ec2db64e034ec && git checkout FETCH_HEAD) && \
     (cd third_party/lpts && \
         git init -q && \
         (git remote add origin "${LPTS_REPO}" 2>/dev/null || git remote set-url origin "${LPTS_REPO}") && \
