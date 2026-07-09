@@ -94,9 +94,9 @@ RUN mkdir -p /artifacts && \
 FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
-ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=main
-ARG OPENIVM_SPARK_COMMIT=7f65ee9bdc957dc9d96b8eb1ea6df9ab5bb096db
+ARG OPENIVM_SPARK_REPO=https://github.com/ila/openivm-spark.git
+ARG OPENIVM_SPARK_BRANCH=fix/issue-20-remove-window-digest
+ARG OPENIVM_SPARK_COMMIT=68e773445d73c364886d5f4573547d64c377f5a7
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -145,7 +145,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=7f65ee9bdc957dc9d96b8eb1ea6df9ab5bb096db
+ARG OPENIVM_SPARK_COMMIT=68e773445d73c364886d5f4573547d64c377f5a7
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
