@@ -163,6 +163,12 @@ FROM ubuntu:22.04
 ARG OPENIVM_SPARK_COMMIT=68e773445d73c364886d5f4573547d64c377f5a7
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
+# Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
+# builder image only when the label still matches, so a base-image / glibc /
+# toolchain change (not just an OPENIVM_SPARK_COMMIT bump) forces a rebuild.
+ARG SPARK_OPENIVM_DOCKERFILE_HASH=""
+LABEL org.openivm.spark.dockerfile_hash="${SPARK_OPENIVM_DOCKERFILE_HASH}"
+
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
         if [ -f /etc/apt/sources.list ]; then \

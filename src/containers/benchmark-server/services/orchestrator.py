@@ -521,40 +521,32 @@ class Orchestrator:
         """
         self.emit("  [spark-openivm-build] Building")
         repo = self._config.repo_dir
-        mgr = DockerManager(
-            os.path.join(repo, "docker/docker-compose.spark-openivm-build.yml"),
-            project_name="spark-openivm-build",
-            cwd=repo,
-        )
         dockerfile = os.path.join(
             repo, "src/containers/spark-openivm-build/Dockerfile"
         )
-        pinned_commit = None
+        # Key the reuse on a hash of the WHOLE Dockerfile (baked into the builder
+        # image as a label), not just OPENIVM_SPARK_COMMIT — so a base-image /
+        # glibc / toolchain change forces a rebuild too. (The pinned commit lives
+        # inside the Dockerfile, so the hash also covers commit bumps.)
         with open(dockerfile, "r", encoding="utf-8") as f:
-            content = f.read()
-        # The Dockerfile declares the spark-openivm pin in two stages
-        # (spark-ext-builder and final). Either match is fine — they're
-        # identical by construction.
-        match = re.search(
-            r"^ARG OPENIVM_SPARK_COMMIT=([0-9a-f]+)$", content, re.MULTILINE
+            dockerfile_hash = hashlib.sha256(f.read().encode("utf-8")).hexdigest()
+        mgr = DockerManager(
+            os.path.join(repo, "docker/docker-compose.spark-openivm-build.yml"),
+            project_name="spark-openivm-build",
+            env={"SPARK_OPENIVM_DOCKERFILE_HASH": dockerfile_hash},
+            cwd=repo,
         )
-        if match:
-            pinned_commit = match.group(1)
-        image_commit = subprocess.run(
+        image_hash = subprocess.run(
             [
                 "docker", "image", "inspect",
                 "spark-openivm-build-spark-openivm-builder:latest",
-                "--format", "{{ index .Config.Labels \"org.openivm.spark.commit\" }}",
+                "--format", "{{ index .Config.Labels \"org.openivm.spark.dockerfile_hash\" }}",
             ],
             capture_output=True,
             text=True,
             cwd=repo,
         )
-        if (
-            not pinned_commit
-            or image_commit.returncode != 0
-            or image_commit.stdout.strip() != pinned_commit
-        ):
+        if image_hash.returncode != 0 or image_hash.stdout.strip() != dockerfile_hash:
             self.emit(
                 "  [spark-openivm-build] Cold cache: compiling DuckDB+OpenIVM "
                 "and sbt-assembling spark extension from source (~10 min)"
@@ -563,7 +555,7 @@ class Orchestrator:
                 mgr.build()
         else:
             self.emit(
-                f"  [spark-openivm-build] Reusing image for openivm-spark {pinned_commit[:7]}"
+                f"  [spark-openivm-build] Reusing image (dockerfile {dockerfile_hash[:7]})"
             )
         with self._heartbeat("spark-openivm-build/run"):
             mgr.up(

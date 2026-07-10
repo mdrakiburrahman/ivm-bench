@@ -4,6 +4,7 @@ services:
       context: ../src/containers/spark-openivm-build
       args:
         UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
+        SPARK_OPENIVM_DOCKERFILE_HASH: "${SPARK_OPENIVM_DOCKERFILE_HASH:-}"
     volumes:
       - ../mount/bin/spark-openivm:/output
     environment:
