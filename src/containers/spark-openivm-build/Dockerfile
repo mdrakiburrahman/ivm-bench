@@ -111,7 +111,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/ila/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=fix/issue-20-remove-window-digest
-ARG OPENIVM_SPARK_COMMIT=68e773445d73c364886d5f4573547d64c377f5a7
+ARG OPENIVM_SPARK_COMMIT=9f2bf438a73a89769231d0ef5fa759dd614c4298
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -160,7 +160,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=68e773445d73c364886d5f4573547d64c377f5a7
+ARG OPENIVM_SPARK_COMMIT=9f2bf438a73a89769231d0ef5fa759dd614c4298
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
