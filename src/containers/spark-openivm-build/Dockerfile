@@ -63,8 +63,10 @@ WORKDIR /src
 # Clone openivm at the pinned commit on the openivm-spark branch, then
 # override the lpts submodule to point at OUR fork so we never need to
 # commit a submodule-URL bump into openivm to pick up new lpts work.
-RUN git clone --branch "${OPENIVM_BRANCH}" --depth 50 "${OPENIVM_REPO}" . && \
-    git checkout "${OPENIVM_COMMIT}" && \
+RUN git init -q && \
+    git remote add origin "${OPENIVM_REPO}" && \
+    git fetch --depth 1 origin "${OPENIVM_COMMIT}" && \
+    git checkout -q FETCH_HEAD && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
     git config -f .gitmodules submodule.third_party/lpts.url "${LPTS_REPO}" && \
     git submodule sync --recursive && \
@@ -72,8 +74,8 @@ RUN git clone --branch "${OPENIVM_BRANCH}" --depth 50 "${OPENIVM_REPO}" . && \
     (cd third_party/lpts && \
         git init -q && \
         (git remote add origin "${LPTS_REPO}" 2>/dev/null || git remote set-url origin "${LPTS_REPO}") && \
-        git fetch --depth 50 origin "${LPTS_BRANCH}" && \
-        git checkout "${LPTS_COMMIT}" && \
+        git fetch --depth 1 origin "${LPTS_COMMIT}" && \
+        git checkout -q FETCH_HEAD && \
         git submodule update --init --recursive --depth 1)
 
 # Build (release).
