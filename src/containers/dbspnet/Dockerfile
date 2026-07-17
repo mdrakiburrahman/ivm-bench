@@ -1,0 +1,26 @@
+# DbspNet engine builder — clones the dbsp-net repo (a .NET DBSP implementation) at a
+# pinned commit and builds the DbspNet control service (the pipeline-manager analogue).
+# Follows the same from-source pattern as the other built engines (e.g. duckdb-openivm):
+# ivm-bench fetches the engine source itself, no sibling checkout needed. Bump the engine
+# by overriding DBSPNET_COMMIT (and DBSPNET_REPO for a fork).
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG DBSPNET_REPO=https://github.com/clast-project/dbsp-net.git
+ARG DBSPNET_COMMIT=6d3bee84625924a7ee187ff1fe0c5c8c0f91c74e
+
+# git + certs for the clone (+ engineered-wood submodule fetch over https).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone "${DBSPNET_REPO}" . \
+ && git checkout "${DBSPNET_COMMIT}" \
+ && git submodule update --init --recursive
+RUN dotnet publish src/DbspNet.Server/DbspNet.Server.csproj -c Release -o /app
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY --from=build /app .
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "DbspNet.Server.dll"]

@@ -1,14 +1,15 @@
 # DbspNet engine (a .NET DBSP implementation) — the DbspNet control service is the
-# pipeline-manager analogue. Unlike Feldera's prebuilt image, DbspNet is built from its
-# own repo (default: a sibling checkout at ../../dbspnet relative to this docker/ dir,
-# i.e. D:/src/dbsp-net alongside D:/src/ivm-bench). Override DBSPNET_REPO if it lives
-# elsewhere. Prerequisite: check out the dbsp-net repo with its engineered-wood submodule
-# initialised (`git submodule update --init --recursive`).
+# pipeline-manager analogue. Unlike Feldera's prebuilt image, DbspNet is built from source;
+# like the other built engines (duckdb-openivm, spark-openivm) the build container clones
+# the engine repo at a pinned commit itself — no sibling checkout needed. Override
+# DBSPNET_COMMIT to bump the engine, or DBSPNET_REPO for a fork.
 services:
   dbspnet-server:
     build:
-      context: ${DBSPNET_REPO:-../../dbsp-net}
-      dockerfile: src/DbspNet.Server/Dockerfile
+      context: ../src/containers/dbspnet
+      args:
+        DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/clast-project/dbsp-net.git}"
+        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-6d3bee84625924a7ee187ff1fe0c5c8c0f91c74e}"
     cpus: ${DBSPNET_CPUS:-32}
     mem_limit: ${DBSPNET_MEM:-120g}
     volumes:

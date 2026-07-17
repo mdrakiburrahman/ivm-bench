@@ -32,16 +32,17 @@ compile.
 | `src/containers/dbt-server/services/dbt_to_program.py` | dbt project → program translator |
 | `src/containers/dbt-server/services/dbspnet_client.py` | client for the DbspNet control service |
 | `src/containers/dbt-server/handlers/dbspnet.py` | Flask blueprint: `/deploy /resume /wait /pause /stats /dbspnet` |
-| `docker/docker-compose.benchmark.dbspnet.yml` | `dbspnet-server` (built from the dbsp-net repo) + `dbt-server` |
+| `src/containers/dbspnet/Dockerfile` | builds the DbspNet control service — clones dbsp-net at a pinned commit (like duckdb-openivm), no sibling checkout |
+| `docker/docker-compose.benchmark.dbspnet.yml` | `dbspnet-server` + `dbt-server` |
 | `benchmark-server` registries | `config.py` (ports/compose/main-service), `engine_runner.py` (dispatch + batch methods), `chart.py`/`oat_chart.py` (order/colour/status) |
 | `experiments/dbspnet.json` | run DbspNet head-to-head with Feldera at SF=3 |
 
 ## Prerequisites
 
-- Check out the **dbsp-net** repo as a sibling of ivm-bench (`D:/src/dbsp-net` next to
-  `D:/src/ivm-bench`), or set `DBSPNET_REPO`.
-- Initialise its engineered-wood submodule: `git -C ../dbsp-net submodule update --init --recursive`.
-- The compose builds the `dbspnet-server` image from `src/DbspNet.Server/Dockerfile`.
+None beyond Docker — like the other from-source engines, the build clones the engine repo
+itself. `src/containers/dbspnet/Dockerfile` clones `clast-project/dbsp-net` at a pinned
+`DBSPNET_COMMIT` (+ its engineered-wood submodule) and builds the control service. To bump
+the engine, override the build arg `DBSPNET_COMMIT` (or `DBSPNET_REPO` for a fork).
 
 ## Run
 
@@ -61,7 +62,7 @@ bash src/.scripts/benchmark.sh
 
 **Needs validation in the Docker/WSL harness (not yet run):**
 - The full 3-batch benchmark over TPC-DI data (needs the `spark-batch-loader` datagen).
-- The compose build of `dbspnet-server` from the sibling repo, and the cross-container
+- The `dbspnet-server` image build (clone-at-pinned-commit) and the cross-container
   dbt-server → service wiring.
 - The `benchmark-server` registry edits under a real OAT run.
 
