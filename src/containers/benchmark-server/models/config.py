@@ -1,5 +1,6 @@
 """Configuration models for benchmark orchestration."""
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -167,8 +168,18 @@ class BenchmarkConfig:
 
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
+        # The datagen compose (docker-compose.datagen.yml) requests cpus:${DATAGEN_CPUS:-32},
+        # a default sized for the repo's 32-core devbox. Docker HARD-rejects a cpus limit above
+        # the host core count, so on a smaller box datagen fails before any engine runs. Cap it
+        # to the detected cores (never above the 32 default, so the devbox is unchanged). The
+        # orchestrator runs inside the benchmark-server container, so a host `export` can't reach
+        # it — this is the only place the cap can be applied. mem_limit over host RAM is NOT a
+        # hard failure, so DATAGEN_MEM keeps its compose default / explicit override.
+        host_cores = self.host_cores or os.cpu_count() or 1
+        datagen_cpus = min(32, host_cores)
         return {
             "SCALE_FACTOR": str(self.scale_factor),
+            "DATAGEN_CPUS": str(datagen_cpus),
             "BENCHMARK_RUNS": str(self.benchmark_runs),
             "BATCH_1_INSERT_PCT": self.batch_1_pct,
             "BATCH_2_INSERT_PCT": self.batch_2_pct,
