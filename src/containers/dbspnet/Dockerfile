@@ -5,7 +5,7 @@
 # by overriding DBSPNET_COMMIT (and DBSPNET_REPO for a fork).
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG DBSPNET_REPO=https://github.com/clast-project/dbsp-net.git
-ARG DBSPNET_COMMIT=898c9033034ac091f493203a71c8ba8c778e1750
+ARG DBSPNET_COMMIT=2c19e10677a608d964ea618693c25a1479355f8f
 
 # git + certs for the clone (+ engineered-wood submodule fetch over https).
 RUN apt-get update \
