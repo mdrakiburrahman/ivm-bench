@@ -82,6 +82,7 @@ ENGINE_PORTS = {
     "databricks-enzyme": 5006,
     "fabric-openivm-jvm-35": 5007,
     "fabric-jvm-35": 5008,
+    "dbspnet": 5009,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -93,6 +94,7 @@ ENGINE_COMPOSE_FILES = {
     "databricks-enzyme": "docker/docker-compose.benchmark.databricks-enzyme.yml",
     "fabric-openivm-jvm-35": "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml",
     "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
+    "dbspnet": "docker/docker-compose.benchmark.dbspnet.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine).
@@ -108,6 +110,7 @@ ENGINE_MAIN_SERVICES = {
     "databricks-enzyme": None,
     "fabric-openivm-jvm-35": None,
     "fabric-jvm-35": None,
+    "dbspnet": "dbspnet-server",
 }
 
 # Cloud-consuming engines: the heavy query compute is offloaded to a remote

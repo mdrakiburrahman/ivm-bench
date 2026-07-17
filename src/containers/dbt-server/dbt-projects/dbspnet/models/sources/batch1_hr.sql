@@ -1,0 +1,9 @@
+employeeid VARCHAR,
+managerid VARCHAR,
+employeefirstname VARCHAR,
+employeelastname VARCHAR,
+employeemi VARCHAR,
+employeejobcode VARCHAR,
+employeebranch VARCHAR,
+employeeoffice VARCHAR,
+employeephone VARCHAR

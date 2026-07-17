@@ -1,0 +1,436 @@
+name: 'tpcdi'
+version: 1.0.0
+config-version: 2
+profile: tpcdi
+model-paths:
+- models
+seed-paths:
+- seeds
+macro-paths:
+- macros
+snapshot-paths:
+- snapshots
+analysis-paths:
+- analyses
+test-paths:
+- tests
+clean-targets:
+- target
+- dbt_packages
+quoting:
+  identifier: true
+dispatch:
+- macro_namespace: dbt_utils
+  search_order:
+  - tpcdi
+  - dbt_utils
+models:
+  tpcdi:
+    sources:
+      +materialized: table
+      staging_cash_transaction:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/cash_transaction
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+              max_concurrent_readers: 35
+          name: staging_cash_transaction_input
+      staging_daily_market:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/daily_market
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_daily_market_input
+      staging_holding_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/holding_history
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_holding_history_input
+      staging_prospect:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/prospect
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_prospect_input
+      staging_trade:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/trade
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_trade_input
+      staging_watch_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/watch_history
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_watch_history_input
+      staging_account:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/account
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_account_input
+      staging_customer:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/customer
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_customer_input
+      staging_batch_date:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/staging/batch_date
+              mode: snapshot_and_follow
+              transaction_mode: always
+              num_parsers: 8
+          name: staging_batch_date_input
+      batch1_customer_mgmt:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/customer_mgmt
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_customer_mgmt_input
+      batch1_date:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/date
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_date_input
+      batch1_finwire:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/finwire
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_finwire_input
+      batch1_hr:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/hr
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_hr_input
+      batch1_industry:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/industry
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_industry_input
+      batch1_status_type:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/status_type
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_status_type_input
+      batch1_tax_rate:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/tax_rate
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_tax_rate_input
+      batch1_time:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/time
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_time_input
+      batch1_trade_history:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/trade_history
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_trade_history_input
+      batch1_trade_type:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/batch1/trade_type
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: batch1_trade_type_input
+      audit:
+        +connectors:
+        - transport:
+            name: delta_table_input
+            config:
+              uri: /data/raw/delta/audit
+              mode: snapshot
+              transaction_mode: always
+              num_parsers: 8
+          name: audit_input
+    bronze:
+      +materialized: view
+    silver:
+      +materialized: view
+    gold:
+      +materialized: view
+      +stored: true
+      dim_account:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/dim_account
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: dim_account_output
+      dim_broker:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/dim_broker
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: dim_broker_output
+      dim_company:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/dim_company
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: dim_company_output
+      dim_customer:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/dim_customer
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: dim_customer_output
+      dim_date:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/dim_date
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: dim_date_output
+      dim_security:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/dim_security
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: dim_security_output
+      dim_trade:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/dim_trade
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: dim_trade_output
+      fact_cash_balances:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/fact_cash_balances
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: fact_cash_balances_output
+      fact_cash_transactions:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/fact_cash_transactions
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: fact_cash_transactions_output
+      fact_holdings:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/fact_holdings
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: fact_holdings_output
+      fact_market_history:
+        # NOTE: At SF=100, the truncate-mode delta_table_output for this
+        # 54M+ row materialized view never drains — every input batch
+        # rewrites the full snapshot, the connector queue grows
+        # unboundedly (1100+ batches with 0 transmitted observed), and
+        # `pipeline_complete` never trips. Drop the output connector so
+        # Feldera computes the view in-memory but skips the Delta write
+        # that wedges the pipeline. The benchmark still measures the
+        # compute cost; no Delta is persisted for this table.
+        +stored: true
+      fact_trade:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/fact_trade
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: fact_trade_output
+      fact_watches:
+        +connectors:
+          - transport:
+              name: delta_table_output
+              config:
+                uri: /data/processed/dbspnet/gold/fact_watches
+                mode: truncate
+            enable_output_buffer: true
+            max_output_buffer_time_millis: 1000
+            max_queued_records: 1000000000
+            name: fact_watches_output
+      analytics:
+        trade_volume_stats:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/dbspnet/gold/trade_volume_stats
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 1000000000
+              name: trade_volume_stats_output
+        market_volatility:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/dbspnet/gold/market_volatility
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 1000000000
+              name: market_volatility_output
+        customer_concentration:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/dbspnet/gold/customer_concentration
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 1000000000
+              name: customer_concentration_output
+        broker_performance:
+          +connectors:
+            - transport:
+                name: delta_table_output
+                config:
+                  uri: /data/processed/dbspnet/gold/broker_performance
+                  mode: truncate
+              enable_output_buffer: true
+              max_output_buffer_time_millis: 1000
+              max_queued_records: 1000000000
+              name: broker_performance_output
+        daily_market_pulse:
+          # NOTE: At SF=100 the global-window aggregations (RANK + LAG
+          # over the full daily_market space, plus CROSS JOIN +
+          # NOT EXISTS) keep the DBSP circuit producing a long stream of
+          # incremental updates that the truncate-mode Delta writer
+          # cannot drain — `transmitted_records` stays at 0 and
+          # `pipeline_complete` never trips. Drop the output connector
+          # so the view is computed but no Delta is persisted.
+          +stored: true
+    work:
+      +materialized: view

@@ -596,6 +596,11 @@ class EngineRunner:
                     self._run_feldera_batch1()
                 else:
                     self._run_feldera_wait(batch_num)
+            elif name == "dbspnet":
+                if batch_num == 1:
+                    self._run_dbspnet_batch1()
+                else:
+                    self._run_dbspnet_wait(batch_num)
             elif name == "duckdb":
                 self._run_duckdb_ducklake(batch_num)
             elif name == "duckdb-openivm":
@@ -823,6 +828,78 @@ class EngineRunner:
         )
         os.makedirs(results_dir, exist_ok=True)
         with open(os.path.join(results_dir, "run-feldera-batch1.json"), "w") as f:
+            json.dump(wait_data, f, indent=2)
+
+    def _run_dbspnet_batch1(self) -> None:
+        """DbspNet batch 1: deploy the program (translate + compile + wire connectors),
+        resume (timer start), then wait for the batch to drain.
+
+        Unlike Feldera there is no dbt build / Rust compile: the dbt-server's dbspnet
+        handler translates the dbt project into a program and POSTs it to the DbspNet
+        control service. Deploy is excluded from the measured duration (like Feldera's
+        compile); resume→wait is the measured batch.
+        """
+        deploy_resp = requests.post(f"{self._dbt_url}/deploy/dbspnet", timeout=1800)
+        deploy_resp.raise_for_status()
+        compile_time_s = deploy_resp.json().get("compileTimeS")
+        self._emit(f"[dbspnet] Deployed — compile {compile_time_s}s (not measured)")
+
+        resume_resp = requests.post(f"{self._dbt_url}/resume/dbspnet", timeout=60)
+        resume_resp.raise_for_status()
+        start_epoch = resume_resp.json().get("resumed_at_epoch_s", time.time())
+        self._emit("[dbspnet] Resumed — waiting for batch 1 to drain")
+
+        wait_resp = requests.post(
+            f"{self._dbt_url}/wait/dbspnet",
+            json={
+                "scale_factor": self._config.scale_factor,
+                "batch_num": 1,
+                "start_epoch_s": start_epoch,
+                "compile_time_s": compile_time_s,
+            },
+            timeout=604800,
+        )
+        wait_data = wait_resp.json()
+        if wait_resp.status_code != 200:
+            raise RuntimeError(f"DbspNet batch 1 wait failed: {wait_data.get('error', 'unknown')}")
+
+        self._emit(f"[dbspnet] Batch 1 processing time: {wait_data.get('duration_s', '?')}s")
+        if compile_time_s:
+            self._result.extra["compile_time_s"] = compile_time_s
+
+        self._save_dbspnet_result(1, wait_data)
+
+    def _run_dbspnet_wait(self, batch_num: int) -> None:
+        """DbspNet batches 2/3: the batch-loader has already appended new source versions
+        (generic append in _run_batch, before the timer). Resume drains only those new
+        versions; wait blocks until done."""
+        resume_resp = requests.post(f"{self._dbt_url}/resume/dbspnet", timeout=60)
+        resume_resp.raise_for_status()
+        start_epoch = resume_resp.json().get("resumed_at_epoch_s", time.time())
+        self._emit(f"[dbspnet] Resumed for batch {batch_num}")
+
+        wait_resp = requests.post(
+            f"{self._dbt_url}/wait/dbspnet",
+            json={
+                "scale_factor": self._config.scale_factor,
+                "batch_num": batch_num,
+                "start_epoch_s": start_epoch,
+            },
+            timeout=604800,
+        )
+        wait_data = wait_resp.json()
+        if wait_resp.status_code != 200:
+            raise RuntimeError(f"DbspNet batch {batch_num} wait failed: {wait_data.get('error', 'unknown')}")
+
+        self._emit(f"[dbspnet] Batch {batch_num} processing time: {wait_data.get('duration_s', '?')}s")
+        self._save_dbspnet_result(batch_num, wait_data)
+
+    def _save_dbspnet_result(self, batch_num: int, wait_data: dict) -> None:
+        results_dir = os.path.join(
+            self._config.repo_dir, "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        with open(os.path.join(results_dir, f"run-dbspnet-batch{batch_num}.json"), "w") as f:
             json.dump(wait_data, f, indent=2)
 
     def _poll_feldera_compilation(self, run_id: str) -> None:

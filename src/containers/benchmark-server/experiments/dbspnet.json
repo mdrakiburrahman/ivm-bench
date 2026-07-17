@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Run the DbspNet engine (a .NET DBSP implementation) head-to-head with Feldera,",
+    "the closest engine class (streaming IVM / DBSP). SF=3 smoke shape.",
+    "",
+    "Prerequisite: check out the dbsp-net repo as a sibling of ivm-bench (D:/src/dbsp-net",
+    "next to D:/src/ivm-bench), with its engineered-wood submodule initialised:",
+    "  git -C ../dbsp-net submodule update --init --recursive",
+    "or set DBSPNET_REPO to its path.",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/dbspnet.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["feldera", "dbspnet"],
+    "parallel": false,
+    "feature_flags": {
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "dbspnet-vs-feldera",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1"
+    }
+  ]
+}

@@ -23,6 +23,8 @@ import os
 import re
 import sys
 
+import yaml
+
 SURROGATE_NULL = "_dbt_utils_surrogate_key_null_"
 
 _REF = re.compile(r"\{\{\s*ref\(\s*'([^']+)'\s*\)\s*\}\}")
@@ -86,12 +88,48 @@ def _topo_sort(models):
     return ordered
 
 
+def _connectors(project_dir):
+    """Read `+connectors` config from dbt_project.yml → (inputs, output_bindings).
+
+    inputs: [{"table", "uri", "mode"}] (delta_table_input on source models).
+    output_bindings: [{"view", "uri", "mode"}] (delta_table_output on gold views).
+    """
+    with open(os.path.join(project_dir, "dbt_project.yml"), encoding="utf-8") as f:
+        proj = yaml.safe_load(f)
+
+    inputs, outputs = [], []
+
+    def process(model_name, connector_list):
+        for c in connector_list or []:
+            transport = c.get("transport", {})
+            cfg = transport.get("config", {})
+            uri, mode = cfg.get("uri"), cfg.get("mode")
+            if transport.get("name") == "delta_table_input":
+                inputs.append({"table": model_name, "uri": uri, "mode": mode})
+            elif transport.get("name") == "delta_table_output":
+                outputs.append({"view": model_name, "uri": uri, "mode": mode or "truncate"})
+
+    def walk(node):
+        if not isinstance(node, dict):
+            return
+        for key, val in node.items():
+            if key.startswith("+"):
+                continue  # a config key (+materialized, +stored, …), not a model
+            if isinstance(val, dict) and "+connectors" in val:
+                process(key, val["+connectors"])
+            else:
+                walk(val)
+
+    walk(proj.get("models", {}).get("tpcdi", {}))
+    return inputs, outputs
+
+
 def build_program(project_dir):
     models = _read_models(os.path.join(project_dir, "models"))
     order = _topo_sort(models)
 
     statements = []
-    outputs = []
+    gold_views = []
     for name in order:
         is_source, raw, layer = models[name]
         body = render(raw).strip()
@@ -100,9 +138,17 @@ def build_program(project_dir):
         else:
             statements.append(f"CREATE VIEW {name} AS\n{body}")
             if layer == "gold":
-                outputs.append(name)
+                gold_views.append(name)
 
-    return {"program": statements, "outputs": outputs}
+    inputs, output_bindings = _connectors(project_dir)
+    return {
+        "program": statements,
+        # All gold views — passed to /compile to validate they all compile.
+        "outputs": gold_views,
+        # Delta bindings for /deploy.
+        "inputs": inputs,
+        "output_bindings": output_bindings,
+    }
 
 
 if __name__ == "__main__":
