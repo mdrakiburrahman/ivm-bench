@@ -539,9 +539,14 @@ class EngineRunner:
                 return
             except RuntimeError as exc:
                 msg = str(exc)
-                transient = (
-                    "dependency mssql-metastore failed to start" in msg
-                    or "is unhealthy" in msg
+                # Only the mssql metastore boot is genuinely transient. Require the
+                # message to name mssql-metastore — a bare "is unhealthy" match would
+                # misclassify ANY unhealthy dependency (e.g. an engine server that
+                # never comes up) as an mssql crash and burn all retries on it,
+                # hiding the real error behind a wrong "transient mssql" label. Stacks
+                # without mssql (e.g. dbspnet) now surface the real failure at once.
+                transient = "mssql-metastore" in msg and (
+                    "failed to start" in msg or "is unhealthy" in msg
                 )
                 if not transient or attempt == max_attempts:
                     raise

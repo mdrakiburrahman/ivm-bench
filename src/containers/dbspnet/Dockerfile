@@ -19,6 +19,13 @@ RUN git clone "${DBSPNET_REPO}" . \
 RUN dotnet publish src/DbspNet.Server/DbspNet.Server.csproj -c Release -o /app
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
+# curl for the compose healthcheck — the aspnet runtime image is Debian-slim and
+# does NOT ship curl, so without this the /healthz probe fails with "curl: not
+# found" and the container never reports healthy (even when the service is up),
+# which cascades into the dbt-server dependency failing to start.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app .
 ENV ASPNETCORE_URLS=http://+:8080
