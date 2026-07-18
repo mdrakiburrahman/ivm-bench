@@ -96,8 +96,13 @@ def disk_cleanup_after_experiment(
 
     targets: List[str] = [os.path.join(mount, "raw", sf)]
     keep_events = os.environ.get("SPARK_METRICS_KEEP_EVENTS", "0") == "1"
+    # PRESERVE_RESULTS=1 keeps each engine's Delta output tables under
+    # mount/results/<sf>/<engine>/ after the run so they can be diffed for
+    # correctness (see src/.scripts/compare_outputs.py). Off by default.
+    preserve_results = os.environ.get("PRESERVE_RESULTS", "0") == "1"
     for engine in engines_list:
-        targets.append(os.path.join(mount, "results", sf, engine))
+        if not preserve_results:
+            targets.append(os.path.join(mount, "results", sf, engine))
         targets.append(os.path.join(mount, "logs", sf, engine))
         if engine in ("spark", "spark-openivm") and not keep_events:
             targets.append(os.path.join(mount, "metrics", sf, engine, "spark-events"))
