@@ -23,7 +23,7 @@ Run (from repo root, after a run with PRESERVE_RESULTS=1):
     docker run --rm -w /work \
       -v "$PWD/mount:/mount:ro" \
       -v "$PWD/src/.scripts/compare_outputs.py:/work/compare_outputs.py:ro" \
-      python:3.11-slim bash -c "pip install --quiet duckdb && SF=3 python3 compare_outputs.py"
+      python:3.11-slim bash -c "pip install --quiet duckdb "pyarrow==17.0.0" "numpy<2" && SF=3 python3 compare_outputs.py"
 """
 import glob
 import json
@@ -32,6 +32,7 @@ import sys
 import urllib.parse
 
 import duckdb
+import pyarrow.parquet as pq
 
 SF = os.environ.get("SF", "3")
 BASE = os.environ.get("RESULTS_BASE", f"/mount/results/{SF}")
@@ -67,11 +68,15 @@ def main() -> int:
     con = duckdb.connect()
 
     def rel(engine, view):
+        # Read via pyarrow (DuckDB's parquet reader rejects engineered-wood's Thrift
+        # footer) and hand DuckDB the Arrow table for the set diff.
         files = live_files(f"{BASE}/{engine}/gold/{view}")
         if not files:
             return None
-        lst = ", ".join("'" + f.replace("'", "''") + "'" for f in files)
-        return f"read_parquet([{lst}])"
+        tbl = pq.read_table(files)  # noqa: F841 — referenced by name in the SQL below
+        name = f"{engine}_{view}"
+        con.register(name, tbl)
+        return name
 
     def project(r, cols, types):
         sel = []
@@ -88,12 +93,13 @@ def main() -> int:
     all_ok = True
 
     for v in VIEWS:
-        d, f = rel("dbspnet", v), rel("feldera", v)
-        if d is None or f is None:
-            print(f"{v:<24} MISSING ({'dbspnet' if d is None else ''}{' feldera' if f is None else ''})")
-            all_ok = False
-            continue
         try:
+            d, f = rel("dbspnet", v), rel("feldera", v)
+            if d is None or f is None:
+                miss = " ".join(x for x, r in (("dbspnet", d), ("feldera", f)) if r is None)
+                print(f"{v:<24} MISSING ({miss})")
+                all_ok = False
+                continue
             dn = con.execute(f"SELECT count(*) FROM {d}").fetchone()[0]
             fn = con.execute(f"SELECT count(*) FROM {f}").fetchone()[0]
             desc = con.execute(f"DESCRIBE SELECT * FROM {d}").fetchall()
