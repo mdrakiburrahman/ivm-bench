@@ -119,8 +119,10 @@ def main():
             mark = "" if diff == 0 else ("  sk (expected)" if c.lower().startswith("sk_") else "  <-- DIFF")
             print(f"  {c:<28}{t[:13]:<14}{diff:>10}{mark}")
             if diff and not c.lower().startswith("sk_"):
-                ds = con.execute(f"SELECT {e} AS x FROM {d} EXCEPT ALL SELECT {e} AS x FROM {f} LIMIT 4").fetchall()
-                fs = con.execute(f"SELECT {e} AS x FROM {f} EXCEPT ALL SELECT {e} AS x FROM {d} LIMIT 4").fetchall()
+                # CAST samples to VARCHAR so DuckDB need not marshal TIMESTAMP/DATE
+                # values into Python (which requires pytz); also keeps output readable.
+                ds = con.execute(f"SELECT CAST({e} AS VARCHAR) FROM {d} EXCEPT ALL SELECT CAST({e} AS VARCHAR) FROM {f} LIMIT 4").fetchall()
+                fs = con.execute(f"SELECT CAST({e} AS VARCHAR) FROM {f} EXCEPT ALL SELECT CAST({e} AS VARCHAR) FROM {d} LIMIT 4").fetchall()
                 print(f"      dbspnet-only e.g.: {[r[0] for r in ds]}")
                 print(f"      feldera-only e.g.: {[r[0] for r in fs]}")
     return 0
