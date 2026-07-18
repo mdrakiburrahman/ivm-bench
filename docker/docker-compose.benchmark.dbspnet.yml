@@ -9,7 +9,7 @@ services:
       context: ../src/containers/dbspnet
       args:
         DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/clast-project/dbsp-net.git}"
-        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-d854971}"
+        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-a279f7e}"
     cpus: ${DBSPNET_CPUS:-32}
     mem_limit: ${DBSPNET_MEM:-120g}
     volumes:
