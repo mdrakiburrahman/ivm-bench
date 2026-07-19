@@ -124,8 +124,22 @@ def _connectors(project_dir):
     return inputs, outputs
 
 
+def _models_dir(project_dir):
+    """Resolve the model source directory, honoring dbt's `model-paths` in
+    dbt_project.yml (default `models`, dbt's own default). This lets a project
+    share another's models — the dbspnet project points model-paths at the
+    feldera project so both engines run the byte-identical model set from a
+    single source instead of a maintained copy. dbt requires model-paths under
+    the project root; this translator does not, so a `../feldera/models` is fine.
+    """
+    with open(os.path.join(project_dir, "dbt_project.yml"), encoding="utf-8") as f:
+        proj = yaml.safe_load(f)
+    paths = proj.get("model-paths") or ["models"]
+    return os.path.normpath(os.path.join(project_dir, paths[0]))
+
+
 def build_program(project_dir):
-    models = _read_models(os.path.join(project_dir, "models"))
+    models = _read_models(_models_dir(project_dir))
     order = _topo_sort(models)
 
     statements = []

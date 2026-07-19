@@ -3,7 +3,10 @@ version: 1.0.0
 config-version: 2
 profile: tpcdi
 model-paths:
-- models
+# Share the feldera project's models: the streaming model set is byte-identical
+# across both engines, so it lives in one place (feldera) instead of a copy kept
+# in sync by hand. Per-engine config (connectors below, profiles) stays local.
+- ../feldera/models
 seed-paths:
 - seeds
 macro-paths:
