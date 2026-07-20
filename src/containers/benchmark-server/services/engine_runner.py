@@ -590,6 +590,10 @@ class EngineRunner:
             t0 = time.time()
             t0_ms = int(t0 * 1000)
 
+            # Engines with a compile-then-process split (feldera) set this to their
+            # own measured processing duration (resume→drain, compile excluded);
+            # None means fall back to wall-clock below.
+            self._measured_duration_s = None
             run_id = None
             if name == "feldera":
                 if batch_num == 1:
@@ -609,9 +613,19 @@ class EngineRunner:
             else:
                 run_id = self._run_dbt(batch_num)
 
-            batch.duration_s = time.time() - t0
+            wall_s = time.time() - t0
+            # Prefer the engine's measured processing duration over wall-clock:
+            # wall-clock folds the one-time compile into the batch, and feldera's
+            # Rust build is minutes — it would dwarf the actual batch-1 processing
+            # (the "not included in duration" compile the log already reports
+            # separately). Mirrors the databricks-enzyme pure-compute override.
+            batch.duration_s = (
+                self._measured_duration_s
+                if self._measured_duration_s is not None
+                else wall_s
+            )
             t1_ms = int(time.time() * 1000)
-            batch.extra["duration_s_wallclock"] = batch.duration_s
+            batch.extra["duration_s_wallclock"] = wall_s
             batch.extra["wall_window_start_ms"] = t0_ms
             batch.extra["wall_window_end_ms"] = t1_ms
 
@@ -807,6 +821,10 @@ class EngineRunner:
             raise RuntimeError(f"Feldera batch 1 wait failed: {wait_data.get('error', 'unknown')}")
 
         duration = wait_data.get("duration_s", "?")
+        if isinstance(duration, (int, float)):
+            # Compile-excluded processing time (measured from resume) — record this
+            # as the batch duration instead of wall-clock, which includes compile.
+            self._measured_duration_s = float(duration)
         compile_info = wait_data.get("compile_time_s")
         self._emit(f"[feldera] Pipeline processing time: {duration}s")
         if compile_info:
@@ -2467,6 +2485,8 @@ class EngineRunner:
             )
 
         duration = wait_data.get("duration_s", "?")
+        if isinstance(duration, (int, float)):
+            self._measured_duration_s = float(duration)
         self._emit(f"[feldera] Batch {batch_num} processing time: {duration}s")
 
         # Save result
