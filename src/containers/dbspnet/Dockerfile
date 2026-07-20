@@ -5,17 +5,17 @@
 # by overriding DBSPNET_COMMIT (and DBSPNET_REPO for a fork).
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG DBSPNET_REPO=https://github.com/clast-project/dbsp-net.git
-ARG DBSPNET_COMMIT=b99d66a
+ARG DBSPNET_COMMIT=355ef65
 
-# git + certs for the clone (+ engineered-wood submodule fetch over https).
+# git + certs for the clone.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 RUN git clone "${DBSPNET_REPO}" . \
- && git checkout "${DBSPNET_COMMIT}" \
- && git submodule update --init --recursive
+ && git checkout "${DBSPNET_COMMIT}"
+# engineered-wood is restored from nuget.org during publish (no submodule).
 RUN dotnet publish src/DbspNet.Server/DbspNet.Server.csproj -c Release -o /app
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
