@@ -733,7 +733,7 @@ def append_sources(batch_num: int, sf: int) -> dict:
       1. Idempotently seed the per-batch staging dirs into the shared
          cache (``_UPLOADED_BATCH<N>`` marker).
       2. ``INSERT INTO exp_<ts>_data.staging_<t> SELECT * FROM
-         delta.\`/Volumes/_shared_cache/.../sf=<N>/staging_batch<N>/<t>\``
+         delta.`/Volumes/_shared_cache/.../sf=<N>/staging_batch<N>/<t>```
          for each staging table — server-side, no client bytes.
 
     The next dbt-databricks REFRESH on the MVs will see the new rows
