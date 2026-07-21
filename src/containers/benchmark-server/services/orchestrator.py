@@ -647,12 +647,9 @@ class Orchestrator:
                 durations = [er.batches[idx].duration_s for er in engine_runs]
                 statuses = [er.batches[idx].status for er in engine_runs]
                 errors = [er.batches[idx].error for er in engine_runs if er.batches[idx].error]
-                batch_extra = {}
-                latest_storage = engine_runs[-1].batches[idx].extra.get("storage")
-                if latest_storage is not None:
-                    # Top-level storage artifacts are from the latest run;
-                    # earlier runs are retained under repetition-N/.
-                    batch_extra["storage"] = copy.deepcopy(latest_storage)
+                # Non-timing forensics describe the latest repetition; every
+                # repetition remains available in BenchmarkResult.repetitions.
+                batch_extra = copy.deepcopy(engine_runs[-1].batches[idx].extra)
                 batches.append(BatchResult(
                     batch_num=batch_num,
                     duration_s=sum(durations) / len(durations),
@@ -888,11 +885,20 @@ class Orchestrator:
             return
         futures = {}
         fatal_validation_exc: Optional[OpenIvmValidationError] = None
+        storage_barrier = None
+        if os.environ.get("STORAGE_METRICS", "1") != "0" and len(engines) > 1:
+            storage_barrier = threading.Barrier(len(engines))
         with ThreadPoolExecutor(max_workers=len(engines)) as pool:
             runners: Dict[str, EngineRunner] = {}
             for name in engines:
                 ec = engine_configs[name]
-                runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
+                runner = EngineRunner(
+                    self._config,
+                    ec,
+                    self.emit,
+                    self._benchmark_id,
+                    storage_barrier=storage_barrier,
+                )
                 runners[name] = runner
                 futures[pool.submit(runner.run)] = (name, runner)
 
@@ -1276,6 +1282,17 @@ class Orchestrator:
         self._result.total_duration_s = wall_s
         if error:
             self._result.error = error
+        if self._oat_run_id is not None:
+            try:
+                oat_runner.archive_storage_artifacts(
+                    repo_dir=repo,
+                    oat_run_id=self._oat_run_id,
+                    exp_idx=exp_idx,
+                    result=self._result,
+                )
+            except Exception as archive_error:
+                self.emit(f"  [oat-storage] WARN: artifact archive failed: {archive_error}")
+                logger.exception("OAT storage archive failed for exp %d", exp_idx)
         # _save_benchmark_results() catches+logs internally; no extra wrap.
         self._save_benchmark_results()
 

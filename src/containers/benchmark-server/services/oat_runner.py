@@ -164,6 +164,65 @@ def _archive_failure_forensics(
             emit(f"  [oat-archive] WARN failed to archive {dbt_src} → {dbt_dst}: {e}")
 
 
+def archive_storage_artifacts(
+    *, repo_dir: str, oat_run_id: str, exp_idx: int, result: BenchmarkResult
+) -> None:
+    """Copy storage snapshots to immutable, experiment-scoped paths.
+
+    ``mount/results/<SF>/dbt-server`` is reused by later OAT rows.  Update all
+    serialized pointers while copying both the latest and repetition-specific
+    snapshots into the durable OAT state tree.
+    """
+    destination = os.path.join(
+        repo_dir, "mount", "oat-state", oat_run_id, f"exp-{exp_idx:03d}", "storage"
+    )
+    os.makedirs(destination, exist_ok=True)
+
+    def archive_engines(engines, repetition: Optional[int] = None) -> None:
+        for engine_result in engines.values():
+            for batch in engine_result.batches:
+                storage = (batch.extra or {}).get("storage")
+                if not isinstance(storage, dict) or not storage.get("artifact"):
+                    continue
+                original = str(storage["artifact"])
+                basename = os.path.basename(original)
+                if basename in ("", ".", ".."):
+                    raise ValueError(f"invalid storage artifact path: {original}")
+                if repetition is None:
+                    source = os.path.join(repo_dir, original)
+                    target_dir = destination
+                else:
+                    original_dir = os.path.dirname(os.path.join(repo_dir, original))
+                    source = os.path.join(original_dir, f"repetition-{repetition}", basename)
+                    target_dir = os.path.join(destination, f"repetition-{repetition}")
+                repo_real = os.path.realpath(repo_dir)
+                source_real = os.path.realpath(source)
+                if not source_real.startswith(repo_real + os.sep):
+                    raise ValueError(f"storage artifact escapes repository: {original}")
+                os.makedirs(target_dir, exist_ok=True)
+                target = os.path.join(target_dir, basename)
+                if not os.path.isfile(source):
+                    storage["status"] = "error"
+                    storage["archive_error"] = f"source artifact missing: {original}"
+                    with open(target, "w") as artifact:
+                        json.dump(
+                            {
+                                "status": "error",
+                                "error": storage["archive_error"],
+                            },
+                            artifact,
+                            indent=2,
+                        )
+                    storage["artifact"] = os.path.relpath(target, repo_dir)
+                    continue
+                shutil.copy2(source, target)
+                storage["artifact"] = os.path.relpath(target, repo_dir)
+
+    archive_engines(result.engines)
+    for repetition, engines in enumerate(result.repetitions, start=1):
+        archive_engines(engines, repetition=repetition)
+
+
 # ---------------------------------------------------------------------------
 # Per-experiment output assembly
 # ---------------------------------------------------------------------------
@@ -203,8 +262,6 @@ def build_per_experiment_dict(
           "error": null,
           "engines": { ... result.engines mirror ... },
           "dbt_run_files": { "spark": [path1, path2, path3], ... },
-          "storage_files": { "spark": [path1, path2, path3], ... },
-          "storage": { "spark": {"1": {...}, "2": {...}, "3": {...}}, ... },
           "inputs": { ... ExperimentInputs.to_dict() ... }
         }
     """
@@ -225,27 +282,6 @@ def build_per_experiment_dict(
             ))
         dbt_run_files[engine] = files
 
-    storage_files: Dict[str, List[str]] = {}
-    storage_out: Dict[str, Dict[str, Any]] = {}
-    for engine in inputs.engines:
-        files = []
-        for batch_num in (1, 2, 3):
-            files.append(os.path.join(
-                "mount", "results", str(inputs.scale_factor), "dbt-server",
-                f"storage-{engine}-batch{batch_num}.json",
-            ))
-        storage_files[engine] = files
-
-    if result is not None:
-        for engine, er in result.engines.items():
-            per_batch: Dict[str, Any] = {}
-            for batch in er.batches:
-                storage = (batch.extra or {}).get("storage")
-                if storage:
-                    per_batch[str(batch.batch_num)] = storage
-            if per_batch:
-                storage_out[engine] = per_batch
-
     return {
         "exp_idx": exp_idx,
         "label": inputs.label or f"exp-{exp_idx}",
@@ -260,8 +296,6 @@ def build_per_experiment_dict(
         "error": error,
         "engines": engines_out,
         "dbt_run_files": dbt_run_files,
-        "storage_files": storage_files,
-        "storage": storage_out,
         "inputs": inputs.to_dict(),
     }
 

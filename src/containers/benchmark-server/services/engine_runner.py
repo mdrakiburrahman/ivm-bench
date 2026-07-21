@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import time
+from threading import Barrier
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
@@ -14,6 +15,7 @@ from models.config import BenchmarkConfig, EngineConfig
 from models.result import EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
+from services.storage_sync import storage_snapshot_barrier
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +132,14 @@ class EngineRunner:
         engine_config: EngineConfig,
         emit: Callable[[str], None],
         benchmark_id: Optional[str] = None,
+        storage_barrier: Optional[Barrier] = None,
     ) -> None:
         self._config = config
         self._engine = engine_config
         self._emit = emit
         self._result = EngineResult(engine=engine_config.name)
         self._benchmark_id = benchmark_id
+        self._storage_barrier = storage_barrier
         docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
         self._dbt_url = f"http://{docker_host}:{engine_config.port}"
         self._override_file: Optional[str] = None
@@ -319,12 +323,16 @@ class EngineRunner:
             self._result.error = str(e)
             self._emit(f"[{name}] FATAL OpenIVM validation failure: {e}")
             logger.exception("Engine %s OpenIVM validation failure (fatal for OAT)", name)
+            if self._storage_barrier is not None:
+                self._storage_barrier.abort()
             raise
         except Exception as e:
             self._result.status = "failed"
             self._result.error = str(e)
             self._emit(f"[{name}] FAILED: {e}")
             logger.exception("Engine %s failed", name)
+            if self._storage_barrier is not None:
+                self._storage_barrier.abort()
 
         finally:
             # Defensive: any exception in cleanup would otherwise REPLACE the
@@ -2683,11 +2691,17 @@ class EngineRunner:
         )
         os.makedirs(results_dir, exist_ok=True)
         out_path = os.path.join(results_dir, f"storage-{name}-batch{batch_num}.json")
+        with storage_snapshot_barrier(self._storage_barrier):
+            self._capture_storage_metrics_request(name, batch_num, batch, out_path)
+
+    def _capture_storage_metrics_request(
+        self, name: str, batch_num: int, batch, out_path: str
+    ) -> None:
         try:
             resp = requests.get(
                 f"{self._dbt_url}/storage/{name}",
                 params={"batch_num": batch_num},
-                timeout=120,
+                timeout=110,
             )
             data = resp.json()
             if resp.status_code >= 500:
@@ -2711,6 +2725,10 @@ class EngineRunner:
                     "overhead_ratio_internal_to_visible"
                 ),
             }
+            if data.get("errors"):
+                batch.extra["storage"]["errors"] = list(data["errors"])
+            elif data.get("error"):
+                batch.extra["storage"]["errors"] = [str(data["error"])]
             self._emit(
                 f"[{name}] Storage metrics captured for batch {batch_num}: "
                 f"visible={totals.get('visible_output_bytes', 0)}B "

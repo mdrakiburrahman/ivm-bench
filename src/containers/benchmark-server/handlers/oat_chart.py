@@ -269,12 +269,21 @@ def _batch_duration(exp: Dict[str, Any], engine: str, batch: int) -> Optional[fl
 
 
 def _storage_summary(exp: Dict[str, Any], engine: str, batch: int) -> Optional[Dict[str, Any]]:
-    storage = exp.get("storage") or {}
-    engine_storage = storage.get(engine)
-    if not isinstance(engine_storage, dict):
+    engine_data = (exp.get("engines") or {}).get(engine)
+    if not isinstance(engine_data, dict):
         return None
-    item = engine_storage.get(str(batch)) or engine_storage.get(batch)
-    return item if isinstance(item, dict) else None
+    for item in engine_data.get("batches") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            if int(item.get("batch_num")) != batch:
+                continue
+        except (TypeError, ValueError):
+            continue
+        extra = item.get("extra") or {}
+        storage = extra.get("storage") if isinstance(extra, dict) else None
+        return storage if isinstance(storage, dict) else None
+    return None
 
 
 def _status(exp: Dict[str, Any]) -> str:

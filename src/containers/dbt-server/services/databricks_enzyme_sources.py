@@ -322,6 +322,38 @@ def _execute(sql_text: str) -> Optional[pd.DataFrame]:
         cursor.close()
 
 
+def execute_isolated(sql_text: str, timeout_s: float = 20.0) -> Optional[pd.DataFrame]:
+    """Execute one bounded query on its own connection.
+
+    Storage probes run concurrently and must not share the module-level cursor
+    connection.  The connector's socket timeout bounds both connect and fetch;
+    closing the isolated connection also gives timed-out probes no state to
+    leak into later benchmark operations.
+    """
+    conn = dbsql.connect(
+        server_hostname=_server_hostname(),
+        http_path=_http_path(),
+        credentials_provider=_credentials_provider,
+        _socket_timeout=max(1.0, float(timeout_s)),
+    )
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql_text)
+        if cursor.description is None:
+            return None
+        try:
+            return cursor.fetchall_arrow().to_pandas()
+        except Exception:
+            rows = cursor.fetchall()
+            cols = [d[0] for d in (cursor.description or [])]
+            return pd.DataFrame.from_records(rows, columns=cols)
+    finally:
+        try:
+            cursor.close()
+        finally:
+            conn.close()
+
+
 def _workspace_client() -> WorkspaceClient:
     return WorkspaceClient(config=_databricks_config())
 

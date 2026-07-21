@@ -18,7 +18,8 @@ sits next to the container-level CPU/memory samples.
 """
 
 import logging
-from typing import Any, Dict, List
+import time
+from typing import Any, Callable, Dict, List, Optional
 
 from services import databricks_enzyme_sources as src
 
@@ -37,7 +38,11 @@ def _candidate_schemas() -> List[str]:
     return list(src.all_experiment_schemas())
 
 
-def _list_relations_in_schema(schema: str) -> List[Dict[str, str]]:
+def _list_relations_in_schema(
+    schema: str,
+    execute: Optional[Callable[[str], Any]] = None,
+    strict: bool = False,
+) -> List[Dict[str, str]]:
     """Return every relation in <catalog>.<schema> as {schema, name, table_type}.
 
     Tries information_schema.tables first (gives us table_type, including
@@ -46,9 +51,10 @@ def _list_relations_in_schema(schema: str) -> List[Dict[str, str]]:
     information_schema for very fresh schemas).
     """
     catalog = src.CATALOG
+    execute = execute or src._execute
     out: List[Dict[str, str]] = []
     try:
-        df = src._execute(
+        df = execute(
             "SELECT table_schema, table_name, table_type "
             f"FROM `{catalog}`.information_schema.tables "
             f"WHERE table_schema = '{schema}'"
@@ -68,7 +74,7 @@ def _list_relations_in_schema(schema: str) -> List[Dict[str, str]]:
             exc,
         )
     try:
-        df = src._execute(f"SHOW TABLES IN `{catalog}`.`{schema}`")
+        df = execute(f"SHOW TABLES IN `{catalog}`.`{schema}`")
         if df is None or df.empty:
             return out
         for _, row in df.iterrows():
@@ -86,15 +92,92 @@ def _list_relations_in_schema(schema: str) -> List[Dict[str, str]]:
             schema,
             exc,
         )
+        if strict:
+            raise RuntimeError(
+                f"could not enumerate Databricks relations in {schema}: {exc}"
+            ) from exc
+    # SHOW TABLES does not reliably expose relation type.  Mark logical views
+    # explicitly so storage collection does not issue DESCRIBE DETAIL against
+    # them and turn an expected zero-byte relation into a false probe failure.
+    try:
+        views = execute(f"SHOW VIEWS IN `{catalog}`.`{schema}`")
+        if views is not None and not views.empty:
+            view_names = {
+                str(
+                    row.get("viewName")
+                    or row.get("view_name")
+                    or row.get("tableName")
+                    or ""
+                )
+                for _, row in views.iterrows()
+            }
+            for rel in out:
+                if rel["name"] in view_names:
+                    rel["table_type"] = "VIEW"
+    except Exception as exc:
+        logger.warning(
+            "[databricks-enzyme/metrics] SHOW VIEWS fallback failed for %s: %s",
+            schema,
+            exc,
+        )
+    return out
+
+
+def _remaining(deadline: Optional[float], default: float = 20.0) -> float:
+    if deadline is None:
+        return default
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Databricks storage collection deadline exceeded")
+    return min(default, remaining)
+
+
+def list_relations(deadline: Optional[float] = None) -> List[Dict[str, str]]:
+    """Return all experiment relations, normally with one catalog query."""
+    schemas = _candidate_schemas()
+    quoted = ", ".join(f"'{schema}'" for schema in schemas)
+    sql = (
+        "SELECT table_schema, table_name, table_type "
+        f"FROM `{src.CATALOG}`.information_schema.tables "
+        f"WHERE table_schema IN ({quoted})"
+    )
+    execute = src._execute
+    if deadline is not None:
+        execute = lambda statement: src.execute_isolated(  # noqa: E731
+            statement, timeout_s=_remaining(deadline)
+        )
+    try:
+        df = execute(sql)
+        if df is not None and not df.empty:
+            return [
+                {
+                    "schema": str(row["table_schema"]),
+                    "name": str(row["table_name"]),
+                    "table_type": str(row.get("table_type", "") or ""),
+                }
+                for _, row in df.iterrows()
+            ]
+    except Exception as exc:
+        logger.warning("[databricks-enzyme/metrics] bulk relation lookup failed: %s", exc)
+
+    out: List[Dict[str, str]] = []
+    for schema in schemas:
+        _remaining(deadline)
+        out.extend(_list_relations_in_schema(schema, execute=execute, strict=True))
     return out
 
 
 def _list_relations() -> List[Dict[str, str]]:
-    """Return every relation across every candidate schema."""
-    out: List[Dict[str, str]] = []
-    for schema in _candidate_schemas():
-        out.extend(_list_relations_in_schema(schema))
-    return out
+    """Backward-compatible alias for refresh-history callers."""
+    return list_relations()
+
+
+def describe_storage(rel: Dict[str, str], deadline: Optional[float] = None):
+    """Return DESCRIBE DETAIL for one physical relation on an isolated connection."""
+    fqn = f"`{src.CATALOG}`.`{rel['schema']}`.`{rel['name']}`"
+    return src.execute_isolated(
+        f"DESCRIBE DETAIL {fqn}", timeout_s=_remaining(deadline)
+    )
 
 
 def _describe_history(fqn: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -134,7 +217,7 @@ def collect_refresh_metrics(batch_num: int, limit: int = 10) -> dict:
     `DESCRIBE HISTORY` rows (most recent first). Returns a JSON-ready
     payload the benchmark-server writes to disk.
     """
-    relations = _list_relations()
+    relations = list_relations()
     catalog = src.CATALOG
     out_relations: List[Dict[str, Any]] = []
     for rel in relations:

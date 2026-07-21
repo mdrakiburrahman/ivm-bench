@@ -51,6 +51,30 @@ class FeatureFlags:
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
     spark_metrics_capture: bool = True
 
+    @classmethod
+    def from_env(cls) -> "FeatureFlags":
+        """Build the OAT baseline from the process environment."""
+        defaults = cls()
+
+        def flag(key: str, default: bool) -> bool:
+            value = os.environ.get(key)
+            if value is None:
+                return default
+            return value.strip().lower() in ("1", "true", "yes", "on")
+
+        return cls(
+            openivm_validate=flag("OPENIVM_VALIDATE", defaults.openivm_validate),
+            openivm_profile_refresh=flag(
+                "OPENIVM_PROFILE_REFRESH", defaults.openivm_profile_refresh
+            ),
+            openivm_query_log=flag("OPENIVM_QUERY_LOG", defaults.openivm_query_log),
+            storage_metrics=flag("STORAGE_METRICS", defaults.storage_metrics),
+            preserve_raw=flag("PRESERVE_RAW", defaults.preserve_raw),
+            spark_metrics_capture=flag(
+                "SPARK_METRICS_CAPTURE", defaults.spark_metrics_capture
+            ),
+        )
+
     def to_compose_env(self) -> Dict[str, str]:
         return {
             "OPENIVM_VALIDATE": "1" if self.openivm_validate else "0",
@@ -317,7 +341,12 @@ def parse_experiments_json(text: str) -> List[ExperimentInputs]:
         raise ValueError("experiments JSON has no 'experiments' array")
 
     baseline_d = data.get("baseline") or {}
-    baseline = ExperimentInputs.from_dict(baseline_d) if baseline_d else ExperimentInputs()
+    env_baseline = ExperimentInputs(feature_flags=FeatureFlags.from_env())
+    baseline = (
+        ExperimentInputs.from_dict(baseline_d, baseline=env_baseline)
+        if baseline_d
+        else env_baseline
+    )
 
     return [ExperimentInputs.from_dict(e, baseline=baseline) for e in raw_exps]
 
