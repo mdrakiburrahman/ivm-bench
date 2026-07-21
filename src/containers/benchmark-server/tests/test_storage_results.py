@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import os
 import sys
@@ -19,6 +21,72 @@ from services.storage_sync import storage_snapshot_barrier
 
 
 class StorageResultTests(unittest.TestCase):
+    def test_results_csv_has_raw_rows_and_paired_base_table_overhead(self):
+        def batch(duration, base_bytes):
+            return {
+                "batch_num": 1,
+                "duration_s": duration,
+                "status": "completed",
+                "extra": {
+                    "storage": {
+                        "status": "ok",
+                        "visible_output_bytes": 10,
+                        "internal_state_bytes": 20,
+                        "metadata_bytes": 3,
+                        "source_bytes": base_bytes,
+                        "total_bytes": 33 + base_bytes,
+                        "overhead_ratio_internal_to_visible": 2.0,
+                        "base_tables": {
+                            "source_mode": "managed",
+                            "storage_bytes": base_bytes,
+                            "reference_bytes": 100,
+                        },
+                    }
+                },
+            }
+
+        state = {
+            "oat_run_id": "run-1",
+            "status": "completed",
+            "experiments": [
+                {
+                    "exp_idx": 0,
+                    "label": "paired",
+                    "status": "completed",
+                    "inputs": {
+                        "scale_factor": 3,
+                        "engines": ["spark", "spark-openivm"],
+                        "feature_flags": {"storage_metrics": True},
+                        "spark_tunables": {},
+                    },
+                    "engines": {
+                        "spark": {"batches": [batch(10.0, 100)]},
+                        "spark-openivm": {"batches": [batch(5.0, 125)]},
+                    },
+                }
+            ],
+        }
+
+        rendered = oat_runner.generate_results_csv(state)
+        reader = csv.DictReader(io.StringIO(rendered))
+        rows = list(reader)
+        openivm = next(
+            row
+            for row in rows
+            if row["engine"] == "spark-openivm" and row["batch_num"] == "1"
+        )
+
+        self.assertEqual(reader.fieldnames, list(oat_runner.RESULTS_CSV_FIELDS))
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(openivm["duration_s"], "5.0")
+        self.assertEqual(openivm["base_table_baseline_kind"], "paired_engine")
+        self.assertEqual(openivm["base_table_baseline_engine"], "spark")
+        self.assertEqual(openivm["base_table_baseline_bytes"], "100")
+        self.assertEqual(openivm["base_table_storage_overhead_bytes"], "25")
+        self.assertEqual(openivm["base_table_storage_overhead_ratio"], "0.25")
+        self.assertEqual(openivm["openivm_over_spark_duration_ratio"], "0.5")
+        self.assertNotIn("| ---", rendered)
+
     def test_environment_disables_storage_when_json_does_not_override_it(self):
         payload = json.dumps({"experiments": [{"engines": ["spark"]}]})
         with mock.patch.dict(os.environ, {"STORAGE_METRICS": "0"}, clear=False):

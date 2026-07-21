@@ -30,6 +30,8 @@ PROCESSED_ROOTS = {
     "feldera": Path("/data/processed/feldera"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
 }
+RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
+RAW_BACKED_ENGINES = {"spark", "feldera"}
 
 
 def _empty_totals() -> Dict[str, int]:
@@ -86,6 +88,92 @@ def _merge_totals(left: Dict[str, int], right: Dict[str, int]) -> None:
 
 def _ratio(internal: int, visible: int) -> Optional[float]:
     return internal / visible if visible > 0 else None
+
+
+def _collect_raw_base_reference(
+    root: Path, *, deadline: float
+) -> Tuple[Optional[int], int, List[str]]:
+    """Measure the current logical input footprint without future batches.
+
+    Only ``batch1``, the mutable ``staging`` snapshot, and ``audit`` belong to
+    the current base tables.  The sibling ``batch2``/``batch3`` directories
+    contain future inputs and must never leak into an earlier sample.  Delta
+    logs and hidden sidecars are excluded so this remains comparable to the
+    collectors' ``source_bytes`` data-file total.
+    """
+    if not root.is_dir():
+        return None, 0, [f"raw base-table root does not exist: {root}"]
+
+    sections = [root / name for name in ("batch1", "staging", "audit")]
+    stack = [path for path in sections if path.is_dir()]
+    if not stack:
+        return None, 0, [f"raw base-table sections do not exist under: {root}"]
+
+    total_bytes = 0
+    file_count = 0
+    errors: List[str] = []
+    while stack:
+        expired = _deadline_error(deadline)
+        if expired:
+            errors.append(expired)
+            break
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError as exc:
+            errors.append(f"cannot scan raw base-table path {current}: {exc}")
+            continue
+        for entry in entries:
+            if entry.name.startswith((".", "_")):
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                total_bytes += entry.stat(follow_symlinks=False).st_size
+                file_count += 1
+            except OSError as exc:
+                errors.append(f"cannot stat raw base-table path {entry.path}: {exc}")
+    return total_bytes, file_count, errors
+
+
+def _base_table_summary(
+    engine: str, totals: Dict[str, int], *, deadline: float
+) -> Dict[str, Any]:
+    """Return a base-table footprint and a raw-data comparison baseline.
+
+    ``source_bytes`` is engine-owned managed storage.  Spark and Feldera read
+    the shared raw tables directly, so their actual base-table footprint is
+    the raw reference instead.  The difference is a storage-overhead proxy:
+    same-engine baseline/OpenIVM pairs isolate metadata/state additions best,
+    while cross-format comparisons can also include encoding and file layout.
+    """
+    reference_bytes, reference_files, reference_errors = _collect_raw_base_reference(
+        RAW_DELTA_ROOT, deadline=deadline
+    )
+    managed_bytes = totals["source_bytes"]
+    source_mode = "shared_raw" if engine in RAW_BACKED_ENGINES else "managed"
+    storage_bytes = reference_bytes if source_mode == "shared_raw" else managed_bytes
+    overhead_bytes: Optional[int] = None
+    overhead_ratio: Optional[float] = None
+    if storage_bytes is not None and reference_bytes is not None:
+        overhead_bytes = storage_bytes - reference_bytes
+        if reference_bytes > 0:
+            overhead_ratio = overhead_bytes / reference_bytes
+    return {
+        "source_mode": source_mode,
+        "storage_bytes": storage_bytes,
+        "managed_source_bytes": managed_bytes,
+        "reference_bytes": reference_bytes,
+        "reference_file_count": reference_files,
+        "reference_format": "delta_data_files",
+        "overhead_bytes_vs_raw": overhead_bytes,
+        "overhead_ratio_vs_raw": overhead_ratio,
+        "reference_status": "ok" if not reference_errors else "partial",
+        **({"reference_errors": reference_errors} if reference_errors else {}),
+    }
 
 
 def _deadline_error(deadline: float) -> Optional[str]:
@@ -611,6 +699,13 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
 
     visible = totals["visible_output_bytes"]
     internal = totals["internal_state_bytes"]
+    base_tables = _base_table_summary(engine, totals, deadline=deadline)
+    if engine in RAW_BACKED_ENGINES and base_tables["storage_bytes"] is None:
+        errors.extend(
+            base_tables.get(
+                "reference_errors", ["raw base-table footprint is unavailable"]
+            )
+        )
     if visible == 0:
         errors.append("storage collector found no visible materialized output")
     if totals["total_bytes"] == 0:
@@ -625,6 +720,7 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
         "deadline_seconds": timeout_s,
         "totals": totals,
         "overhead_ratio_internal_to_visible": _ratio(internal, visible),
+        "base_tables": base_tables,
         "items": sorted(
             items,
             key=lambda item: (item["category"], item["name"], item["kind"]),
@@ -632,6 +728,7 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
     }
     if engine in PROCESSED_ROOTS:
         result["roots"] = {"processed": str(PROCESSED_ROOTS[engine])}
+    result.setdefault("roots", {})["raw_base_reference"] = str(RAW_DELTA_ROOT)
     if errors:
         result["errors"] = errors
     return result

@@ -1,4 +1,4 @@
-"""OAT sweep chart and markdown result generation."""
+"""OAT sweep chart and CSV result generation."""
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ except ModuleNotFoundError:
             raise NotImplementedError
 
 from models.experiments import ExperimentInputs
+from services import oat_runner
 
 bp = Blueprint("oat_chart", __name__)
 
@@ -931,16 +932,16 @@ def oat_chart_png() -> Response:
     return Response(png, mimetype="image/png")
 
 
-@bp.route("/benchmark/oat-results.md", methods=["GET"])
-def oat_results_md() -> Response:
+@bp.route("/benchmark/oat-results.csv", methods=["GET"])
+def oat_results_csv() -> Response:
     run_id = request.args.get("run_id", "").strip()
     if not run_id:
         return jsonify({"error": "run_id query parameter is required"}), 400
     try:
-        md = generate_oat_results_md(run_id)
+        state = _load_oat_state(run_id, "/data/state")
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 404
-    return Response(md, mimetype="text/markdown; charset=utf-8")
+    return Response(oat_runner.generate_results_csv(state), mimetype="text/csv; charset=utf-8")
 
 
 class OatChartHandler(BaseHandler):

@@ -2724,6 +2724,7 @@ class EngineRunner:
                 "overhead_ratio_internal_to_visible": data.get(
                     "overhead_ratio_internal_to_visible"
                 ),
+                "base_tables": data.get("base_tables"),
             }
             if data.get("errors"):
                 batch.extra["storage"]["errors"] = list(data["errors"])

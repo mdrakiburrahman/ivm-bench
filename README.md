@@ -74,22 +74,33 @@ reported as `partial` (or `error` when nothing could be measured), never as a
 successful zero-byte result. The overhead ratio is
 `internal_state_bytes / visible_output_bytes`.
 
+Each sample also reports a base-table footprint. Engines that directly read
+the generated Delta tables use that current snapshot; engines that copy data
+into managed tables use their measured `source_bytes`. `results.csv` compares
+OpenIVM engines with the same-batch vanilla engine where one exists (Spark,
+DuckDB, and Fabric), and otherwise retains the raw Delta reference. The
+`base_table_storage_overhead_*` columns are a storage proxy: paired comparisons
+control for engine and format, while raw-reference comparisons can also include
+compression, encoding, and file-layout differences. The byte value is
+`base_table_bytes - base_table_baseline_bytes`; the ratio divides that difference
+by `base_table_baseline_bytes`.
+
 For append-only runs, `batch_N_pct` (or the alias `batch_N_insert_pct`) is the
 insert percentage; for mixed-DML batches, `batch_N_update_pct` and
 `batch_N_delete_pct` are optional mutation percentages applied before the
 insert (batch 1 is always insert-only, defaults are `0`).
 
-At the end, `benchmark.sh` cats `mount/oat-state/latest/RESULTS.md`:
+At the end, `benchmark.sh` cats `mount/oat-state/latest/results.csv`. The file
+contains one row per experiment, engine, and batch with raw numeric timing and
+storage values (columns abridged here):
 
 ```text
-=== OAT sweep — status: completed ===
-
-| # | label     | sf | b1   | b2     | b3     | engines              | parallel | wall   | status    |
-|---|-----------|----|------|--------|--------|----------------------|----------|--------|-----------|
-| 1 | smoke-sf3 | 3  | 1    | 0.001  | 0.002  | spark, spark-openivm | false    | 30m12s | completed |
+oat_run_id,run_status,experiment_index,experiment_label,engine,batch_num,duration_s,base_table_bytes,base_table_baseline_bytes,base_table_storage_overhead_bytes
+abc123,completed,0,smoke-sf3,spark,1,120.5,1048576,1048576,0
+abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,1089536,1048576,40960
 ```
 
-Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, RESULTS.md, outputs.json}`
+Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.csv, outputs.json}`
 
 Each experiment runs 3 batches per engine (full load `batch1` → append `batch2` →
 append `batch3`). Set `BENCHMARK_RUNS` greater than 1 to repeat the full 3-batch
@@ -216,7 +227,7 @@ Per-OAT artifacts land under `mount/oat-state/<oat_run_id>/` with a
 | `outputs.json`           | Per-experiment aggregated outputs (status, walls, per-batch durations…)  |
 | `chart-oat.png`          | Aggregate heatmap (rows = experiments, columns = batch × engine)         |
 | `chart-per-model.png`    | Per-dbt-model heatmap with log₂(openivm / spark) per batch               |
-| `RESULTS.md`             | Markdown overview + timing/storage tables + per-model break-even table   |
+| `results.csv`            | One row per experiment/engine/batch with raw timing and storage metrics  |
 | `benchmark-server.log`   | Copy of the orchestrator log for that run                                |
 | `exp-<NNN>/outputs.json` | One per experiment — same shape as a per-experiment entry in master      |
 | `exp-<NNN>/storage/storage-<engine>-batch<N>.json` | Immutable per-experiment storage snapshot; repeated runs are under `storage/repetition-<N>/` |

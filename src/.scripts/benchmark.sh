@@ -17,7 +17,7 @@
 #
 # Artifacts (per-sweep, refreshed after every experiment):
 #   mount/oat-state/<oat_run_id>/{chart-oat,chart-per-model}.png
-#   mount/oat-state/<oat_run_id>/RESULTS.md
+#   mount/oat-state/<oat_run_id>/results.csv
 #   mount/oat-state/<oat_run_id>/outputs.json
 #   mount/oat-state/latest → <oat_run_id>
 #
@@ -199,13 +199,13 @@ echo ""
 echo "=== OAT sweep finished — status: ${FINAL_STATUS} ==="
 echo ""
 
-OAT_RESULTS_MD="mount/oat-state/latest/RESULTS.md"
-if [[ -f "$OAT_RESULTS_MD" ]]; then
-  cat "$OAT_RESULTS_MD"
+OAT_RESULTS_CSV="mount/oat-state/latest/results.csv"
+if [[ -f "$OAT_RESULTS_CSV" ]]; then
+  cat "$OAT_RESULTS_CSV"
   echo ""
   echo "Artifacts: mount/oat-state/latest/"
 else
-  echo "(no RESULTS.md found at $OAT_RESULTS_MD — check mount/oat-state/ for partial output)"
+  echo "(no results.csv found at $OAT_RESULTS_CSV — check mount/oat-state/ for partial output)"
 fi
 
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true

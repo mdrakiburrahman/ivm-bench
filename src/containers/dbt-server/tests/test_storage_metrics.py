@@ -37,6 +37,45 @@ class _Frame:
 
 
 class StorageMetricsTests(unittest.TestCase):
+    def test_raw_base_reference_excludes_logs_sidecars_and_future_batches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_size(root / "batch1/customer/data.parquet", 11)
+            _write_size(root / "staging/trade/data.parquet", 13)
+            _write_size(root / "audit/data.parquet", 17)
+            _write_size(root / "staging/trade/_delta_log/1.json", 19)
+            _write_size(root / "staging/trade/_change_data/cdc.parquet", 23)
+            _write_size(root / "batch2/trade/future.parquet", 29)
+
+            total, file_count, errors = storage_metrics._collect_raw_base_reference(
+                root, deadline=time.monotonic() + 10
+            )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(total, 41)
+        self.assertEqual(file_count, 3)
+
+    def test_base_table_summary_uses_raw_for_spark_and_managed_source_for_openivm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_size(root / "batch1/customer/data.parquet", 40)
+            totals = storage_metrics._empty_totals()
+            totals["source_bytes"] = 55
+            with mock.patch.object(storage_metrics, "RAW_DELTA_ROOT", root):
+                spark = storage_metrics._base_table_summary(
+                    "spark", totals, deadline=time.monotonic() + 10
+                )
+                openivm = storage_metrics._base_table_summary(
+                    "spark-openivm", totals, deadline=time.monotonic() + 10
+                )
+
+        self.assertEqual(spark["source_mode"], "shared_raw")
+        self.assertEqual(spark["storage_bytes"], 40)
+        self.assertEqual(spark["overhead_bytes_vs_raw"], 0)
+        self.assertEqual(openivm["source_mode"], "managed")
+        self.assertEqual(openivm["storage_bytes"], 55)
+        self.assertEqual(openivm["overhead_bytes_vs_raw"], 15)
+
     def test_spark_openivm_classifies_backing_views_deltas_and_sources(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -248,6 +287,19 @@ class StorageMetricsTests(unittest.TestCase):
             ):
                 empty_result = storage_metrics.collect_storage_metrics("spark")
         self.assertEqual(empty_result["status"], "error")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            processed = Path(tmp)
+            _write_size(processed / "gold/output.parquet", 1)
+            with mock.patch.dict(
+                storage_metrics.PROCESSED_ROOTS, {"spark": processed}
+            ), mock.patch.object(
+                storage_metrics, "RAW_DELTA_ROOT", missing
+            ):
+                missing_base = storage_metrics.collect_storage_metrics("spark")
+        self.assertEqual(missing_base["status"], "partial")
+        self.assertIsNone(missing_base["base_tables"]["storage_bytes"])
+        self.assertTrue(any("raw base-table" in error for error in missing_base["errors"]))
 
     def test_fabric_path_classification(self):
         classify = storage_metrics._classify_fabric_path
