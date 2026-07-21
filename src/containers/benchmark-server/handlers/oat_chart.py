@@ -852,7 +852,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
                         _MISSING,
                     ])
                     continue
-                ratio = _numeric(summary.get("overhead_ratio_internal_to_visible"))
+                ratio = _numeric(summary.get("overhead_ratio_helper_to_visible"))
                 storage_rows.append([
                     _exp_idx(exp, idx),
                     _exp_label(exp, idx),
@@ -861,7 +861,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
                     batch,
                     summary.get("status", _MISSING),
                     _format_bytes(summary.get("visible_output_bytes")),
-                    _format_bytes(summary.get("internal_state_bytes")),
+                    _format_bytes(summary.get("helper_data_bytes")),
                     _format_bytes(summary.get("metadata_bytes")),
                     _format_bytes(summary.get("source_bytes")),
                     _MISSING if ratio is None else f"{ratio:.2f}",
@@ -869,7 +869,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     lines.append(_markdown_table(
         [
             "#", "label", "SF", "engine", "batch", "status",
-            "visible", "internal", "metadata", "source", "internal/visible",
+            "visible", "helper", "metadata", "source", "helper/visible",
         ],
         storage_rows,
     ))

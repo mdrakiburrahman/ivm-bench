@@ -2717,12 +2717,12 @@ class EngineRunner:
                     f"storage-{name}-batch{batch_num}.json",
                 ),
                 "visible_output_bytes": totals.get("visible_output_bytes", 0),
-                "internal_state_bytes": totals.get("internal_state_bytes", 0),
+                "helper_data_bytes": totals.get("helper_data_bytes", 0),
                 "metadata_bytes": totals.get("metadata_bytes", 0),
                 "source_bytes": totals.get("source_bytes", 0),
                 "total_bytes": totals.get("total_bytes", 0),
-                "overhead_ratio_internal_to_visible": data.get(
-                    "overhead_ratio_internal_to_visible"
+                "overhead_ratio_helper_to_visible": data.get(
+                    "overhead_ratio_helper_to_visible"
                 ),
                 "base_tables": data.get("base_tables"),
             }
@@ -2733,7 +2733,7 @@ class EngineRunner:
             self._emit(
                 f"[{name}] Storage metrics captured for batch {batch_num}: "
                 f"visible={totals.get('visible_output_bytes', 0)}B "
-                f"internal={totals.get('internal_state_bytes', 0)}B"
+                f"helper={totals.get('helper_data_bytes', 0)}B"
             )
         except Exception as e:
             logger.warning("Failed to capture storage metrics for %s batch %d: %s", name, batch_num, e)

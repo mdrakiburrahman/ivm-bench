@@ -83,11 +83,11 @@ RESULTS_CSV_FIELDS = (
     "openivm_over_spark_duration_ratio",
     "storage_status",
     "visible_output_bytes",
-    "internal_state_bytes",
+    "helper_data_bytes",
     "metadata_bytes",
     "source_bytes",
     "total_bytes",
-    "internal_over_visible_ratio",
+    "helper_over_visible_ratio",
     "storage_errors",
     "storage_artifact",
     "base_table_source_mode",
@@ -620,12 +620,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         ),
                         "storage_status": storage.get("status", ""),
                         "visible_output_bytes": storage.get("visible_output_bytes", ""),
-                        "internal_state_bytes": storage.get("internal_state_bytes", ""),
+                        "helper_data_bytes": storage.get("helper_data_bytes", ""),
                         "metadata_bytes": storage.get("metadata_bytes", ""),
                         "source_bytes": storage.get("source_bytes", ""),
                         "total_bytes": storage.get("total_bytes", ""),
-                        "internal_over_visible_ratio": storage.get(
-                            "overhead_ratio_internal_to_visible", ""
+                        "helper_over_visible_ratio": storage.get(
+                            "overhead_ratio_helper_to_visible", ""
                         ),
                         "storage_errors": storage_errors or storage.get("error") or "",
                         "storage_artifact": storage.get("artifact", ""),

@@ -66,13 +66,14 @@ an explicit `feature_flags` value in the experiments JSON overrides that
 baseline for the corresponding row.
 
 Storage totals describe durable bytes owned by the active engine experiment:
-`visible_output` is user-facing materialized output, `internal_state` is IVM
-delta/auxiliary state, `metadata` is catalogs and transaction/query logs, and
-`source` is the engine's current managed source state. Shared raw generators
-and reusable cloud caches are excluded. A partial relation/listing failure is
-reported as `partial` (or `error` when nothing could be measured), never as a
-successful zero-byte result. The overhead ratio is
-`internal_state_bytes / visible_output_bytes`.
+`visible_output` is user-facing materialized output, `helper_data` is hidden
+intermediate state required by the engine (for example Feldera DBSP storage or
+OpenIVM delta/auxiliary data), `metadata` is catalogs and transaction/query
+logs, and `source` is the engine's current managed source state. Shared raw
+generators and reusable cloud caches are excluded. A partial relation/listing
+failure is reported as `partial` (or `error` when nothing could be measured),
+never as a successful zero-byte result. The overhead ratio is
+`helper_data_bytes / visible_output_bytes`.
 
 Each sample also reports a base-table footprint. Engines that directly read
 the generated Delta tables use that current snapshot; engines that copy data
@@ -95,9 +96,9 @@ contains one row per experiment, engine, and batch with raw numeric timing and
 storage values (columns abridged here):
 
 ```text
-oat_run_id,run_status,experiment_index,experiment_label,engine,batch_num,duration_s,base_table_bytes,base_table_baseline_bytes,base_table_storage_overhead_bytes
-abc123,completed,0,smoke-sf3,spark,1,120.5,1048576,1048576,0
-abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,1089536,1048576,40960
+oat_run_id,run_status,experiment_index,experiment_label,engine,batch_num,duration_s,helper_data_bytes,base_table_bytes,base_table_baseline_bytes,base_table_storage_overhead_bytes
+abc123,completed,0,smoke-sf3,spark,1,120.5,0,1048576,1048576,0
+abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,40960,1089536,1048576,40960
 ```
 
 Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.csv, outputs.json}`

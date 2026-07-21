@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
-CATEGORIES = ("visible_output", "internal_state", "metadata", "source")
+CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
 LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "databricks-enzyme"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
@@ -32,6 +32,7 @@ PROCESSED_ROOTS = {
 }
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
 RAW_BACKED_ENGINES = {"spark", "feldera"}
+RAW_REFERENCE_ENGINES = RAW_BACKED_ENGINES | {"databricks-enzyme"}
 
 
 def _empty_totals() -> Dict[str, int]:
@@ -150,9 +151,16 @@ def _base_table_summary(
     same-engine baseline/OpenIVM pairs isolate metadata/state additions best,
     while cross-format comparisons can also include encoding and file layout.
     """
-    reference_bytes, reference_files, reference_errors = _collect_raw_base_reference(
-        RAW_DELTA_ROOT, deadline=deadline
-    )
+    if engine in RAW_REFERENCE_ENGINES:
+        reference_bytes, reference_files, reference_errors = (
+            _collect_raw_base_reference(RAW_DELTA_ROOT, deadline=deadline)
+        )
+    else:
+        # Managed engines are compared with a same-batch vanilla engine in the
+        # consolidated CSV.  Their raw mount is not necessarily the source of
+        # the managed tables (and can belong to another serial engine), so a
+        # raw comparison here would be misleading.
+        reference_bytes, reference_files, reference_errors = None, 0, []
     managed_bytes = totals["source_bytes"]
     source_mode = "shared_raw" if engine in RAW_BACKED_ENGINES else "managed"
     storage_bytes = reference_bytes if source_mode == "shared_raw" else managed_bytes
@@ -171,7 +179,11 @@ def _base_table_summary(
         "reference_format": "delta_data_files",
         "overhead_bytes_vs_raw": overhead_bytes,
         "overhead_ratio_vs_raw": overhead_ratio,
-        "reference_status": "ok" if not reference_errors else "partial",
+        "reference_status": (
+            "not_applicable"
+            if engine not in RAW_REFERENCE_ENGINES
+            else "ok" if not reference_errors else "partial"
+        ),
         **({"reference_errors": reference_errors} if reference_errors else {}),
     }
 
@@ -206,11 +218,11 @@ def _classify_processed(engine: str, rel: str, *, is_delta_table: bool = False) 
         if len(parts) >= 2 and parts[0] == "_ivm" and parts[1] == "views":
             return "visible_output"
         if first in {"_ivm", "_openivm", "_tmp", "tmp"}:
-            return "internal_state"
+            return "helper_data"
     if engine == "databricks-enzyme" and first in {"query-plan", "pipeline-events"}:
         return "metadata"
     if first in {"_tmp", "tmp"}:
-        return "internal_state"
+        return "helper_data"
     return "visible_output"
 
 
@@ -300,6 +312,39 @@ def _collect_local_root(
     return items, totals, errors
 
 
+def _collect_feldera_helper_data(
+    *, deadline: float
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[str]]:
+    """Measure Feldera's DBSP intermediate state through its stats API."""
+    from services import feldera_client
+
+    items: List[Dict[str, Any]] = []
+    totals = _empty_totals()
+    expired = _deadline_error(deadline)
+    if expired:
+        return items, totals, [expired]
+    stats = feldera_client.get_stats()
+    if not stats:
+        return items, totals, ["Feldera pipeline storage stats are unavailable"]
+    global_metrics = stats.get("global_metrics") or {}
+    if global_metrics.get("storage_bytes") is None:
+        return items, totals, ["Feldera pipeline stats omit storage_bytes"]
+    storage_bytes = _safe_int(global_metrics["storage_bytes"])
+    _add_item(
+        items,
+        totals,
+        engine="feldera",
+        name="dbsp_intermediate_state",
+        category="helper_data",
+        bytes_=storage_bytes,
+        file_count=0,
+        path=f"feldera://pipeline/{feldera_client.FELDERA_PIPELINE_NAME}/storage",
+        kind="feldera_storage",
+        details={"measurement": "global_metrics.storage_bytes"},
+    )
+    return items, totals, []
+
+
 def _ducklake_category(engine: str, schema: str, table: str) -> str:
     schema_lower = schema.lower()
     table_lower = table.lower()
@@ -312,7 +357,7 @@ def _ducklake_category(engine: str, schema: str, table: str) -> str:
     if engine == "duckdb-openivm" and table_lower.startswith("openivm_data_"):
         return "visible_output"
     if engine == "duckdb-openivm" and table_lower.startswith("openivm_"):
-        return "internal_state"
+        return "helper_data"
     return "visible_output"
 
 
@@ -341,6 +386,7 @@ def _collect_ducklake_storage(
 
     mapped: Set[Path] = set()
     relation_totals: Dict[Tuple[str, str, str], List[int]] = {}
+    table_directories: List[Tuple[Path, str, str, str]] = []
     inline_catalog_bytes = 0
     sql = """
         SELECT s.schema_name, s.path, s.path_is_relative,
@@ -363,12 +409,14 @@ def _collect_ducklake_storage(
                 lambda: 1 if time.monotonic() >= deadline else 0, 1000
             )
             rows = connection.execute(sql).fetchall()
+            table_rows = connection.execute(
+                "SELECT t.table_id, s.schema_name, s.path, s.path_is_relative, "
+                "t.table_name, t.path, t.path_is_relative "
+                "FROM ducklake_table t JOIN ducklake_schema s USING (schema_id)"
+            ).fetchall()
             table_lookup = {
                 int(table_id): (str(schema), str(table))
-                for table_id, schema, table in connection.execute(
-                    "SELECT t.table_id, s.schema_name, t.table_name "
-                    "FROM ducklake_table t JOIN ducklake_schema s USING (schema_id)"
-                ).fetchall()
+                for table_id, schema, _, _, table, _, _ in table_rows
             }
             try:
                 inline_tables = connection.execute(
@@ -388,6 +436,19 @@ def _collect_ducklake_storage(
             connection.close()
     except (OSError, sqlite3.Error) as exc:
         return items, totals, [f"cannot read DuckLake catalog {catalog}: {exc}"]
+
+    for _, schema, schema_path, schema_relative, table, table_path, table_relative in table_rows:
+        schema_dir = _relative_path(root / "data", schema_path, schema_relative)
+        table_dir = _relative_path(schema_dir, table_path, table_relative).resolve()
+        table_directories.append(
+            (
+                table_dir,
+                str(schema),
+                str(table),
+                _ducklake_category(engine, str(schema), str(table)),
+            )
+        )
+    table_directories.sort(key=lambda entry: len(entry[0].parts), reverse=True)
 
     for table_id, inline_name in inline_tables:
         relation = table_lookup.get(int(table_id))
@@ -427,6 +488,11 @@ def _collect_ducklake_storage(
         if not physical.is_file():
             # DuckLake can retain historical file records after compaction.
             continue
+        if physical in mapped:
+            # A physical file can remain referenced by multiple DuckLake
+            # snapshots.  Storage is a physical footprint, so count its path
+            # once rather than once per catalog record.
+            continue
         try:
             size = physical.stat().st_size
         except OSError as exc:
@@ -438,19 +504,6 @@ def _collect_ducklake_storage(
         aggregate = relation_totals.setdefault(key, [0, 0])
         aggregate[0] += int(size)
         aggregate[1] += 1
-
-    for (schema, table, category), (bytes_, file_count) in sorted(relation_totals.items()):
-        _add_item(
-            items,
-            totals,
-            engine=engine,
-            name=f"{schema}.{table}",
-            category=category,
-            bytes_=bytes_,
-            file_count=file_count,
-            path=f"ducklake://{schema}/{table}",
-            kind="ducklake_relation",
-        )
 
     known_metadata = {catalog.resolve()}
     main_db = root / ("openivm.duckdb" if engine == "duckdb-openivm" else "duckdb.duckdb")
@@ -477,16 +530,45 @@ def _collect_ducklake_storage(
                 if physical == catalog.resolve():
                     size = max(0, size - inline_catalog_bytes)
             elif physical.is_relative_to((root / "data").resolve()):
-                category, kind = "internal_state", "unmapped_ducklake_file"
+                owner = next(
+                    (
+                        (schema, table, category)
+                        for table_dir, schema, table, category in table_directories
+                        if physical.is_relative_to(table_dir)
+                    ),
+                    None,
+                )
+                if owner is not None:
+                    schema, table, category = owner
+                    aggregate = relation_totals.setdefault(
+                        (schema, table, category), [0, 0]
+                    )
+                    aggregate[0] += int(size)
+                    aggregate[1] += 1
+                    continue
+                category, kind = "helper_data", "unmapped_ducklake_file"
                 errors.append(f"unmapped DuckLake data file: {physical}")
             else:
                 rel = physical.relative_to(root.resolve()).as_posix()
-                category = "internal_state" if rel.startswith("_tmp/") else "metadata"
+                category = "helper_data" if rel.startswith("_tmp/") else "metadata"
                 kind = "files"
             key = (category, kind)
             aggregate = extras.setdefault(key, [0, 0])
             aggregate[0] += int(size)
             aggregate[1] += 1
+
+    for (schema, table, category), (bytes_, file_count) in sorted(relation_totals.items()):
+        _add_item(
+            items,
+            totals,
+            engine=engine,
+            name=f"{schema}.{table}",
+            category=category,
+            bytes_=bytes_,
+            file_count=file_count,
+            path=f"ducklake://{schema}/{table}",
+            kind="ducklake_relation",
+        )
 
     for (category, kind), (bytes_, file_count) in sorted(extras.items()):
         _add_item(
@@ -509,7 +591,7 @@ def _databricks_category(src: Any, schema: str, name: str) -> str:
     if schema == src.data_schema():
         return "source"
     if schema == src.work_schema():
-        return "internal_state"
+        return "helper_data"
     return "visible_output"
 
 
@@ -598,12 +680,12 @@ def _classify_fabric_path(engine: str, rel: str) -> str:
     if "_delta_log" in parts:
         return "metadata"
     if lowered.startswith("files/_openivm/"):
-        return "internal_state"
+        return "helper_data"
     if lowered.startswith("files/_ivm-warehouse/"):
         warehouse_rel = lowered.split("files/_ivm-warehouse/", 1)[1]
         if warehouse_rel.startswith("_ivm/views/"):
             return "visible_output"
-        return "internal_state"
+        return "helper_data"
     if lowered.startswith("tables/"):
         relation_parts = parts[1:]
         if relation_parts and relation_parts[0] == "tpcdi":
@@ -686,6 +768,14 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
     _merge_totals(totals, local_totals)
     errors.extend(local_errors)
 
+    if engine == "feldera" and time.monotonic() < deadline:
+        helper_items, helper_totals, helper_errors = _collect_feldera_helper_data(
+            deadline=deadline
+        )
+        items.extend(helper_items)
+        _merge_totals(totals, helper_totals)
+        errors.extend(helper_errors)
+
     if engine == "databricks-enzyme" and time.monotonic() < deadline:
         try:
             remote_items, remote_totals, remote_errors = (
@@ -698,7 +788,7 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
             errors.append(f"Databricks remote storage unavailable: {exc}")
 
     visible = totals["visible_output_bytes"]
-    internal = totals["internal_state_bytes"]
+    helper = totals["helper_data_bytes"]
     base_tables = _base_table_summary(engine, totals, deadline=deadline)
     if engine in RAW_BACKED_ENGINES and base_tables["storage_bytes"] is None:
         errors.extend(
@@ -719,7 +809,7 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
         "batch_num": batch_num,
         "deadline_seconds": timeout_s,
         "totals": totals,
-        "overhead_ratio_internal_to_visible": _ratio(internal, visible),
+        "overhead_ratio_helper_to_visible": _ratio(helper, visible),
         "base_tables": base_tables,
         "items": sorted(
             items,
