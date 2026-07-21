@@ -17,7 +17,7 @@
 #
 # Artifacts (per-sweep, refreshed after every experiment):
 #   mount/oat-state/<oat_run_id>/{chart-oat,chart-per-model}.png
-#   mount/oat-state/<oat_run_id>/RESULTS.md
+#   mount/oat-state/<oat_run_id>/results.csv
 #   mount/oat-state/<oat_run_id>/outputs.json
 #   mount/oat-state/latest → <oat_run_id>
 #
@@ -50,6 +50,9 @@
 #                    CREATE/REFRESH MV (spark-openivm only). Writes a per-MV
 #                    per-refresh directory tree of `.sql` files under
 #                    mount/results/<sf>/spark-openivm/query-log/.
+#   STORAGE_METRICS — 1 = collect per-engine storage footprint artifacts after
+#                    each batch and surface aggregate storage overhead in OAT
+#                    outputs (default: 1)
 #   OPENIVM_UBUNTU_MIRROR — override OpenIVM Docker build apt mirror
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -120,6 +123,7 @@ export PRESERVE_RAW="${PRESERVE_RAW:-0}"
 export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-1}"
 export OPENIVM_PROFILE_REFRESH="${OPENIVM_PROFILE_REFRESH:-0}"
 export OPENIVM_QUERY_LOG="${OPENIVM_QUERY_LOG:-1}"
+export STORAGE_METRICS="${STORAGE_METRICS:-1}"
 export REPO_HOST_PATH="$REPO_ROOT"
 
 detect_ec2_ubuntu_mirror() {
@@ -195,13 +199,13 @@ echo ""
 echo "=== OAT sweep finished — status: ${FINAL_STATUS} ==="
 echo ""
 
-OAT_RESULTS_MD="mount/oat-state/latest/RESULTS.md"
-if [[ -f "$OAT_RESULTS_MD" ]]; then
-  cat "$OAT_RESULTS_MD"
+OAT_RESULTS_CSV="mount/oat-state/latest/results.csv"
+if [[ -f "$OAT_RESULTS_CSV" ]]; then
+  cat "$OAT_RESULTS_CSV"
   echo ""
   echo "Artifacts: mount/oat-state/latest/"
 else
-  echo "(no RESULTS.md found at $OAT_RESULTS_MD — check mount/oat-state/ for partial output)"
+  echo "(no results.csv found at $OAT_RESULTS_CSV — check mount/oat-state/ for partial output)"
 fi
 
 docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true

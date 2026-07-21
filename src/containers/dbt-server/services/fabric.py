@@ -107,13 +107,24 @@ _keepwarm_lock = threading.Lock()
 # Auth
 # ---------------------------------------------------------------------------
 
-def _warm_livy_token() -> None:
+def _warm_livy_token(timeout: Optional[float] = None) -> None:
     """Synchronously mint the Livy (Power BI) token into az's cache so the very
     first dbt statement of a batch reads a warm token."""
     subprocess.run(
         ["az", "account", "get-access-token", "--scope", LIVY_SCOPE, "-o", "none"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=timeout,
     )
+
+
+def _bounded_timeout(
+    deadline: Optional[float], timeout: Optional[float]
+) -> Optional[float]:
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Fabric storage collection deadline exceeded")
+    return remaining if timeout is None else min(timeout, remaining)
 
 
 def _keepwarm_loop() -> None:
@@ -148,7 +159,12 @@ def _start_keepwarm() -> None:
         logger.info("[fabric] token keep-warm daemon started (every %ss)", _KEEPWARM_INTERVAL)
 
 
-def ensure_az_login() -> None:
+def ensure_az_login(
+    *,
+    timeout: Optional[float] = None,
+    deadline: Optional[float] = None,
+    warm_livy: bool = True,
+) -> None:
     """Idempotently ``az login --identity`` through the imds-router sidecar, then
     pre-warm the Livy token and start the keep-warm daemon.
 
@@ -157,26 +173,47 @@ def ensure_az_login() -> None:
     Safe to call repeatedly — a live login short-circuits.
     """
     probe = subprocess.run(
-        ["az", "account", "show"], capture_output=True, text=True
+        ["az", "account", "show"],
+        capture_output=True,
+        text=True,
+        timeout=_bounded_timeout(deadline, timeout),
     )
     if probe.returncode != 0:
         cmd = ["az", "login", "--identity", "--allow-no-subscriptions"]
         if UAMI_CLIENT_ID:
             cmd += ["--client-id", UAMI_CLIENT_ID]
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        res = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(deadline, timeout),
+        )
         if res.returncode != 0:
             raise RuntimeError(f"`az login --identity` failed: {res.stderr[:500]}")
         logger.info("[fabric] az login --identity OK")
-    _warm_livy_token()
+    if warm_livy:
+        _warm_livy_token(timeout=_bounded_timeout(deadline, timeout))
     _start_keepwarm()
 
 
-def get_token(resource: str) -> str:
-    ensure_az_login()
+def get_token(
+    resource: str,
+    *,
+    timeout: Optional[float] = None,
+    deadline: Optional[float] = None,
+    warm_livy: bool = True,
+) -> str:
+    ensure_az_login(
+        timeout=timeout,
+        deadline=deadline,
+        warm_livy=warm_livy,
+    )
     res = subprocess.run(
         ["az", "account", "get-access-token", "--resource", resource,
          "--query", "accessToken", "-o", "tsv"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
+        timeout=_bounded_timeout(deadline, timeout),
     )
     if res.returncode != 0:
         raise RuntimeError(f"az token for {resource} failed: {res.stderr[:300]}")
@@ -187,9 +224,11 @@ def _fabric_headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {get_token(FABRIC_RESOURCE)}"}
 
 
-def _storage_headers() -> Dict[str, str]:
+def _storage_headers(deadline: Optional[float] = None) -> Dict[str, str]:
     return {
-        "Authorization": f"Bearer {get_token(STORAGE_RESOURCE)}",
+        "Authorization": (
+            f"Bearer {get_token(STORAGE_RESOURCE, deadline=deadline, warm_livy=False)}"
+        ),
         "x-ms-version": "2021-10-04",
     }
 
@@ -528,6 +567,59 @@ def _dfs_list(rel_dir: str, lakehouse_id: Optional[str] = None) -> List[str]:
     if r.status_code != 200:
         return []
     return [p["name"] for p in (r.json().get("paths") or []) if p.get("name")]
+
+
+def list_storage_paths(deadline: Optional[float] = None) -> List[Dict[str, object]]:
+    """List durable files owned by the active compute lakehouse.
+
+    The persistent shared raw cache is deliberately excluded: it is reusable
+    benchmark input, not storage created by this experiment.  ADLS pagination
+    and the caller's collection deadline are honored for every root.
+    """
+    lid = _compute_lakehouse_id()
+    base_url = f"https://{ONELAKE_HOST}/{WORKSPACE_ID}"
+    headers = _storage_headers(deadline)
+    out: List[Dict[str, object]] = []
+    for rel_dir in ("Tables", WAREHOUSE_ROOT, STATE_ROOT):
+        continuation: Optional[str] = None
+        for _ in range(1000):
+            remaining = _HTTP_TIMEOUT if deadline is None else deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Fabric storage collection deadline exceeded")
+            params = {
+                "resource": "filesystem",
+                "recursive": "true",
+                "directory": f"{lid}/{rel_dir.lstrip('/')}",
+            }
+            if continuation:
+                params["continuation"] = continuation
+            response = requests.get(
+                base_url,
+                headers=headers,
+                params=params,
+                timeout=max(1.0, min(float(_HTTP_TIMEOUT), remaining)),
+            )
+            if response.status_code == 404:
+                break
+            response.raise_for_status()
+            for record in (response.json().get("paths") or []):
+                if record.get("isDirectory") in (True, "true", "True"):
+                    continue
+                name = str(record.get("name") or "")
+                prefix = f"{lid}/"
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+                if name:
+                    out.append({
+                        "path": name,
+                        "bytes": int(record.get("contentLength") or 0),
+                    })
+            continuation = response.headers.get("x-ms-continuation")
+            if not continuation:
+                break
+        else:
+            raise RuntimeError(f"Fabric storage listing exceeded page cap for {rel_dir}")
+    return out
 
 
 # ---------------------------------------------------------------------------

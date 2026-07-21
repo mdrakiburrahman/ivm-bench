@@ -47,14 +47,40 @@ class FeatureFlags:
     openivm_validate: bool = True
     openivm_profile_refresh: bool = True
     openivm_query_log: bool = True
+    storage_metrics: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
     spark_metrics_capture: bool = True
+
+    @classmethod
+    def from_env(cls) -> "FeatureFlags":
+        """Build the OAT baseline from the process environment."""
+        defaults = cls()
+
+        def flag(key: str, default: bool) -> bool:
+            value = os.environ.get(key)
+            if value is None:
+                return default
+            return value.strip().lower() in ("1", "true", "yes", "on")
+
+        return cls(
+            openivm_validate=flag("OPENIVM_VALIDATE", defaults.openivm_validate),
+            openivm_profile_refresh=flag(
+                "OPENIVM_PROFILE_REFRESH", defaults.openivm_profile_refresh
+            ),
+            openivm_query_log=flag("OPENIVM_QUERY_LOG", defaults.openivm_query_log),
+            storage_metrics=flag("STORAGE_METRICS", defaults.storage_metrics),
+            preserve_raw=flag("PRESERVE_RAW", defaults.preserve_raw),
+            spark_metrics_capture=flag(
+                "SPARK_METRICS_CAPTURE", defaults.spark_metrics_capture
+            ),
+        )
 
     def to_compose_env(self) -> Dict[str, str]:
         return {
             "OPENIVM_VALIDATE": "1" if self.openivm_validate else "0",
             "OPENIVM_PROFILE_REFRESH": "1" if self.openivm_profile_refresh else "0",
             "OPENIVM_QUERY_LOG": "1" if self.openivm_query_log else "0",
+            "STORAGE_METRICS": "1" if self.storage_metrics else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
             "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
         }
@@ -225,13 +251,29 @@ class ExperimentInputs:
         else:
             engines = list(engines_raw)
 
+        def _flag(value: Any, default: bool) -> bool:
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in ("1", "true", "yes", "on"):
+                    return True
+                if text in ("0", "false", "no", "off", ""):
+                    return False
+            return bool(value)
+
         ff_d = d.get("feature_flags") or {}
         ff = FeatureFlags(
-            openivm_validate=bool(ff_d.get("openivm_validate", base.feature_flags.openivm_validate)),
-            openivm_profile_refresh=bool(ff_d.get("openivm_profile_refresh", base.feature_flags.openivm_profile_refresh)),
-            openivm_query_log=bool(ff_d.get("openivm_query_log", base.feature_flags.openivm_query_log)),
-            preserve_raw=bool(ff_d.get("preserve_raw", base.feature_flags.preserve_raw)),
-            spark_metrics_capture=bool(ff_d.get("spark_metrics_capture", base.feature_flags.spark_metrics_capture)),
+            openivm_validate=_flag(ff_d.get("openivm_validate"), base.feature_flags.openivm_validate),
+            openivm_profile_refresh=_flag(ff_d.get("openivm_profile_refresh"), base.feature_flags.openivm_profile_refresh),
+            openivm_query_log=_flag(ff_d.get("openivm_query_log"), base.feature_flags.openivm_query_log),
+            storage_metrics=_flag(ff_d.get("storage_metrics"), base.feature_flags.storage_metrics),
+            preserve_raw=_flag(ff_d.get("preserve_raw"), base.feature_flags.preserve_raw),
+            spark_metrics_capture=_flag(
+                ff_d.get("spark_metrics_capture"), base.feature_flags.spark_metrics_capture
+            ),
         )
 
         st_d = d.get("spark_tunables") or {}
@@ -299,7 +341,12 @@ def parse_experiments_json(text: str) -> List[ExperimentInputs]:
         raise ValueError("experiments JSON has no 'experiments' array")
 
     baseline_d = data.get("baseline") or {}
-    baseline = ExperimentInputs.from_dict(baseline_d) if baseline_d else ExperimentInputs()
+    env_baseline = ExperimentInputs(feature_flags=FeatureFlags.from_env())
+    baseline = (
+        ExperimentInputs.from_dict(baseline_d, baseline=env_baseline)
+        if baseline_d
+        else env_baseline
+    )
 
     return [ExperimentInputs.from_dict(e, baseline=baseline) for e in raw_exps]
 

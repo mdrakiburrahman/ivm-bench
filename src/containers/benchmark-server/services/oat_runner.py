@@ -14,6 +14,8 @@ need to live on the Orchestrator class:
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import os
@@ -26,6 +28,76 @@ from models.experiments import ExperimentInputs
 from models.result import BenchmarkResult
 
 logger = logging.getLogger(__name__)
+
+_BATCH_NUMBERS = (1, 2, 3)
+_BASE_TABLE_PAIRS = {
+    "spark-openivm": "spark",
+    "duckdb-openivm": "duckdb",
+    "fabric-openivm-jvm-35": "fabric-jvm-35",
+}
+_RAW_REFERENCE_BASELINES = {"databricks-enzyme"}
+
+RESULTS_CSV_FIELDS = (
+    "oat_run_id",
+    "run_status",
+    "run_started_at",
+    "run_completed_at",
+    "run_total_duration_s",
+    "experiments_file",
+    "experiment_index",
+    "experiment_label",
+    "experiment_status",
+    "experiment_started_at",
+    "experiment_ended_at",
+    "experiment_wall_clock_s",
+    "experiment_disk_free_pct",
+    "benchmark_id",
+    "experiment_error",
+    "skip_reason",
+    "scale_factor",
+    "batch_1_pct",
+    "batch_2_pct",
+    "batch_3_pct",
+    "batch_2_update_pct",
+    "batch_2_delete_pct",
+    "batch_3_update_pct",
+    "batch_3_delete_pct",
+    "schedule",
+    "parallel",
+    "openivm_validate",
+    "openivm_profile_refresh",
+    "openivm_query_log",
+    "storage_metrics",
+    "preserve_raw",
+    "spark_metrics_capture",
+    "spark_driver_pct_ram",
+    "spark_executor_pct_ram",
+    "spark_shuffle_partitions",
+    "spark_default_parallelism",
+    "spark_dbt_threads",
+    "engine",
+    "batch_num",
+    "batch_status",
+    "duration_s",
+    "batch_error",
+    "openivm_over_spark_duration_ratio",
+    "storage_status",
+    "visible_output_bytes",
+    "helper_data_bytes",
+    "metadata_bytes",
+    "source_bytes",
+    "total_bytes",
+    "helper_over_visible_ratio",
+    "storage_errors",
+    "storage_artifact",
+    "base_table_source_mode",
+    "base_table_bytes",
+    "base_table_baseline_kind",
+    "base_table_baseline_engine",
+    "base_table_baseline_bytes",
+    "base_table_storage_overhead_bytes",
+    "base_table_storage_overhead_ratio",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +236,65 @@ def _archive_failure_forensics(
             emit(f"  [oat-archive] WARN failed to archive {dbt_src} → {dbt_dst}: {e}")
 
 
+def archive_storage_artifacts(
+    *, repo_dir: str, oat_run_id: str, exp_idx: int, result: BenchmarkResult
+) -> None:
+    """Copy storage snapshots to immutable, experiment-scoped paths.
+
+    ``mount/results/<SF>/dbt-server`` is reused by later OAT rows.  Update all
+    serialized pointers while copying both the latest and repetition-specific
+    snapshots into the durable OAT state tree.
+    """
+    destination = os.path.join(
+        repo_dir, "mount", "oat-state", oat_run_id, f"exp-{exp_idx:03d}", "storage"
+    )
+    os.makedirs(destination, exist_ok=True)
+
+    def archive_engines(engines, repetition: Optional[int] = None) -> None:
+        for engine_result in engines.values():
+            for batch in engine_result.batches:
+                storage = (batch.extra or {}).get("storage")
+                if not isinstance(storage, dict) or not storage.get("artifact"):
+                    continue
+                original = str(storage["artifact"])
+                basename = os.path.basename(original)
+                if basename in ("", ".", ".."):
+                    raise ValueError(f"invalid storage artifact path: {original}")
+                if repetition is None:
+                    source = os.path.join(repo_dir, original)
+                    target_dir = destination
+                else:
+                    original_dir = os.path.dirname(os.path.join(repo_dir, original))
+                    source = os.path.join(original_dir, f"repetition-{repetition}", basename)
+                    target_dir = os.path.join(destination, f"repetition-{repetition}")
+                repo_real = os.path.realpath(repo_dir)
+                source_real = os.path.realpath(source)
+                if not source_real.startswith(repo_real + os.sep):
+                    raise ValueError(f"storage artifact escapes repository: {original}")
+                os.makedirs(target_dir, exist_ok=True)
+                target = os.path.join(target_dir, basename)
+                if not os.path.isfile(source):
+                    storage["status"] = "error"
+                    storage["archive_error"] = f"source artifact missing: {original}"
+                    with open(target, "w") as artifact:
+                        json.dump(
+                            {
+                                "status": "error",
+                                "error": storage["archive_error"],
+                            },
+                            artifact,
+                            indent=2,
+                        )
+                    storage["artifact"] = os.path.relpath(target, repo_dir)
+                    continue
+                shutil.copy2(source, target)
+                storage["artifact"] = os.path.relpath(target, repo_dir)
+
+    archive_engines(result.engines)
+    for repetition, engines in enumerate(result.repetitions, start=1):
+        archive_engines(engines, repetition=repetition)
+
+
 # ---------------------------------------------------------------------------
 # Per-experiment output assembly
 # ---------------------------------------------------------------------------
@@ -290,6 +421,224 @@ def write_master_outputs(
         json.dump(master, f, indent=2)
     os.replace(tmp, out_path)
     return out_path
+
+
+def _batch_dict(
+    experiment: Dict[str, Any], engine: str, batch_num: int
+) -> Dict[str, Any]:
+    engine_data = (experiment.get("engines") or {}).get(engine)
+    if not isinstance(engine_data, dict):
+        return {}
+    for batch in engine_data.get("batches") or []:
+        if not isinstance(batch, dict):
+            continue
+        try:
+            if int(batch.get("batch_num")) == batch_num:
+                return batch
+        except (TypeError, ValueError):
+            continue
+    return {}
+
+
+def _storage_dict(
+    experiment: Dict[str, Any], engine: str, batch_num: int
+) -> Dict[str, Any]:
+    batch = _batch_dict(experiment, engine, batch_num)
+    extra = batch.get("extra") if isinstance(batch, dict) else None
+    storage = extra.get("storage") if isinstance(extra, dict) else None
+    return storage if isinstance(storage, dict) else {}
+
+
+def _engine_base_bytes(storage: Dict[str, Any]) -> Optional[int]:
+    base_tables = storage.get("base_tables")
+    if isinstance(base_tables, dict) and base_tables.get("storage_bytes") is not None:
+        try:
+            return int(base_tables["storage_bytes"])
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
+
+
+def _duration_ratio(experiment: Dict[str, Any], batch_num: int) -> Optional[float]:
+    spark = _batch_dict(experiment, "spark", batch_num).get("duration_s")
+    openivm = _batch_dict(experiment, "spark-openivm", batch_num).get("duration_s")
+    try:
+        return float(openivm) / float(spark) if float(spark) > 0 else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _base_table_comparison(
+    experiment: Dict[str, Any], engine: str, batch_num: int, storage: Dict[str, Any]
+) -> Tuple[str, str, Optional[int], Optional[int], Optional[float]]:
+    actual = _engine_base_bytes(storage)
+    kind = ""
+    baseline: Optional[int] = None
+    baseline_engine = _BASE_TABLE_PAIRS.get(engine)
+    if baseline_engine:
+        baseline = _engine_base_bytes(
+            _storage_dict(experiment, baseline_engine, batch_num)
+        )
+        if baseline is not None:
+            kind = "paired_engine"
+        else:
+            baseline_engine = None
+    elif actual is not None and engine not in _RAW_REFERENCE_BASELINES:
+        baseline_engine = engine
+        baseline = actual
+        kind = "self"
+    else:
+        baseline = None
+        kind = ""
+
+    if baseline_engine is None:
+        base_tables = storage.get("base_tables")
+        reference = (
+            base_tables.get("reference_bytes")
+            if isinstance(base_tables, dict)
+            else None
+        )
+        try:
+            baseline = int(reference) if reference is not None else None
+        except (TypeError, ValueError, OverflowError):
+            baseline = None
+        if baseline is not None:
+            baseline_engine = "raw-delta-reference"
+            kind = "raw_delta_reference"
+
+    overhead = (
+        actual - baseline if actual is not None and baseline is not None else None
+    )
+    ratio = (
+        overhead / baseline
+        if overhead is not None and baseline and baseline > 0
+        else None
+    )
+    return kind, baseline_engine or "", baseline, overhead, ratio
+
+
+def generate_results_csv(state: Dict[str, Any]) -> str:
+    """Render one raw, machine-readable row per experiment/engine/batch."""
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=RESULTS_CSV_FIELDS, lineterminator="\n")
+    writer.writeheader()
+    experiments = state.get("experiments") or []
+    for position, experiment in enumerate(experiments):
+        if not isinstance(experiment, dict):
+            continue
+        inputs = experiment.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            inputs = {}
+        flags = inputs.get("feature_flags") or {}
+        if not isinstance(flags, dict):
+            flags = {}
+        tunables = inputs.get("spark_tunables") or {}
+        if not isinstance(tunables, dict):
+            tunables = {}
+        configured_engines = inputs.get("engines") or []
+        engines_data = experiment.get("engines") or {}
+        if isinstance(configured_engines, str):
+            configured_engines = [
+                engine.strip()
+                for engine in configured_engines.split(",")
+                if engine.strip()
+            ]
+        if not isinstance(engines_data, dict):
+            engines_data = {}
+        engines = list(dict.fromkeys([*configured_engines, *engines_data.keys()]))
+        for engine in engines:
+            for batch_num in _BATCH_NUMBERS:
+                batch = _batch_dict(experiment, engine, batch_num)
+                storage = _storage_dict(experiment, engine, batch_num)
+                base_tables = storage.get("base_tables") or {}
+                if not isinstance(base_tables, dict):
+                    base_tables = {}
+                (
+                    baseline_kind,
+                    baseline_engine,
+                    baseline_bytes,
+                    overhead,
+                    overhead_ratio,
+                ) = _base_table_comparison(experiment, engine, batch_num, storage)
+                storage_errors = storage.get("errors")
+                if isinstance(storage_errors, list):
+                    storage_errors = "; ".join(str(error) for error in storage_errors)
+                writer.writerow(
+                    {
+                        "oat_run_id": state.get("oat_run_id", ""),
+                        "run_status": state.get("status", ""),
+                        "run_started_at": state.get("started_at", ""),
+                        "run_completed_at": state.get("completed_at", ""),
+                        "run_total_duration_s": state.get("total_duration_s", ""),
+                        "experiments_file": state.get("experiments_file", ""),
+                        "experiment_index": experiment.get("exp_idx", position),
+                        "experiment_label": experiment.get("label", ""),
+                        "experiment_status": experiment.get("status", ""),
+                        "experiment_started_at": experiment.get("started_at", ""),
+                        "experiment_ended_at": experiment.get("ended_at", ""),
+                        "experiment_wall_clock_s": experiment.get("wall_clock_s", ""),
+                        "experiment_disk_free_pct": experiment.get("disk_free_pct", ""),
+                        "benchmark_id": experiment.get("benchmark_id", ""),
+                        "experiment_error": experiment.get("error") or "",
+                        "skip_reason": experiment.get("skip_reason") or "",
+                        "scale_factor": inputs.get(
+                            "scale_factor", experiment.get("scale_factor", "")
+                        ),
+                        "batch_1_pct": inputs.get("batch_1_pct", ""),
+                        "batch_2_pct": inputs.get("batch_2_pct", ""),
+                        "batch_3_pct": inputs.get("batch_3_pct", ""),
+                        "batch_2_update_pct": inputs.get("batch_2_update_pct", ""),
+                        "batch_2_delete_pct": inputs.get("batch_2_delete_pct", ""),
+                        "batch_3_update_pct": inputs.get("batch_3_update_pct", ""),
+                        "batch_3_delete_pct": inputs.get("batch_3_delete_pct", ""),
+                        "schedule": inputs.get("schedule", ""),
+                        "parallel": inputs.get("parallel", ""),
+                        "openivm_validate": flags.get("openivm_validate", ""),
+                        "openivm_profile_refresh": flags.get(
+                            "openivm_profile_refresh", ""
+                        ),
+                        "openivm_query_log": flags.get("openivm_query_log", ""),
+                        "storage_metrics": flags.get("storage_metrics", ""),
+                        "preserve_raw": flags.get("preserve_raw", ""),
+                        "spark_metrics_capture": flags.get("spark_metrics_capture", ""),
+                        "spark_driver_pct_ram": tunables.get("driver_pct_ram", ""),
+                        "spark_executor_pct_ram": tunables.get("executor_pct_ram", ""),
+                        "spark_shuffle_partitions": tunables.get(
+                            "shuffle_partitions", ""
+                        ),
+                        "spark_default_parallelism": tunables.get(
+                            "default_parallelism", ""
+                        ),
+                        "spark_dbt_threads": tunables.get("dbt_threads", ""),
+                        "engine": engine,
+                        "batch_num": batch_num,
+                        "batch_status": batch.get("status", ""),
+                        "duration_s": batch.get("duration_s", ""),
+                        "batch_error": batch.get("error") or "",
+                        "openivm_over_spark_duration_ratio": _duration_ratio(
+                            experiment, batch_num
+                        ),
+                        "storage_status": storage.get("status", ""),
+                        "visible_output_bytes": storage.get("visible_output_bytes", ""),
+                        "helper_data_bytes": storage.get("helper_data_bytes", ""),
+                        "metadata_bytes": storage.get("metadata_bytes", ""),
+                        "source_bytes": storage.get("source_bytes", ""),
+                        "total_bytes": storage.get("total_bytes", ""),
+                        "helper_over_visible_ratio": storage.get(
+                            "overhead_ratio_helper_to_visible", ""
+                        ),
+                        "storage_errors": storage_errors or storage.get("error") or "",
+                        "storage_artifact": storage.get("artifact", ""),
+                        "base_table_source_mode": base_tables.get("source_mode", ""),
+                        "base_table_bytes": _engine_base_bytes(storage),
+                        "base_table_baseline_kind": baseline_kind,
+                        "base_table_baseline_engine": baseline_engine,
+                        "base_table_baseline_bytes": baseline_bytes,
+                        "base_table_storage_overhead_bytes": overhead,
+                        "base_table_storage_overhead_ratio": overhead_ratio,
+                    }
+                )
+    return output.getvalue()
 
 
 def write_inputs(
