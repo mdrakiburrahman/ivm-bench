@@ -1,7 +1,21 @@
 """Configuration models for benchmark orchestration."""
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+
+def _detect_host_memory_gb() -> int:
+    """Total memory in GB from /proc/meminfo (mirrors resource_calc; inlined to
+    avoid a circular import, since resource_calc imports this module)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return max(int(line.split()[1]) // (1024 * 1024), 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    return 16
 
 
 @dataclass
@@ -87,6 +101,7 @@ ENGINE_PORTS = {
     "databricks-enzyme": 5006,
     "fabric-openivm-jvm-35": 5007,
     "fabric-jvm-35": 5008,
+    "dbspnet": 5009,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -98,6 +113,7 @@ ENGINE_COMPOSE_FILES = {
     "databricks-enzyme": "docker/docker-compose.benchmark.databricks-enzyme.yml",
     "fabric-openivm-jvm-35": "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml",
     "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
+    "dbspnet": "docker/docker-compose.benchmark.dbspnet.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine).
@@ -113,6 +129,7 @@ ENGINE_MAIN_SERVICES = {
     "databricks-enzyme": None,
     "fabric-openivm-jvm-35": None,
     "fabric-jvm-35": None,
+    "dbspnet": "dbspnet-server",
 }
 
 # Containers whose CPU contributes to the controlled local-system metric.
@@ -180,8 +197,23 @@ class BenchmarkConfig:
 
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
+        # The datagen compose (docker-compose.datagen.yml) is sized for the repo's 32-core /
+        # 128 GB devbox. On a smaller box it fails before any engine runs, and the orchestrator
+        # runs inside the benchmark-server container so a host `export` can't reach the compose
+        # call — base_env() is the only place these caps can be applied.
+        #   * cpus:${DATAGEN_CPUS:-32} — Docker HARD-rejects a cpus limit above the host core
+        #     count. Cap to detected cores (never above the 32 default → devbox unchanged).
+        #   * -Xms${DATAGEN_HEAP:-80g} — the Spark JVM commits its heap eagerly, so an 80 GB
+        #     heap OOMs a smaller VM at startup. Size to 60% of host RAM (min 4g), matching the
+        #     batch-loader's rule, capped at the 80g default so the devbox is unchanged.
+        host_cores = self.host_cores or os.cpu_count() or 1
+        host_mem_gb = self.host_memory_gb or _detect_host_memory_gb()
+        datagen_cpus = min(32, host_cores)
+        datagen_heap_gb = max(4, min(80, int(host_mem_gb * 0.6)))
         return {
             "SCALE_FACTOR": str(self.scale_factor),
+            "DATAGEN_CPUS": str(datagen_cpus),
+            "DATAGEN_HEAP": f"{datagen_heap_gb}g",
             "BENCHMARK_RUNS": str(self.benchmark_runs),
             "BATCH_1_INSERT_PCT": self.batch_1_pct,
             "BATCH_2_INSERT_PCT": self.batch_2_pct,

@@ -25,7 +25,7 @@ services:
       - ../mount/raw/${SCALE_FACTOR:-3}/digen:/data/digen:ro
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
-      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx${DATAGEN_HEAP:-80g} -Xms${DATAGEN_HEAP:-80g} -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
       DIGEN_PATH: /data/digen
       DELTA_PATH: /data/delta
       BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
