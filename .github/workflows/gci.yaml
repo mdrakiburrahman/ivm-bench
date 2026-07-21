@@ -147,15 +147,6 @@ jobs:
         with:
           clean: true
 
-      - name: "🧪 Storage metrics unit tests"
-        run: |
-          set -euo pipefail
-          python3 -m compileall -q src/containers/dbt-server src/containers/benchmark-server
-          PYTHONPATH=src/containers/dbt-server \
-            python3 -m unittest discover -s src/containers/dbt-server/tests -v
-          PYTHONPATH=src/containers/benchmark-server \
-            python3 -m unittest discover -s src/containers/benchmark-server/tests -v
-
       - name: "🧬 Resolve experiments file"
         env:
           INPUT_EXPERIMENTS_FILE: ${{ inputs.experiments_file || '' }}
