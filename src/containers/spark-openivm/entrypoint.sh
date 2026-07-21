@@ -75,6 +75,14 @@ case "${OPENIVM_QUERY_LOG:-0}" in
   *) export OPENIVM_QUERY_LOG_BOOL=false ;;
 esac
 
+# Translate SPARK_METRICS_CAPTURE (`0`/`1` or unset) into the eventLog bool
+# the spark-defaults template expects, and create the event-log dir when ON
+# (issue #36). IDENTICAL to the plain `spark` engine. Default ON when unset.
+case "${SPARK_METRICS_CAPTURE:-1}" in
+  1|true|TRUE|True) export SPARK_EVENTLOG_ENABLED_BOOL=true; mkdir -p /data/metrics/spark-events ;;
+  *) export SPARK_EVENTLOG_ENABLED_BOOL=false ;;
+esac
+
 mkdir -p /opt/spark/conf
 process_template "$CONFIG_DIR/spark-defaults.conf.tmpl" "/opt/spark/conf/spark-defaults.conf"
 process_template "$CONFIG_DIR/hive-site.xml.tmpl" "/opt/spark/conf/hive-site.xml"

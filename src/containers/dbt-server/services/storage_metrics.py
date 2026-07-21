@@ -255,6 +255,12 @@ def _databricks_relation_storage() -> tuple[List[Dict[str, Any]], Dict[str, int]
     for rel in metrics._list_relations():
         schema = rel["schema"]
         name = rel["name"]
+        table_type = str(rel.get("table_type", "") or "").upper()
+        # Enzyme exposes each materialization through a logical VIEW and keeps
+        # the bytes in separately listed MANAGED backing tables. DESCRIBE
+        # DETAIL rejects views, and counting them would add no storage.
+        if "VIEW" in table_type:
+            continue
         fqn = f"`{src.CATALOG}`.`{schema}`.`{name}`"
         try:
             df = src._execute(f"DESCRIBE DETAIL {fqn}")
@@ -277,7 +283,9 @@ def _databricks_relation_storage() -> tuple[List[Dict[str, Any]], Dict[str, int]
         row = df.iloc[0]
         size_bytes = _safe_int(row.get("sizeInBytes", row.get("size_in_bytes", 0)))
         file_count = _safe_int(row.get("numFiles", row.get("num_files", 0)))
-        if schema == src.data_schema():
+        if name.startswith("event_log_"):
+            category = "metadata"
+        elif schema == src.data_schema():
             category = "source"
         elif schema == src.work_schema():
             category = "internal_state"
@@ -294,7 +302,7 @@ def _databricks_relation_storage() -> tuple[List[Dict[str, Any]], Dict[str, int]
             path=str(row.get("location") or fqn),
             kind="databricks_relation",
             details={
-                "table_type": rel.get("table_type", ""),
+                "table_type": table_type,
                 "format": str(row.get("format") or ""),
             },
         )

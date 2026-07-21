@@ -51,6 +51,11 @@ export SPARK_EXECUTOR_CORES=$(calc_cores_clamped "$EXECUTOR_PCT_CORES" "$TOTAL_C
 export SPARK_SUBMIT_SHUFFLE_PARTITIONS=$SHUFFLE_PARTITIONS
 export SPARK_SUBMIT_DEFAULT_PARALLELISM=$DEFAULT_PARALLELISM
 
+case "${SPARK_METRICS_CAPTURE:-1}" in
+  1|true|TRUE|True) export SPARK_EVENTLOG_ENABLED_BOOL=true; mkdir -p /data/metrics/spark-events ;;
+  *) export SPARK_EVENTLOG_ENABLED_BOOL=false ;;
+esac
+
 mkdir -p /opt/spark/conf
 process_template "$CONFIG_DIR/spark-defaults.conf.tmpl" "/opt/spark/conf/spark-defaults.conf"
 process_template "$CONFIG_DIR/hive-site.xml.tmpl" "/opt/spark/conf/hive-site.xml"

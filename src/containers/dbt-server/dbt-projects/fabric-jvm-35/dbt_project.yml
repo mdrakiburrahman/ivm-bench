@@ -1,0 +1,44 @@
+name: 'tpcdi'
+version: '1.0.0'
+config-version: 2
+
+profile: 'tpcdi'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+dispatch:
+  - macro_namespace: dbt_utils
+    search_order: ["tpcdi", "dbt_utils"]
+
+on-run-start:
+  - "{{ load_fabric_sources() }}"
+
+# Source registration is handled out-of-band by the dbt-server endpoint
+# `/sources/spark-openivm/init` before the first dbt build (mirrors the
+# duckdb-openivm pattern).
+
+models:
+  tpcdi:
+    bronze:
+      +schema: bronze
+      +materialized: table
+    silver:
+      +schema: silver
+      +materialized: table
+    gold:
+      +schema: gold
+      +materialized: table
+      analytics:
+        +materialized: table
+    work:
+      +schema: work
+      +materialized: ephemeral

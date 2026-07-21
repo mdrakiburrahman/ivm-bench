@@ -22,6 +22,8 @@
 #   mount/oat-state/latest → <oat_run_id>
 #
 # Environment variables:
+#   BENCHMARK_RUNS — repeat the full 3-batch benchmark N times and average
+#                    the per-engine batch timings (default: 1)
 #   OAT_MIN_FREE_PCT — minimum % free disk under repo root to keep running.
 #                    Default 10. The sweep SKIPS remaining experiments below
 #                    this threshold (no host crash on WSL).
@@ -63,6 +65,8 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   source "$REPO_ROOT/.env"
   set +o allexport
 fi
+
+export BENCHMARK_RUNS="${BENCHMARK_RUNS:-1}"
 
 if [[ -z "${BENCHMARK_EXPERIMENTS_FILE:-}" ]]; then
   echo "ERROR: BENCHMARK_EXPERIMENTS_FILE must be set."
@@ -109,6 +113,9 @@ export BATCH_2_DELETE_PCT="${BATCH_2_DELETE_PCT:-0}"
 export BATCH_3_UPDATE_PCT="${BATCH_3_UPDATE_PCT:-0}"
 export BATCH_3_DELETE_PCT="${BATCH_3_DELETE_PCT:-0}"
 export PARALLEL="${PARALLEL:-0}"
+# Scheduling mode: serial | parallel | serial-host-parallel-cloud. The OAT JSON's
+# per-experiment `schedule` overrides this default.
+export SCHEDULE="${SCHEDULE:-serial}"
 export ENGINES="${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"

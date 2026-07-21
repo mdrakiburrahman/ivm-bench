@@ -25,6 +25,9 @@ DB_LOCK = threading.Lock()
 
 
 def _get_db() -> sqlite3.Connection:
+    # STATE_DIR is a bind-mount source that can disappear mid-sweep; recreate it
+    # so connect() never raises "unable to open database file" and abort a run.
+    os.makedirs(STATE_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

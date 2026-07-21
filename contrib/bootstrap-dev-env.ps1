@@ -44,7 +44,7 @@ foreach ($distro in $distros) {
 }
 
 $RECOMMENDED_CORES = 32
-$RECOMMENDED_FREE_GB = 128
+$RECOMMENDED_FREE_GB = 512
 
 $memGB=[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)
 $cpu=[Environment]::ProcessorCount

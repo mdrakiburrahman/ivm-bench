@@ -80,6 +80,8 @@ ENGINE_PORTS = {
     "feldera": 5004,
     "spark-openivm": 5005,
     "databricks-enzyme": 5006,
+    "fabric-openivm-jvm-35": 5007,
+    "fabric-jvm-35": 5008,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -89,9 +91,14 @@ ENGINE_COMPOSE_FILES = {
     "feldera": "docker/docker-compose.benchmark.feldera.yml",
     "spark-openivm": "docker/docker-compose.benchmark.spark-openivm.yml",
     "databricks-enzyme": "docker/docker-compose.benchmark.databricks-enzyme.yml",
+    "fabric-openivm-jvm-35": "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml",
+    "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
 }
 
-# Engine's primary service (None if dbt-server IS the engine)
+# Engine's primary service (None if dbt-server IS the engine).
+# Fabric engines run dbt against remote Fabric Spark (Livy) — like
+# databricks-enzyme, dbt-server IS the engine locally (plus the imds-router
+# sidecar that brokers `az login --identity`).
 ENGINE_MAIN_SERVICES = {
     "spark": "spark",
     "duckdb": None,
@@ -99,13 +106,33 @@ ENGINE_MAIN_SERVICES = {
     "feldera": "pipeline-manager",
     "spark-openivm": "spark-openivm",
     "databricks-enzyme": None,
+    "fabric-openivm-jvm-35": None,
+    "fabric-jvm-35": None,
 }
+
+# Cloud-consuming engines: the heavy query compute is offloaded to a remote
+# service (Databricks Serverless SQL / Fabric Spark Livy), so their host
+# footprint is just the light dbt-server (+ imds-router) orchestration
+# container. Everything else is host-consuming (local Spark/DuckDB/Feldera).
+# The ``serial-host-parallel-cloud`` schedule serialises host engines (they
+# contend for host CPU/RAM/disk) and runs cloud engines in one parallel wave.
+CLOUD_ENGINES = {
+    "databricks-enzyme",
+    "fabric-openivm-jvm-35",
+    "fabric-jvm-35",
+}
+
+
+def is_cloud_engine(name: str) -> bool:
+    """True if the engine offloads its compute to a remote cloud service."""
+    return name in CLOUD_ENGINES
 
 
 @dataclass
 class BenchmarkConfig:
     """Top-level benchmark configuration."""
     scale_factor: int = 3
+    benchmark_runs: int = 1
     batch_1_pct: str = "1"
     batch_2_pct: str = "0.001"
     batch_3_pct: str = "0.002"
@@ -114,6 +141,11 @@ class BenchmarkConfig:
     batch_3_update_pct: str = "0"
     batch_3_delete_pct: str = "0"
     parallel: bool = False
+    # Scheduling mode: "serial" (all engines one-at-a-time), "parallel" (all in
+    # one wave), or "serial-host-parallel-cloud" (host engines serial, cloud
+    # engines in one parallel wave). ``parallel=True`` maps to "parallel" for
+    # back-compat when ``schedule`` is left at its default.
+    schedule: str = "serial"
     engines: List[str] = field(
         default_factory=lambda: [
             "spark",
@@ -127,10 +159,14 @@ class BenchmarkConfig:
     host_memory_gb: Optional[int] = None
     repo_dir: str = "/repo"
 
+    def __post_init__(self):
+        self.benchmark_runs = max(1, int(self.benchmark_runs))
+
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
         return {
             "SCALE_FACTOR": str(self.scale_factor),
+            "BENCHMARK_RUNS": str(self.benchmark_runs),
             "BATCH_1_INSERT_PCT": self.batch_1_pct,
             "BATCH_2_INSERT_PCT": self.batch_2_pct,
             "BATCH_3_INSERT_PCT": self.batch_3_pct,

@@ -14,6 +14,7 @@ services:
       REPO_DIR: "${REPO_HOST_PATH:-.}"
       DOCKER_HOST_ADDRESS: "host.docker.internal"
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
+      BENCHMARK_RUNS: "${BENCHMARK_RUNS:-1}"
       BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
       BATCH_2_INSERT_PCT: "${BATCH_2_INSERT_PCT:-}"
       BATCH_3_INSERT_PCT: "${BATCH_3_INSERT_PCT:-}"
@@ -25,6 +26,7 @@ services:
       BATCH_3_UPDATE_PCT: "${BATCH_3_UPDATE_PCT:-0}"
       BATCH_3_DELETE_PCT: "${BATCH_3_DELETE_PCT:-0}"
       PARALLEL: "${PARALLEL:-0}"
+      SCHEDULE: "${SCHEDULE:-serial}"
       ENGINES: "${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
       HOST_CORES: "${HOST_CORES:-}"
       HOST_MEMORY: "${HOST_MEMORY:-}"
@@ -33,6 +35,8 @@ services:
       OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
       OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
       STORAGE_METRICS: "${STORAGE_METRICS:-1}"
+      SPARK_METRICS_CAPTURE: "${SPARK_METRICS_CAPTURE:-1}"
+      SPARK_METRICS_KEEP_EVENTS: "${SPARK_METRICS_KEEP_EVENTS:-0}"
       OPENIVM_UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-}"
       # OAT harness: experiments JSON file path + headroom config.
       # BENCHMARK_EXPERIMENTS_FILE is the in-container path of the JSON
@@ -52,6 +56,24 @@ services:
       # bringing up the databricks-enzyme engine stack. Empty default
       # is intentional — non-databricks experiments don't need it.
       DATABRICKS_EXPERIMENT_ID: "${DATABRICKS_EXPERIMENT_ID:-}"
+      FABRIC_API_BASE: "${FABRIC_API_BASE:-https://api.fabric.microsoft.com}"
+      FABRIC_WORKSPACE_ID: "${FABRIC_WORKSPACE_ID:-}"
+      FABRIC_ONELAKE_HOST: "${FABRIC_ONELAKE_HOST:-msit-onelake.dfs.fabric.microsoft.com}"
+      FABRIC_CACHE_LAKEHOUSE_NAME: "${FABRIC_CACHE_LAKEHOUSE_NAME:-ivmbench_cache}"
+      FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS: "${FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS:-86400}"
+      FABRIC_JVM_35_BASE_NAME: "${FABRIC_JVM_35_BASE_NAME:-jvm_35}"
+      FABRIC_JVM_35_CPUS: "${FABRIC_JVM_35_CPUS:-4}"
+      FABRIC_JVM_35_MEM: "${FABRIC_JVM_35_MEM:-8g}"
+      FABRIC_OPENIVM_JVM_35_BASE_NAME: "${FABRIC_OPENIVM_JVM_35_BASE_NAME:-openivm_jvm_35}"
+      FABRIC_OPENIVM_JVM_35_CPUS: "${FABRIC_OPENIVM_JVM_35_CPUS:-4}"
+      FABRIC_OPENIVM_JVM_35_MEM: "${FABRIC_OPENIVM_JVM_35_MEM:-8g}"
+      IMDS_ROUTER_PORT: "${IMDS_ROUTER_PORT:-8080}"
+      IMDS_RELAY_URL: "${IMDS_RELAY_URL:-}"
+      IMDS_RELAY_SENDER_KEY: "${IMDS_RELAY_SENDER_KEY:-}"
+      IMDS_RELAY_KEY_NAME: "${IMDS_RELAY_KEY_NAME:-Send}"
+      IDENTITY_HEADER: "${IDENTITY_HEADER:-local-dev-secret}"
+      UAMI_CLIENT_ID: "${UAMI_CLIENT_ID:-}"
+      UAMI_SUBSCRIPTION: "${UAMI_SUBSCRIPTION:-}"
     healthcheck:
       test: curl -sf http://localhost:9000/health || exit 1
       interval: 5s

@@ -27,3 +27,10 @@ spark.locality.wait=0s
 
 # Warehouse location
 spark.sql.warehouse.dir=/data/processed/spark
+
+# Spark-native event log
+spark.eventLog.enabled=${SPARK_EVENTLOG_ENABLED_BOOL}
+spark.eventLog.dir=file:/data/metrics/spark-events
+spark.eventLog.rolling.enabled=true
+spark.eventLog.rolling.maxFileSize=128m
+spark.eventLog.logStageExecutorMetrics=true

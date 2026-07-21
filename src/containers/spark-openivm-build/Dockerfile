@@ -37,10 +37,10 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=cec35ae41e930a607db774673310e6cc263775bd
-ARG LPTS_REPO=https://github.com/ila/lpts.git
+ARG OPENIVM_COMMIT=909a106364427844c6e8a0a891ba2ed6de4127e1
+ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
-ARG LPTS_COMMIT=9019277d27b27d791f9112667ad9099ab034c8df
+ARG LPTS_COMMIT=39a186cc59aa552ebf517c984784ebc9b48ca221
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -63,8 +63,10 @@ WORKDIR /src
 # Clone openivm at the pinned commit on the openivm-spark branch, then
 # override the lpts submodule to point at OUR fork so we never need to
 # commit a submodule-URL bump into openivm to pick up new lpts work.
-RUN git clone --branch "${OPENIVM_BRANCH}" --depth 50 "${OPENIVM_REPO}" . && \
-    git checkout "${OPENIVM_COMMIT}" && \
+RUN git init -q && \
+    git remote add origin "${OPENIVM_REPO}" && \
+    git fetch --depth 1 origin "${OPENIVM_COMMIT}" && \
+    git checkout -q FETCH_HEAD && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
     git config -f .gitmodules submodule.third_party/lpts.url "${LPTS_REPO}" && \
     git submodule sync --recursive && \
@@ -72,8 +74,8 @@ RUN git clone --branch "${OPENIVM_BRANCH}" --depth 50 "${OPENIVM_REPO}" . && \
     (cd third_party/lpts && \
         git init -q && \
         (git remote add origin "${LPTS_REPO}" 2>/dev/null || git remote set-url origin "${LPTS_REPO}") && \
-        git fetch --depth 50 origin "${LPTS_BRANCH}" && \
-        git checkout "${LPTS_COMMIT}" && \
+        git fetch --depth 1 origin "${LPTS_COMMIT}" && \
+        git checkout -q FETCH_HEAD && \
         git submodule update --init --recursive --depth 1)
 
 # Build (release).
@@ -94,7 +96,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=main
-ARG OPENIVM_SPARK_COMMIT=20610580f79413e7d7bbf0d8b1a7a9a61a94b713
+ARG OPENIVM_SPARK_COMMIT=7f65ee9bdc957dc9d96b8eb1ea6df9ab5bb096db
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -124,6 +126,10 @@ WORKDIR /src/spark-ext
 
 ENV SBT_OPTS="-Xmx4g -XX:+UseG1GC"
 
+COPY --from=openivm-builder /artifacts/duckdb                 /native/duckdb
+COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.duckdb_extension
+ENV OPENIVM_NATIVE_DIR=/native
+
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
 # orchestrator's plain `docker compose build` invocation, so we accept a
 # slower cold cache here — sbt will re-fetch deps each rebuild. Acceptable
@@ -139,7 +145,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=20610580f79413e7d7bbf0d8b1a7a9a61a94b713
+ARG OPENIVM_SPARK_COMMIT=7f65ee9bdc957dc9d96b8eb1ea6df9ab5bb096db
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu

@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -19,6 +19,46 @@ logger = logging.getLogger(__name__)
 
 HEALTH_TIMEOUT = 300
 HEALTH_INTERVAL = 5
+
+_RETRY_DELAYS = [30, 60, 120]
+
+
+def _post_with_retry(
+    url: str,
+    timeout: int,
+    emit: Callable[[str], None],
+    label: str,
+    **kwargs,
+) -> requests.Response:
+    """POST with exponential-backoff retry on 5xx / connection errors.
+
+    Retries up to len(_RETRY_DELAYS) times before propagating the last
+    exception.  Non-5xx HTTP errors (4xx etc.) are re-raised immediately.
+    """
+    last_exc: Exception = RuntimeError("no attempts made")
+    for attempt, delay in enumerate(
+        [0] + _RETRY_DELAYS, start=1
+    ):
+        if delay:
+            emit(f"[{label}] retrying in {delay}s (attempt {attempt}/{len(_RETRY_DELAYS) + 1})")
+            time.sleep(delay)
+        try:
+            resp = requests.post(url, timeout=timeout, **kwargs)
+            if resp.status_code >= 500:
+                last_exc = requests.HTTPError(
+                    f"{resp.status_code} Server Error for url: {url}",
+                    response=resp,
+                )
+                emit(f"[{label}] FAILED: {last_exc} — will retry")
+                continue
+            resp.raise_for_status()
+            return resp
+        except requests.ConnectionError as exc:
+            last_exc = exc
+            emit(f"[{label}] connection error: {exc} — will retry")
+            continue
+    raise last_exc
+
 
 # Databricks-enzyme dbt-build retry policy for transient DLT pipeline
 # failures (lost executor, INTERNAL_ERROR, transient Connection refused).
@@ -56,6 +96,10 @@ DATABRICKS_TRANSIENT_SIGNATURES = (
     "PIPELINE_INTERNAL_ERROR",
     "SERVICE_UNAVAILABLE",
     "TEMPORARILY_UNAVAILABLE",
+    # DLT pipeline service failed to start on the cluster (startup race /
+    # transient cluster-side infra), e.g. "Failed to initialize the pipeline
+    # service on cluster <id>. Check the cluster driver logs for more details."
+    "Failed to initialize the pipeline service",
 )
 
 
@@ -291,6 +335,7 @@ class EngineRunner:
                 ("collect_feldera_debug", self._collect_feldera_debug),
                 ("capture_logs", self._capture_logs),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
+                ("fabric_cleanup", self._fabric_cleanup),
                 ("engine_mgr.down", self._engine_mgr.down),
                 ("cleanup_staging", self._cleanup_staging),
             ):
@@ -334,6 +379,141 @@ class EngineRunner:
                 )
         except Exception as e:
             self._emit(f"[databricks-enzyme] Post-run cleanup-schema WARN: {e}")
+
+    def _fabric_cleanup(self) -> None:
+        """End-of-run: tear down this run's compute lakehouse + environment so no
+        experiment leaves stale resources behind (the shared cache lakehouse is
+        preserved). Orphan-sweep at the next run's provision is the backstop.
+        No-op for any non-fabric engine."""
+        if self._engine.name not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
+            return
+        try:
+            resp = requests.post(f"{self._dbt_url}/environment/fabric/teardown", timeout=1200)
+            if resp.status_code == 200:
+                data = resp.json()
+                self._emit(
+                    f"[{self._engine.name}] Post-run teardown OK "
+                    f"(deleted={data.get('deleted')})"
+                )
+            else:
+                self._emit(
+                    f"[{self._engine.name}] Post-run teardown WARN: "
+                    f"HTTP {resp.status_code} {resp.text[:200]}"
+                )
+        except Exception as e:
+            self._emit(f"[{self._engine.name}] Post-run teardown WARN: {e}")
+
+    def _run_fabric(self, batch_num: int) -> str:
+        """Fabric engine batch flow (mirrors _run_databricks_enzyme):
+
+        batch 1: (openivm) refresh Environment "35" with the JAR + config →
+                 blow up prior Tables/ + state → drop stale-SF cache → azcopy
+                 the batch-1 sources into the OneLake Files cache.
+        batch 2/3: azcopy the per-batch staging increment into the cache.
+
+        Then a dbt build against Fabric Spark (Livy). The source CREATE/INSERT
+        SQL runs inside the dbt session via the load_fabric_sources
+        on-run-start macro (batch-num aware). All wall-clock from the cache
+        staging through the dbt build is inside the measured batch latency,
+        matching the spark-openivm / databricks-enzyme convention.
+        """
+        name = self._engine.name
+        is_openivm = name == "fabric-openivm-jvm-35"
+        sf = self._config.scale_factor
+        full_refresh = batch_num == 1
+
+        if batch_num == 1:
+            self._emit(
+                f"[{name}] Provisioning fresh Fabric compute lakehouse + environment"
+                f"{' (openivm JAR + Spark config)' if is_openivm else ''}"
+            )
+            resp = requests.post(
+                f"{self._dbt_url}/environment/fabric/provision",
+                json={"openivm": is_openivm}, timeout=2400,
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"fabric provision failed: HTTP {resp.status_code} {resp.text[:500]}"
+                )
+            data = resp.json()
+            res = data.get("resolved", {})
+            self._emit(
+                f"[{name}] Provisioned {res.get('lakehouse_name')} "
+                f"(lakehouse={res.get('lakehouse_id')} environment={res.get('environment_id')}); "
+                f"swept {len(data.get('swept', []))} orphan(s); "
+                f"publish={(data.get('publish') or {}).get('publish_state')}"
+            )
+
+            last_sf = self._read_last_sf()
+            if last_sf is not None and last_sf != sf:
+                self._emit(
+                    f"[{name}] SF changed {last_sf} -> {sf}; dropping cache sf={last_sf}"
+                )
+                try:
+                    requests.post(
+                        f"{self._dbt_url}/sources/fabric/cleanup-cache/{last_sf}",
+                        timeout=1200,
+                    )
+                except Exception as e:
+                    self._emit(f"[{name}] cleanup-cache/{last_sf} WARN: {e}")
+
+            self._emit(f"[{name}] Staging sources into OneLake cache (sf={sf})")
+            resp = requests.post(
+                f"{self._dbt_url}/sources/fabric/init/{sf}", timeout=7200
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"fabric init/{sf} failed: HTTP {resp.status_code} {resp.text[:500]}"
+                )
+            data = resp.json()
+            self._emit(
+                f"[{name}] Cache init: files_uploaded={data.get('files_uploaded')} "
+                f"already_seeded={data.get('already_seeded')}"
+            )
+        else:
+            self._emit(
+                f"[{name}] Staging batch {batch_num} increment into OneLake cache (sf={sf})"
+            )
+            resp = requests.post(
+                f"{self._dbt_url}/sources/fabric/append/{batch_num}/{sf}", timeout=7200
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(
+                    f"fabric append/{batch_num}/{sf} failed: "
+                    f"HTTP {resp.status_code} {resp.text[:500]}"
+                )
+            data = resp.json()
+            self._emit(
+                f"[{name}] Cache batch {batch_num}: files_uploaded={data.get('files_uploaded')} "
+                f"already_seeded={data.get('already_seeded')}"
+            )
+
+        run_id = self._run_fabric_dbt(batch_num, full_refresh)
+        if batch_num == 1:
+            self._write_last_sf(sf)
+        return run_id
+
+    def _run_fabric_dbt(self, batch_num: int, full_refresh: bool) -> str:
+        """POST /run/<engine> with batch_num (for the source macro), stream
+        progress, check + save the result."""
+        name = self._engine.name
+        resp = requests.post(
+            f"{self._dbt_url}/run/{name}",
+            json={
+                "scale_factor": self._config.scale_factor,
+                "full_refresh": full_refresh,
+                "batch_num": batch_num,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        run_id = resp.json()["run_id"]
+        self._emit(f"[{name}] dbt run_id={run_id} (batch {batch_num})")
+
+        self._stream_dbt_progress(run_id, batch_num)
+        self._check_run_result(run_id, batch_num)
+        self._save_run_result(run_id, batch_num)
+        return run_id
 
     def _up_with_retry(self, max_attempts: int = 3, backoff_s: int = 30) -> None:
         """Start the compose stack, retrying on transient mssql startup crashes.
@@ -424,6 +604,8 @@ class EngineRunner:
                 run_id = self._run_spark_openivm(batch_num)
             elif name == "databricks-enzyme":
                 run_id = self._run_databricks_enzyme(batch_num)
+            elif name in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
+                run_id = self._run_fabric(batch_num)
             else:
                 run_id = self._run_dbt(batch_num)
 
@@ -557,8 +739,12 @@ class EngineRunner:
             self._emit(f"[duckdb] Sources initialised: {src_result.get('tables_created', '?')} tables")
         else:
             self._emit(f"[duckdb] Appending batch {batch_num} sources")
-            resp = requests.post(f"{self._dbt_url}/sources/duckdb/append/{batch_num}", timeout=600)
-            resp.raise_for_status()
+            resp = _post_with_retry(
+                f"{self._dbt_url}/sources/duckdb/append/{batch_num}",
+                timeout=600,
+                emit=self._emit,
+                label="duckdb",
+            )
             src_result = resp.json()
             self._emit(
                 f"[duckdb] Batch {batch_num} appended: "
@@ -768,11 +954,12 @@ class EngineRunner:
             )
         else:
             self._emit(f"[duckdb-openivm] Appending batch {batch_num} sources")
-            resp = requests.post(
+            resp = _post_with_retry(
                 f"{self._dbt_url}/sources/duckdb-openivm/append/{batch_num}",
                 timeout=600,
+                emit=self._emit,
+                label="duckdb-openivm",
             )
-            resp.raise_for_status()
             src_result = resp.json()
             self._emit(
                 f"[duckdb-openivm] Batch {batch_num} appended: "
@@ -826,11 +1013,12 @@ class EngineRunner:
 
         if batch_num == 1:
             self._emit("[spark-openivm] Initialising sources (DML via Livy)")
-            resp = requests.post(
+            resp = _post_with_retry(
                 f"{self._dbt_url}/sources/spark-openivm/init",
                 timeout=3600,
+                emit=self._emit,
+                label="spark-openivm",
             )
-            resp.raise_for_status()
             src_result = resp.json()
             if src_result.get("status") != "ok":
                 raise RuntimeError(
@@ -841,11 +1029,12 @@ class EngineRunner:
             )
         else:
             self._emit(f"[spark-openivm] Appending batch {batch_num} sources (DML via Livy)")
-            resp = requests.post(
+            resp = _post_with_retry(
                 f"{self._dbt_url}/sources/spark-openivm/append/{batch_num}",
                 timeout=3600,
+                emit=self._emit,
+                label="spark-openivm",
             )
-            resp.raise_for_status()
             src_result = resp.json()
             if src_result.get("status") != "ok":
                 raise RuntimeError(
@@ -2342,16 +2531,54 @@ class EngineRunner:
 
     # ----- Batch loading -----
 
+    def _batch_loader_log_file(self, suffix: str) -> Optional[str]:
+        """Path under mount/logs/<sf>/<engine>/ for batch-loader output.
+
+        Written so the real Spark error survives the loader container's `--rm`
+        and is archived into the uploaded artifact by _archive_failure_forensics
+        (which copies mount/logs/<sf>/<engine>/ on failure).
+        """
+        try:
+            log_dir = os.path.join(
+                self._config.repo_dir, "mount", "logs",
+                str(self._config.scale_factor), self._engine.name,
+            )
+            os.makedirs(log_dir, exist_ok=True)
+            return os.path.join(log_dir, f"batch-loader-{suffix}.log")
+        except OSError:
+            return None
+
+    def _run_batch_loader_service(self, cmd_args: List[str], log_suffix: str) -> None:
+        """Run the spark-batch-loader one-shot, teeing output to a forensic log."""
+        name = self._engine.name
+        log_path = self._batch_loader_log_file(log_suffix)
+        fh = open(log_path, "w") if log_path else None
+
+        def _sink(line: str) -> None:
+            logger.debug("[batch-loader/%s] %s", name, line)
+            if fh is not None:
+                try:
+                    fh.write(line + "\n")
+                    fh.flush()
+                except OSError:
+                    pass
+
+        try:
+            self._batch_mgr.run_service(
+                "spark-batch-loader",
+                cmd_args=cmd_args,
+                stream_callback=_sink,
+            )
+        finally:
+            if fh is not None:
+                fh.close()
+
     def _batch_loader_init(self) -> None:
         """Initialize staging from batch1 (serial mode only)."""
         name = self._engine.name
         self._emit(f"[{name}] Batch loader: init")
 
-        self._batch_mgr.run_service(
-            "spark-batch-loader",
-            cmd_args=["init"],
-            stream_callback=lambda line: logger.debug("[batch-loader/%s] %s", name, line),
-        )
+        self._run_batch_loader_service(["init"], "init")
         self._fix_delta_permissions()
         self._emit(f"[{name}] Batch loader: init complete")
 
@@ -2370,10 +2597,8 @@ class EngineRunner:
             f"[{name}] Batch loader: append {batch_num} "
             f"(heap {self._batch_append_heap_gb}g)"
         )
-        self._batch_mgr.run_service(
-            "spark-batch-loader",
-            cmd_args=["append", str(batch_num)],
-            stream_callback=lambda line: logger.debug("[batch-loader/%s] %s", name, line),
+        self._run_batch_loader_service(
+            ["append", str(batch_num)], f"append{batch_num}"
         )
         self._fix_delta_permissions()
         self._emit(f"[{name}] Batch loader: append {batch_num} complete")
