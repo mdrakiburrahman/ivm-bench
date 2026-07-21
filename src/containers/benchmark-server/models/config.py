@@ -69,6 +69,11 @@ class EngineConfig:
         if self.name == "duckdb-openivm":
             mem_gb = max(1, int(self.main_resources.memory_gb * 0.8))
             env["DUCKDB_OPENIVM_MEM_LIMIT"] = f"{mem_gb}GB"
+            # Validation runs outside the timed window and materializes a full
+            # expected result.  Leave extra cgroup headroom for its spill-file
+            # page cache instead of letting the host OOM-kill the validator.
+            validate_mem_gb = max(1, int(self.main_resources.memory_gb * 0.5))
+            env["DUCKDB_OPENIVM_VALIDATE_MEM_LIMIT"] = f"{validate_mem_gb}GB"
             env["DUCKDB_OPENIVM_THREADS"] = str(self.main_resources.cpus)
         return env
 
