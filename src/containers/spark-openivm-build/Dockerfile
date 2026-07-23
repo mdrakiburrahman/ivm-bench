@@ -46,7 +46,7 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=6d8d6a5e01ebb7f059d35747c22dfe1bbb989fa2
+ARG OPENIVM_COMMIT=21fb899b521defe824b12e10bc87236d074adf92
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
 ARG LPTS_COMMIT=13786cbd8f32216aa5d92c99f8bf53c7cc52c9fb
@@ -110,8 +110,8 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/ila/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=fix/issue-20-remove-window-digest
-ARG OPENIVM_SPARK_COMMIT=8bcfe08bbf3791bd66799f5cb0d7f6f1002a097b
+ARG OPENIVM_SPARK_BRANCH=fix/watches-insert-only-refresh
+ARG OPENIVM_SPARK_COMMIT=6e2c4ace495fa097caf3ca6555466165bd55453c
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -160,7 +160,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=8bcfe08bbf3791bd66799f5cb0d7f6f1002a097b
+ARG OPENIVM_SPARK_COMMIT=6e2c4ace495fa097caf3ca6555466165bd55453c
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
