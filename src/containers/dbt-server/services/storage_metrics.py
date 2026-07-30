@@ -9,9 +9,11 @@ returned as structured errors.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -33,6 +35,12 @@ PROCESSED_ROOTS = {
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
 RAW_BACKED_ENGINES = {"spark", "feldera"}
 RAW_REFERENCE_ENGINES = RAW_BACKED_ENGINES | {"databricks-enzyme"}
+DATABRICKS_BACKING_TABLE = re.compile(
+    r"^__materialization_mat_"
+    r"[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}"
+    r"_(?P<view_name>.+)_[0-9]+$",
+    re.IGNORECASE,
+)
 
 
 def _empty_totals() -> Dict[str, int]:
@@ -587,12 +595,22 @@ def _collect_ducklake_storage(
 
 def _databricks_category(src: Any, schema: str, name: str) -> str:
     if name.startswith("event_log_"):
-        return "metadata"
+        return "helper_data"
     if schema == src.data_schema():
         return "source"
     if schema == src.work_schema():
         return "helper_data"
     return "visible_output"
+
+
+def _databricks_metric_int(name: str, value: Any) -> int:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise RuntimeError(f"invalid {name} metric: {value!r}") from None
+    if not number.is_finite() or number < 0 or number != number.to_integral_value():
+        raise RuntimeError(f"invalid {name} metric: {value!r}")
+    return int(number)
 
 
 def _databricks_storage_values(frame: Any) -> Dict[str, int]:
@@ -608,9 +626,12 @@ def _databricks_storage_values(frame: Any) -> Dict[str, int]:
         "time_travel_bytes",
         "num_time_travel_files",
     }
+    raw_values = {
+        str(row["metric_name"]): row["metric_value"] for _, row in frame.iterrows()
+    }
     values = {
-        str(row["metric_name"]): _safe_int(row["metric_value"])
-        for _, row in frame.iterrows()
+        name: _databricks_metric_int(name, raw_values[name])
+        for name in required & raw_values.keys()
     }
     missing = sorted(required - values.keys())
     if missing:
@@ -625,9 +646,49 @@ def _databricks_storage_values(frame: Any) -> Dict[str, int]:
             "ANALYZE TABLE COMPUTE STORAGE METRICS returned totals smaller "
             "than the active snapshot"
         )
+    retained_data_bytes = (
+        values["vacuumable_bytes"] + values["time_travel_bytes"]
+    )
+    retained_data_files = (
+        values["num_vacuumable_files"] + values["num_time_travel_files"]
+    )
+    if retained_data_bytes > retained_bytes or retained_data_files > retained_files:
+        raise RuntimeError(
+            "ANALYZE TABLE COMPUTE STORAGE METRICS returned retained data "
+            "larger than total retained storage"
+        )
     values["retained_bytes"] = retained_bytes
     values["num_retained_files"] = retained_files
+    values["retained_data_bytes"] = retained_data_bytes
+    values["num_retained_data_files"] = retained_data_files
+    values["transaction_log_bytes"] = retained_bytes - retained_data_bytes
+    values["num_transaction_log_files"] = retained_files - retained_data_files
     return values
+
+
+def _databricks_physical_relations(
+    relations: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    candidates = [
+        rel
+        for rel in relations
+        if str(rel.get("table_type", "")).upper().replace(" ", "_") != "VIEW"
+    ]
+    backing_aliases = set()
+    for rel in candidates:
+        match = DATABRICKS_BACKING_TABLE.match(str(rel.get("name", "")))
+        if match:
+            backing_aliases.add((str(rel.get("schema", "")), match["view_name"]))
+    return [
+        rel
+        for rel in candidates
+        if not (
+            str(rel.get("table_type", "")).upper().replace(" ", "_")
+            == "MATERIALIZED_VIEW"
+            and (str(rel.get("schema", "")), str(rel.get("name", "")))
+            in backing_aliases
+        )
+    ]
 
 
 def _databricks_relation_storage(
@@ -641,11 +702,7 @@ def _databricks_relation_storage(
     totals = _empty_totals()
     errors: List[str] = []
     relations = metrics.list_relations(deadline=deadline)
-    physical = [
-        rel
-        for rel in relations
-        if str(rel.get("table_type", "")).upper().replace(" ", "_") != "VIEW"
-    ]
+    physical = _databricks_physical_relations(relations)
     configured_workers = _safe_int(os.environ.get("STORAGE_DATABRICKS_WORKERS", "8"))
     workers = max(1, min(configured_workers, len(physical) or 1))
     executor = ThreadPoolExecutor(
@@ -683,6 +740,12 @@ def _databricks_relation_storage(
                         "num_time_travel_files": values[
                             "num_time_travel_files"
                         ],
+                        "transaction_log_bytes": values[
+                            "transaction_log_bytes"
+                        ],
+                        "num_transaction_log_files": values[
+                            "num_transaction_log_files"
+                        ],
                     }
                     _add_item(
                         items,
@@ -696,17 +759,36 @@ def _databricks_relation_storage(
                         kind="databricks_active_snapshot",
                         details=details,
                     )
-                    if values["retained_bytes"] or values["num_retained_files"]:
+                    if (
+                        values["retained_data_bytes"]
+                        or values["num_retained_data_files"]
+                    ):
                         _add_item(
                             items,
                             totals,
                             engine="databricks-enzyme",
-                            name=f"{relation}:retained",
-                            category="metadata",
-                            bytes_=values["retained_bytes"],
-                            file_count=values["num_retained_files"],
+                            name=f"{relation}:retained-data",
+                            category=category,
+                            bytes_=values["retained_data_bytes"],
+                            file_count=values["num_retained_data_files"],
                             path=f"{src.CATALOG}.{relation}",
-                            kind="databricks_retained_storage",
+                            kind="databricks_retained_data",
+                            details=details,
+                        )
+                    if (
+                        values["transaction_log_bytes"]
+                        or values["num_transaction_log_files"]
+                    ):
+                        _add_item(
+                            items,
+                            totals,
+                            engine="databricks-enzyme",
+                            name=f"{relation}:transaction-log",
+                            category="metadata",
+                            bytes_=values["transaction_log_bytes"],
+                            file_count=values["num_transaction_log_files"],
+                            path=f"{src.CATALOG}.{relation}",
+                            kind="databricks_transaction_log",
                             details=details,
                         )
                 except Exception as exc:

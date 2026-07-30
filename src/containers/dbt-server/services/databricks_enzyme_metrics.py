@@ -1,4 +1,4 @@
-"""Databricks MV refresh-metrics collector.
+"""Databricks MV refresh- and storage-metrics collector.
 
 After each dbt batch finishes, we want to know — per MV — how many rows the
 INCREMENTAL STRICT refresh actually inserted/updated/deleted, how long the
@@ -96,8 +96,8 @@ def _list_relations_in_schema(
             raise RuntimeError(
                 f"could not enumerate Databricks relations in {schema}: {exc}"
             ) from exc
-    # SHOW TABLES does not reliably expose relation type.  Mark logical views
-    # explicitly so storage collection does not issue DESCRIBE DETAIL against
+    # SHOW TABLES does not reliably expose relation type. Mark logical views
+    # explicitly so storage collection does not issue ANALYZE TABLE against
     # them and turn an expected zero-byte relation into a false probe failure.
     try:
         views = execute(f"SHOW VIEWS IN `{catalog}`.`{schema}`")
