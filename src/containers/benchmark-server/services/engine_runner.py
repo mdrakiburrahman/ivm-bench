@@ -2718,10 +2718,19 @@ class EngineRunner:
         self, name: str, batch_num: int, batch, out_path: str
     ) -> None:
         try:
+            default_timeout = 1820 if name == "databricks-enzyme" else 110
+            configured_timeout = os.environ.get(
+                "STORAGE_COLLECTION_TIMEOUT_S", ""
+            ).strip()
+            request_timeout = (
+                self._safe_int(configured_timeout, default_timeout) + 20
+                if configured_timeout
+                else default_timeout
+            )
             resp = requests.get(
                 f"{self._dbt_url}/storage/{name}",
                 params={"batch_num": batch_num},
-                timeout=110,
+                timeout=request_timeout,
             )
             data = resp.json()
             if resp.status_code >= 500:

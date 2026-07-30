@@ -47,6 +47,7 @@ export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/exp
 export OAT_MIN_FREE_PCT=10   # skip remaining experiments when free disk < 10%
 export PRESERVE_RAW=1        # keep mount/bin/ across sweeps (raw/<SF>/ is always wiped between experiments)
 export STORAGE_METRICS=1     # collect per-engine storage artifacts after each batch (set 0 to disable)
+export STORAGE_COLLECTION_TIMEOUT_S=1800 # optional storage-collection deadline
 export BENCHMARK_RUNS=1      # repeat the full benchmark N times and average per-engine timings
 
 sudo rm -rf ${GIT_ROOT}/mount
@@ -74,6 +75,14 @@ generators and reusable cloud caches are excluded. A partial relation/listing
 failure is reported as `partial` (or `error` when nothing could be measured),
 never as a successful zero-byte result. The overhead ratio is
 `helper_data_bytes / visible_output_bytes`.
+
+Databricks storage collection requires
+`ANALYZE TABLE ... COMPUTE STORAGE METRICS` (Databricks Runtime 18 or newer)
+and must run as the materialized-view owner. The active backing snapshot,
+including Enzyme's internal columns, is reported as `visible_output`; retained
+files, transaction logs, and associated metadata are reported as `metadata`.
+The per-relation artifact preserves the full active, vacuumable, time-travel,
+and total byte/file breakdown.
 
 Each sample also reports a base-table footprint. Engines that directly read
 the generated Delta tables use that current snapshot; engines that copy data

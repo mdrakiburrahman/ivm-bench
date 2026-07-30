@@ -172,11 +172,12 @@ def _list_relations() -> List[Dict[str, str]]:
     return list_relations()
 
 
-def describe_storage(rel: Dict[str, str], deadline: Optional[float] = None):
-    """Return DESCRIBE DETAIL for one physical relation on an isolated connection."""
+def analyze_storage(rel: Dict[str, str], deadline: Optional[float] = None):
+    """Return complete storage metrics for one relation on an isolated connection."""
     fqn = f"`{src.CATALOG}`.`{rel['schema']}`.`{rel['name']}`"
     return src.execute_isolated(
-        f"DESCRIBE DETAIL {fqn}", timeout_s=_remaining(deadline)
+        f"ANALYZE TABLE {fqn} COMPUTE STORAGE METRICS",
+        timeout_s=_remaining(deadline, default=1800.0),
     )
 
 
