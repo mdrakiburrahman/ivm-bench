@@ -15,7 +15,11 @@ from models.config import BenchmarkConfig, EngineConfig
 from models.result import EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
-from services.storage_sync import storage_snapshot_barrier
+from services.storage_sync import (
+    StorageMetricsError,
+    require_complete_storage_metrics,
+    storage_snapshot_barrier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2718,10 +2722,19 @@ class EngineRunner:
         self, name: str, batch_num: int, batch, out_path: str
     ) -> None:
         try:
+            default_timeout = 1820 if name == "databricks-enzyme" else 110
+            configured_timeout = os.environ.get(
+                "STORAGE_COLLECTION_TIMEOUT_S", ""
+            ).strip()
+            request_timeout = (
+                self._safe_int(configured_timeout, default_timeout) + 20
+                if configured_timeout
+                else default_timeout
+            )
             resp = requests.get(
                 f"{self._dbt_url}/storage/{name}",
                 params={"batch_num": batch_num},
-                timeout=110,
+                timeout=request_timeout,
             )
             data = resp.json()
             if resp.status_code >= 500:
@@ -2750,11 +2763,15 @@ class EngineRunner:
                 batch.extra["storage"]["errors"] = list(data["errors"])
             elif data.get("error"):
                 batch.extra["storage"]["errors"] = [str(data["error"])]
+            status = batch.extra["storage"]["status"]
             self._emit(
                 f"[{name}] Storage metrics captured for batch {batch_num}: "
                 f"visible={totals.get('visible_output_bytes', 0)}B "
                 f"helper={totals.get('helper_data_bytes', 0)}B"
             )
+            require_complete_storage_metrics(status, name, batch_num)
+        except StorageMetricsError:
+            raise
         except Exception as e:
             logger.warning("Failed to capture storage metrics for %s batch %d: %s", name, batch_num, e)
             batch.extra["storage"] = {
@@ -2780,6 +2797,9 @@ class EngineRunner:
                     batch_num,
                     write_error,
                 )
+            raise StorageMetricsError(
+                f"storage metrics failed for {name} batch {batch_num}: {e}"
+            ) from e
 
     def _fetch_lineage(self) -> None:
         """Fetch dbt lineage."""

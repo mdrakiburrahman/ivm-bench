@@ -9,9 +9,11 @@ returned as structured errors.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -33,6 +35,12 @@ PROCESSED_ROOTS = {
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
 RAW_BACKED_ENGINES = {"spark", "feldera"}
 RAW_REFERENCE_ENGINES = RAW_BACKED_ENGINES | {"databricks-enzyme"}
+DATABRICKS_BACKING_TABLE = re.compile(
+    r"^__materialization_mat_"
+    r"[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}"
+    r"_(?P<view_name>.+)_[0-9]+$",
+    re.IGNORECASE,
+)
 
 
 def _empty_totals() -> Dict[str, int]:
@@ -595,6 +603,94 @@ def _databricks_category(src: Any, schema: str, name: str) -> str:
     return "visible_output"
 
 
+def _databricks_metric_int(name: str, value: Any) -> int:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise RuntimeError(f"invalid {name} metric: {value!r}") from None
+    if not number.is_finite() or number < 0 or number != number.to_integral_value():
+        raise RuntimeError(f"invalid {name} metric: {value!r}")
+    return int(number)
+
+
+def _databricks_storage_values(frame: Any) -> Dict[str, int]:
+    if frame is None or frame.empty:
+        raise RuntimeError("ANALYZE TABLE COMPUTE STORAGE METRICS returned no rows")
+    required = {
+        "total_bytes",
+        "num_total_files",
+        "active_bytes",
+        "num_active_files",
+        "vacuumable_bytes",
+        "num_vacuumable_files",
+        "time_travel_bytes",
+        "num_time_travel_files",
+    }
+    raw_values = {
+        str(row["metric_name"]): row["metric_value"] for _, row in frame.iterrows()
+    }
+    values = {
+        name: _databricks_metric_int(name, raw_values[name])
+        for name in required & raw_values.keys()
+    }
+    missing = sorted(required - values.keys())
+    if missing:
+        raise RuntimeError(
+            "ANALYZE TABLE COMPUTE STORAGE METRICS omitted required metrics: "
+            + ", ".join(missing)
+        )
+    retained_bytes = values["total_bytes"] - values["active_bytes"]
+    retained_files = values["num_total_files"] - values["num_active_files"]
+    if retained_bytes < 0 or retained_files < 0:
+        raise RuntimeError(
+            "ANALYZE TABLE COMPUTE STORAGE METRICS returned totals smaller "
+            "than the active snapshot"
+        )
+    retained_data_bytes = (
+        values["vacuumable_bytes"] + values["time_travel_bytes"]
+    )
+    retained_data_files = (
+        values["num_vacuumable_files"] + values["num_time_travel_files"]
+    )
+    if retained_data_bytes > retained_bytes or retained_data_files > retained_files:
+        raise RuntimeError(
+            "ANALYZE TABLE COMPUTE STORAGE METRICS returned retained data "
+            "larger than total retained storage"
+        )
+    values["retained_bytes"] = retained_bytes
+    values["num_retained_files"] = retained_files
+    values["retained_data_bytes"] = retained_data_bytes
+    values["num_retained_data_files"] = retained_data_files
+    values["transaction_log_bytes"] = retained_bytes - retained_data_bytes
+    values["num_transaction_log_files"] = retained_files - retained_data_files
+    return values
+
+
+def _databricks_physical_relations(
+    relations: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    candidates = [
+        rel
+        for rel in relations
+        if str(rel.get("table_type", "")).upper().replace(" ", "_") != "VIEW"
+    ]
+    backing_aliases = set()
+    for rel in candidates:
+        match = DATABRICKS_BACKING_TABLE.match(str(rel.get("name", "")))
+        if match:
+            backing_aliases.add((str(rel.get("schema", "")), match["view_name"]))
+    return [
+        rel
+        for rel in candidates
+        if not (
+            str(rel.get("table_type", "")).upper().replace(" ", "_")
+            == "MATERIALIZED_VIEW"
+            and (str(rel.get("schema", "")), str(rel.get("name", "")))
+            in backing_aliases
+        )
+    ]
+
+
 def _databricks_relation_storage(
     *, deadline: Optional[float] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[str]]:
@@ -606,18 +702,14 @@ def _databricks_relation_storage(
     totals = _empty_totals()
     errors: List[str] = []
     relations = metrics.list_relations(deadline=deadline)
-    physical = [
-        rel
-        for rel in relations
-        if "VIEW" not in str(rel.get("table_type", "")).upper()
-    ]
+    physical = _databricks_physical_relations(relations)
     configured_workers = _safe_int(os.environ.get("STORAGE_DATABRICKS_WORKERS", "8"))
     workers = max(1, min(configured_workers, len(physical) or 1))
     executor = ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="storage-databricks"
     )
     futures = {
-        executor.submit(metrics.describe_storage, rel, deadline=deadline): rel
+        executor.submit(metrics.analyze_storage, rel, deadline=deadline): rel
         for rel in physical
     }
     try:
@@ -630,32 +722,75 @@ def _databricks_relation_storage(
                 table_type = str(rel.get("table_type", "") or "").upper()
                 try:
                     frame = future.result()
-                    if frame is None or frame.empty:
-                        raise RuntimeError("DESCRIBE DETAIL returned no rows")
-                    row = frame.iloc[0]
-                    size_bytes = _safe_int(
-                        row.get("sizeInBytes", row.get("size_in_bytes", 0))
-                    )
-                    file_count = _safe_int(
-                        row.get("numFiles", row.get("num_files", 0))
-                    )
+                    values = _databricks_storage_values(frame)
+                    relation = f"{schema}.{name}"
+                    category = _databricks_category(src, schema, name)
+                    details = {
+                        "table_type": table_type,
+                        "storage_metric_source": (
+                            "analyze_table_compute_storage_metrics"
+                        ),
+                        "total_bytes": values["total_bytes"],
+                        "num_total_files": values["num_total_files"],
+                        "active_bytes": values["active_bytes"],
+                        "num_active_files": values["num_active_files"],
+                        "vacuumable_bytes": values["vacuumable_bytes"],
+                        "num_vacuumable_files": values["num_vacuumable_files"],
+                        "time_travel_bytes": values["time_travel_bytes"],
+                        "num_time_travel_files": values[
+                            "num_time_travel_files"
+                        ],
+                        "transaction_log_bytes": values[
+                            "transaction_log_bytes"
+                        ],
+                        "num_transaction_log_files": values[
+                            "num_transaction_log_files"
+                        ],
+                    }
                     _add_item(
                         items,
                         totals,
                         engine="databricks-enzyme",
-                        name=f"{schema}.{name}",
-                        category=_databricks_category(src, schema, name),
-                        bytes_=size_bytes,
-                        file_count=file_count,
-                        path=str(
-                            row.get("location") or f"{src.CATALOG}.{schema}.{name}"
-                        ),
-                        kind="databricks_relation",
-                        details={
-                            "table_type": table_type,
-                            "format": str(row.get("format") or ""),
-                        },
+                        name=relation,
+                        category=category,
+                        bytes_=values["active_bytes"],
+                        file_count=values["num_active_files"],
+                        path=f"{src.CATALOG}.{relation}",
+                        kind="databricks_active_snapshot",
+                        details=details,
                     )
+                    if (
+                        values["retained_data_bytes"]
+                        or values["num_retained_data_files"]
+                    ):
+                        _add_item(
+                            items,
+                            totals,
+                            engine="databricks-enzyme",
+                            name=f"{relation}:retained-data",
+                            category=category,
+                            bytes_=values["retained_data_bytes"],
+                            file_count=values["num_retained_data_files"],
+                            path=f"{src.CATALOG}.{relation}",
+                            kind="databricks_retained_data",
+                            details=details,
+                        )
+                    if (
+                        values["transaction_log_bytes"]
+                        or values["num_transaction_log_files"]
+                    ):
+                        _add_item(
+                            items,
+                            totals,
+                            engine="databricks-enzyme",
+                            name=f"{relation}:transaction-log",
+                            category="metadata",
+                            bytes_=values["transaction_log_bytes"],
+                            file_count=values["num_transaction_log_files"],
+                            path=f"{src.CATALOG}.{relation}",
+                            kind="databricks_transaction_log",
+                            details=details,
+                        )
                 except Exception as exc:
                     errors.append(
                         f"Databricks storage probe failed for {schema}.{name}: {exc}"
@@ -748,8 +883,13 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
             "items": items,
         }
 
+    default_timeout_s = 1800 if engine == "databricks-enzyme" else 90
+    configured_timeout = os.environ.get("STORAGE_COLLECTION_TIMEOUT_S", "").strip()
     timeout_s = max(
-        1, _safe_int(os.environ.get("STORAGE_COLLECTION_TIMEOUT_S", "90"))
+        1,
+        _safe_int(configured_timeout)
+        if configured_timeout
+        else default_timeout_s,
     )
     deadline = time.monotonic() + timeout_s
     if engine in DUCKLAKE_ENGINES:

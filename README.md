@@ -47,6 +47,7 @@ export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/exp
 export OAT_MIN_FREE_PCT=10   # skip remaining experiments when free disk < 10%
 export PRESERVE_RAW=1        # keep mount/bin/ across sweeps (raw/<SF>/ is always wiped between experiments)
 export STORAGE_METRICS=1     # collect per-engine storage artifacts after each batch (set 0 to disable)
+export STORAGE_COLLECTION_TIMEOUT_S=1800 # optional storage-collection deadline
 export BENCHMARK_RUNS=1      # repeat the full benchmark N times and average per-engine timings
 
 sudo rm -rf ${GIT_ROOT}/mount
@@ -74,6 +75,20 @@ generators and reusable cloud caches are excluded. A partial relation/listing
 failure is reported as `partial` (or `error` when nothing could be measured),
 never as a successful zero-byte result. The overhead ratio is
 `helper_data_bytes / visible_output_bytes`.
+
+Databricks storage collection requires
+`ANALYZE TABLE ... COMPUTE STORAGE METRICS` (Databricks Runtime 18 or newer)
+and must run as the materialized-view owner. Databricks registers both a public
+materialized-view alias and its physical `__materialization_mat_*` backing
+table; the collector measures the backing table once and excludes the alias.
+The active backing snapshot, including inseparable Enzyme-internal columns, is
+reported as `visible_output`, making it an upper bound on user-visible bytes.
+Enzyme auxiliary state is not separately observable from this physical backing
+snapshot. The `event_log_*` tables, transaction logs, and associated metadata
+are reported as `metadata`; no positive lower bound on separate Enzyme state is
+claimed. Vacuumable and time-travel data retain the owning relation's category.
+The per-relation artifact preserves the full active, vacuumable, time-travel,
+transaction-log, and total byte/file breakdown.
 
 Each sample also reports a base-table footprint. Engines that directly read
 the generated Delta tables use that current snapshot; engines that copy data
