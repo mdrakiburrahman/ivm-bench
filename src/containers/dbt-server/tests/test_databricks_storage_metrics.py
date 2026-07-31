@@ -130,7 +130,9 @@ class DatabricksStorageMetricsTest(unittest.TestCase):
         ):
             self.storage._databricks_storage_values(frame)
 
-    def test_relation_storage_deduplicates_mv_alias_and_tracks_event_log(self):
+    def test_relation_storage_deduplicates_mv_alias_and_tracks_event_log_as_metadata(
+        self,
+    ):
         backing_name = (
             "__materialization_mat_01234567_89ab_cdef_0123_456789abcdef"
             "_customer_summary_1"
@@ -210,8 +212,8 @@ class DatabricksStorageMetricsTest(unittest.TestCase):
         }
         self.assertEqual(analyzed_names, {backing_name, relations[2]["name"]})
         self.assertEqual(totals["visible_output_bytes"], 110)
-        self.assertEqual(totals["helper_data_bytes"], 10)
-        self.assertEqual(totals["metadata_bytes"], 15)
+        self.assertEqual(totals["helper_data_bytes"], 0)
+        self.assertEqual(totals["metadata_bytes"], 25)
         self.assertEqual(totals["total_bytes"], 135)
         kinds = {item["kind"] for item in items}
         self.assertEqual(

@@ -82,13 +82,13 @@ and must run as the materialized-view owner. Databricks registers both a public
 materialized-view alias and its physical `__materialization_mat_*` backing
 table; the collector measures the backing table once and excludes the alias.
 The active backing snapshot, including inseparable Enzyme-internal columns, is
-reported as `visible_output`, while `event_log_*` tables are `helper_data`.
-Consequently, Databricks `visible_output` is an upper bound on user-visible
-bytes and `helper_data` is a lower bound on auxiliary state. Vacuumable and
-time-travel data retain the owning relation's category; transaction logs and
-associated metadata are `metadata`. The per-relation artifact preserves the
-full active, vacuumable, time-travel, transaction-log, and total byte/file
-breakdown.
+reported as `visible_output`, making it an upper bound on user-visible bytes.
+Enzyme auxiliary state is not separately observable from this physical backing
+snapshot. The `event_log_*` tables, transaction logs, and associated metadata
+are reported as `metadata`; no positive lower bound on separate Enzyme state is
+claimed. Vacuumable and time-travel data retain the owning relation's category.
+The per-relation artifact preserves the full active, vacuumable, time-travel,
+transaction-log, and total byte/file breakdown.
 
 Each sample also reports a base-table footprint. Engines that directly read
 the generated Delta tables use that current snapshot; engines that copy data

@@ -148,7 +148,9 @@ jobs:
           clean: true
 
       - name: "🧪 Run storage collector unit tests"
-        run: python3 -m unittest discover -s src/containers/dbt-server/tests -v
+        run: |
+          python3 -m unittest discover -s src/containers/dbt-server/tests -v
+          python3 -m unittest discover -s src/containers/benchmark-server/tests -v
 
       - name: "🧬 Resolve experiments file"
         env:

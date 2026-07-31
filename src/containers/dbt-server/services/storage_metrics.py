@@ -595,7 +595,7 @@ def _collect_ducklake_storage(
 
 def _databricks_category(src: Any, schema: str, name: str) -> str:
     if name.startswith("event_log_"):
-        return "helper_data"
+        return "metadata"
     if schema == src.data_schema():
         return "source"
     if schema == src.work_schema():
