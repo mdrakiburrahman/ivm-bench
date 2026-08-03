@@ -45,8 +45,8 @@ FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_BRANCH=refactor
-ARG OPENIVM_COMMIT=ec44050a6ae989f0ceff6e46733b6eb97d280043
+ARG OPENIVM_BRANCH=main
+ARG OPENIVM_COMMIT=051dcc3c0e82884ff2327108927e2197a34c738c
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
 ARG LPTS_COMMIT=13786cbd8f32216aa5d92c99f8bf53c7cc52c9fb
@@ -113,7 +113,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/ila/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=fix/mv-view-delta-insert-only
-ARG OPENIVM_SPARK_COMMIT=7a54795dceb1eca7c310b2f670023dd289927ec7
+ARG OPENIVM_SPARK_COMMIT=6ebf9b161ea00ea52aefb830c120e45ea147f906
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -162,7 +162,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=7a54795dceb1eca7c310b2f670023dd289927ec7
+ARG OPENIVM_SPARK_COMMIT=6ebf9b161ea00ea52aefb830c120e45ea147f906
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
