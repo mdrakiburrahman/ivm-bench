@@ -46,6 +46,8 @@ export BENCHMARK_EXPERIMENTS_FILE="$GIT_ROOT/src/containers/benchmark-server/exp
 # Optional global knobs (apply to the OAT loop itself):
 export OAT_MIN_FREE_PCT=10   # skip remaining experiments when free disk < 10%
 export PRESERVE_RAW=1        # keep mount/bin/ across sweeps (raw/<SF>/ is always wiped between experiments)
+export STORAGE_METRICS=1     # collect per-engine storage artifacts after each batch (set 0 to disable)
+export STORAGE_COLLECTION_TIMEOUT_S=1800 # optional storage-collection deadline
 export BENCHMARK_RUNS=1      # repeat the full benchmark N times and average per-engine timings
 
 sudo rm -rf ${GIT_ROOT}/mount
@@ -59,23 +61,62 @@ mixes, engines, parallel mode, OpenIVM feature flags, Spark tunables) live
 INSIDE the experiments JSON — each row inherits from a `baseline` block and
 overrides only what varies. See `smoke.json` for the schema and the
 [OAT sweeps](#oat-sweeps-one-at-a-time) section below for artifact layout.
+Storage metrics are enabled by default via `STORAGE_METRICS=1` and are captured
+outside the timed batch window. Environment feature flags form the baseline;
+an explicit `feature_flags` value in the experiments JSON overrides that
+baseline for the corresponding row.
+
+Storage totals describe durable bytes owned by the active engine experiment:
+`visible_output` is user-facing materialized output, `helper_data` is hidden
+intermediate state required by the engine (for example Feldera DBSP storage or
+OpenIVM delta/auxiliary data), `metadata` is catalogs and transaction/query
+logs, and `source` is the engine's current managed source state. Shared raw
+generators and reusable cloud caches are excluded. A partial relation/listing
+failure is reported as `partial` (or `error` when nothing could be measured),
+never as a successful zero-byte result. The overhead ratio is
+`helper_data_bytes / visible_output_bytes`.
+
+Databricks storage collection requires
+`ANALYZE TABLE ... COMPUTE STORAGE METRICS` (Databricks Runtime 18 or newer)
+and must run as the materialized-view owner. Databricks registers both a public
+materialized-view alias and its physical `__materialization_mat_*` backing
+table; the collector measures the backing table once and excludes the alias.
+The active backing snapshot, including inseparable Enzyme-internal columns, is
+reported as `visible_output`, making it an upper bound on user-visible bytes.
+Enzyme auxiliary state is not separately observable from this physical backing
+snapshot. The `event_log_*` tables, transaction logs, and associated metadata
+are reported as `metadata`; no positive lower bound on separate Enzyme state is
+claimed. Vacuumable and time-travel data retain the owning relation's category.
+The per-relation artifact preserves the full active, vacuumable, time-travel,
+transaction-log, and total byte/file breakdown.
+
+Each sample also reports a base-table footprint. Engines that directly read
+the generated Delta tables use that current snapshot; engines that copy data
+into managed tables use their measured `source_bytes`. `results.csv` compares
+OpenIVM engines with the same-batch vanilla engine where one exists (Spark,
+DuckDB, and Fabric), and otherwise retains the raw Delta reference. The
+`base_table_storage_overhead_*` columns are a storage proxy: paired comparisons
+control for engine and format, while raw-reference comparisons can also include
+compression, encoding, and file-layout differences. The byte value is
+`base_table_bytes - base_table_baseline_bytes`; the ratio divides that difference
+by `base_table_baseline_bytes`.
 
 For append-only runs, `batch_N_pct` (or the alias `batch_N_insert_pct`) is the
 insert percentage; for mixed-DML batches, `batch_N_update_pct` and
 `batch_N_delete_pct` are optional mutation percentages applied before the
 insert (batch 1 is always insert-only, defaults are `0`).
 
-At the end, `benchmark.sh` cats `mount/oat-state/latest/RESULTS.md`:
+At the end, `benchmark.sh` cats `mount/oat-state/latest/results.csv`. The file
+contains one row per experiment, engine, and batch with raw numeric timing and
+storage values (columns abridged here):
 
 ```text
-=== OAT sweep — status: completed ===
-
-| # | label     | sf | b1   | b2     | b3     | engines              | parallel | wall   | status    |
-|---|-----------|----|------|--------|--------|----------------------|----------|--------|-----------|
-| 1 | smoke-sf3 | 3  | 1    | 0.001  | 0.002  | spark, spark-openivm | false    | 30m12s | completed |
+oat_run_id,run_status,experiment_index,experiment_label,engine,batch_num,duration_s,helper_data_bytes,base_table_bytes,base_table_baseline_bytes,base_table_storage_overhead_bytes
+abc123,completed,0,smoke-sf3,spark,1,120.5,0,1048576,1048576,0
+abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,40960,1089536,1048576,40960
 ```
 
-Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, RESULTS.md, outputs.json}`
+Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.csv, outputs.json}`
 
 Each experiment runs 3 batches per engine (full load `batch1` → append `batch2` →
 append `batch3`). Set `BENCHMARK_RUNS` greater than 1 to repeat the full 3-batch
@@ -202,9 +243,10 @@ Per-OAT artifacts land under `mount/oat-state/<oat_run_id>/` with a
 | `outputs.json`           | Per-experiment aggregated outputs (status, walls, per-batch durations…)  |
 | `chart-oat.png`          | Aggregate heatmap (rows = experiments, columns = batch × engine)         |
 | `chart-per-model.png`    | Per-dbt-model heatmap with log₂(openivm / spark) per batch               |
-| `RESULTS.md`             | Markdown overview + per-input/output tables + per-model break-even table |
+| `results.csv`            | One row per experiment/engine/batch with raw timing and storage metrics  |
 | `benchmark-server.log`   | Copy of the orchestrator log for that run                                |
 | `exp-<NNN>/outputs.json` | One per experiment — same shape as a per-experiment entry in master      |
+| `exp-<NNN>/storage/storage-<engine>-batch<N>.json` | Immutable per-experiment storage snapshot; repeated runs are under `storage/repetition-<N>/` |
 
 To write your own sweep, copy `experiments/smoke.json` as a starting point
 and override `scale_factor` / `batch_*_pct` / `engines` / `parallel` /

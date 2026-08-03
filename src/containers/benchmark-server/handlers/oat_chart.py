@@ -1,4 +1,4 @@
-"""OAT sweep chart and markdown result generation."""
+"""OAT sweep chart and CSV result generation."""
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ except ModuleNotFoundError:
             raise NotImplementedError
 
 from models.experiments import ExperimentInputs
+from services import oat_runner
 
 bp = Blueprint("oat_chart", __name__)
 
@@ -219,6 +220,20 @@ def _format_duration(seconds: Any, *, compact: bool = False) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def _format_bytes(value: Any) -> str:
+    numeric = _numeric(value)
+    if numeric is None:
+        return _MISSING
+    size = float(numeric)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(size) < 1024 or unit == "TiB":
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return _MISSING
+
+
 def _cell_text(value: Any) -> str:
     if value is None or value == "":
         return _MISSING
@@ -251,6 +266,24 @@ def _batch_duration(exp: Dict[str, Any], engine: str, batch: int) -> Optional[fl
             return _numeric(item.get("duration_s"))
     if 0 <= batch - 1 < len(batches) and isinstance(batches[batch - 1], dict):
         return _numeric(batches[batch - 1].get("duration_s"))
+    return None
+
+
+def _storage_summary(exp: Dict[str, Any], engine: str, batch: int) -> Optional[Dict[str, Any]]:
+    engine_data = (exp.get("engines") or {}).get(engine)
+    if not isinstance(engine_data, dict):
+        return None
+    for item in engine_data.get("batches") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            if int(item.get("batch_num")) != batch:
+                continue
+        except (TypeError, ValueError):
+            continue
+        extra = item.get("extra") or {}
+        storage = extra.get("storage") if isinstance(extra, dict) else None
+        return storage if isinstance(storage, dict) else None
     return None
 
 
@@ -798,6 +831,49 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
         timing_rows.append(row)
     lines.append(_markdown_table(timing_headers, timing_rows))
 
+    lines.extend(["", "## Per-engine storage overhead", ""])
+    storage_rows = []
+    for idx, exp in enumerate(experiments):
+        for engine in _engine_names_for_exp(exp):
+            for batch in _BATCHES:
+                summary = _storage_summary(exp, engine, batch)
+                if not summary:
+                    storage_rows.append([
+                        _exp_idx(exp, idx),
+                        _exp_label(exp, idx),
+                        _scale_factor(exp),
+                        engine,
+                        batch,
+                        _MISSING,
+                        _MISSING,
+                        _MISSING,
+                        _MISSING,
+                        _MISSING,
+                        _MISSING,
+                    ])
+                    continue
+                ratio = _numeric(summary.get("overhead_ratio_helper_to_visible"))
+                storage_rows.append([
+                    _exp_idx(exp, idx),
+                    _exp_label(exp, idx),
+                    _scale_factor(exp),
+                    engine,
+                    batch,
+                    summary.get("status", _MISSING),
+                    _format_bytes(summary.get("visible_output_bytes")),
+                    _format_bytes(summary.get("helper_data_bytes")),
+                    _format_bytes(summary.get("metadata_bytes")),
+                    _format_bytes(summary.get("source_bytes")),
+                    _MISSING if ratio is None else f"{ratio:.2f}",
+                ])
+    lines.append(_markdown_table(
+        [
+            "#", "label", "SF", "engine", "batch", "status",
+            "visible", "helper", "metadata", "source", "helper/visible",
+        ],
+        storage_rows,
+    ))
+
     lines.extend(
         [
             "",
@@ -856,16 +932,16 @@ def oat_chart_png() -> Response:
     return Response(png, mimetype="image/png")
 
 
-@bp.route("/benchmark/oat-results.md", methods=["GET"])
-def oat_results_md() -> Response:
+@bp.route("/benchmark/oat-results.csv", methods=["GET"])
+def oat_results_csv() -> Response:
     run_id = request.args.get("run_id", "").strip()
     if not run_id:
         return jsonify({"error": "run_id query parameter is required"}), 400
     try:
-        md = generate_oat_results_md(run_id)
+        state = _load_oat_state(run_id, "/data/state")
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 404
-    return Response(md, mimetype="text/markdown; charset=utf-8")
+    return Response(oat_runner.generate_results_csv(state), mimetype="text/csv; charset=utf-8")
 
 
 class OatChartHandler(BaseHandler):

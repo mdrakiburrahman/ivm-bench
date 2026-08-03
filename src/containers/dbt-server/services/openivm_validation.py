@@ -44,7 +44,10 @@ logger = logging.getLogger(__name__)
 
 WORK_DIR = Path(os.environ.get("DUCKDB_OPENIVM_WORK_DIR", "/data/processed/duckdb-openivm"))
 OPENIVM_BIN = os.environ.get("DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duckdb")
-MEM_LIMIT = os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB")
+MEM_LIMIT = os.environ.get(
+    "DUCKDB_OPENIVM_VALIDATE_MEM_LIMIT",
+    os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB"),
+)
 TEMP_DIR = Path(os.environ.get("DUCKDB_OPENIVM_TEMP_DIR", str(WORK_DIR / "_tmp")))
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 

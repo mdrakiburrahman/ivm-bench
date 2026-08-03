@@ -639,11 +639,15 @@ class Orchestrator:
                 durations = [er.batches[idx].duration_s for er in engine_runs]
                 statuses = [er.batches[idx].status for er in engine_runs]
                 errors = [er.batches[idx].error for er in engine_runs if er.batches[idx].error]
+                # Non-timing forensics describe the latest repetition; every
+                # repetition remains available in BenchmarkResult.repetitions.
+                batch_extra = copy.deepcopy(engine_runs[-1].batches[idx].extra)
                 batches.append(BatchResult(
                     batch_num=batch_num,
                     duration_s=sum(durations) / len(durations),
                     status="completed" if all(s == "completed" for s in statuses) else "failed",
                     error="; ".join(errors) if errors else None,
+                    extra=batch_extra,
                 ))
 
             extra = {}
@@ -873,11 +877,20 @@ class Orchestrator:
             return
         futures = {}
         fatal_validation_exc: Optional[OpenIvmValidationError] = None
+        storage_barrier = None
+        if os.environ.get("STORAGE_METRICS", "1") != "0" and len(engines) > 1:
+            storage_barrier = threading.Barrier(len(engines))
         with ThreadPoolExecutor(max_workers=len(engines)) as pool:
             runners: Dict[str, EngineRunner] = {}
             for name in engines:
                 ec = engine_configs[name]
-                runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
+                runner = EngineRunner(
+                    self._config,
+                    ec,
+                    self.emit,
+                    self._benchmark_id,
+                    storage_barrier=storage_barrier,
+                )
                 runners[name] = runner
                 futures[pool.submit(runner.run)] = (name, runner)
 
@@ -926,7 +939,7 @@ class Orchestrator:
                        * write per-experiment outputs.json + master outputs.json
                        * disk-cleanup: wipe raw/<sf>, results/<sf>/<engine>,
                          logs/<sf>/<engine>. Preserve dbt-server/, stats/, bin/.
-            phase 3  OAT chart + RESULTS.md generation; copy server log.
+            phase 3  OAT chart + results.csv generation; copy server log.
         """
         oat_t0 = time.time()
         repo = self._config.repo_dir
@@ -992,12 +1005,12 @@ class Orchestrator:
                     total_duration_s=time.time() - oat_t0,
                     per_experiment_dicts=self._oat_per_exp_dicts,
                 )
-                # Regenerate the OAT charts + RESULTS.md after every
+                # Regenerate the OAT charts + results.csv after every
                 # experiment so an external observer (`watch eog ...`, a
-                # file-watcher dashboard, `cat .../RESULTS.md`) can see the
+                # file-watcher dashboard, `cat .../results.csv`) can see the
                 # sweep evolve in real time. Atomic writes inside
                 # _phase3_oat_chart guarantee readers never see a half-
-                # written PNG/MD. ``silent=True`` keeps the SSE stream
+                # written PNG/CSV. ``silent=True`` keeps the SSE stream
                 # quiet — the chart pass logs to /tmp/benchmark-server.log
                 # at WARN level on failure regardless.
                 self._phase3_oat_chart(silent=True)
@@ -1005,7 +1018,7 @@ class Orchestrator:
                 # FAIL-FAST: an OpenIVM validation diff is unrecoverable
                 # (the MV definition or refresh path is broken). Abort the
                 # sweep immediately, marking the remaining experiments as
-                # skipped so RESULTS.md / chart-oat.png still render cleanly.
+                # skipped so results.csv / chart-oat.png still render cleanly.
                 if self._oat_fatal_validation_error is not None:
                     remaining = len(self._experiments) - (idx + 1)
                     self.emit("")
@@ -1063,7 +1076,7 @@ class Orchestrator:
         """Write skipped per-experiment dicts for every experiment in [from_idx, N).
 
         Used by fail-fast: an OpenIVM validation diff aborts the sweep, but
-        we still want RESULTS.md and chart-oat.png to render with a complete
+        we still want results.csv and chart-oat.png to render with a complete
         row count so the observer can see exactly which experiments never ran.
         """
         repo = self._config.repo_dir
@@ -1261,6 +1274,17 @@ class Orchestrator:
         self._result.total_duration_s = wall_s
         if error:
             self._result.error = error
+        if self._oat_run_id is not None:
+            try:
+                oat_runner.archive_storage_artifacts(
+                    repo_dir=repo,
+                    oat_run_id=self._oat_run_id,
+                    exp_idx=exp_idx,
+                    result=self._result,
+                )
+            except Exception as archive_error:
+                self.emit(f"  [oat-storage] WARN: artifact archive failed: {archive_error}")
+                logger.exception("OAT storage archive failed for exp %d", exp_idx)
         # _save_benchmark_results() catches+logs internally; no extra wrap.
         self._save_benchmark_results()
 
@@ -1341,7 +1365,7 @@ class Orchestrator:
 
         A SQLite failure here (e.g. the bind-mounted state dir vanished
         mid-sweep) must never abort the sweep — the filesystem outputs.json /
-        RESULTS.md are the real deliverables. Degrade to a WARN.
+        results.csv are the real deliverables. Degrade to a WARN.
         """
         try:
             with DB_LOCK:
@@ -1396,7 +1420,7 @@ class Orchestrator:
         )
 
         # Best-effort: a SQLite failure (e.g. vanished state dir) must not
-        # block the chart / RESULTS.md / server-log artifacts written below.
+        # block the chart / results.csv / server-log artifacts written below.
         try:
             with DB_LOCK:
                 conn = get_db()
@@ -1410,7 +1434,7 @@ class Orchestrator:
             self.emit(f"  [oat-db] WARN: failed to update oat_runs row: {e}")
             logger.warning("Failed to update oat_runs row %s: %s", self._oat_run_id, e)
 
-        # Chart + RESULTS.md generation (best-effort — never fail the run).
+        # Chart + results.csv generation (best-effort — never fail the run).
         self._phase3_oat_chart()
         self._dump_server_log_into_oat_state()
 
@@ -1431,7 +1455,7 @@ class Orchestrator:
             self._result.error = error
 
     def _phase3_oat_chart(self, *, silent: bool = False) -> None:
-        """Generate OAT aggregate PNG + per-model PNG + RESULTS.md.
+        """Generate OAT aggregate PNG + per-model PNG + results.csv.
 
         Writes are atomic (``.tmp`` + ``os.replace``) so a `watch`-style
         external observer always sees a coherent file. Best-effort: failures
@@ -1471,18 +1495,18 @@ class Orchestrator:
                 logger.warning("OAT chart %s render failed: %s", kind, e)
 
         try:
-            md = oat_chart.generate_oat_results_md(
-                self._oat_run_id, state_dir=os.path.dirname(state_dir)
-            )
-            if md:
-                out = os.path.join(state_dir, "RESULTS.md")
-                _atomic_write(out, md, "w")
+            with open(os.path.join(state_dir, "outputs.json"), encoding="utf-8") as f:
+                state = json.load(f)
+            csv_text = oat_runner.generate_results_csv(state)
+            if csv_text:
+                out = os.path.join(state_dir, "results.csv")
+                _atomic_write(out, csv_text, "w")
                 if not silent:
                     self.emit(f"  [oat-chart] wrote {os.path.relpath(out, repo)}")
         except Exception as e:
             if not silent:
-                self.emit(f"  [oat-chart] WARN: RESULTS.md render failed: {e}")
-            logger.warning("OAT RESULTS.md render failed: %s", e)
+                self.emit(f"  [oat-chart] WARN: results.csv render failed: {e}")
+            logger.warning("OAT results.csv render failed: %s", e)
 
     def _emit_spark_metrics(self, exp_idx: int, inputs: ExperimentInputs) -> None:
         """Parse Spark event logs → A/B Parquet + PNG + RESULTS.md + zip (issue #36).

@@ -144,7 +144,7 @@ Do not make assumptions unless you are **crystal clear** on the user's intent.
 `benchmark.sh` is OAT-only — it always runs an experiments JSON file passed
 via `BENCHMARK_EXPERIMENTS_FILE`. The server runs each experiment serially
 with disk-aware cleanup (`OAT_MIN_FREE_PCT`, default 10%). Per-run artifacts
-(`chart-oat.png`, `chart-per-model.png`, `RESULTS.md`, `outputs.json`) land
+(`chart-oat.png`, `chart-per-model.png`, `results.csv`, `outputs.json`) land
 under `mount/oat-state/<run_id>/` with a `mount/oat-state/latest` symlink and
 are refreshed after every experiment so the run can be observed live.
 Built-in sweeps: `experiments/sf-sweep.json` (12 SFs, spark vs spark-openivm)

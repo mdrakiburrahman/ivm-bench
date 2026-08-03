@@ -26,6 +26,7 @@ from handlers.lineage import LineageHandler
 from handlers.duckdb_openivm import DuckDBOpenIVMHandler
 from handlers.query_plans import QueryPlansHandler
 from handlers.spark_openivm import SparkOpenIVMHandler
+from handlers.storage_metrics import StorageMetricsHandler
 from handlers.runs import RunsHandler
 from handlers.sql_analysis import SQLAnalysisHandler
 from services.db import init_db
@@ -78,6 +79,7 @@ def register_handlers(flask_app: Flask) -> None:
         SQLAnalysisHandler(),
         ContainerStatsHandler(),
         DeltaStatsHandler(),
+        StorageMetricsHandler(),
         QueryPlansHandler(),
     ]
     for handler in handlers:
