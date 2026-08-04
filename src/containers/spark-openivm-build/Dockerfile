@@ -32,15 +32,24 @@
 # -----------------------------------------------------------------------------
 # Stage 1: openivm-builder (verbatim from spark-ext/dev/docker/Dockerfile)
 # -----------------------------------------------------------------------------
+# Build the openivm duckdb CLI + extension on ubuntu:22.04 (GLIBC 2.35), NOT
+# 24.04 (GLIBC 2.39). These artifacts are copied into the ubuntu:22.04 final
+# stage and executed there (the spark driver's OpenIvmCompiler shells out to
+# the `duckdb` CLI and dlopens `openivm.duckdb_extension`); a 24.04-built binary
+# fails on 22.04 with `GLIBC_2.38 not found` / `GLIBCXX_3.4.32 not found`, which
+# crashes every per-view compile -> COMPILE_FAILED -> FULL_REFRESH for all views.
+# lpts 13786cbd needs GCC 13, so pull gcc-13 from the toolchain PPA. Keep libstdc++
+# DYNAMIC (no -static-libstdc++): the CLI and the loadable extension must share a
+# single libstdc++, so the final stage installs the matching gcc-13 libstdc++6.
 FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=909a106364427844c6e8a0a891ba2ed6de4127e1
+ARG OPENIVM_COMMIT=154323e8ec8b53d26210660c0a6f06eaf1217bd7
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
-ARG LPTS_COMMIT=39a186cc59aa552ebf517c984784ebc9b48ca221
+ARG LPTS_COMMIT=13786cbd8f32216aa5d92c99f8bf53c7cc52c9fb
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -55,7 +64,13 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
     apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
     apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git ca-certificates \
-        python3 python3-pip libssl-dev pkg-config zip unzip curl && \
+        python3 python3-pip libssl-dev pkg-config zip unzip curl \
+        software-properties-common gpg-agent && \
+    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
+    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
+    apt-get install -y --no-install-recommends gcc-13 g++-13 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -71,6 +86,8 @@ RUN git init -q && \
     git config -f .gitmodules submodule.third_party/lpts.url "${LPTS_REPO}" && \
     git submodule sync --recursive && \
     git submodule update --init --recursive --depth 1 duckdb extension-ci-tools && \
+    (cd duckdb && git fetch --depth 1 origin 08e34c447bae34eaee3723cac61f2878b6bdf787 && git checkout FETCH_HEAD) && \
+    (cd extension-ci-tools && git fetch --depth 1 origin 72e76e99cd7fee45a99739cd118ec2db64e034ec && git checkout FETCH_HEAD) && \
     (cd third_party/lpts && \
         git init -q && \
         (git remote add origin "${LPTS_REPO}" 2>/dev/null || git remote set-url origin "${LPTS_REPO}") && \
@@ -96,7 +113,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=main
-ARG OPENIVM_SPARK_COMMIT=7f65ee9bdc957dc9d96b8eb1ea6df9ab5bb096db
+ARG OPENIVM_SPARK_COMMIT=90587c0f16ecd4c027b21e3808faa3375e56aa4f
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -145,8 +162,14 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=7f65ee9bdc957dc9d96b8eb1ea6df9ab5bb096db
+ARG OPENIVM_SPARK_COMMIT=90587c0f16ecd4c027b21e3808faa3375e56aa4f
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
+
+# Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
+# builder image only when the label still matches, so a base-image / glibc /
+# toolchain change (not just an OPENIVM_SPARK_COMMIT bump) forces a rebuild.
+ARG SPARK_OPENIVM_DOCKERFILE_HASH=""
+LABEL org.openivm.spark.dockerfile_hash="${SPARK_OPENIVM_DOCKERFILE_HASH}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
@@ -158,7 +181,10 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
         fi; \
     fi && \
     apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --no-install-recommends ca-certificates && \
+    apt-get install -y --no-install-recommends ca-certificates software-properties-common gpg-agent && \
+    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
+    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
+    apt-get install -y --only-upgrade libstdc++6 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /opt/spark-openivm/openivm.duckdb_extension
