@@ -286,7 +286,16 @@ class EngineRunner:
             # via Livy. Under `spark.openivm.changeFeed.mode=cdf` the INSERT
             # writes Delta CDF records that the next REFRESH consumes — no DML
             # interception in this mode.
-            if name not in ("duckdb", "duckdb-openivm") and not self._parallel:
+            # compiler-bench never reads the TPC-DI Delta sources (it loads its
+            # own TPC-C data), and the orchestrator skips their generation — so
+            # staging them would fail on the missing input rather than merely
+            # waste time.
+            compiler_bench = self._compiler_bench_enabled()
+            if (
+                name not in ("duckdb", "duckdb-openivm")
+                and not self._parallel
+                and not compiler_bench
+            ):
                 self._batch_loader_init()
 
             # Start engine stack
@@ -300,9 +309,12 @@ class EngineRunner:
 
             # Start container stats
             self._start_stats()
-            self._capture_delta_stats(1)
+            if not compiler_bench:
+                # Also TPC-DI-only: nothing to measure when those tables are
+                # neither generated nor read.
+                self._capture_delta_stats(1)
 
-            if self._compiler_bench_enabled():
+            if compiler_bench:
                 # The survey creates and drops thousands of views, so it replaces
                 # the timed batches rather than sharing an engine with them.
                 self._run_compiler_bench()
