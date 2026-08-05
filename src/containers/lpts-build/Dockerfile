@@ -47,6 +47,14 @@ ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_COMMIT=ecb176c500aae39fa09557a72ffddfd75288a29f
 ARG DUCKDB_COMMIT=08e34c447bae34eaee3723cac61f2878b6bdf787
 ARG EXTENSION_CI_TOOLS_COMMIT=72e76e99cd7fee45a99739cd118ec2db64e034ec
+# Must be the tag DUCKDB_COMMIT corresponds to. A loadable extension records the
+# DuckDB version it was built for and refuses to load into any other, and that
+# version comes from `git describe` on the duckdb submodule. The shallow
+# fetch-by-SHA below carries no tags, so git describe fails and the version
+# silently becomes v0.0.1 — the extension then fails to load with "built
+# specifically for DuckDB version 'v0.0.1'" and every corpus query is reported
+# untranslatable. OVERRIDE_GIT_DESCRIBE is DuckDB's supported way to supply it.
+ARG DUCKDB_VERSION=v1.5.4
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -88,9 +96,17 @@ RUN git init -q && \
 # CLI provides the matching GLIBCXX (the dbt-server / benchmark-server images
 # already do — see the duckdb-openivm and spark-openivm Dockerfiles).
 ENV CC=gcc-13 \
-    CXX=g++-13
+    CXX=g++-13 \
+    OVERRIDE_GIT_DESCRIBE=${DUCKDB_VERSION}
 
 RUN GEN=ninja make release -j"$(nproc)"
+
+# Fail the build here rather than at LOAD time: an extension stamped with the
+# wrong DuckDB version is useless, and the failure would otherwise surface as
+# "every query is untranslatable" much later.
+RUN duckdb_ver=$(build/release/duckdb -noheader -list -c "SELECT version()" 2>/dev/null) && \
+    echo "built against DuckDB ${duckdb_ver} (expected ${DUCKDB_VERSION})" && \
+    [ "${duckdb_ver}" = "${DUCKDB_VERSION}" ]
 
 RUN mkdir -p /artifacts && \
     cp build/release/extension/lpts/lpts.duckdb_extension /artifacts/ && \

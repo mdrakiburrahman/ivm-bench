@@ -510,6 +510,14 @@ def _cache_key(
     return digest.hexdigest()
 
 
+def _read_translation_rows(dialect_dir: Path) -> List[dict]:
+    path = dialect_dir / "translation.csv"
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
 def _lpts_sha(extension: Path) -> str:
     sums = extension.parent / "SHA256SUMS"
     if sums.exists():
@@ -644,6 +652,27 @@ def prepare(
             "[compiler-bench] %s: %d/%d translated (%.1f%%)",
             dialect, ok, len(queries), per_dialect[dialect]["pct_translated"],
         )
+
+    # A dialect that translated nothing means the transpiler is broken, not that
+    # the corpus is inexpressible — e.g. an LPTS extension built against the
+    # wrong DuckDB version fails every LOAD. Fail here: proceeding would start
+    # engines against an empty corpus and report 0% incrementalizable, which
+    # reads like an engine result.
+    for dialect, names in translatable.items():
+        if not names:
+            sample = next(
+                (
+                    r["error"]
+                    for r in _read_translation_rows(paths.root / dialect)
+                    if r.get("error")
+                ),
+                "no error recorded",
+            )
+            raise RuntimeError(
+                f"compiler-bench: translation produced 0 of {len(queries)} queries "
+                f"for dialect {dialect!r} — the transpiler is not working. "
+                f"First error: {sample}"
+            )
 
     # Queries every dialect could express. Cross-engine percentages computed over
     # this set are comparable; per-engine percentages over each engine's own

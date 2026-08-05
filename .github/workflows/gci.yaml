@@ -269,6 +269,14 @@ jobs:
             mount/oat-state/
             mount/imgs/
             imgs/
+            # compiler-bench: per-query results/summary plus the translation
+            # report, which carries the per-query reason a query was not
+            # expressible in a dialect. Without it a cloud run that fails
+            # translation gives only the aggregate count.
+            mount/compiler-bench/results/
+            mount/compiler-bench/corpus/*/translation.csv
+            mount/compiler-bench/corpus/*/meta.json
+            mount/compiler-bench/corpus/meta.json
             gci-experiments.json
           if-no-files-found: warn
           retention-days: 30
