@@ -188,12 +188,25 @@ hand-written `ducklake_*` variants (which this harness therefore skips). Set
 `ducklake: true` on an experiment row; results land under
 `results/<engine>-ducklake/` so the two runs cannot overwrite each other.
 
-One deviation from the timed engine: DuckLake metadata here is DuckDB-backed
-rather than `ducklake:sqlite:`. This harness runs each phase in its own process
-for crash isolation, and reopening a SQLite metadata catalog that often races on
-its lock — the refresh fails with `Failed to commit DuckLake transaction ...
-database is locked` for roughly half the corpus. The metadata backend is not what
-is being measured; the DuckLake storage and scan path are identical either way.
+DuckLake metadata is DuckDB-backed — the same `ATTACH '<db>.ducklake.db' AS dl
+(TYPE ducklake)` the C++ benchmark uses, so verdicts stay comparable with the
+reference. It is *not* the `ducklake:sqlite:` the timed duckdb-openivm engine
+attaches, because OpenIVM's refresh cannot commit against DuckLake with SQLite
+metadata at all: `PRAGMA refresh` fails with `Failed to commit DuckLake
+transaction ... database is locked` on a single connection in a single process,
+regardless of `openivm_cascade_refresh`. That looks worth reporting upstream.
+
+The DuckDB-family engines run through **one persistent CLI worker** rather than a
+process per phase, matching the C++ benchmark's fork-once worker: one connection
+held across every phase of every query, re-spawned only after a crash (which is
+what preserves crash isolation). Statements are bracketed by stdout markers with
+stderr drained concurrently, so each statement's error stays attributable and one
+bad query cannot end the session.
+
+The engine sessions deliberately do **not** load icu, even though the translation
+step does. icu changes string collation, which changes what `EXCEPT ALL`
+considers equal, and turned 10 of 60 correct results into spurious
+`verify_failed`. The C++ benchmark does not load it either.
 
 Reading the numbers:
 

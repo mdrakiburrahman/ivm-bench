@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -154,16 +157,173 @@ def _verify_probe(
 
 
 # ---------------------------------------------------------------------------
-# DuckDB family — a CLI subprocess per phase
+# DuckDB family — one persistent CLI worker driven over pipes
 # ---------------------------------------------------------------------------
 
 
-class _DuckDBCliAdapter(EngineAdapter):
-    """One CLI process per phase against a persistent database file.
+class _DuckDBSession:
+    """A long-lived DuckDB CLI process, one statement at a time.
 
-    Slower than holding a connection open, but it is what buys crash isolation:
-    a query that segfaults DuckDB takes down only its own process, as the C++
-    benchmark's fork-per-query does. The database file is this benchmark's own,
+    Mirrors the C++ benchmark's worker: start once, hold ONE connection across
+    every phase of every query, re-spawn only after a crash. A process per phase
+    would instead race on whatever lock the connection holds — with DuckLake's
+    SQLite metadata catalog that surfaces as `Failed to commit DuckLake
+    transaction ... database is locked`.
+
+    Protocol: each statement is bracketed by marker SELECTs on stdout so the end
+    of its output is unambiguous, while stderr is drained concurrently. Whatever
+    stderr produced during a statement is that statement's error; `.bail off`
+    keeps the session alive so the next query still runs.
+    """
+
+    _POLL_S = 0.25
+    #: stdout and stderr are separate pipes, so a failing statement's stderr can
+    #: trail its closing stdout marker by a hair.
+    _STDERR_GRACE_S = 0.05
+
+    def __init__(self, binary: str, db_path: str, preamble: Sequence[str]) -> None:
+        self._binary = binary
+        self._db_path = db_path
+        self._preamble = list(preamble)
+        self._proc: Optional[subprocess.Popen] = None
+        self._stdout: "queue.Queue" = queue.Queue()
+        self._stderr: "queue.Queue" = queue.Queue()
+        self._seq = 0
+
+    def start(self) -> None:
+        self.close()
+        try:
+            self._proc = subprocess.Popen(
+                [self._binary, "-unsigned", self._db_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            raise EngineCrashed(f"cannot launch {self._binary}: {exc}") from exc
+
+        self._stdout = queue.Queue()
+        self._stderr = queue.Queue()
+        threading.Thread(target=self._drain, args=(self._proc.stdout, self._stdout, True),
+                         daemon=True).start()
+        threading.Thread(target=self._drain, args=(self._proc.stderr, self._stderr, False),
+                         daemon=True).start()
+
+        # `.bail off` keeps one bad query from ending the session; markers plus the
+        # error stream say what happened. JSON mode makes results parseable.
+        self._write(".bail off\n.mode json\n")
+        for statement in self._preamble:
+            self._write(statement.rstrip(";") + ";\n")
+        # Preamble errors are tolerated (icu may be unavailable) and its output is
+        # drained here so it cannot be mistaken for the first statement's.
+        self.execute("SELECT 1 AS __ready", timeout_s=300, tolerate_errors=True)
+
+    def close(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+
+    @property
+    def alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    @staticmethod
+    def _drain(stream, sink: "queue.Queue", mark_eof: bool) -> None:
+        for line in stream:
+            sink.put(line)
+        if mark_eof:
+            sink.put(None)  # the process is gone
+
+    def _write(self, text: str) -> None:
+        if self._proc is None or self._proc.stdin is None:
+            raise EngineCrashed("session is not running")
+        try:
+            self._proc.stdin.write(text)
+            self._proc.stdin.flush()
+        except (BrokenPipeError, ValueError) as exc:
+            raise EngineCrashed(f"session died while writing: {exc}") from exc
+
+    def _take_stderr(self) -> str:
+        lines = []
+        while True:
+            try:
+                lines.append(self._stderr.get_nowait())
+            except queue.Empty:
+                break
+        return "".join(lines).strip()
+
+    def execute(
+        self, sql: str, *, timeout_s: float, tolerate_errors: bool = False
+    ) -> str:
+        """Run one statement, returning its stdout.
+
+        Raises QueryFailed on a SQL error, EngineTimeout when it outlives the
+        budget (the process is killed — the CLI offers no statement-level
+        cancel), EngineCrashed when the process died.
+        """
+        if not self.alive:
+            raise EngineCrashed("session is not running")
+
+        self._take_stderr()  # drop anything left over from an earlier statement
+        self._seq += 1
+        begin, end = f"<<<B{self._seq}>>>", f"<<<E{self._seq}>>>"
+        self._write(
+            f"SELECT '{begin}' AS __m;\n{sql.rstrip().rstrip(';')};\n"
+            f"SELECT '{end}' AS __m;\n"
+        )
+
+        deadline = time.monotonic() + max(1.0, timeout_s)
+        out: List[str] = []
+        started = False
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                raise EngineTimeout(f"statement exceeded {timeout_s:.0f}s")
+            try:
+                line = self._stdout.get(timeout=min(remaining, self._POLL_S))
+            except queue.Empty:
+                continue
+            if line is None:
+                error = self._take_stderr()
+                self._proc = None
+                raise EngineCrashed(f"session died: {error[:800] or 'no output'}")
+            if end in line:
+                break
+            if begin in line:
+                started = True
+                continue
+            if started:
+                out.append(line)
+
+        time.sleep(self._STDERR_GRACE_S)
+        error = self._take_stderr()
+        if error and not tolerate_errors:
+            if _is_fatal(error):
+                raise EngineCrashed(error[:800])
+            raise QueryFailed(error[:800])
+        return "".join(out)
+
+
+class _DuckDBCliAdapter(EngineAdapter):
+    """DuckDB-family engines, driven through one persistent CLI worker.
+
+    Crash isolation comes from the worker being a separate process: a query that
+    segfaults DuckDB takes the worker down rather than the dbt-server, and the
+    runner calls reset() to spawn a fresh one — the same fork-and-respawn
+    arrangement as the C++ benchmark. The database file is this benchmark's own,
     never the main benchmark's, so corruption cannot damage a real run.
     """
 
@@ -186,77 +346,107 @@ class _DuckDBCliAdapter(EngineAdapter):
         self._ducklake = os.environ.get("COMPILER_BENCH_DUCKLAKE", "0").strip().lower() in (
             "1", "true", "yes", "on",
         )
-        self._ducklake_meta = work_dir / "compiler-bench.ducklake"
+        self._ducklake_meta = work_dir / "compiler-bench.ducklake.db"
         self._ducklake_data = work_dir / "compiler-bench-ducklake-data"
         prefix = self.name.upper().replace("-", "_")
         self._mem_limit = os.environ.get(f"{prefix}_MEM_LIMIT", "")
         self._threads = os.environ.get(f"{prefix}_THREADS", "")
         self._corpus: Optional[Corpus] = None
+        self._session: Optional[_DuckDBSession] = None
 
     @property
     def storage_label(self) -> str:
         return "ducklake" if self._ducklake else "duckdb"
 
-    def _preamble(self, *, bail: bool = True) -> List[str]:
-        # icu is loaded best-effort ahead of `.bail on`: a few corpus queries need
-        # it, but it must not abort the run when the extension is unavailable.
-        lines = [".bail off", "INSTALL icu;", "LOAD icu;"]
-        lines.append(".bail on" if bail else ".bail off")
-        lines.append(f"SET temp_directory='{self._temp_dir}';")
+    def _preamble(self) -> List[str]:
+        # Deliberately NOT loading icu, even though the translation step does.
+        # icu changes string collation, which changes what EXCEPT ALL considers
+        # equal: with it loaded the verification probe reports differences for
+        # queries whose results are in fact identical (measured: 10 of 60 became
+        # spurious verify_failed). The C++ benchmark does not load it either, so
+        # leaving it out also keeps verdicts comparable with the reference. A
+        # query that genuinely needs icu to run fails as base_query_failed, which
+        # is an honest verdict.
+        lines = [f"SET temp_directory='{self._temp_dir}'"]
         if self._mem_limit:
-            lines.append(f"SET memory_limit='{self._mem_limit}';")
+            lines.append(f"SET memory_limit='{self._mem_limit}'")
         if self._threads:
-            lines.append(f"SET threads={int(self._threads)};")
+            lines.append(f"SET threads={int(self._threads)}")
         if self.load_extension:
-            lines.append(f"LOAD {self.load_extension};")
+            lines.append(f"LOAD {self.load_extension}")
         if self._ducklake:
-            # Every phase runs in its own process, so the attach is repeated
-            # rather than held open.
+            # Byte-for-byte the attach the C++ benchmark uses (rewriter_benchmark
+            # .cpp: `ATTACH IF NOT EXISTS '<db>.ducklake.db' AS dl (TYPE
+            # ducklake)`), so DuckLake results stay comparable with the reference.
             #
-            # DuckDB-backed metadata, NOT the `ducklake:sqlite:` the timed engine
-            # uses (services/duckdb_openivm_sources.py). Reopening a SQLite
-            # metadata catalog once per phase races on its lock: the refresh dies
-            # with `Failed to commit DuckLake transaction ... database is locked`
-            # for roughly half the corpus. The metadata backend is not what this
-            # benchmark measures — the DuckLake storage and scan path are
-            # identical either way — so it trades that for a stable run.
+            # Metadata is DuckDB-backed, NOT the `ducklake:sqlite:` the timed
+            # duckdb-openivm engine uses. That is not a shortcut: OpenIVM's
+            # refresh cannot commit against DuckLake with SQLite metadata at all
+            # — `PRAGMA refresh` dies with `Failed to commit DuckLake transaction
+            # ... database is locked` on a single connection in a single process,
+            # regardless of openivm_cascade_refresh. The C++ benchmark avoids it
+            # the same way.
             lines += [
-                "INSTALL ducklake;",
-                "LOAD ducklake;",
-                f"ATTACH IF NOT EXISTS 'ducklake:{self._ducklake_meta}' AS ducklake "
-                f"(DATA_PATH '{self._ducklake_data}', data_inlining_row_limit 0);",
-                "USE ducklake.main;",
+                "INSTALL ducklake",
+                "LOAD ducklake",
+                f"ATTACH IF NOT EXISTS '{self._ducklake_meta}' AS dl (TYPE ducklake, "
+                f"DATA_PATH '{self._ducklake_data}', data_inlining_row_limit 0)",
+                "USE dl.main",
             ]
         return lines
 
-    def _run(
-        self, statements: Sequence[str], *, timeout_s: float, json_out: bool = False
-    ) -> str:
-        script = self._preamble()
-        if json_out:
-            script.append(".mode json")
-        script += [s.strip().rstrip(";") + ";" for s in statements if s.strip()]
-        try:
-            proc = subprocess.run(
-                [self._binary, "-unsigned", str(self._db_path)],
-                input="\n".join(script) + "\n",
-                text=True,
-                capture_output=True,
-                timeout=max(1.0, timeout_s),
+    def _session_or_start(self) -> _DuckDBSession:
+        if self._session is None or not self._session.alive:
+            self._session = _DuckDBSession(
+                self._binary, str(self._db_path), self._preamble()
             )
-        except subprocess.TimeoutExpired:
-            raise EngineTimeout(f"{self.name}: CLI exceeded {timeout_s:.0f}s")
-        except OSError as exc:
-            raise EngineCrashed(f"{self.name}: cannot launch CLI: {exc}") from exc
+            self._session.start()
+        return self._session
 
-        if proc.returncode != 0:
-            message = (proc.stderr or proc.stdout or "").strip()
-            if proc.returncode < 0 or _is_fatal(message):
-                raise EngineCrashed(
-                    f"{self.name}: CLI died (rc={proc.returncode}): {message[:800]}"
+    def _run(
+        self,
+        statements: Sequence[str],
+        *,
+        timeout_s: float,
+        json_out: bool = False,
+        tolerate_errors: bool = False,
+    ) -> str:
+        """Run statements on the persistent worker, returning the last output.
+
+        ``json_out`` is kept for call-site clarity; the session is always in JSON
+        mode, so it is a no-op.
+        """
+        session = self._session_or_start()
+        deadline = time.monotonic() + max(1.0, timeout_s)
+        out = ""
+        for statement in statements:
+            if not statement.strip():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise EngineTimeout(f"{self.name}: exceeded {timeout_s:.0f}s")
+            try:
+                out = session.execute(
+                    statement, timeout_s=remaining, tolerate_errors=tolerate_errors
                 )
-            raise QueryFailed(f"{self.name}: {message[:800]}")
-        return proc.stdout
+            except (QueryFailed, EngineTimeout, EngineCrashed) as exc:
+                # Prefix the engine so the CSV error column names its source.
+                exc.args = (f"{self.name}: {exc.args[0] if exc.args else exc}",)
+                raise
+        return out
+
+    def reset(self) -> None:
+        # After a crash or timeout the worker is gone or wedged; a fresh one
+        # re-establishes the settings and any DuckLake attach via the preamble.
+        if self._session is not None:
+            self._session.close()
+        self._session = None
+        self._session_or_start()
+
+    def teardown(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
 
     def setup(self, corpus: Corpus) -> None:
         self._corpus = corpus
@@ -290,19 +480,9 @@ class _DuckDBCliAdapter(EngineAdapter):
         if not statements:
             return
         # Individual deltas may legitimately fail (duplicate key), as in the C++
-        # benchmark, so run with bail off and ignore per-statement errors.
-        script = self._preamble(bail=False)
-        script += [s.strip().rstrip(";") + ";" for s in statements]
-        try:
-            subprocess.run(
-                [self._binary, "-unsigned", str(self._db_path)],
-                input="\n".join(script) + "\n",
-                text=True,
-                capture_output=True,
-                timeout=max(1.0, timeout_s),
-            )
-        except subprocess.TimeoutExpired:
-            raise EngineTimeout(f"{self.name}: delta batch exceeded {timeout_s:.0f}s")
+        # benchmark, so errors are tolerated: a delta failure is not a verdict on
+        # the query.
+        self._run(statements, timeout_s=timeout_s, tolerate_errors=True)
 
     def _describe(self, mv_name: str, *, timeout_s: float) -> List[tuple]:
         """(name, type) per column, in order. Empty when it cannot be read."""
