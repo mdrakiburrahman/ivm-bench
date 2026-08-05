@@ -400,7 +400,8 @@ class EngineRunner:
 
         self._emit(
             f"[{name}] compiler-bench: sf={options.scale_factor} "
-            f"timeout={options.timeout_s:.0f}s limit={options.limit or 'all'}"
+            f"timeout={options.timeout_s:.0f}s limit={options.limit or 'all'} "
+            f"storage={'ducklake' if options.ducklake else 'native'}"
         )
 
         response = _post_with_retry(
@@ -410,6 +411,7 @@ class EngineRunner:
             f"{name} compiler-bench start",
             json={
                 "limit": options.limit,
+                "ducklake": options.ducklake,
                 "timeout_s": options.timeout_s,
                 "delta_batch_size": options.delta_batch_size,
                 "verify": options.verify,
@@ -462,9 +464,11 @@ class EngineRunner:
         self._result.extra["compiler_bench"] = summary
 
     def _write_compiler_bench_artifacts(self, options, final: dict) -> None:
+        # DuckLake and native runs of the same engine must not overwrite each
+        # other — they are two different measurements.
+        engine_dir = self._engine.name + ("-ducklake" if options.ducklake else "")
         out_dir = os.path.join(
-            self._config.repo_dir, "mount", "compiler-bench", "results",
-            self._engine.name,
+            self._config.repo_dir, "mount", "compiler-bench", "results", engine_dir,
         )
         os.makedirs(out_dir, exist_ok=True)
 

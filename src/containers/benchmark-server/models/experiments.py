@@ -154,6 +154,12 @@ class CompilerBenchOptions:
     verify: bool = True
     delta_batch_size: int = 10
     include_ducklake: bool = False
+    #: Back the base tables with DuckLake instead of plain DuckDB tables. Only the
+    #: DuckDB-family engines have a DuckLake mode; others ignore it. This is the
+    #: storage the timed duckdb / duckdb-openivm benchmark actually uses, so it is
+    #: worth surveying both — OpenIVM can classify a query differently when the
+    #: scan is a DuckLake scan. Results land under results/<engine>-ducklake/.
+    ducklake: bool = False
 
     def to_compose_env(self) -> Dict[str, str]:
         return {
@@ -163,6 +169,7 @@ class CompilerBenchOptions:
             "COMPILER_BENCH_VERIFY": "1" if self.verify else "0",
             "COMPILER_BENCH_DELTA_BATCH_SIZE": str(self.delta_batch_size),
             "COMPILER_BENCH_INCLUDE_DUCKLAKE": "1" if self.include_ducklake else "0",
+            "COMPILER_BENCH_DUCKLAKE": "1" if self.ducklake else "0",
         }
 
     @classmethod
@@ -195,6 +202,7 @@ class CompilerBenchOptions:
             include_ducklake=_flag(
                 "COMPILER_BENCH_INCLUDE_DUCKLAKE", defaults.include_ducklake
             ),
+            ducklake=_flag("COMPILER_BENCH_DUCKLAKE", defaults.ducklake),
         )
 
 
@@ -363,6 +371,7 @@ class ExperimentInputs:
             verify=_flag(cb_d.get("verify"), cb_base.verify),
             delta_batch_size=int(cb_d.get("delta_batch_size", cb_base.delta_batch_size)),
             include_ducklake=_flag(cb_d.get("include_ducklake"), cb_base.include_ducklake),
+            ducklake=_flag(cb_d.get("ducklake"), cb_base.ducklake),
         )
 
         st_d = d.get("spark_tunables") or {}

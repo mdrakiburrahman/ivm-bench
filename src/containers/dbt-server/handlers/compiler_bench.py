@@ -8,6 +8,7 @@ query-log exports.
 """
 
 import logging
+import os
 import threading
 import uuid
 from typing import Dict
@@ -38,6 +39,10 @@ def _set(run_id: str, **fields) -> None:
 
 def _execute(run_id: str, engine: str, options: dict) -> None:
     try:
+        # The adapters read the storage mode from the environment, matching how
+        # every other engine knob reaches them.
+        if options["ducklake"]:
+            os.environ["COMPILER_BENCH_DUCKLAKE"] = "1"
         corpus = load(engine, limit=options["limit"])
         _set(run_id, status="running", total=len(corpus.queries), completed=0)
 
@@ -73,6 +78,7 @@ def start(engine: str):
         "timeout_s": float(body.get("timeout_s", 60.0)),
         "delta_batch_size": int(body.get("delta_batch_size", 10)),
         "verify": bool(body.get("verify", True)),
+        "ducklake": bool(body.get("ducklake", False)),
     }
     run_id = str(uuid.uuid4())
     _set(run_id, status="queued", engine=engine, options=options)

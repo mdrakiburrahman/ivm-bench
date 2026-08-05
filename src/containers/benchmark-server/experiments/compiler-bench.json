@@ -26,10 +26,17 @@
     "Usage (host):",
     "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/compiler-bench.json \\",
     "    bash src/.scripts/benchmark.sh",
+    "Storage: the duckdb-family engines can run the survey against plain DuckDB tables or",
+    "DuckLake (the storage the timed benchmark actually uses). The translated corpus is",
+    "storage-agnostic - table names are unqualified - so the SAME queries run either way,",
+    "and all 2181 queries get DuckLake coverage rather than only openivm's 319 hand-written",
+    "ducklake_* variants. Results land under results/<engine>-ducklake/ so the two runs do",
+    "not overwrite each other. OpenIVM can classify a query differently when the scan is a",
+    "DuckLake scan, which is the point of surveying both.",
     "",
     "Artifacts:",
-    "  mount/compiler-bench/corpus/<dialect>/   translated queries + translation.csv",
-    "  mount/compiler-bench/results/<engine>/   results.csv + summary.json"
+    "  mount/compiler-bench/corpus/<dialect>/            translated queries + translation.csv",
+    "  mount/compiler-bench/results/<engine>[-ducklake]/ results.csv + summary.json"
   ],
   "baseline": {
     "engines": [
@@ -67,7 +74,23 @@
       }
     },
     {
-      "_comment": "Full ~2.2k-query corpus. Run after the smoke row passes.",
+      "_comment": "Same corpus on DuckLake-backed tables - the storage the timed benchmark uses.",
+      "label": "compiler-bench-smoke-ducklake",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "engines": [
+        "duckdb",
+        "duckdb-openivm"
+      ],
+      "compiler_bench": {
+        "limit": 200,
+        "ducklake": true
+      }
+    },
+    {
+      "_comment": "Full ~2.2k-query corpus. Run after the smoke rows pass.",
       "label": "compiler-bench-full",
       "scale_factor": 3,
       "batch_1_pct": "100",
@@ -75,6 +98,22 @@
       "batch_3_pct": "1",
       "compiler_bench": {
         "limit": 0
+      }
+    },
+    {
+      "_comment": "Full corpus on DuckLake.",
+      "label": "compiler-bench-full-ducklake",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "engines": [
+        "duckdb",
+        "duckdb-openivm"
+      ],
+      "compiler_bench": {
+        "limit": 0,
+        "ducklake": true
       }
     }
   ]

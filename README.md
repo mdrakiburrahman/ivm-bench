@@ -162,6 +162,7 @@ Knobs live in a `compiler_bench` block in the experiments JSON:
 | `limit` | `0` | `0` = whole corpus. Use a small value to smoke-test |
 | `verify` | `true` | Run the `EXCEPT ALL` correctness check |
 | `delta_batch_size` | `10` | Delta statements applied per query |
+| `ducklake` | `false` | Back the base tables with DuckLake instead of plain DuckDB tables (DuckDB-family engines only) |
 
 **Queries are translated per engine dialect via LPTS**, which re-renders each
 query from DuckDB's optimized logical plan into the target dialect. Every engine
@@ -177,6 +178,22 @@ a verdict. Measured against openivm's own C++ results on the TPC-C corpus, 4 of
 declines, but LPTS flattens the optimized plan into explicit CTEs that it accepts.
 Otherwise the port agrees with the C++ benchmark on 399/400 queries for both
 classification and phase.
+
+**Storage modes.** The timed `duckdb` / `duckdb-openivm` benchmark is
+DuckLake-backed, and OpenIVM can classify a query differently when the scan is a
+DuckLake scan, so both are worth surveying. Because the translated corpus uses
+*unqualified* table names it is storage-agnostic: the same queries run either
+way, so all 2181 queries get DuckLake coverage rather than only openivm's 319
+hand-written `ducklake_*` variants (which this harness therefore skips). Set
+`ducklake: true` on an experiment row; results land under
+`results/<engine>-ducklake/` so the two runs cannot overwrite each other.
+
+One deviation from the timed engine: DuckLake metadata here is DuckDB-backed
+rather than `ducklake:sqlite:`. This harness runs each phase in its own process
+for crash isolation, and reopening a SQLite metadata catalog that often races on
+its lock — the refresh fails with `Failed to commit DuckLake transaction ...
+database is locked` for roughly half the corpus. The metadata backend is not what
+is being measured; the DuckLake storage and scan path are identical either way.
 
 Reading the numbers:
 

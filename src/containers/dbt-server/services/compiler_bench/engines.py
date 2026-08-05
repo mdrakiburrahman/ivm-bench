@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -177,19 +178,55 @@ class _DuckDBCliAdapter(EngineAdapter):
         work_dir = Path(os.environ.get(self.work_dir_env, self.work_dir_default))
         self._db_path = work_dir / "compiler-bench.duckdb"
         self._temp_dir = work_dir / "_compiler_bench_tmp"
+        # DuckLake storage mode. The real duckdb / duckdb-openivm engines are
+        # DuckLake-backed, so this is the configuration the timed benchmark
+        # actually uses; plain DuckDB tables are the simpler comparison point.
+        # The translated corpus is storage-agnostic (unqualified table names), so
+        # the same queries run either way — only where the tables live changes.
+        self._ducklake = os.environ.get("COMPILER_BENCH_DUCKLAKE", "0").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        self._ducklake_meta = work_dir / "compiler-bench.ducklake"
+        self._ducklake_data = work_dir / "compiler-bench-ducklake-data"
         prefix = self.name.upper().replace("-", "_")
         self._mem_limit = os.environ.get(f"{prefix}_MEM_LIMIT", "")
         self._threads = os.environ.get(f"{prefix}_THREADS", "")
         self._corpus: Optional[Corpus] = None
 
-    def _preamble(self) -> List[str]:
-        lines = [".bail on", f"SET temp_directory='{self._temp_dir}';"]
+    @property
+    def storage_label(self) -> str:
+        return "ducklake" if self._ducklake else "duckdb"
+
+    def _preamble(self, *, bail: bool = True) -> List[str]:
+        # icu is loaded best-effort ahead of `.bail on`: a few corpus queries need
+        # it, but it must not abort the run when the extension is unavailable.
+        lines = [".bail off", "INSTALL icu;", "LOAD icu;"]
+        lines.append(".bail on" if bail else ".bail off")
+        lines.append(f"SET temp_directory='{self._temp_dir}';")
         if self._mem_limit:
             lines.append(f"SET memory_limit='{self._mem_limit}';")
         if self._threads:
             lines.append(f"SET threads={int(self._threads)};")
         if self.load_extension:
             lines.append(f"LOAD {self.load_extension};")
+        if self._ducklake:
+            # Every phase runs in its own process, so the attach is repeated
+            # rather than held open.
+            #
+            # DuckDB-backed metadata, NOT the `ducklake:sqlite:` the timed engine
+            # uses (services/duckdb_openivm_sources.py). Reopening a SQLite
+            # metadata catalog once per phase races on its lock: the refresh dies
+            # with `Failed to commit DuckLake transaction ... database is locked`
+            # for roughly half the corpus. The metadata backend is not what this
+            # benchmark measures — the DuckLake storage and scan path are
+            # identical either way — so it trades that for a stable run.
+            lines += [
+                "INSTALL ducklake;",
+                "LOAD ducklake;",
+                f"ATTACH IF NOT EXISTS 'ducklake:{self._ducklake_meta}' AS ducklake "
+                f"(DATA_PATH '{self._ducklake_data}', data_inlining_row_limit 0);",
+                "USE ducklake.main;",
+            ]
         return lines
 
     def _run(
@@ -224,10 +261,18 @@ class _DuckDBCliAdapter(EngineAdapter):
     def setup(self, corpus: Corpus) -> None:
         self._corpus = corpus
         self._temp_dir.mkdir(parents=True, exist_ok=True)
+        # Start from a clean slate so a previous run's views cannot influence
+        # this one's verdicts.
         for suffix in ("", ".wal"):
             path = Path(str(self._db_path) + suffix)
             if path.exists():
                 path.unlink()
+        if self._ducklake:
+            for path in (self._ducklake_meta, Path(str(self._ducklake_meta) + "-wal")):
+                if path.exists():
+                    path.unlink()
+            shutil.rmtree(self._ducklake_data, ignore_errors=True)
+            self._ducklake_data.mkdir(parents=True, exist_ok=True)
 
         statements = list(corpus.schema_ddl)
         data_dir = _tpcc_data_dir(corpus)
@@ -246,8 +291,7 @@ class _DuckDBCliAdapter(EngineAdapter):
             return
         # Individual deltas may legitimately fail (duplicate key), as in the C++
         # benchmark, so run with bail off and ignore per-statement errors.
-        script = self._preamble()
-        script[0] = ".bail off"
+        script = self._preamble(bail=False)
         script += [s.strip().rstrip(";") + ";" for s in statements]
         try:
             subprocess.run(
