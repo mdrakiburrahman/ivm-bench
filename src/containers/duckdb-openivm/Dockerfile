@@ -48,6 +48,13 @@ RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb
+
+# The compiler-bench query corpus travels with the binary so the queries are
+# always the ones OPENIVM_COMMIT ships — no submodule in this repo to drift out
+# of sync with the pin, and no recursive clone of openivm's own submodules
+# (duckdb + lpts + benchbase) just to read ~2.5k small .sql files.
+COPY --from=builder /src/benchmark/queries /opt/duckdb-openivm/queries
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /opt/duckdb-openivm/duckdb
 

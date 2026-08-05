@@ -1,0 +1,81 @@
+{
+  "_comment": [
+    "compiler-bench: per-engine incrementalizability survey over openivm's TPC-C query corpus.",
+    "",
+    "A port of openivm's benchmark/src/rewriter_benchmark.cpp to every engine: instead of",
+    "timing one TPC-DI DAG, it pushes ~2.2k queries at an engine and reports what fraction",
+    "its compiler can maintain incrementally.",
+    "",
+    "With feature_flags.compiler_bench on, an experiment runs the survey INSTEAD of the",
+    "timed 3-batch benchmark - thousands of created/dropped views would otherwise pollute",
+    "timings. batch_*_pct are still required by the schema but unused.",
+    "",
+    "Per query: run the SELECT -> CREATE MATERIALIZED VIEW -> ask the engine whether it",
+    "will maintain it incrementally -> apply base-table deltas -> refresh -> verify the",
+    "view equals a re-run of the query. The phase a query stops at is its result.",
+    "",
+    "Queries are LPTS-translated to each engine's dialect, so every engine sees an",
+    "equivalent query and a full-vs-incremental verdict reflects its compiler rather than",
+    "its parser. Queries LPTS cannot express in a dialect are reported as",
+    "translation_failed, never skipped. Cross-engine percentages are only comparable over",
+    "the common subset (summary.json -> common_subset).",
+    "",
+    "compiler_bench.scale_factor is separate from the experiment's: incrementalizability",
+    "does not depend on data volume, so the survey stays small (3 warehouses).",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/compiler-bench.json \\",
+    "    bash src/.scripts/benchmark.sh",
+    "",
+    "Artifacts:",
+    "  mount/compiler-bench/corpus/<dialect>/   translated queries + translation.csv",
+    "  mount/compiler-bench/results/<engine>/   results.csv + summary.json"
+  ],
+  "baseline": {
+    "engines": [
+      "duckdb",
+      "duckdb-openivm",
+      "spark",
+      "spark-openivm"
+    ],
+    "parallel": false,
+    "feature_flags": {
+      "compiler_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": true,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "compiler_bench": {
+      "scale_factor": 3,
+      "timeout_s": 60,
+      "limit": 200,
+      "verify": true,
+      "delta_batch_size": 10
+    }
+  },
+  "experiments": [
+    {
+      "label": "compiler-bench-smoke",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "compiler_bench": {
+        "limit": 200
+      }
+    },
+    {
+      "_comment": "Full ~2.2k-query corpus. Run after the smoke row passes.",
+      "label": "compiler-bench-full",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "compiler_bench": {
+        "limit": 0
+      }
+    }
+  ]
+}

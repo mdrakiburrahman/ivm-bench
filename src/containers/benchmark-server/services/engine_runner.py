@@ -1,5 +1,6 @@
 """Per-engine benchmark execution logic."""
 
+import csv
 import json
 import logging
 import os
@@ -301,6 +302,15 @@ class EngineRunner:
             self._start_stats()
             self._capture_delta_stats(1)
 
+            if self._compiler_bench_enabled():
+                # The survey creates and drops thousands of views, so it replaces
+                # the timed batches rather than sharing an engine with them.
+                self._run_compiler_bench()
+                self._stop_stats()
+                self._result.status = "completed"
+                self._emit(f"[{name}] compiler-bench completed successfully")
+                return self._result
+
             # Run 3 batches
             for batch_num in range(1, 4):
                 self._run_batch(batch_num)
@@ -364,6 +374,110 @@ class EngineRunner:
                     logger.warning("Engine %s unlink %s failed: %s", name, f, ce)
 
         return self._result
+
+    # ------------------------------------------------------------------
+    # compiler-bench
+    # ------------------------------------------------------------------
+
+    def _compiler_bench_enabled(self) -> bool:
+        return os.environ.get("COMPILER_BENCH", "0").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    def _run_compiler_bench(self) -> None:
+        """Drive the survey on this engine and persist its artifacts.
+
+        Polls rather than blocking on one request: a full corpus is thousands of
+        queries. There is no overall deadline beyond the per-query budget the
+        dbt-server enforces, so a wedged engine is bounded by
+        COMPILER_BENCH_RUN_TIMEOUT_S.
+        """
+        from models.experiments import CompilerBenchOptions
+
+        name = self._engine.name
+        options = CompilerBenchOptions.from_env()
+        run_timeout_s = float(os.environ.get("COMPILER_BENCH_RUN_TIMEOUT_S", "86400"))
+
+        self._emit(
+            f"[{name}] compiler-bench: sf={options.scale_factor} "
+            f"timeout={options.timeout_s:.0f}s limit={options.limit or 'all'}"
+        )
+
+        response = _post_with_retry(
+            f"{self._dbt_url}/compiler-bench/{name}",
+            120,
+            self._emit,
+            f"{name} compiler-bench start",
+            json={
+                "limit": options.limit,
+                "timeout_s": options.timeout_s,
+                "delta_batch_size": options.delta_batch_size,
+                "verify": options.verify,
+            },
+        )
+        run_id = response.json()["run_id"]
+
+        deadline = time.time() + run_timeout_s
+        last_completed = -1
+        while True:
+            if time.time() > deadline:
+                raise RuntimeError(
+                    f"{name} compiler-bench exceeded {run_timeout_s:.0f}s"
+                )
+            time.sleep(10)
+            status_resp = requests.get(
+                f"{self._dbt_url}/compiler-bench/runs/{run_id}", timeout=60
+            )
+            status_resp.raise_for_status()
+            payload = status_resp.json()
+            state = payload.get("status")
+            completed = payload.get("completed", 0)
+            if completed != last_completed:
+                self._emit(
+                    f"[{name}] compiler-bench {completed}/{payload.get('total', '?')}"
+                )
+                last_completed = completed
+            if state == "completed":
+                break
+            if state == "error":
+                raise RuntimeError(f"{name} compiler-bench failed: {payload.get('error')}")
+
+        rows_resp = requests.get(
+            f"{self._dbt_url}/compiler-bench/runs/{run_id}?include_rows=1", timeout=600
+        )
+        rows_resp.raise_for_status()
+        final = rows_resp.json()
+        self._write_compiler_bench_artifacts(options, final)
+
+        summary = final.get("summary") or {}
+        totals = summary.get("totals") or {}
+        by_created = summary.get("pct_of_mv_created") or {}
+        self._emit(
+            f"[{name}] compiler-bench: {totals.get('incremental', 0)} incremental / "
+            f"{totals.get('full_refresh', 0)} full of {totals.get('mv_created', 0)} created "
+            f"({by_created.get('incremental', 0)}% incremental); "
+            f"crash={totals.get('crashed', 0)} timeout={totals.get('timeout', 0)} "
+            f"translation_failed={totals.get('translation_failed', 0)}"
+        )
+        self._result.extra["compiler_bench"] = summary
+
+    def _write_compiler_bench_artifacts(self, options, final: dict) -> None:
+        out_dir = os.path.join(
+            self._config.repo_dir, "mount", "compiler-bench", "results",
+            self._engine.name,
+        )
+        os.makedirs(out_dir, exist_ok=True)
+
+        columns = final.get("columns") or []
+        rows = final.get("rows") or []
+        if columns and rows:
+            with open(os.path.join(out_dir, "results.csv"), "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(rows)
+        with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
+            json.dump(final.get("summary") or {}, fh, indent=2)
+        self._emit(f"[{self._engine.name}] compiler-bench artifacts -> {out_dir}")
 
     def _databricks_enzyme_drop_mvs(self) -> None:
         """End-of-run: drop the databricks-enzyme MVs so REFRESH SCHEDULE

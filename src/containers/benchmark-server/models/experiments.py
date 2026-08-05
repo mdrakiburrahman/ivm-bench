@@ -50,6 +50,10 @@ class FeatureFlags:
     storage_metrics: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
     spark_metrics_capture: bool = True
+    # compiler-bench: off by default. When on, the experiment runs the
+    # incrementalizability survey INSTEAD of the timed batches — thousands of
+    # views would otherwise pollute the timings it shares an engine with.
+    compiler_bench: bool = False
 
     @classmethod
     def from_env(cls) -> "FeatureFlags":
@@ -73,6 +77,7 @@ class FeatureFlags:
             spark_metrics_capture=flag(
                 "SPARK_METRICS_CAPTURE", defaults.spark_metrics_capture
             ),
+            compiler_bench=flag("COMPILER_BENCH", defaults.compiler_bench),
         )
 
     def to_compose_env(self) -> Dict[str, str]:
@@ -83,6 +88,7 @@ class FeatureFlags:
             "STORAGE_METRICS": "1" if self.storage_metrics else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
             "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
+            "COMPILER_BENCH": "1" if self.compiler_bench else "0",
         }
 
 
@@ -130,6 +136,69 @@ class SparkTunables:
 
 
 # ---------------------------------------------------------------------------
+# compiler-bench options (only consulted when feature_flags.compiler_bench is on)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CompilerBenchOptions:
+    """Knobs for the incrementalizability survey.
+
+    ``scale_factor`` is deliberately separate from the experiment's own: the
+    survey measures which queries an engine can incrementalize, which does not
+    depend on data volume, so it stays small (3 warehouses) even when the
+    surrounding sweep runs at SF100.
+    """
+    scale_factor: int = 3
+    timeout_s: float = 60.0          # per-query wall clock budget
+    limit: int = 0                   # 0 = whole corpus
+    verify: bool = True
+    delta_batch_size: int = 10
+    include_ducklake: bool = False
+
+    def to_compose_env(self) -> Dict[str, str]:
+        return {
+            "COMPILER_BENCH_SCALE_FACTOR": str(self.scale_factor),
+            "COMPILER_BENCH_TIMEOUT_S": str(self.timeout_s),
+            "COMPILER_BENCH_LIMIT": str(self.limit),
+            "COMPILER_BENCH_VERIFY": "1" if self.verify else "0",
+            "COMPILER_BENCH_DELTA_BATCH_SIZE": str(self.delta_batch_size),
+            "COMPILER_BENCH_INCLUDE_DUCKLAKE": "1" if self.include_ducklake else "0",
+        }
+
+    @classmethod
+    def from_env(cls) -> "CompilerBenchOptions":
+        defaults = cls()
+
+        def _num(key: str, default, cast):
+            raw = os.environ.get(key)
+            if raw is None or not raw.strip():
+                return default
+            try:
+                return cast(raw)
+            except ValueError:
+                return default
+
+        def _flag(key: str, default: bool) -> bool:
+            raw = os.environ.get(key)
+            if raw is None:
+                return default
+            return raw.strip().lower() in ("1", "true", "yes", "on")
+
+        return cls(
+            scale_factor=_num("COMPILER_BENCH_SCALE_FACTOR", defaults.scale_factor, int),
+            timeout_s=_num("COMPILER_BENCH_TIMEOUT_S", defaults.timeout_s, float),
+            limit=_num("COMPILER_BENCH_LIMIT", defaults.limit, int),
+            verify=_flag("COMPILER_BENCH_VERIFY", defaults.verify),
+            delta_batch_size=_num(
+                "COMPILER_BENCH_DELTA_BATCH_SIZE", defaults.delta_batch_size, int
+            ),
+            include_ducklake=_flag(
+                "COMPILER_BENCH_INCLUDE_DUCKLAKE", defaults.include_ducklake
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Top-level experiment inputs
 # ---------------------------------------------------------------------------
 
@@ -150,6 +219,7 @@ class ExperimentInputs:
     schedule: str = "serial"
     feature_flags: FeatureFlags = field(default_factory=FeatureFlags)
     spark_tunables: SparkTunables = field(default_factory=SparkTunables)
+    compiler_bench: CompilerBenchOptions = field(default_factory=CompilerBenchOptions)
     label: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -173,6 +243,7 @@ class ExperimentInputs:
         }
         env.update(self.feature_flags.to_compose_env())
         env.update(self.spark_tunables.to_compose_env())
+        env.update(self.compiler_bench.to_compose_env())
         return env
 
     def to_dict(self) -> Dict[str, Any]:
@@ -191,6 +262,7 @@ class ExperimentInputs:
             "schedule": self.schedule,
             "feature_flags": asdict(self.feature_flags),
             "spark_tunables": asdict(self.spark_tunables),
+            "compiler_bench": asdict(self.compiler_bench),
         }
 
     def flat_values(self) -> Dict[str, Any]:
@@ -213,6 +285,9 @@ class ExperimentInputs:
         for f in fields(SparkTunables):
             v = getattr(self.spark_tunables, f.name)
             out[f"spark_tunables.{f.name}"] = "" if v is None else v
+        for f in fields(CompilerBenchOptions):
+            v = getattr(self.compiler_bench, f.name)
+            out[f"compiler_bench.{f.name}"] = int(v) if isinstance(v, bool) else v
         return out
 
     @classmethod
@@ -235,6 +310,8 @@ class ExperimentInputs:
             headers[f"feature_flags.{f.name}"] = f.name
         for f in fields(SparkTunables):
             headers[f"spark_tunables.{f.name}"] = f.name
+        for f in fields(CompilerBenchOptions):
+            headers[f"compiler_bench.{f.name}"] = f.name
         return headers
 
     @classmethod
@@ -274,6 +351,18 @@ class ExperimentInputs:
             spark_metrics_capture=_flag(
                 ff_d.get("spark_metrics_capture"), base.feature_flags.spark_metrics_capture
             ),
+            compiler_bench=_flag(ff_d.get("compiler_bench"), base.feature_flags.compiler_bench),
+        )
+
+        cb_d = d.get("compiler_bench") or {}
+        cb_base = base.compiler_bench
+        rb = CompilerBenchOptions(
+            scale_factor=int(cb_d.get("scale_factor", cb_base.scale_factor)),
+            timeout_s=float(cb_d.get("timeout_s", cb_base.timeout_s)),
+            limit=int(cb_d.get("limit", cb_base.limit)),
+            verify=_flag(cb_d.get("verify"), cb_base.verify),
+            delta_batch_size=int(cb_d.get("delta_batch_size", cb_base.delta_batch_size)),
+            include_ducklake=_flag(cb_d.get("include_ducklake"), cb_base.include_ducklake),
         )
 
         st_d = d.get("spark_tunables") or {}
@@ -313,6 +402,7 @@ class ExperimentInputs:
             schedule=schedule,
             feature_flags=ff,
             spark_tunables=st,
+            compiler_bench=rb,
             label=d.get("label"),
         )
 

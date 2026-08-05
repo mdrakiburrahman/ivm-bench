@@ -1,0 +1,11 @@
+services:
+  lpts-builder:
+    build:
+      context: ../src/containers/lpts-build
+      args:
+        UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
+        LPTS_BUILD_DOCKERFILE_HASH: "${LPTS_BUILD_DOCKERFILE_HASH:-}"
+    volumes:
+      - ../mount/bin/lpts:/output
+    environment:
+      OUTPUT_DIR: /output
