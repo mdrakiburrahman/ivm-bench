@@ -389,7 +389,9 @@ class Orchestrator:
             elif os.path.exists(path):
                 os.remove(path)
 
-    def _phase1_prep(self, include_datagen: bool = True) -> None:
+    def _phase1_prep(
+        self, include_datagen: bool = True, compiler_bench: Optional[bool] = None
+    ) -> None:
         """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
 
         ``include_datagen=False`` runs ONLY the build steps. The OAT runner
@@ -406,7 +408,10 @@ class Orchestrator:
         if include_datagen:
             callables.append(self._run_datagen)
         callables.append(self._build_batch_loader)
-        compiler_bench = self._compiler_bench_enabled()
+        # At phase 0 the per-experiment env is not applied yet, so the caller
+        # passes the decision in from the experiments list; None means "read env".
+        if compiler_bench is None:
+            compiler_bench = self._compiler_bench_enabled()
         # compiler-bench needs the duckdb-openivm image whatever the engine list:
         # it ships the query corpus, and its CLI drives corpus translation.
         if "duckdb-openivm" in self._config.engines or compiler_bench:
@@ -1218,7 +1223,14 @@ class Orchestrator:
             self._config.scale_factor = first.scale_factor
             self._pre_create_dirs()
             # Builds only — no datagen here. Each experiment runs its own datagen.
-            self._phase1_prep(include_datagen=False)
+            # The compiler-bench decision comes from the experiments themselves:
+            # per-experiment env is applied later, in the loop.
+            self._phase1_prep(
+                include_datagen=False,
+                compiler_bench=any(
+                    inp.feature_flags.compiler_bench for inp in experiments
+                ),
+            )
         finally:
             self._config.engines = original_engines
 
@@ -1279,7 +1291,12 @@ class Orchestrator:
 
             # Datagen for THIS SF. Idempotent — but raw/<sf>/ is usually
             # empty because the previous experiment cleanup wiped it.
-            self._run_datagen()
+            # compiler-bench runs on its own generated TPC-C data and never reads
+            # the TPC-DI Delta sources, so generating them would be pure cost.
+            if self._compiler_bench_enabled():
+                self.emit("  [datagen] Skipped: compiler-bench uses its own TPC-C data")
+            else:
+                self._run_datagen()
 
             # Re-check disk AFTER datagen. SF=1000 may blow the threshold
             # during datagen alone; bailing here is much cheaper than
