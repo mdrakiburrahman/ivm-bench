@@ -703,6 +703,16 @@ class EngineRunner:
                 # before failing, to absorb event-propagation lag.
                 self._apply_databricks_enzyme_pure_compute(batch_num, batch, run_id)
 
+            if (
+                name in (
+                    "databricks-enzyme",
+                    "fabric-jvm-35",
+                    "fabric-openivm-jvm-35",
+                )
+                and batch.status != "failed"
+            ):
+                self._capture_cloud_compute_metrics(name, batch_num, batch)
+
             # Check status from the stream_progress result
             if batch.status != "failed":
                 self._save_openivm_ops_chart(name, batch_num)
@@ -718,6 +728,54 @@ class EngineRunner:
         finally:
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
+
+    def _capture_cloud_compute_metrics(self, name: str, batch_num: int, batch) -> None:
+        """Collect remote task work after the timed batch, without failing it."""
+        start_ms = batch.extra.get("wall_window_start_ms")
+        end_ms = batch.extra.get("wall_window_end_ms")
+        artifact_rel = os.path.join(
+            "mount",
+            "results",
+            str(self._config.scale_factor),
+            "dbt-server",
+            f"cloud-compute-{name}-batch{batch_num}.json",
+        )
+        artifact_abs = os.path.join(self._config.repo_dir, artifact_rel)
+        os.makedirs(os.path.dirname(artifact_abs), exist_ok=True)
+        try:
+            response = requests.post(
+                f"{self._dbt_url}/cloud-compute/{name}/{batch_num}",
+                json={"start_ms": start_ms, "end_ms": end_ms},
+                timeout=1200,
+            )
+            data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"HTTP {response.status_code}: {data.get('error', response.text[:300])}"
+                )
+            data["artifact"] = artifact_rel
+            batch.extra["cloud_compute"] = data
+            self._emit(
+                f"[{name}] cloud compute batch {batch_num}: "
+                f"task_time={data.get('task_time_s')}s, "
+                f"cpu_time={data.get('cpu_time_s')}s"
+            )
+        except Exception as exc:
+            data = {
+                "status": "unavailable",
+                "engine": name,
+                "batch_num": batch_num,
+                "error": str(exc),
+                "task_time_s": None,
+                "cpu_time_s": None,
+                "artifact": artifact_rel,
+            }
+            batch.extra["cloud_compute"] = data
+            self._emit(
+                f"[{name}] WARN cloud compute unavailable for batch {batch_num}: {exc}"
+            )
+        with open(artifact_abs, "w") as handle:
+            json.dump(data, handle, indent=2)
 
     def _save_openivm_ops_chart(self, name: str, batch_num: int) -> None:
         if name not in ("spark-openivm", "duckdb-openivm"):

@@ -81,6 +81,12 @@ RESULTS_CSV_FIELDS = (
     "duration_s",
     "batch_error",
     "openivm_over_spark_duration_ratio",
+    "cloud_compute_status",
+    "cloud_task_time_s",
+    "cloud_cpu_time_s",
+    "cloud_compute_source",
+    "cloud_compute_error",
+    "cloud_compute_artifact",
     "storage_status",
     "visible_output_bytes",
     "helper_data_bytes",
@@ -549,6 +555,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
         for engine in engines:
             for batch_num in _BATCH_NUMBERS:
                 batch = _batch_dict(experiment, engine, batch_num)
+                batch_extra = batch.get("extra") or {}
+                if not isinstance(batch_extra, dict):
+                    batch_extra = {}
+                cloud_compute = batch_extra.get("cloud_compute") or {}
+                if not isinstance(cloud_compute, dict):
+                    cloud_compute = {}
                 storage = _storage_dict(experiment, engine, batch_num)
                 base_tables = storage.get("base_tables") or {}
                 if not isinstance(base_tables, dict):
@@ -618,6 +630,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "openivm_over_spark_duration_ratio": _duration_ratio(
                             experiment, batch_num
                         ),
+                        "cloud_compute_status": cloud_compute.get("status", ""),
+                        "cloud_task_time_s": cloud_compute.get("task_time_s", ""),
+                        "cloud_cpu_time_s": cloud_compute.get("cpu_time_s", ""),
+                        "cloud_compute_source": cloud_compute.get("source", ""),
+                        "cloud_compute_error": cloud_compute.get("error", ""),
+                        "cloud_compute_artifact": cloud_compute.get("artifact", ""),
                         "storage_status": storage.get("status", ""),
                         "visible_output_bytes": storage.get("visible_output_bytes", ""),
                         "helper_data_bytes": storage.get("helper_data_bytes", ""),

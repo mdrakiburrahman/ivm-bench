@@ -118,6 +118,15 @@ abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,40960,1089536,1048576,40960
 
 Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.csv, outputs.json}`
 
+For cloud engines, each batch also writes
+`cloud-compute-<engine>-batch<N>.json`. Databricks reports distributed task
+time from `system.query.history.total_task_duration_ms`; Fabric reports Spark
+executor task time and executor CPU time through the Fabric monitoring API.
+Task time is summed across parallel tasks and may exceed elapsed time. These
+metrics describe compute work, not DBU/CU billing. If the cloud API or required
+permissions are unavailable, `results.csv` records an explicit `unavailable`
+status and error rather than treating the measurement as zero.
+
 Each experiment runs 3 batches per engine (full load `batch1` → append `batch2` →
 append `batch3`). Set `BENCHMARK_RUNS` greater than 1 to repeat the full 3-batch
 benchmark from clean engine state and report averaged per-engine batch timings.
