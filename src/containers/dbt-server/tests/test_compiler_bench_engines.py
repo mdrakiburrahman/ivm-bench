@@ -406,3 +406,49 @@ class FelderaDiffReadNumericTest(unittest.TestCase):
         # miscounted as a crash.
         self.assertIsNone(FelderaAdapter._diff_value({"error": "Execution error: ..."}))
         self.assertEqual(FelderaAdapter._diff_value({"count": 4}), 4)
+
+
+class FelderaBagCompareSqlTest(unittest.TestCase):
+    """The generated group-and-count comparison.
+
+    Validated against a live pipeline post-delta: matching view -> 0, wrong
+    values -> 4, duplicate-bearing view matching -> 0, and a duplicated base
+    -> 3. That last case is what a plain anti-join would silently pass, which is
+    why this compares per-group counts rather than membership.
+    """
+
+    def _sql(self, columns=("a", "s")):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        return FelderaAdapter.bag_compare_sql("V", "SELECT a, sum(b) AS s FROM T GROUP BY a", list(columns))
+
+    def test_groups_both_sides_by_every_column(self):
+        sql = self._sql()
+        self.assertEqual(sql.count("GROUP BY a, s"), 2)
+        self.assertIn("count(*) AS __n", sql)
+
+    def test_compares_multiplicity_not_membership(self):
+        # Bag equality: the difference is per-group counts.
+        self.assertIn("v.__n IS DISTINCT FROM q.__n", self._sql())
+
+    def test_full_join_so_either_side_missing_counts(self):
+        self.assertIn("FULL JOIN", self._sql())
+
+    def test_join_predicates_are_null_safe_and_parenthesised(self):
+        # IS NOT DISTINCT FROM binds looser than AND in DataFusion; unbracketed
+        # this parsed as `v.a IS NOT DISTINCT FROM (q.a AND ...)` and failed with
+        # "Cannot infer common argument type for logical boolean operation".
+        sql = self._sql()
+        self.assertIn("(v.a IS NOT DISTINCT FROM q.a) AND (v.s IS NOT DISTINCT FROM q.s)", sql)
+
+    def test_no_set_operation_is_used(self):
+        # A Feldera view is a Z-set; after deltas it holds negative-weight
+        # records, which the ad-hoc engine refuses inside EXCEPT/INTERSECT.
+        sql = self._sql().upper()
+        for banned in ("EXCEPT", "INTERSECT"):
+            self.assertNotIn(banned, sql)
+
+    def test_single_column_view(self):
+        sql = self._sql(columns=("a",))
+        self.assertIn("GROUP BY a", sql)
+        self.assertIn("(v.a IS NOT DISTINCT FROM q.a)", sql)

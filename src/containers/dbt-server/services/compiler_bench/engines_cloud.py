@@ -707,26 +707,83 @@ class FelderaAdapter(EngineAdapter):
             out.append(tuple(values))
         return sorted(out, key=repr)
 
-    def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
-        """Compare the view against the query by reading both and diffing here.
+    def _view_columns(self, mv_name: str, *, timeout_s: float) -> List[str]:
+        """Column names of a view, from a zero-row read."""
+        rows = self._adhoc(
+            f"SELECT * FROM {mv_name} LIMIT 1", timeout_s=timeout_s, label="describe"
+        )
+        return list(rows[0].keys()) if rows else []
 
-        NOT `EXCEPT ALL`: a Feldera materialized view is a Z-set, and once
-        deltas are applied it holds negative-weight (retraction) records, which
-        the ad-hoc engine refuses to process in a set operation —
-        "Unexpected record with negative weight encountered". Plain SELECTs over
-        the same view work, so both sides are read out and compared as row
-        multisets here instead.
+    @staticmethod
+    def bag_compare_sql(mv_name: str, sql: str, columns: Sequence[str]) -> str:
+        """One query returning the number of rows whose multiplicity differs.
+
+        Group both sides by every column and compare the per-group counts, so
+        this is BAG equality: a row present twice on one side and once on the
+        other is a difference. A plain anti-join would be set equality and would
+        miss exactly that, which matters most for the join-heavy queries where
+        the same row legitimately repeats.
+
+        Deliberately no set operation: a Feldera view is a Z-set and after
+        deltas contains negative-weight records, which the ad-hoc engine refuses
+        inside EXCEPT/INTERSECT. Grouping and joining are fine.
+
+        FULL JOIN so a group missing from either side counts, and NULL-safe
+        equality so grouping columns that are NULL still match each other —
+        plain `=` would leave those groups unjoined and report them as
+        differences.
         """
-        # Labelled separately: a single undifferentiated error could not say
-        # whether the view read or the base-query read failed, and the two have
-        # different causes — a probe showed plain view reads survive retractions.
-        view_rows = self._adhoc(
-            f"SELECT * FROM {mv_name}", timeout_s=timeout_s, label="view-read"
+        cols = ", ".join(columns)
+        # Each predicate parenthesised: IS NOT DISTINCT FROM binds looser than
+        # AND in DataFusion, so without them this parses as
+        # `v.a IS NOT DISTINCT FROM (q.a AND ...)` and fails type coercion with
+        # "Cannot infer common argument type for logical boolean operation".
+        on = " AND ".join(
+            f"(v.{c} IS NOT DISTINCT FROM q.{c})" for c in columns
         )
-        expected_rows = self._adhoc(
-            f"SELECT * FROM ({sql}) __cb", timeout_s=timeout_s, label="base-query"
+        return (
+            "SELECT count(*) AS diff FROM "
+            f"(SELECT {cols}, count(*) AS __n FROM {mv_name} GROUP BY {cols}) v "
+            "FULL JOIN "
+            f"(SELECT {cols}, count(*) AS __n FROM ({sql}) __cb GROUP BY {cols}) q "
+            f"ON {on} "
+            "WHERE v.__n IS DISTINCT FROM q.__n"
         )
-        return self._normalize(view_rows) == self._normalize(expected_rows)
+
+    def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
+        """Compare view against query inside Feldera, returning one row.
+
+        The corpus contains partial-key joins that produce ~1e6 rows at SF3;
+        reading both sides out and diffing them in Python transferred all of
+        that per query and was slow and fragile. This keeps the comparison in
+        the engine and transfers a single count.
+
+        Falls back to reading both sides only when the column list cannot be
+        established, since the grouped form needs the names.
+        """
+        columns = self._view_columns(mv_name, timeout_s=timeout_s)
+        if not columns:
+            view_rows = self._adhoc(
+                f"SELECT * FROM {mv_name}", timeout_s=timeout_s, label="view-read"
+            )
+            expected_rows = self._adhoc(
+                f"SELECT * FROM ({sql}) __cb", timeout_s=timeout_s, label="base-query"
+            )
+            return self._normalize(view_rows) == self._normalize(expected_rows)
+
+        rows = self._adhoc(
+            self.bag_compare_sql(mv_name, sql, columns),
+            timeout_s=timeout_s,
+            label="bag-compare",
+        )
+        if not rows:
+            raise QueryFailed(f"{self.name}: bag comparison produced no result")
+        diff = self._diff_value(rows[0])
+        if diff is None:
+            raise QueryFailed(
+                f"{self.name}: bag comparison returned no count; got {rows[0]!r}"
+            )
+        return int(diff) == 0
 
     @staticmethod
     def _diff_value(row):
