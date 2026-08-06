@@ -68,6 +68,40 @@ class DatabricksEnzymeAdapter(EngineAdapter):
                 raise EngineCrashed(f"{self.name}: {message[:800]}") from exc
             raise QueryFailed(f"{self.name}: {message[:800]}") from exc
 
+    def _upload_tpcc_data(self, corpus: Corpus) -> str:
+        """Copy the TPC-C Parquet into a UC volume and return the volume path.
+
+        Databricks Serverless SQL has no access to the benchmark host's
+        filesystem, so reading `parquet.'<local path>'` fails with
+        FAILED_TO_CREATE_PLAN_FOR_DIRECT_QUERY. The data has to live in a volume
+        the warehouse can read. Reuses the same shared cache volume (and its
+        size-aware sync) that init_sources uses for the TPC-DI sources, so a
+        repeat run at the same scale re-uploads nothing.
+        """
+        from pathlib import Path
+
+        local = Path(_tpcc_data_dir(corpus))
+        if not local.is_dir():
+            raise EngineCrashed(
+                f"{self.name}: TPC-C Parquet not found at {local} — corpus prep "
+                "must generate it before the engine runs"
+            )
+        scale_factor = corpus.meta.get("scale_factor", 3)
+        remote = f"{self._src._cache_volume_root()}/compiler-bench/sf{scale_factor}"
+        try:
+            ws = self._src._workspace_client()
+            self._src._ensure_cache_schema(ws)
+            uploaded, skipped = self._src._sync_dir(ws, local, remote)
+        except Exception as exc:
+            raise EngineCrashed(
+                f"{self.name}: uploading TPC-C data to {remote} failed: {exc}"
+            ) from exc
+        logger.info(
+            "[%s] TPC-C data in volume %s (%d uploaded, %d already current)",
+            self.name, remote, uploaded, skipped,
+        )
+        return remote
+
     def setup(self, corpus: Corpus) -> None:
         self._corpus = corpus
         self._execute(
@@ -75,7 +109,7 @@ class DatabricksEnzymeAdapter(EngineAdapter):
             timeout_s=120,
         )
         self._execute(f"USE `{self._src.CATALOG}`.`{self._schema}`", timeout_s=60)
-        data_dir = _tpcc_data_dir(corpus)
+        data_dir = self._upload_tpcc_data(corpus)
         for stmt in corpus.schema_ddl:
             table = _tpcc_table_names([stmt])[0]
             self._execute(f"DROP TABLE IF EXISTS {self._fq(table)}", timeout_s=300)
