@@ -286,6 +286,15 @@ class CompilerBenchRunner:
         adapter = self._adapter
         adapter.setup(self._corpus)
 
+        # Engines with no per-view DDL (Feldera: one program, one Rust compile)
+        # build every view up front; the per-query loop then reports on each.
+        build_batch = getattr(adapter, "build_batch", None)
+        if callable(build_batch):
+            translated = [(f"cb_mv_{i}", q.sql)
+                          for i, q in enumerate(self._corpus.queries, start=1)
+                          if q.translated]
+            build_batch(translated, timeout_s=max(self._timeout_s, 600))
+
         total = len(self._corpus.queries)
         for index, query in enumerate(self._corpus.queries, start=1):
             mv_name = f"cb_mv_{index}"

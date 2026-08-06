@@ -726,6 +726,10 @@ def generate_tpcc_parquet(
     for table in TPCC_TABLES:
         target = str(out_dir / f"{table}.parquet").replace("'", "''")
         stmts.append(f"COPY {table} TO '{target}' (FORMAT PARQUET);")
+        # CSV as well: Feldera ingests over HTTP and takes CSV/JSON, not Parquet.
+        # Same generated rows, so every engine still loads identical data.
+        csv_target = str(out_dir / f"{table}.csv").replace("'", "''")
+        stmts.append(f"COPY {table} TO '{csv_target}' (FORMAT CSV, HEADER FALSE);")
 
     proc = subprocess.run(
         [str(duckdb_bin), "-unsigned"],

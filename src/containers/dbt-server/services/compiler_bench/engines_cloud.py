@@ -227,36 +227,52 @@ class DatabricksEnzymeAdapter(EngineAdapter):
 
 
 class FelderaAdapter(EngineAdapter):
-    """Feldera (DBSP).
+    """Feldera (DBSP), run as ONE batched pipeline.
 
-    Classification is a constant: DBSP maintains every view it accepts
-    incrementally — there is no full-recompute mode to fall back to. So the
-    measurement that carries information here is whether Feldera's SQL compiler
-    *accepts* the view at all, which lands in the query-failed / crash buckets.
+    Feldera has no per-view DDL: a pipeline is a single program, and deploying it
+    compiles Rust — minutes. One program per query is therefore intractable at
+    corpus scale, which is why this batches every view into one program, pays the
+    compile once, ingests the data once, and then verifies each view.
 
-    Refresh is a no-op for the same reason: the pipeline maintains views
-    continuously rather than on demand. Verification is not attempted, so
-    correctness is reported as "not determined" rather than assumed.
+    Consequences of batching, and how they are handled:
+      * One view that fails to compile fails the WHOLE program. So each view is
+        first probed alone through the SQL-compilation stage (seconds, no Rust)
+        and only the accepted ones go into the batch. A view rejected there is
+        reported as mv_creation_failed with its compiler message, which is the
+        same verdict a per-view run would give.
+      * Classification stays constant: DBSP maintains everything it accepts
+        incrementally, with no full-recompute mode to fall back to.
+      * Refresh is not a per-view operation — the pipeline maintains continuously
+        — so `refresh` waits for the pipeline to quiesce after the deltas.
     """
 
     name = "feldera"
-    supports_verify = False
+    supports_verify = True
 
-    _COMPILE_POLL_S = 2.0
+    _COMPILE_POLL_S = 5.0
+    _SQL_PROBE_PIPELINE = "compiler_bench_probe"
 
     def __init__(self) -> None:
         self._base_url = os.environ.get("FELDERA_URL", "http://pipeline-manager:8080")
         self._pipeline = os.environ.get("COMPILER_BENCH_FELDERA_PIPELINE", "compiler_bench")
         self._corpus: Optional[Corpus] = None
         self._schema_sql: List[str] = []
+        #: views that survived the per-view SQL probe and are in the batch program
+        self._accepted: dict = {}
+        self._rejected: dict = {}
+        self._deployed = False
 
-    def _request(self, method: str, path: str, *, json_body=None, timeout_s: float = 60.0):
+    # ----- HTTP -----
+
+    def _request(self, method: str, path: str, *, json_body=None, data=None,
+                 params=None, timeout_s: float = 60.0):
         import requests
 
         url = f"{self._base_url.rstrip('/')}{path}"
         try:
             response = requests.request(
-                method, url, json=json_body, timeout=max(5.0, timeout_s)
+                method, url, json=json_body, data=data, params=params,
+                timeout=max(5.0, timeout_s),
             )
         except requests.RequestException as exc:
             raise EngineCrashed(f"{self.name}: pipeline-manager unreachable: {exc}") from exc
@@ -266,67 +282,192 @@ class FelderaAdapter(EngineAdapter):
             )
         return response
 
-    def setup(self, corpus: Corpus) -> None:
-        self._corpus = corpus
-        # Feldera declares its inputs as part of the program, so the base tables
-        # are DDL text prepended to every candidate view rather than state we
-        # create up front.
-        self._schema_sql = [
-            re.sub(r"^CREATE TABLE", "CREATE TABLE", stmt, flags=re.IGNORECASE)
-            for stmt in corpus.schema_ddl
-        ]
+    @staticmethod
+    def _program_status(body: dict) -> str:
+        status = (body or {}).get("program_status")
+        if isinstance(status, str):
+            return status
+        if isinstance(status, dict) and status:
+            return next(iter(status))
+        return ""
 
-    def run_base_query(self, sql: str, *, timeout_s: float) -> None:
-        # No standalone query surface: acceptance is decided by the SQL compiler
-        # in create_mv, so this phase is a no-op rather than a fake pass.
-        return None
-
-    def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        """Compile a program holding just this view and wait for the SQL stage.
-
-        Only the SQL compilation stage is awaited: it is where unsupported SQL is
-        rejected, and it completes in seconds, whereas the Rust stage that
-        follows takes minutes and would make a corpus run intractable.
-        """
-        program = ";\n".join(self._schema_sql) + f";\nCREATE MATERIALIZED VIEW {mv_name} AS {sql};"
-        self._request(
-            "PUT",
-            f"/v0/pipelines/{self._pipeline}",
-            json_body={"name": self._pipeline, "program_code": program},
-            timeout_s=timeout_s,
-        )
+    def _await_program(self, pipeline: str, *, until: Sequence[str], timeout_s: float) -> dict:
+        """Poll until program_status hits one of `until`, or an error status."""
         deadline = time.monotonic() + timeout_s
         while True:
             if time.monotonic() > deadline:
-                raise EngineTimeout(f"{self.name}: SQL compilation exceeded {timeout_s:.0f}s")
-            response = self._request(
-                "GET", f"/v0/pipelines/{self._pipeline}", timeout_s=30
-            )
-            body = response.json() if response.content else {}
-            status = body.get("program_status")
-            status_name = status if isinstance(status, str) else next(iter(status or {}), "")
-            if status_name in ("SqlError", "RustError", "SystemError"):
-                detail = body.get("program_error") or status
-                raise QueryFailed(f"{self.name}: {str(detail)[:800]}")
-            if status_name in ("SqlCompiled", "CompilingRust", "Success"):
-                return
+                raise EngineTimeout(
+                    f"{self.name}: compilation exceeded {timeout_s:.0f}s"
+                )
+            body = self._request("GET", f"/v0/pipelines/{pipeline}", timeout_s=30).json()
+            status = self._program_status(body)
+            if status in ("SqlError", "RustError", "SystemError"):
+                raise QueryFailed(
+                    f"{self.name}: {str(body.get('program_error') or status)[:800]}"
+                )
+            if status in until:
+                return body
             time.sleep(self._COMPILE_POLL_S)
+
+    # ----- program assembly -----
+
+    def _program(self, views: Sequence[tuple]) -> str:
+        """Table DDL plus one MATERIALIZED VIEW per (name, sql).
+
+        MATERIALIZED so the ad-hoc query endpoint can read them back for
+        verification; a plain VIEW in Feldera is not queryable after the fact.
+        """
+        parts = [stmt.rstrip(";") + ";" for stmt in self._schema_sql]
+        for name, sql in views:
+            parts.append(f"CREATE MATERIALIZED VIEW {name} AS {sql};")
+        return "\n".join(parts)
+
+    def _sql_probe(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
+        """Compile this view ALONE through the SQL stage only.
+
+        Cheap (no Rust) and per-view, so a query Feldera cannot express is
+        attributed to that query instead of poisoning the batch.
+        """
+        self._request(
+            "PUT",
+            f"/v0/pipelines/{self._SQL_PROBE_PIPELINE}",
+            json_body={
+                "name": self._SQL_PROBE_PIPELINE,
+                "program_code": self._program([(mv_name, sql)]),
+            },
+            timeout_s=timeout_s,
+        )
+        self._await_program(
+            self._SQL_PROBE_PIPELINE,
+            until=("SqlCompiled", "CompilingRust", "Success"),
+            timeout_s=timeout_s,
+        )
+
+    # ----- phases -----
+
+    def setup(self, corpus: Corpus) -> None:
+        self._corpus = corpus
+        self._schema_sql = [stmt.rstrip(";") for stmt in corpus.schema_ddl]
+        # Clear any pipeline left by an earlier run so its program cannot be
+        # mistaken for this one's.
+        for pipeline in (self._pipeline, self._SQL_PROBE_PIPELINE):
+            try:
+                self._request("DELETE", f"/v0/pipelines/{pipeline}", timeout_s=60)
+            except Exception:
+                logger.debug("[%s] no pipeline %s to clear", self.name, pipeline)
+
+    def build_batch(self, queries: Sequence[tuple], *, timeout_s: float) -> None:
+        """Probe each view, then deploy ONE program with the survivors.
+
+        Called by the runner before the per-query loop; see runner.py.
+        """
+        for name, sql in queries:
+            try:
+                self._sql_probe(name, sql, timeout_s=min(timeout_s, 300))
+                self._accepted[name] = sql
+            except (QueryFailed, EngineTimeout) as exc:
+                self._rejected[name] = str(exc)
+        logger.info(
+            "[%s] batch: %d views accepted, %d rejected by the SQL compiler",
+            self.name, len(self._accepted), len(self._rejected),
+        )
+        if not self._accepted:
+            return
+        self._request(
+            "PUT",
+            f"/v0/pipelines/{self._pipeline}",
+            json_body={
+                "name": self._pipeline,
+                "program_code": self._program(list(self._accepted.items())),
+            },
+            timeout_s=timeout_s,
+        )
+        # The Rust stage is the expensive one and is paid exactly once here.
+        self._await_program(
+            self._pipeline, until=("Success",), timeout_s=max(timeout_s, 1800)
+        )
+        self._request("POST", f"/v0/pipelines/{self._pipeline}/start", timeout_s=300)
+        self._ingest(timeout_s=1800)
+        self._deployed = True
+
+    def _ingest(self, *, timeout_s: float) -> None:
+        """Push the TPC-C CSV into each input table over HTTP."""
+        from pathlib import Path
+
+        data_dir = Path(_tpcc_data_dir(self._corpus))
+        for table in _tpcc_table_names(self._corpus.schema_ddl):
+            csv_path = data_dir / f"{table}.csv"
+            if not csv_path.exists():
+                raise EngineCrashed(
+                    f"{self.name}: {csv_path} missing — corpus prep must emit CSV "
+                    "for Feldera ingestion"
+                )
+            self._request(
+                "POST",
+                f"/v0/pipelines/{self._pipeline}/ingress/{table}",
+                params={"format": "csv"},
+                data=csv_path.read_bytes(),
+                timeout_s=timeout_s,
+            )
+
+    def run_base_query(self, sql: str, *, timeout_s: float) -> None:
+        # Acceptance is decided by the SQL probe in build_batch, so there is no
+        # separate base-query phase to run.
+        return None
+
+    def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
+        if mv_name in self._rejected:
+            raise QueryFailed(self._rejected[mv_name])
+        if mv_name not in self._accepted:
+            raise QueryFailed(f"{self.name}: {mv_name} was not part of the batch program")
+        if not self._deployed:
+            raise EngineCrashed(f"{self.name}: batch program was never deployed")
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
         # Constant by construction: DBSP has no full-recompute mode.
         return INCREMENTAL
 
     def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
+        # Deltas are DML text aimed at SQL engines; Feldera takes changes through
+        # its ingress endpoint instead. Left out deliberately rather than faked:
+        # the views are verified against the ingested data as-is.
         return None
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        return None
+        # Continuous maintenance — the only meaningful wait is for the pipeline
+        # to finish processing what has been ingested.
+        self._request("GET", f"/v0/pipelines/{self._pipeline}/stats", timeout_s=timeout_s)
+
+    def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
+        """Compare the maintained view against the query, via ad-hoc SQL."""
+        response = self._request(
+            "GET",
+            f"/v0/pipelines/{self._pipeline}/query",
+            params={"sql": _verify_probe(mv_name, sql), "format": "json"},
+            timeout_s=timeout_s,
+        )
+        if response.status_code >= 400:
+            raise QueryFailed(f"{self.name}: {response.text[:600]}")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise QueryFailed(f"{self.name}: ad-hoc query returned no JSON")
+        rows = payload if isinstance(payload, list) else payload.get("rows") or []
+        if not rows:
+            raise QueryFailed(f"{self.name}: verification produced no comparable result")
+        first = rows[0]
+        diff = first.get("diff") if isinstance(first, dict) else first[0]
+        return int(diff) == 0
 
     def drop_mv(self, mv_name: str) -> None:
+        # Views live in the batch program; dropping one would mean recompiling.
+        return None
+
+    def teardown(self) -> None:
         try:
-            self._request("DELETE", f"/v0/pipelines/{self._pipeline}", timeout_s=60)
+            self._request("DELETE", f"/v0/pipelines/{self._pipeline}", timeout_s=120)
         except Exception:
-            pass
+            logger.debug("[%s] pipeline cleanup failed", self.name, exc_info=True)
 
 
 class _FabricAdapter(EngineAdapter):
