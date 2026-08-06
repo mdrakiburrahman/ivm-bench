@@ -309,6 +309,31 @@ class FelderaAdapter(EngineAdapter):
                 return body
             time.sleep(self._COMPILE_POLL_S)
 
+    def _await_deployment(self, *, timeout_s: float) -> None:
+        """Poll deployment_status until the pipeline can accept data."""
+        deadline = time.monotonic() + timeout_s
+        last = ""
+        while True:
+            if time.monotonic() > deadline:
+                raise EngineTimeout(
+                    f"{self.name}: pipeline not deployed within {timeout_s:.0f}s "
+                    f"(last deployment_status={last!r})"
+                )
+            body = self._request(
+                "GET", f"/v0/pipelines/{self._pipeline}", timeout_s=30
+            ).json()
+            status = body.get("deployment_status")
+            last = status if isinstance(status, str) else str(status)
+            if last in ("Running", "Provisioned", "Initializing", "Paused"):
+                if last in ("Running", "Paused"):
+                    return
+            if last in ("Failed", "Stopping"):
+                raise EngineCrashed(
+                    f"{self.name}: pipeline deployment {last}: "
+                    f"{str(body.get('deployment_error'))[:600]}"
+                )
+            time.sleep(self._COMPILE_POLL_S)
+
     # ----- program assembly -----
 
     def _program(self, views: Sequence[tuple]) -> str:
@@ -387,6 +412,11 @@ class FelderaAdapter(EngineAdapter):
             self._pipeline, until=("Success",), timeout_s=max(timeout_s, 1800)
         )
         self._request("POST", f"/v0/pipelines/{self._pipeline}/start", timeout_s=300)
+        # Feldera tracks compilation and deployment separately: program_status
+        # reaching Success only means the binary is built. Ingesting before
+        # deployment_status leaves Stopped/Provisioning fails with
+        # "PipelineInteractionNotDeployed".
+        self._await_deployment(timeout_s=900)
         self._ingest(timeout_s=1800)
         self._deployed = True
 
