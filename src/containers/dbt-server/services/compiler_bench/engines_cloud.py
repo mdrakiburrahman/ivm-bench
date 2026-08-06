@@ -490,11 +490,161 @@ class FelderaAdapter(EngineAdapter):
         # Constant by construction: DBSP has no full-recompute mode.
         return INCREMENTAL
 
-    def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
-        # Deltas are DML text aimed at SQL engines; Feldera takes changes through
-        # its ingress endpoint instead. Left out deliberately rather than faked:
-        # the views are verified against the ingested data as-is.
+    # The delta pool is SQL DML aimed at engines with an UPDATE statement.
+    # Feldera takes changes as insert/delete records on its ingress endpoint, so
+    # each statement is translated into that form. Shapes come from
+    # compiler_bench_corpus.tpcc_delta_pool, which generates exactly these three.
+    _RE_UPDATE = re.compile(
+        r"^UPDATE\s+(?P<table>\w+)\s+SET\s+(?P<sets>.+?)\s+WHERE\s+(?P<where>.+)$",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _RE_DELETE = re.compile(
+        r"^DELETE\s+FROM\s+(?P<table>\w+)\s+WHERE\s+(?P<where>.+)$",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _RE_INSERT = re.compile(
+        r"^INSERT\s+INTO\s+(?P<table>\w+)\s+VALUES\s*\((?P<values>.+)\)\s*$",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    @staticmethod
+    def _split_top_level(text: str, sep: str) -> List[str]:
+        """Split on `sep` outside quotes, so values containing it stay intact."""
+        parts, buf, quote = [], [], None
+        for ch in text:
+            if quote:
+                buf.append(ch)
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in "'\"":
+                quote = ch
+                buf.append(ch)
+                continue
+            if text[len(parts) : ] and ch == sep:
+                parts.append("".join(buf))
+                buf = []
+                continue
+            buf.append(ch)
+        parts.append("".join(buf))
+        return [p.strip() for p in parts if p.strip()]
+
+    @staticmethod
+    def _literal(text: str):
+        """SQL literal -> Python value, for JSON ingress records."""
+        text = text.strip()
+        if text.upper() == "NULL":
+            return None
+        if len(text) >= 2 and text[0] == "'" and text[-1] == "'":
+            return text[1:-1].replace("''", "'")
+        if text.upper().startswith("TIMESTAMP'") and text.endswith("'"):
+            return text[len("TIMESTAMP'"):-1]
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return float(text)
+        except ValueError:
+            return text
+
+    @classmethod
+    def parse_delta(cls, statement: str) -> Optional[dict]:
+        """Break one DML statement into the parts an ingress translation needs.
+
+        Returns None for anything unrecognised, so an unexpected shape is
+        skipped rather than silently applied as something else.
+        """
+        stmt = statement.strip().rstrip(";")
+        match = cls._RE_UPDATE.match(stmt)
+        if match:
+            assignments = {}
+            for item in cls._split_top_level(match.group("sets"), ","):
+                if "=" not in item:
+                    return None
+                column, _, value = item.partition("=")
+                assignments[column.strip().lower()] = cls._literal(value)
+            return {"op": "update", "table": match.group("table"),
+                    "set": assignments, "where": match.group("where").strip()}
+        match = cls._RE_DELETE.match(stmt)
+        if match:
+            return {"op": "delete", "table": match.group("table"),
+                    "where": match.group("where").strip()}
+        match = cls._RE_INSERT.match(stmt)
+        if match:
+            values = [cls._literal(v) for v in cls._split_top_level(match.group("values"), ",")]
+            return {"op": "insert", "table": match.group("table"), "values": values}
         return None
+
+    def _columns_of(self, table: str) -> List[str]:
+        for stmt in self._schema_sql:
+            match = re.match(r"CREATE TABLE\s+(\w+)\s*\((.*)\)\s*$", stmt.strip(),
+                             re.IGNORECASE | re.DOTALL)
+            if match and match.group(1).lower() == table.lower():
+                return [c.split()[0].lower()
+                        for c in self._split_top_level(match.group(2), ",")]
+        return []
+
+    def _select_rows(self, table: str, where: str, *, timeout_s: float) -> List[dict]:
+        response = self._request(
+            "GET",
+            f"/v0/pipelines/{self._pipeline}/query",
+            params={"sql": f"SELECT * FROM {table} WHERE {where}", "format": "json"},
+            timeout_s=timeout_s,
+        )
+        if response.status_code >= 400:
+            raise QueryFailed(f"{self.name}: {response.text[:400]}")
+        return [r for r in self._ndjson_rows(response.text) if isinstance(r, dict)]
+
+    def _push(self, table: str, records: Sequence[dict], *, timeout_s: float) -> None:
+        if not records:
+            return
+        body = "\n".join(json.dumps(r) for r in records)
+        self._request(
+            "POST",
+            f"/v0/pipelines/{self._pipeline}/ingress/{table}",
+            params={"format": "json", "update_format": "insert_delete"},
+            data=body.encode(),
+            timeout_s=timeout_s,
+        )
+
+    def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
+        """Apply the delta batch as ingress records.
+
+        An UPDATE becomes delete-old + insert-new, which needs the current rows —
+        read back from the input tables, which are materialized. Reading them
+        from Feldera itself (rather than replaying the DML elsewhere) keeps the
+        change set consistent with what this pipeline actually holds.
+        """
+        if not self._deployed:
+            return
+        for statement in statements:
+            parsed = self.parse_delta(statement)
+            if not parsed:
+                logger.debug("[%s] skipping unrecognised delta: %s", self.name, statement[:120])
+                continue
+            table = parsed["table"]
+            try:
+                if parsed["op"] == "insert":
+                    columns = self._columns_of(table)
+                    values = parsed["values"]
+                    if len(columns) != len(values):
+                        continue
+                    self._push(table, [{"insert": dict(zip(columns, values))}],
+                               timeout_s=timeout_s)
+                    continue
+                rows = self._select_rows(table, parsed["where"], timeout_s=timeout_s)
+                if not rows:
+                    continue
+                records = [{"delete": row} for row in rows]
+                if parsed["op"] == "update":
+                    for row in rows:
+                        records.append({"insert": {**row, **parsed["set"]}})
+                self._push(table, records, timeout_s=timeout_s)
+            except QueryFailed:
+                # As in the C++ benchmark, a delta that does not apply is not a
+                # verdict on the query.
+                continue
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         # Continuous maintenance — the only meaningful wait is for the pipeline
