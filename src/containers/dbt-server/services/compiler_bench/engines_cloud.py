@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import List, Optional, Sequence
 
 from services.compiler_bench.corpus import Corpus
@@ -58,8 +60,28 @@ class DatabricksEnzymeAdapter(EngineAdapter):
         return f"`{self._src.CATALOG}`.`{self._schema}`.`{name}`"
 
     def _execute(self, sql: str, *, timeout_s: float):
+        # The module-level connection, NOT execute_isolated: the corpus queries
+        # are unqualified and rely on the `USE CATALOG` / `USE SCHEMA` issued in
+        # setup(), and an isolated connection per statement drops that session
+        # state — every query then fails with TABLE_OR_VIEW_NOT_FOUND. Safe here
+        # because compiler-bench runs with storage metrics off and no concurrent
+        # dbt run, which is what execute_isolated exists to avoid colliding with.
+        #
+        # That connection has no per-statement timeout, so the query budget is
+        # enforced here. A timed-out statement keeps running server-side; the
+        # session is reset so the next query does not inherit its state.
         try:
-            return self._src.execute_isolated(sql, timeout_s=max(5.0, timeout_s))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(self._src._execute, sql)
+                try:
+                    return future.result(timeout=max(5.0, timeout_s))
+                except FuturesTimeout:
+                    self._reset_connection()
+                    raise EngineTimeout(
+                        f"{self.name}: statement exceeded {timeout_s:.0f}s"
+                    )
+        except (EngineTimeout, EngineCrashed):
+            raise
         except Exception as exc:
             message = str(exc)
             if isinstance(exc, TimeoutError) or "timeout" in message.lower():
@@ -67,6 +89,20 @@ class DatabricksEnzymeAdapter(EngineAdapter):
             if _is_fatal(message):
                 raise EngineCrashed(f"{self.name}: {message[:800]}") from exc
             raise QueryFailed(f"{self.name}: {message[:800]}") from exc
+
+    def _reset_connection(self) -> None:
+        """Drop the shared connection so the next statement gets a fresh one.
+
+        Also re-issues the session default, which does not survive the drop.
+        """
+        try:
+            self._src._drop_connection()
+        except Exception:
+            logger.debug("[%s] dropping connection failed", self.name, exc_info=True)
+        try:
+            self._src._execute(f"USE `{self._src.CATALOG}`.`{self._schema}`")
+        except Exception:
+            logger.warning("[%s] could not restore session schema", self.name, exc_info=True)
 
     def _upload_tpcc_data(self, corpus: Corpus) -> str:
         """Copy the TPC-C Parquet into a UC volume and return the volume path.

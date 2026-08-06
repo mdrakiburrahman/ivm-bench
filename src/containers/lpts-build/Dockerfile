@@ -39,12 +39,14 @@ FROM ubuntu:22.04 AS lpts-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
-# cwida/lpts main. Adds the lpts_output_catalog / lpts_output_schema /
-# lpts_output_unqualified settings the corpus translation step needs — without
-# them LPTS bakes the local planning catalog into every emitted table reference.
-# Direct child of 13786cbd (the LPTS revision the openivm engines are compiled
+# cwida/lpts main. Carries two things the corpus translation needs:
+#   - lpts_output_catalog / _schema / _unqualified, without which LPTS bakes the
+#     local planning catalog into every emitted table reference
+#   - dialect-valid COUNT(*) and datediff units; DuckDB's count_star() and
+#     datediff('day', ...) are rejected by Databricks/Spark
+# Descends from 13786cbd (the LPTS revision the openivm engines are compiled
 # against), so the transpiler and the engines stay in sync.
-ARG LPTS_COMMIT=ecb176c500aae39fa09557a72ffddfd75288a29f
+ARG LPTS_COMMIT=79ea9b2e2281318232d27f038e0347831847a645
 ARG DUCKDB_COMMIT=08e34c447bae34eaee3723cac61f2878b6bdf787
 ARG EXTENSION_CI_TOOLS_COMMIT=72e76e99cd7fee45a99739cd118ec2db64e034ec
 # Must be the tag DUCKDB_COMMIT corresponds to. A loadable extension records the
@@ -114,7 +116,8 @@ RUN mkdir -p /artifacts && \
 
 FROM debian:bookworm-slim
 
-ARG LPTS_COMMIT=13786cbd8f32216aa5d92c99f8bf53c7cc52c9fb
+# Keep in step with the builder-stage pin above; this only feeds the label.
+ARG LPTS_COMMIT=79ea9b2e2281318232d27f038e0347831847a645
 LABEL org.lpts.commit="${LPTS_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile, mirroring the duckdb-openivm and
