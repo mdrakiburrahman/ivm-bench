@@ -342,7 +342,13 @@ class FelderaAdapter(EngineAdapter):
         MATERIALIZED so the ad-hoc query endpoint can read them back for
         verification; a plain VIEW in Feldera is not queryable after the fact.
         """
-        parts = [stmt.rstrip(";") + ";" for stmt in self._schema_sql]
+        # Input tables must be materialized too, not just the views: the verify
+        # probe re-runs the base query through the ad-hoc endpoint, which refuses
+        # to "SELECT from a non-materialized source".
+        parts = [
+            f"{stmt.rstrip(';')} WITH ('materialized' = 'true');"
+            for stmt in self._schema_sql
+        ]
         for name, sql in views:
             parts.append(f"CREATE MATERIALIZED VIEW {name} AS {sql};")
         return "\n".join(parts)
