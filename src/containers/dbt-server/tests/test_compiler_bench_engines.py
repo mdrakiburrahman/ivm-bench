@@ -225,3 +225,35 @@ class FelderaChunkedProbeTest(unittest.TestCase):
         adapter = self._adapter(bad_names=set())
         adapter._partition([], timeout_s=60)
         self.assertEqual(adapter.compiles, [])
+
+
+class FelderaAdHocResponseTest(unittest.TestCase):
+    """The ad-hoc endpoint returns newline-delimited JSON.
+
+    Shapes captured from a live pipeline. Calling response.json() on NDJSON and
+    looking for a "rows" key returned nothing, which surfaced as "verification
+    produced no comparable result" for every query rather than as an error.
+    """
+
+    def _rows(self, text):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        return FelderaAdapter._ndjson_rows(text)
+
+    def test_multiple_rows_one_json_object_per_line(self):
+        self.assertEqual(
+            self._rows('{"a":1,"s":30}\n{"a":2,"s":5}'),
+            [{"a": 1, "s": 30}, {"a": 2, "s": 5}],
+        )
+
+    def test_single_row_probe_result(self):
+        self.assertEqual(self._rows('{"diff":0}'), [{"diff": 0}])
+
+    def test_blank_lines_and_empty_body(self):
+        self.assertEqual(self._rows('\n{"diff":2}\n\n'), [{"diff": 2}])
+        self.assertEqual(self._rows(""), [])
+
+    def test_a_json_array_is_not_the_shape_returned(self):
+        # Guard against reverting to the array assumption: an array body yields
+        # one element, not the rows inside it.
+        self.assertEqual(self._rows('[{"diff":0}]'), [[{"diff": 0}]])

@@ -6,6 +6,7 @@ are validated by a GCI run rather than on a dev box.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -500,8 +501,36 @@ class FelderaAdapter(EngineAdapter):
         # to finish processing what has been ingested.
         self._request("GET", f"/v0/pipelines/{self._pipeline}/stats", timeout_s=timeout_s)
 
+    @staticmethod
+    def _ndjson_rows(text: str) -> List[dict]:
+        """Parse the ad-hoc endpoint's newline-delimited JSON.
+
+        It returns one JSON object per line — NOT a JSON array and not
+        {"rows": [...]}. Observed against a live pipeline:
+            {"a":1,"s":30}
+            {"a":2,"s":5}
+        response.json() parses only a single-row body and then finds no "rows"
+        key, which surfaced as "verification produced no comparable result" for
+        every query instead of as an error.
+        """
+        rows = []
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return rows
+
     def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
-        """Compare the maintained view against the query, via ad-hoc SQL."""
+        """Compare the maintained view against the query with EXCEPT ALL.
+
+        Checked against a live pipeline: the probe returns {"diff":0} when the
+        view matches and a non-zero diff when it does not, so a pass is a real
+        comparison rather than an empty result being read as success.
+        """
         response = self._request(
             "GET",
             f"/v0/pipelines/{self._pipeline}/query",
@@ -510,15 +539,13 @@ class FelderaAdapter(EngineAdapter):
         )
         if response.status_code >= 400:
             raise QueryFailed(f"{self.name}: {response.text[:600]}")
-        try:
-            payload = response.json()
-        except ValueError:
-            raise QueryFailed(f"{self.name}: ad-hoc query returned no JSON")
-        rows = payload if isinstance(payload, list) else payload.get("rows") or []
+        rows = self._ndjson_rows(response.text)
         if not rows:
             raise QueryFailed(f"{self.name}: verification produced no comparable result")
         first = rows[0]
         diff = first.get("diff") if isinstance(first, dict) else first[0]
+        if diff is None:
+            raise QueryFailed(f"{self.name}: verification returned no diff column")
         return int(diff) == 0
 
     def drop_mv(self, mv_name: str) -> None:
