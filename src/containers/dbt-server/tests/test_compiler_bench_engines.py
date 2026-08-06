@@ -452,3 +452,51 @@ class FelderaBagCompareSqlTest(unittest.TestCase):
         sql = self._sql(columns=("a",))
         self.assertIn("GROUP BY a", sql)
         self.assertIn("(v.a IS NOT DISTINCT FROM q.a)", sql)
+
+
+class FelderaBagDigestTest(unittest.TestCase):
+    """Join-free bag digest.
+
+    Validated against a live pipeline post-delta; the digests were
+    view=(2,2,5744212106), correct query identical, wrong query
+    (2,2,3892664944) — groups and row count identical, only the checksum
+    differing — and a duplicated base (3,6,...) vs (3,3,...).
+    """
+
+    def _sql(self, relation="V", columns=("a", "s")):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        return FelderaAdapter.bag_digest_sql(relation, list(columns))
+
+    def test_reports_groups_rows_and_checksum(self):
+        sql = self._sql()
+        for field in ("groups", "rows_total", "checksum"):
+            self.assertIn(f"AS {field}", sql)
+
+    def test_multiplicity_is_inside_the_checksum(self):
+        # sum(__n * __h): a row present twice on one side and once on the other
+        # changes the checksum, which a set-based probe would miss.
+        self.assertIn("sum(__n * __h)", self._sql())
+
+    def test_no_join_and_no_set_operation(self):
+        # The FULL JOIN version hit "Unexpected record with negative weight" on
+        # million-row join views; aggregates over a Z-set survive retractions.
+        upper = self._sql().upper()
+        for banned in ("JOIN", "EXCEPT", "INTERSECT", "UNION"):
+            self.assertNotIn(banned, upper)
+
+    def test_hex_prefix_converted_without_a_cast(self):
+        # DataFusion cannot cast '0xf19fabb5' to Int64 and exposes no
+        # hash-to-number function, so the hex digits are converted via strpos.
+        sql = self._sql()
+        self.assertNotIn("0x", sql)
+        self.assertEqual(sql.count("strpos('0123456789abcdef'"), 8)
+        self.assertIn("* 268435456", sql)  # 16^7, the leading digit's place value
+
+    def test_nulls_use_a_sentinel_that_cannot_collide(self):
+        # A NULL column and the literal string 'NULL' must hash differently.
+        self.assertIn("coalesce(cast(a AS VARCHAR), '\\x00NULL')", self._sql())
+
+    def test_groups_by_every_column(self):
+        self.assertIn("GROUP BY a, s", self._sql())
+        self.assertIn("GROUP BY a", self._sql(columns=("a",)))

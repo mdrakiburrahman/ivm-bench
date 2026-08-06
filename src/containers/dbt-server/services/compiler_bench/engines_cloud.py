@@ -714,6 +714,53 @@ class FelderaAdapter(EngineAdapter):
         )
         return list(rows[0].keys()) if rows else []
 
+    #: Hex digit -> value via strpos, because DataFusion cannot cast '0xabc' to
+    #: an integer ("Cannot cast string '0xf19fabb5' to value of Int64 type") and
+    #: exposes no hash-to-number function. 8 hex digits fit in a BIGINT.
+    _HEX_DIGITS = "0123456789abcdef"
+    _HEX_PLACE_VALUES = (268435456, 16777216, 1048576, 65536, 4096, 256, 16, 1)
+
+    @classmethod
+    def _hex_prefix_to_int(cls, hex_expr: str) -> str:
+        terms = [
+            f"(strpos('{cls._HEX_DIGITS}', substr({hex_expr}, {i + 1}, 1)) - 1) * {place}"
+            for i, place in enumerate(cls._HEX_PLACE_VALUES)
+        ]
+        return "(" + " + ".join(terms) + ")"
+
+    @classmethod
+    def bag_digest_sql(cls, relation: str, columns: Sequence[str]) -> str:
+        """One row summarising a relation as a bag — no join, no set operation.
+
+        Groups by every column, then reduces the groups to three numbers: how
+        many distinct groups, the total row count, and a checksum mixing each
+        group's multiplicity with a hash of its values. Multiplicity is inside
+        the checksum, so a row present twice on one side and once on the other
+        changes it — the property a set-based probe loses.
+
+        Why no join: the group-and-count comparison ran, but its FULL JOIN still
+        hit "Unexpected record with negative weight" on the million-row join
+        views, and the labelled error placed the failure inside that comparison
+        rather than in either read. Aggregates over a Z-set view were measured to
+        survive retractions, so each side is reduced independently here and the
+        two digests are compared outside the engine.
+
+        NULLs are coalesced to a sentinel that cannot collide with the string
+        'NULL', so a NULL column and a literal 'NULL' hash differently.
+        """
+        cols = ", ".join(columns)
+        parts = ", ".join(
+            f"coalesce(cast({c} AS VARCHAR), '\\x00NULL')" for c in columns
+        )
+        hex_expr = f"substr(md5(concat_ws(chr(1), {parts})), 1, 8)"
+        row_hash = cls._hex_prefix_to_int(hex_expr)
+        return (
+            "SELECT count(*) AS groups, sum(__n) AS rows_total, "
+            "sum(__n * __h) AS checksum FROM "
+            f"(SELECT count(*) AS __n, {row_hash} AS __h "
+            f"FROM {relation} GROUP BY {cols}) __g"
+        )
+
     @staticmethod
     def bag_compare_sql(mv_name: str, sql: str, columns: Sequence[str]) -> str:
         """One query returning the number of rows whose multiplicity differs.
@@ -771,19 +818,24 @@ class FelderaAdapter(EngineAdapter):
             )
             return self._normalize(view_rows) == self._normalize(expected_rows)
 
-        rows = self._adhoc(
-            self.bag_compare_sql(mv_name, sql, columns),
+        view = self._adhoc(
+            self.bag_digest_sql(mv_name, columns),
             timeout_s=timeout_s,
-            label="bag-compare",
+            label="view-digest",
         )
-        if not rows:
-            raise QueryFailed(f"{self.name}: bag comparison produced no result")
-        diff = self._diff_value(rows[0])
-        if diff is None:
+        expected = self._adhoc(
+            self.bag_digest_sql(f"({sql}) __cb", columns),
+            timeout_s=timeout_s,
+            label="query-digest",
+        )
+        if not view or not expected:
+            raise QueryFailed(f"{self.name}: digest comparison produced no result")
+        keys = ("groups", "rows_total", "checksum")
+        if any(k not in view[0] or k not in expected[0] for k in keys):
             raise QueryFailed(
-                f"{self.name}: bag comparison returned no count; got {rows[0]!r}"
+                f"{self.name}: digest missing fields; got {view[0]!r} / {expected[0]!r}"
             )
-        return int(diff) == 0
+        return all(view[0][k] == expected[0][k] for k in keys)
 
     @staticmethod
     def _diff_value(row):
