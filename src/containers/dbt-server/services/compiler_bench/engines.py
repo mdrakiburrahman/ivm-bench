@@ -13,6 +13,7 @@ actually did (query log, pipeline events). The runner prefers the observed one.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -656,7 +657,18 @@ class _LivyAdapter(EngineAdapter):
 
     @staticmethod
     def _rows(result: dict) -> List[list]:
-        payload = ((result or {}).get("data") or {}).get("application/json") or {}
+        """Rows out of a Livy statement response.
+
+        The table payload sits at result["output"]["data"]["application/json"],
+        NOT result["data"] — LivyClient.execute returns the whole statement
+        object, whose "output" holds the result. Dropping that level makes every
+        row-returning statement silently yield nothing, which shows up as
+        "classification unknown" and "verification produced no comparable
+        result" rather than as an error. Same shape
+        spark_openivm_profile._extract_rows consumes.
+        """
+        output = (result or {}).get("output") or {}
+        payload = (output.get("data") or {}).get("application/json")
         if isinstance(payload, dict):
             return [list(r) for r in (payload.get("data") or [])]
         return []
@@ -668,9 +680,17 @@ class _LivyAdapter(EngineAdapter):
         for stmt in corpus.schema_ddl:
             table = _tpcc_table_names([stmt])[0]
             self._execute(f"DROP TABLE IF EXISTS {table}", timeout_s=300)
-            # Delta everywhere in this family: Databricks needs it for
-            # incremental maintenance, so all Spark engines see one format.
-            self._execute(f"{stmt} USING DELTA", timeout_s=300)
+            # Delta with the change data feed on. The spark-openivm engine runs
+            # with `spark.openivm.changeFeed.mode=cdf`, which refuses to create a
+            # view over any source lacking `delta.enableChangeDataFeed` — without
+            # it every CREATE MATERIALIZED VIEW fails. Vanilla Spark does not need
+            # it, but both engines get the same table properties so the two are
+            # comparing views, not storage configurations.
+            self._execute(
+                f"{stmt} USING DELTA "
+                "TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')",
+                timeout_s=300,
+            )
             self._execute(
                 f"INSERT INTO {table} SELECT * FROM parquet.`{data_dir}/{table}.parquet`",
                 timeout_s=1800,
@@ -711,6 +731,39 @@ class _LivyAdapter(EngineAdapter):
 
 class SparkOpenIVMAdapter(_LivyAdapter):
     name = "spark-openivm"
+
+    def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
+        """Ask the extension up front, via its own dry-run verdict.
+
+        `EXPLAIN CREATE MATERIALIZED VIEW` compiles and classifies exactly as a
+        real CREATE would but materialises nothing, returning one JSON row with
+        `eligible` and `refresh_type` (refresh_type 3 is FULL_REFRESH, mirroring
+        openivm's DuckDB catalog). Asking here rather than only reading the
+        post-refresh query log means a view still gets a verdict when the log is
+        unavailable — and it is the same shape as the databricks-enzyme probe.
+
+        Uses a throwaway name: the command registers the explained view in the
+        session's dry-run registry, which would otherwise collide with the real
+        CREATE that follows.
+        """
+        rows = self._rows(
+            self._execute(
+                f"EXPLAIN CREATE MATERIALIZED VIEW {mv_name}_explain AS ({sql})",
+                timeout_s=timeout_s,
+            )
+        )
+        if not rows or not rows[0]:
+            return UNKNOWN
+        try:
+            verdict = json.loads(str(rows[0][0]))
+        except (json.JSONDecodeError, TypeError):
+            return UNKNOWN
+        if "eligible" in verdict:
+            return INCREMENTAL if verdict["eligible"] else FULL
+        refresh_type = verdict.get("refresh_type")
+        if refresh_type is None:
+            return UNKNOWN
+        return FULL if int(refresh_type) == 3 else INCREMENTAL
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         self._execute(f"CREATE MATERIALIZED VIEW {mv_name} AS ({sql})", timeout_s=timeout_s)

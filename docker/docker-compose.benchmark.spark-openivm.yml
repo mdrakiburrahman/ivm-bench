@@ -51,6 +51,9 @@ services:
       # All 3 openivm runtime artifacts: assembly jar + duckdb extension + duckdb CLI.
       # Produced by docker/docker-compose.spark-openivm-build.yml.
       - ../mount/bin/spark-openivm:/opt/spark-openivm:ro
+      # compiler-bench TPC-C Parquet. The Spark EXECUTOR reads this path, not the
+      # dbt-server, so mounting it on dbt-server alone gives PATH_NOT_FOUND.
+      - ../mount/compiler-bench:/data/compiler-bench:ro
       # Surface Livy spark-session log4j output (where openivm-spark's
       # [openivm-mv] telemetry lands at logInfo/logError) onto the host so
       # post-mortem analysis can grep per-MV `compiled_refresh_type=` and

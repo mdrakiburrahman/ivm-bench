@@ -44,6 +44,9 @@ services:
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/spark:/data/processed/spark
+      # compiler-bench TPC-C Parquet. The Spark EXECUTOR reads this path, not the
+      # dbt-server, so mounting it on dbt-server alone gives PATH_NOT_FOUND.
+      - ../mount/compiler-bench:/data/compiler-bench:ro
       - ../mount/metrics/${SCALE_FACTOR:-3}/spark/spark-events:/data/metrics/spark-events
     healthcheck:
       test: curl -sf http://localhost:8998/sessions || exit 1
