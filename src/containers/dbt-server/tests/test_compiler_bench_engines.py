@@ -157,3 +157,71 @@ class SchemaHelperTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FelderaChunkedProbeTest(unittest.TestCase):
+    """Chunked pre-filter: accept whole chunks, bisect only what fails.
+
+    Per-view probing measured ~5s/query (one full SQL compilation each), which
+    projects to ~3h for the 2186-query corpus. These tests pin the two
+    properties that make chunking correct: every view still gets an individual
+    verdict, and a passing chunk costs one compile.
+    """
+
+    def _adapter(self, bad_names):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        adapter = FelderaAdapter.__new__(FelderaAdapter)
+        adapter._accepted = {}
+        adapter._rejected = {}
+        adapter.compiles = []
+
+        def chunk_compiles(views, *, timeout_s):
+            adapter.compiles.append([n for n, _ in views])
+            bad = [n for n, _ in views if n in bad_names]
+            return f"cannot compile {bad[0]}" if bad else None
+
+        adapter._chunk_compiles = chunk_compiles
+        return adapter
+
+    @staticmethod
+    def _views(n):
+        return [(f"cb_mv_{i}", f"SELECT {i}") for i in range(1, n + 1)]
+
+    def test_all_good_chunk_costs_one_compile(self):
+        adapter = self._adapter(bad_names=set())
+        adapter._partition(self._views(50), timeout_s=60)
+        self.assertEqual(len(adapter.compiles), 1)
+        self.assertEqual(len(adapter._accepted), 50)
+        self.assertEqual(adapter._rejected, {})
+
+    def test_single_bad_view_is_isolated_and_others_accepted(self):
+        adapter = self._adapter(bad_names={"cb_mv_7"})
+        adapter._partition(self._views(16), timeout_s=60)
+        self.assertEqual(set(adapter._rejected), {"cb_mv_7"})
+        self.assertEqual(len(adapter._accepted), 15)
+        # Bisection, not a per-view sweep: far fewer compiles than 16.
+        self.assertLess(len(adapter.compiles), 12)
+
+    def test_rejected_view_keeps_the_compiler_message(self):
+        adapter = self._adapter(bad_names={"cb_mv_3"})
+        adapter._partition(self._views(4), timeout_s=60)
+        self.assertIn("cannot compile cb_mv_3", adapter._rejected["cb_mv_3"])
+
+    def test_every_view_gets_a_verdict(self):
+        adapter = self._adapter(bad_names={"cb_mv_2", "cb_mv_9"})
+        views = self._views(12)
+        adapter._partition(views, timeout_s=60)
+        decided = set(adapter._accepted) | set(adapter._rejected)
+        self.assertEqual(decided, {n for n, _ in views})
+
+    def test_all_bad_rejects_each_individually(self):
+        adapter = self._adapter(bad_names={f"cb_mv_{i}" for i in range(1, 5)})
+        adapter._partition(self._views(4), timeout_s=60)
+        self.assertEqual(len(adapter._rejected), 4)
+        self.assertEqual(adapter._accepted, {})
+
+    def test_empty_input_does_nothing(self):
+        adapter = self._adapter(bad_names=set())
+        adapter._partition([], timeout_s=60)
+        self.assertEqual(adapter.compiles, [])

@@ -347,27 +347,6 @@ class FelderaAdapter(EngineAdapter):
             parts.append(f"CREATE MATERIALIZED VIEW {name} AS {sql};")
         return "\n".join(parts)
 
-    def _sql_probe(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        """Compile this view ALONE through the SQL stage only.
-
-        Cheap (no Rust) and per-view, so a query Feldera cannot express is
-        attributed to that query instead of poisoning the batch.
-        """
-        self._request(
-            "PUT",
-            f"/v0/pipelines/{self._SQL_PROBE_PIPELINE}",
-            json_body={
-                "name": self._SQL_PROBE_PIPELINE,
-                "program_code": self._program([(mv_name, sql)]),
-            },
-            timeout_s=timeout_s,
-        )
-        self._await_program(
-            self._SQL_PROBE_PIPELINE,
-            until=("SqlCompiled", "CompilingRust", "Success"),
-            timeout_s=timeout_s,
-        )
-
     # ----- phases -----
 
     def setup(self, corpus: Corpus) -> None:
@@ -381,17 +360,64 @@ class FelderaAdapter(EngineAdapter):
             except Exception:
                 logger.debug("[%s] no pipeline %s to clear", self.name, pipeline)
 
+    #: Views per probe program. Chunking is what makes the pre-filter scale: a
+    #: per-view probe costs one full SQL compilation (~5s measured), so 2186
+    #: queries would be ~3h serial. A chunk that compiles accepts every view in
+    #: it from one round trip; only failing chunks are split.
+    _PROBE_CHUNK = 50
+
+    def _chunk_compiles(self, views: Sequence[tuple], *, timeout_s: float) -> Optional[str]:
+        """None if every view in `views` compiles, else the compiler's message."""
+        try:
+            self._request(
+                "PUT",
+                f"/v0/pipelines/{self._SQL_PROBE_PIPELINE}",
+                json_body={
+                    "name": self._SQL_PROBE_PIPELINE,
+                    "program_code": self._program(list(views)),
+                },
+                timeout_s=timeout_s,
+            )
+            self._await_program(
+                self._SQL_PROBE_PIPELINE,
+                until=("SqlCompiled", "CompilingRust", "Success"),
+                timeout_s=timeout_s,
+            )
+            return None
+        except (QueryFailed, EngineTimeout) as exc:
+            return str(exc)
+
+    def _partition(self, views: Sequence[tuple], *, timeout_s: float) -> None:
+        """Accept/reject each view, splitting only what fails to compile.
+
+        Bisecting costs ~log2(chunk) extra compiles per bad view, which beats a
+        per-view probe whenever most views compile — the measured rejection rate
+        is a few percent.
+        """
+        if not views:
+            return
+        error = self._chunk_compiles(views, timeout_s=timeout_s)
+        if error is None:
+            for name, sql in views:
+                self._accepted[name] = sql
+            return
+        if len(views) == 1:
+            self._rejected[views[0][0]] = error
+            return
+        middle = len(views) // 2
+        self._partition(views[:middle], timeout_s=timeout_s)
+        self._partition(views[middle:], timeout_s=timeout_s)
+
     def build_batch(self, queries: Sequence[tuple], *, timeout_s: float) -> None:
-        """Probe each view, then deploy ONE program with the survivors.
+        """Pre-filter by chunked probing, then deploy ONE program.
 
         Called by the runner before the per-query loop; see runner.py.
         """
-        for name, sql in queries:
-            try:
-                self._sql_probe(name, sql, timeout_s=min(timeout_s, 300))
-                self._accepted[name] = sql
-            except (QueryFailed, EngineTimeout) as exc:
-                self._rejected[name] = str(exc)
+        probe_budget = min(timeout_s, 600)
+        for start in range(0, len(queries), self._PROBE_CHUNK):
+            self._partition(
+                list(queries[start : start + self._PROBE_CHUNK]), timeout_s=probe_budget
+            )
         logger.info(
             "[%s] batch: %d views accepted, %d rejected by the SQL compiler",
             self.name, len(self._accepted), len(self._rejected),
