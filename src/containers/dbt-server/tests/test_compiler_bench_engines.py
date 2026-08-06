@@ -328,3 +328,33 @@ class FelderaDeltaParsingTest(unittest.TestCase):
         for dialect in ("duckdb", "spark"):
             for stmt in module.tpcc_delta_pool(3, dialect):
                 self.assertIsNotNone(self._parse(stmt), f"unparsed: {stmt}")
+
+
+class FelderaDiffReadTest(unittest.TestCase):
+    """Reading the probe's count out of a result row."""
+
+    def _diff(self, row):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        return FelderaAdapter._diff_value(row)
+
+    def test_named_diff_column(self):
+        self.assertEqual(self._diff({"diff": 0}), 0)
+        self.assertEqual(self._diff({"diff": 2}), 2)
+
+    def test_case_variants(self):
+        self.assertEqual(self._diff({"DIFF": 3}), 3)
+
+    def test_single_column_row_regardless_of_name(self):
+        # Unambiguous: one column, one value — a naming difference should not
+        # fail the whole verification.
+        self.assertEqual(self._diff({"count(*)": 7}), 7)
+
+    def test_multi_column_row_without_diff_is_unreadable(self):
+        # Ambiguous — guessing which column is the count would risk a wrong
+        # verdict, so this must report rather than pick one.
+        self.assertIsNone(self._diff({"a": 1, "b": 2}))
+
+    def test_null_and_empty(self):
+        self.assertIsNone(self._diff({"diff": None}))
+        self.assertIsNone(self._diff({}))

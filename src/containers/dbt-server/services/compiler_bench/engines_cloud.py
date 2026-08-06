@@ -692,11 +692,34 @@ class FelderaAdapter(EngineAdapter):
         rows = self._ndjson_rows(response.text)
         if not rows:
             raise QueryFailed(f"{self.name}: verification produced no comparable result")
-        first = rows[0]
-        diff = first.get("diff") if isinstance(first, dict) else first[0]
+        diff = self._diff_value(rows[0])
         if diff is None:
-            raise QueryFailed(f"{self.name}: verification returned no diff column")
+            # Include the payload: the previous message named the symptom and
+            # discarded the evidence, so a run could only report "no diff column"
+            # without ever showing what came back.
+            raise QueryFailed(
+                f"{self.name}: verification returned no diff column; "
+                f"response was {response.text[:300]!r}"
+            )
         return int(diff) == 0
+
+    @staticmethod
+    def _diff_value(row):
+        """Read the probe's single count out of a result row.
+
+        The alias survives as `diff` in every shape observed, but a single-column
+        row is unambiguous regardless of what the engine called the column, so
+        fall back to its only value rather than failing on a naming difference.
+        """
+        if not isinstance(row, dict):
+            return row[0] if row else None
+        for key in ("diff", "DIFF", "Diff"):
+            if key in row and row[key] is not None:
+                return row[key]
+        values = [v for v in row.values() if v is not None]
+        if len(row) == 1 and values:
+            return values[0]
+        return None
 
     def drop_mv(self, mv_name: str) -> None:
         # Views live in the batch program; dropping one would mean recompiling.
