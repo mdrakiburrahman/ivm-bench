@@ -674,7 +674,7 @@ class FelderaAdapter(EngineAdapter):
                 continue
         return rows
 
-    def _adhoc(self, sql: str, *, timeout_s: float) -> List[dict]:
+    def _adhoc(self, sql: str, *, timeout_s: float, label: str = "query") -> List[dict]:
         response = self._request(
             "GET",
             f"/v0/pipelines/{self._pipeline}/query",
@@ -682,11 +682,11 @@ class FelderaAdapter(EngineAdapter):
             timeout_s=timeout_s,
         )
         if response.status_code >= 400:
-            raise QueryFailed(f"{self.name}: {response.text[:600]}")
+            raise QueryFailed(f"{self.name}: [{label}] {response.text[:600]}")
         rows = self._ndjson_rows(response.text)
         for row in rows:
             if isinstance(row, dict) and "error" in row and len(row) == 1:
-                raise QueryFailed(f"{self.name}: {str(row['error'])[:600]}")
+                raise QueryFailed(f"{self.name}: [{label}] {str(row['error'])[:600]}")
         return [r for r in rows if isinstance(r, dict)]
 
     @staticmethod
@@ -717,8 +717,15 @@ class FelderaAdapter(EngineAdapter):
         the same view work, so both sides are read out and compared as row
         multisets here instead.
         """
-        view_rows = self._adhoc(f"SELECT * FROM {mv_name}", timeout_s=timeout_s)
-        expected_rows = self._adhoc(f"SELECT * FROM ({sql}) __cb", timeout_s=timeout_s)
+        # Labelled separately: a single undifferentiated error could not say
+        # whether the view read or the base-query read failed, and the two have
+        # different causes — a probe showed plain view reads survive retractions.
+        view_rows = self._adhoc(
+            f"SELECT * FROM {mv_name}", timeout_s=timeout_s, label="view-read"
+        )
+        expected_rows = self._adhoc(
+            f"SELECT * FROM ({sql}) __cb", timeout_s=timeout_s, label="base-query"
+        )
         return self._normalize(view_rows) == self._normalize(expected_rows)
 
     @staticmethod
