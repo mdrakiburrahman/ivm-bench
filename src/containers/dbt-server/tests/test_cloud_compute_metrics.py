@@ -10,7 +10,7 @@ sys.path.insert(0, str(DBT_SERVER))
 from services.cloud_compute_metrics import (  # noqa: E402
     _overlaps_window,
     summarize_databricks_rows,
-    summarize_fabric_tasks,
+    summarize_fabric_stages,
 )
 
 
@@ -18,8 +18,8 @@ class CloudComputeMetricsTest(unittest.TestCase):
     def test_databricks_sums_task_time_without_claiming_cpu_time(self):
         result = summarize_databricks_rows(
             [
-                {"statement_id": "a", "total_task_duration_ms": 1250},
-                {"statement_id": "b", "total_task_duration_ms": 2750},
+                {"statement_id": "a", "metrics": {"task_total_time_ms": 1250}},
+                {"statement_id": "b", "metrics": {"task_total_time_ms": 2750}},
             ]
         )
 
@@ -34,33 +34,30 @@ class CloudComputeMetricsTest(unittest.TestCase):
         self.assertIn("no rows", result["error"])
 
     def test_fabric_sums_executor_runtime_and_cpu_time(self):
-        result = summarize_fabric_tasks(
+        result = summarize_fabric_stages(
             [
                 {
-                    "taskMetrics": {
-                        "executorRunTime": 2500,
-                        "executorCpuTime": 1_500_000_000,
-                    }
+                    "executorRunTime": 2500,
+                    "executorCpuTime": 1_500_000_000,
+                    "numCompleteTasks": 4,
                 },
                 {
-                    "taskMetrics": {
-                        "executorRunTime": 500,
-                        "executorCpuTime": 250_000_000,
-                    }
+                    "executorRunTime": 500,
+                    "executorCpuTime": 250_000_000,
+                    "numCompleteTasks": 2,
                 },
-            ],
-            stage_count=2,
+            ]
         )
 
         self.assertEqual(result["task_time_s"], 3.0)
         self.assertEqual(result["cpu_time_s"], 1.75)
-        self.assertEqual(result["task_count"], 2)
+        self.assertEqual(result["task_count"], 6)
 
     def test_empty_fabric_tasks_are_not_reported_as_zero_work(self):
-        result = summarize_fabric_tasks([], stage_count=0)
+        result = summarize_fabric_stages([])
 
         self.assertEqual(result["status"], "unavailable")
-        self.assertIn("no completed tasks", result["error"])
+        self.assertIn("no completed stages", result["error"])
 
     def test_stage_must_overlap_batch_window(self):
         start_ms = int(

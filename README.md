@@ -120,7 +120,7 @@ Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.
 
 For cloud engines, each batch also writes
 `cloud-compute-<engine>-batch<N>.json`. Databricks reports distributed task
-time from `system.query.history.total_task_duration_ms`; Fabric reports Spark
+time from Query History API `metrics.task_total_time_ms`; Fabric reports Spark
 executor task time and executor CPU time through the Fabric monitoring API.
 Task time is summed across parallel tasks and may exceed elapsed time. These
 metrics describe compute work, not DBU/CU billing. If the cloud API or required

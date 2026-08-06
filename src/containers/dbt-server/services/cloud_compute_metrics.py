@@ -25,11 +25,13 @@ def _number(value: Any) -> float:
 
 def summarize_databricks_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     rows = list(rows)
-    task_ms = sum(_number(row.get("total_task_duration_ms")) for row in rows)
+    task_ms = sum(
+        _number((row.get("metrics") or {}).get("task_total_time_ms")) for row in rows
+    )
     result = {
         "status": "ok" if rows else "unavailable",
-        "source": "databricks_system_query_history",
-        "semantics": "sum(total_task_duration_ms) across queries overlapping the batch window",
+        "source": "databricks_query_history_api",
+        "semantics": "sum(metrics.task_total_time_ms) across queries started in the batch window",
         "task_time_s": task_ms / 1000.0,
         "cpu_time_s": None,
         "query_count": len(rows),
@@ -41,39 +43,39 @@ def summarize_databricks_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def collect_databricks(start_ms: int, end_ms: int) -> Dict[str, Any]:
-    """Collect SQL task duration for queries overlapping ``[start_ms,end_ms]``.
+    """Collect SQL task duration for queries started in ``[start_ms,end_ms]``.
 
-    The collection query starts after ``end_ms`` and is consequently excluded
-    by the upper bound.  The GCI workspace is dedicated to the benchmark, so we
-    intentionally do not filter by warehouse: Dynamic Tables may execute on
-    managed pipeline compute rather than the SQL warehouse that submits DDL.
+    The Query History REST API returns queries visible to the calling principal
+    without requiring grants on the ``system.query`` schema.  We intentionally
+    do not filter by warehouse: Dynamic Tables may execute on managed pipeline
+    compute rather than the SQL warehouse that submits DDL.
     """
     from services import databricks_enzyme_sources as src
 
-    sql = f"""
-        SELECT statement_id, statement_type, execution_status,
-               start_time, end_time, total_duration_ms,
-               total_task_duration_ms, read_bytes, written_bytes
-        FROM system.query.history
-        WHERE start_time <= timestamp_millis({int(end_ms)})
-          AND COALESCE(end_time, CURRENT_TIMESTAMP()) >= timestamp_millis({int(start_ms)})
-          AND total_task_duration_ms IS NOT NULL
-        ORDER BY start_time
-    """
-    conn = src._get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql)
-        names = [str(column[0]).lower() for column in cursor.description]
-        rows = []
-        for values in cursor.fetchall():
-            row = dict(zip(names, values))
-            for key, value in list(row.items()):
-                if isinstance(value, datetime):
-                    row[key] = value.isoformat()
-            rows.append(row)
-    finally:
-        cursor.close()
+    api = src._workspace_client().api_client
+    query: Dict[str, Any] = {
+        "filter_by": {
+            "query_start_time_range": {
+                "start_time_ms": int(start_ms),
+                "end_time_ms": int(end_ms),
+            }
+        },
+        "include_metrics": True,
+        "max_results": 1000,
+    }
+    rows: List[Dict[str, Any]] = []
+    while True:
+        response = api.do(
+            "GET",
+            "/api/2.0/sql/history/queries",
+            query=query,
+            headers={"Accept": "application/json"},
+        )
+        rows.extend(response.get("res") or [])
+        page_token = response.get("next_page_token")
+        if not page_token or not response.get("has_next_page"):
+            break
+        query = {"include_metrics": True, "max_results": 1000, "page_token": page_token}
     result = summarize_databricks_rows(rows)
     result.update({"window_start_ms": start_ms, "window_end_ms": end_ms})
     return result
@@ -99,27 +101,22 @@ def _overlaps_window(stage: Dict[str, Any], start_ms: int, end_ms: int) -> bool:
     return submitted <= end_ms and (completed is None or completed >= start_ms)
 
 
-def summarize_fabric_tasks(
-    tasks: Iterable[Dict[str, Any]], *, stage_count: int
-) -> Dict[str, Any]:
-    tasks = list(tasks)
-    run_ms = 0.0
-    cpu_ns = 0.0
-    for task in tasks:
-        metrics = task.get("taskMetrics") or {}
-        run_ms += _number(metrics.get("executorRunTime"))
-        cpu_ns += _number(metrics.get("executorCpuTime"))
+def summarize_fabric_stages(stages: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    stages = list(stages)
+    run_ms = sum(_number(stage.get("executorRunTime")) for stage in stages)
+    cpu_ns = sum(_number(stage.get("executorCpuTime")) for stage in stages)
+    task_count = sum(_number(stage.get("numCompleteTasks")) for stage in stages)
     result = {
-        "status": "ok" if tasks else "unavailable",
+        "status": "ok" if stages else "unavailable",
         "source": "fabric_spark_monitoring_api",
-        "semantics": "sum of successful Spark task metrics for stages overlapping the batch window",
+        "semantics": "sum of Spark StageData executor metrics for completed stages overlapping the batch window",
         "task_time_s": run_ms / 1000.0,
         "cpu_time_s": cpu_ns / 1_000_000_000.0,
-        "stage_count": stage_count,
-        "task_count": len(tasks),
+        "stage_count": len(stages),
+        "task_count": int(task_count),
     }
-    if not tasks:
-        result["error"] = "Fabric monitoring returned no completed tasks for the batch window"
+    if not stages:
+        result["error"] = "Fabric monitoring returned no completed stages for the batch window"
     return result
 
 
@@ -179,25 +176,7 @@ def collect_fabric(engine: str, start_ms: int, end_ms: int) -> Dict[str, Any]:
         if str(stage.get("status", "")).upper() == "COMPLETE"
         and _overlaps_window(stage, start_ms, end_ms)
     ]
-    tasks: List[Dict[str, Any]] = []
-    for stage in selected:
-        stage_id = stage.get("stageId")
-        attempt_id = stage.get("attemptId", 0)
-        offset = 0
-        while True:
-            page = _fabric_get(
-                f"{app_base}/stages/{stage_id}/{attempt_id}/taskList",
-                params={"offset": offset, "length": 10000, "status": "success"},
-            )
-            successful = [
-                task for task in page if str(task.get("status", "")).upper() == "SUCCESS"
-            ]
-            tasks.extend(successful)
-            if len(page) < 10000:
-                break
-            offset += len(page)
-
-    result = summarize_fabric_tasks(tasks, stage_count=len(selected))
+    result = summarize_fabric_stages(selected)
     result.update(
         {
             "window_start_ms": start_ms,
