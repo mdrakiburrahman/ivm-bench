@@ -358,3 +358,51 @@ class FelderaDiffReadTest(unittest.TestCase):
     def test_null_and_empty(self):
         self.assertIsNone(self._diff({"diff": None}))
         self.assertIsNone(self._diff({}))
+
+
+class FelderaMultisetVerifyTest(unittest.TestCase):
+    """Row-multiset comparison, used instead of EXCEPT ALL.
+
+    A Feldera materialized view is a Z-set: once deltas are applied it holds
+    negative-weight (retraction) records, and the ad-hoc engine refuses to
+    process those in a set operation ("Unexpected record with negative weight
+    encountered"). Plain SELECTs work, so both sides are read and diffed here.
+    """
+
+    def _norm(self, rows):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        return FelderaAdapter._normalize(rows)
+
+    def test_equal_multisets_match_regardless_of_row_order(self):
+        a = [{"x": 1, "y": 2}, {"x": 3, "y": 4}]
+        b = [{"x": 3, "y": 4}, {"x": 1, "y": 2}]
+        self.assertEqual(self._norm(a), self._norm(b))
+
+    def test_duplicate_rows_are_significant(self):
+        self.assertNotEqual(self._norm([{"x": 1}, {"x": 1}]), self._norm([{"x": 1}]))
+
+    def test_differing_values_do_not_match(self):
+        self.assertNotEqual(self._norm([{"x": 1}]), self._norm([{"x": 2}]))
+
+    def test_float_drift_within_tolerance_matches(self):
+        self.assertEqual(
+            self._norm([{"x": 1.00000000001}]), self._norm([{"x": 1.00000000002}])
+        )
+
+    def test_float_difference_beyond_tolerance_does_not_match(self):
+        self.assertNotEqual(self._norm([{"x": 1.001}]), self._norm([{"x": 1.002}]))
+
+    def test_empty_sides(self):
+        self.assertEqual(self._norm([]), self._norm([]))
+        self.assertNotEqual(self._norm([{"x": 1}]), self._norm([]))
+
+
+class FelderaDiffReadNumericTest(unittest.TestCase):
+    def test_single_column_error_string_is_not_read_as_a_count(self):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        # This produced "harness error: invalid literal for int()" and was
+        # miscounted as a crash.
+        self.assertIsNone(FelderaAdapter._diff_value({"error": "Execution error: ..."}))
+        self.assertEqual(FelderaAdapter._diff_value({"count": 4}), 4)

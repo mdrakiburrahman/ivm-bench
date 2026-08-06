@@ -674,34 +674,52 @@ class FelderaAdapter(EngineAdapter):
                 continue
         return rows
 
-    def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
-        """Compare the maintained view against the query with EXCEPT ALL.
-
-        Checked against a live pipeline: the probe returns {"diff":0} when the
-        view matches and a non-zero diff when it does not, so a pass is a real
-        comparison rather than an empty result being read as success.
-        """
+    def _adhoc(self, sql: str, *, timeout_s: float) -> List[dict]:
         response = self._request(
             "GET",
             f"/v0/pipelines/{self._pipeline}/query",
-            params={"sql": _verify_probe(mv_name, sql), "format": "json"},
+            params={"sql": sql, "format": "json"},
             timeout_s=timeout_s,
         )
         if response.status_code >= 400:
             raise QueryFailed(f"{self.name}: {response.text[:600]}")
         rows = self._ndjson_rows(response.text)
-        if not rows:
-            raise QueryFailed(f"{self.name}: verification produced no comparable result")
-        diff = self._diff_value(rows[0])
-        if diff is None:
-            # Include the payload: the previous message named the symptom and
-            # discarded the evidence, so a run could only report "no diff column"
-            # without ever showing what came back.
-            raise QueryFailed(
-                f"{self.name}: verification returned no diff column; "
-                f"response was {response.text[:300]!r}"
-            )
-        return int(diff) == 0
+        for row in rows:
+            if isinstance(row, dict) and "error" in row and len(row) == 1:
+                raise QueryFailed(f"{self.name}: {str(row['error'])[:600]}")
+        return [r for r in rows if isinstance(r, dict)]
+
+    @staticmethod
+    def _normalize(rows: Sequence[dict]) -> List[tuple]:
+        """Row multiset, comparable across the two sides.
+
+        Compares by position after sorting each row's columns by name, because
+        the view's column names are engine-sanitised and need not match the
+        query's. Floats are rounded to the same 10 decimals the SQL probes use.
+        """
+        out = []
+        for row in rows:
+            values = []
+            for _, value in sorted(row.items()):
+                if isinstance(value, float):
+                    value = round(value, 10)
+                values.append(value)
+            out.append(tuple(values))
+        return sorted(out, key=repr)
+
+    def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
+        """Compare the view against the query by reading both and diffing here.
+
+        NOT `EXCEPT ALL`: a Feldera materialized view is a Z-set, and once
+        deltas are applied it holds negative-weight (retraction) records, which
+        the ad-hoc engine refuses to process in a set operation —
+        "Unexpected record with negative weight encountered". Plain SELECTs over
+        the same view work, so both sides are read out and compared as row
+        multisets here instead.
+        """
+        view_rows = self._adhoc(f"SELECT * FROM {mv_name}", timeout_s=timeout_s)
+        expected_rows = self._adhoc(f"SELECT * FROM ({sql}) __cb", timeout_s=timeout_s)
+        return self._normalize(view_rows) == self._normalize(expected_rows)
 
     @staticmethod
     def _diff_value(row):
@@ -717,7 +735,10 @@ class FelderaAdapter(EngineAdapter):
             if key in row and row[key] is not None:
                 return row[key]
         values = [v for v in row.values() if v is not None]
-        if len(row) == 1 and values:
+        if len(row) == 1 and values and isinstance(values[0], (int, float)):
+            # Numeric only: a single-column row holding an error string would
+            # otherwise be returned and then blow up on int(), turning an engine
+            # message into an unattributable harness error.
             return values[0]
         return None
 
