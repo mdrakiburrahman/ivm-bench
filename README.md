@@ -118,14 +118,22 @@ abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,40960,1089536,1048576,40960
 
 Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.csv, outputs.json}`
 
-For cloud engines, each batch also writes
-`cloud-compute-<engine>-batch<N>.json`. Databricks reports distributed task
-time from Query History API `metrics.task_total_time_ms`; Fabric reports Spark
-executor task time and executor CPU time through the Fabric monitoring API.
-Task time is summed across parallel tasks and may exceed elapsed time. These
-metrics describe compute work, not DBU/CU billing. If the cloud API or required
-permissions are unavailable, `results.csv` records an explicit `unavailable`
-status and error rather than treating the measurement as zero.
+Every batch reports explicitly sourced compute metrics. Local engines integrate
+Docker CPU utilization for the primary execution container into CPU-seconds;
+orchestration and metastore containers are excluded. Fabric reports Spark
+executor task time and CPU time through its monitoring API. Databricks reports
+summed materialized-view flow duration from pipeline events and attributes
+serverless billing DBUs through `system.billing.usage` using the exact
+`dlt_update_id` values captured for that batch. Because billing rows can arrive
+after a run completes, missing Databricks DBUs are recorded as `pending`, never
+as zero. Remote sidecars are written as
+`compute-metrics-<engine>-batch<N>.json`; local samples remain under
+`mount/stats/<sf>/<engine>/container_stats.jsonl`.
+
+Task time may exceed elapsed time because work from parallel tasks or flows is
+summed. The CSV keeps task seconds, CPU-seconds, and billed quantities in
+separate columns with their source and semantics; these values are not treated
+as interchangeable.
 
 Each experiment runs 3 batches per engine (full load `batch1` → append `batch2` →
 append `batch3`). Set `BENCHMARK_RUNS` greater than 1 to repeat the full 3-batch

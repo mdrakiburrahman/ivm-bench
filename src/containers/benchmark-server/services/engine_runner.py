@@ -630,7 +630,7 @@ class EngineRunner:
             # wall-clock folds the one-time compile into the batch, and feldera's
             # Rust build is minutes — it would dwarf the actual batch-1 processing
             # (the "not included in duration" compile the log already reports
-            # separately). Mirrors the databricks-enzyme pure-compute override.
+            # separately). Mirrors the Databricks flow-coverage override.
             batch.duration_s = (
                 self._measured_duration_s
                 if self._measured_duration_s is not None
@@ -693,7 +693,7 @@ class EngineRunner:
                 and batch.status != "failed"
             ):
                 self._export_databricks_enzyme_metrics(batch_num)
-                # CRITICAL: derive pure-compute time from pipeline events.
+                # Derive comparable flow-work time from pipeline events.
                 # User mandate: report engine compute, NOT wall-clock that
                 # includes Lakeflow pipeline orchestration overhead.
                 # FAILS the batch if events are missing — never silently
@@ -711,7 +711,7 @@ class EngineRunner:
                 )
                 and batch.status != "failed"
             ):
-                self._capture_cloud_compute_metrics(name, batch_num, batch)
+                self._capture_remote_compute_metrics(name, batch_num, batch)
 
             # Check status from the stream_progress result
             if batch.status != "failed":
@@ -729,7 +729,7 @@ class EngineRunner:
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
 
-    def _capture_cloud_compute_metrics(self, name: str, batch_num: int, batch) -> None:
+    def _capture_remote_compute_metrics(self, name: str, batch_num: int, batch) -> None:
         """Collect remote task work after the timed batch, without failing it."""
         start_ms = batch.extra.get("wall_window_start_ms")
         end_ms = batch.extra.get("wall_window_end_ms")
@@ -738,14 +738,19 @@ class EngineRunner:
             "results",
             str(self._config.scale_factor),
             "dbt-server",
-            f"cloud-compute-{name}-batch{batch_num}.json",
+            f"compute-metrics-{name}-batch{batch_num}.json",
         )
         artifact_abs = os.path.join(self._config.repo_dir, artifact_rel)
         os.makedirs(os.path.dirname(artifact_abs), exist_ok=True)
         try:
             response = requests.post(
-                f"{self._dbt_url}/cloud-compute/{name}/{batch_num}",
-                json={"start_ms": start_ms, "end_ms": end_ms},
+                f"{self._dbt_url}/compute-metrics/{name}/{batch_num}",
+                json={
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "update_ids": batch.extra.get("databricks_update_ids") or [],
+                    "pipeline_work_s": batch.extra.get("compute_work_s"),
+                },
                 timeout=1200,
             )
             data = response.json()
@@ -754,11 +759,12 @@ class EngineRunner:
                     f"HTTP {response.status_code}: {data.get('error', response.text[:300])}"
                 )
             data["artifact"] = artifact_rel
-            batch.extra["cloud_compute"] = data
+            batch.extra["compute_metrics"] = data
             self._emit(
-                f"[{name}] cloud compute batch {batch_num}: "
+                f"[{name}] compute metrics batch {batch_num}: "
                 f"task_time={data.get('task_time_s')}s, "
-                f"cpu_time={data.get('cpu_time_s')}s"
+                f"cpu_time={data.get('cpu_time_s')}s, "
+                f"billing={data.get('billing_quantity')} {data.get('billing_unit') or ''}"
             )
         except Exception as exc:
             data = {
@@ -768,11 +774,13 @@ class EngineRunner:
                 "error": str(exc),
                 "task_time_s": None,
                 "cpu_time_s": None,
+                "billing_quantity": None,
+                "billing_unit": None,
                 "artifact": artifact_rel,
             }
-            batch.extra["cloud_compute"] = data
+            batch.extra["compute_metrics"] = data
             self._emit(
-                f"[{name}] WARN cloud compute unavailable for batch {batch_num}: {exc}"
+                f"[{name}] WARN compute metrics unavailable for batch {batch_num}: {exc}"
             )
         with open(artifact_abs, "w") as handle:
             json.dump(data, handle, indent=2)
@@ -1538,7 +1546,7 @@ class EngineRunner:
         real model bug — anything whose dbt error message does NOT
         match a transient signature — fails immediately. Returns the
         run_id of the FINAL attempt (whether success or final failure)
-        so downstream artifact collection / pure-compute extraction
+        so downstream artifact collection / flow-work extraction
         works against the right run.
         """
         sf = self._config.scale_factor
@@ -2124,7 +2132,7 @@ class EngineRunner:
         batch,
         run_id: Optional[str],
     ) -> None:
-        """Replace wall-clock timings with Databricks pipeline pure-compute.
+        """Replace wall-clock timings with Databricks pipeline flow coverage.
 
         After dbt finishes, POLL Databricks for pipeline events until they
         are complete (every expected MV has at least one COMPLETED flow
@@ -2136,7 +2144,7 @@ class EngineRunner:
            every MV update that ran within this batch's wall-clock
            window — i.e. the Databricks UI "Duration" column unioned).
         2. Patch ``run-databricks-enzyme-batch<N>.json`` so each model's
-           ``execution_time_s`` becomes the per-MV pure-compute seconds
+           ``execution_time_s`` becomes the per-MV flow-work seconds
            (Databricks-reported ``execution_duration_ms`` when present;
            ``COMPLETED_ts - QUEUED_ts`` otherwise — matches the UI
            Duration column for that flow).
@@ -2243,6 +2251,12 @@ class EngineRunner:
         batch.extra["segments_total"] = bsum["segments_total"]
         batch.extra["segments_fallback"] = bsum["segments_fallback"]
         batch.extra["compute_poll_attempts"] = attempt
+        batch.extra["databricks_update_ids"] = sorted({
+            update.update_id
+            for updates in summary["tables"].values()
+            for update in updates
+            if update.update_id and update.update_id != "unknown"
+        })
         if expected is not None:
             batch.extra["expected_tables"] = expected
 
@@ -2275,7 +2289,7 @@ class EngineRunner:
             json.dump(persistence, f, indent=2)
 
         # Patch the per-node run JSON so the chart's per-model bars
-        # reflect pure compute instead of dbt-reported wall time.
+        # reflect pipeline flow work instead of dbt-reported wall time.
         if not run_id:
             self._emit(
                 f"[databricks-enzyme] no run_id for batch {batch_num}; "
@@ -2339,7 +2353,7 @@ class EngineRunner:
 
         self._emit(
             f"[databricks-enzyme] Patched run JSON batch {batch_num}: "
-            f"{patched} models swapped to pure compute, "
+            f"{patched} models swapped to pipeline flow work, "
             f"{len(skipped)} unpatched"
         )
         if skipped:
@@ -2736,13 +2750,57 @@ class EngineRunner:
             logger.warning("Failed to start stats: %s", e)
 
     def _stop_stats(self) -> None:
-        """Stop container stats collection."""
+        """Stop container stats and attach per-batch CPU-seconds locally."""
         try:
+            local_engines = {
+                "duckdb",
+                "duckdb-openivm",
+                "feldera",
+                "spark",
+                "spark-openivm",
+            }
+            batch_windows = []
+            for batch in self._result.batches:
+                start_ms = batch.extra.get("wall_window_start_ms")
+                end_ms = batch.extra.get("wall_window_end_ms")
+                if start_ms is not None and end_ms is not None:
+                    batch_windows.append({
+                        "batch_num": batch.batch_num,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                    })
+            execution_service = self._engine.main_service or "dbt-server"
             resp = requests.post(
-                f"{self._dbt_url}/stats/containers/stop", timeout=10
+                f"{self._dbt_url}/stats/containers/stop",
+                json={
+                    "batch_windows": (
+                        batch_windows if self._engine.name in local_engines else []
+                    ),
+                    "included_services": [execution_service],
+                },
+                timeout=60,
             )
-            count = resp.json().get("sample_count", 0)
+            resp.raise_for_status()
+            payload = resp.json()
+            count = payload.get("sample_count", 0)
             self._emit(f"[{self._engine.name}] Stats collection stopped ({count} samples)")
+            artifact = os.path.join(
+                "mount", "stats", str(self._config.scale_factor),
+                self._engine.name, "container_stats.jsonl",
+            )
+            batches = {batch.batch_num: batch for batch in self._result.batches}
+            for summary in payload.get("batch_summaries") or []:
+                batch = batches.get(summary.get("batch_num"))
+                if batch is None:
+                    continue
+                summary["artifact"] = artifact
+                batch.extra["compute_metrics"] = summary
+                self._persist_batch_result(batch.batch_num, batch)
+                self._emit(
+                    f"[{self._engine.name}] CPU batch {batch.batch_num}: "
+                    f"{summary.get('cpu_time_s')} CPU-s "
+                    f"from {execution_service}"
+                )
         except Exception as e:
             logger.warning("Failed to stop stats: %s", e)
 

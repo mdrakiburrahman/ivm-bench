@@ -1,4 +1,4 @@
-"""Databricks Lakeflow pipeline-events → pure compute time extraction.
+"""Databricks Lakeflow pipeline-events → flow-work time extraction.
 
 Each ``REFRESH POLICY INCREMENTAL STRICT`` materialized view is backed by
 a Lakeflow Declarative Pipeline. The wall-clock time we measure around
@@ -11,18 +11,19 @@ overhead the engine itself does NOT pay for in production:
 * harness setup (sweep-stale, init/<sf>, EXPLAIN pre-flight).
 
 For an honest comparison against engines that don't have a per-query
-remote pipeline (Spark/DuckDB/Feldera), we report **pure compute time**
-for ``databricks-enzyme``. This module derives those numbers from the
-pipeline-events JSON the dbt-server already captured to disk.
+remote pipeline (Spark/DuckDB/Feldera), we report pipeline flow time for
+``databricks-enzyme``. This module derives those numbers from the pipeline
+events JSON the dbt-server already captured to disk. It is not CPU time or
+billed usage; DBUs are collected separately from ``system.billing.usage``.
 
-Per-MV pure compute (preferred path):
+Per-MV flow work (preferred path):
     last ``flow_progress`` event with
     ``details.flow_progress.status == COMPLETED``
         → ``details.flow_progress.metrics.execution_duration_ms``
     Fallback: ``COMPLETED.timestamp − first RUNNING.timestamp`` for that
     ``(update_id, flow_id)``.
 
-Per-batch pure compute:
+Per-batch flow work:
     coverage-time = union (interval-merge) of every
     ``[RUNNING_start, COMPLETED_end]`` window across every flow that
     ran inside this batch's wall-clock window.
@@ -162,8 +163,7 @@ def extract_flow_segments(events: List[dict]) -> List[FlowSegment]:
 
     Per-flow duration matches the Databricks pipeline UI's "Duration"
     column: ``COMPLETED.timestamp − QUEUED.timestamp``. This is the
-    full lifecycle of the flow on the cluster — the time Databricks
-    bills compute for — EXCLUDING the update-level cluster-spinup
+    full lifecycle of the flow on the cluster, excluding update-level cluster-spinup
     phases (``WAITING_FOR_RESOURCES``, ``INITIALIZING``,
     ``SETTING_UP_TABLES``) which dominate wall-clock for single-MV
     pipelines.
@@ -323,7 +323,7 @@ def compute_batch_summary(
     window_start_ms: Optional[int],
     window_end_ms: Optional[int],
 ) -> Dict[str, Any]:
-    """Aggregate per-MV pure compute and per-batch coverage-time.
+    """Aggregate per-MV flow work and per-batch coverage-time.
 
     ``window_start_ms`` and ``window_end_ms`` (epoch-ms) bracket the
     batch's measured wall-clock. Updates whose ``creation_time`` falls

@@ -1,19 +1,27 @@
-"""Best-effort cloud compute telemetry for Databricks and Microsoft Fabric.
+"""Best-effort remote compute telemetry for Databricks and Microsoft Fabric.
 
 The benchmark timer measures elapsed refresh latency.  This module separately
-collects the amount of distributed task work performed during that wall-clock
-window.  Databricks exposes task duration through ``system.query.history``;
-Fabric exposes Spark task metrics through its monitoring REST API.
+collects the amount of distributed work performed during that wall-clock
+window. Databricks bills serverless MV pipelines in DBUs through
+``system.billing.usage``; Fabric exposes Spark task metrics through its
+monitoring REST API.
 
-These values are deliberately labelled task/CPU time rather than cost.  Task
-time is the sum across concurrently executing tasks and can therefore exceed
-wall time.  Only Fabric currently exposes executor CPU time through this path.
+Task time is the sum across concurrently executing tasks and can therefore
+exceed wall time. Only Fabric exposes executor CPU time through this path.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
+
+
+_UUID = re.compile(r"^[0-9a-fA-F-]{36}$")
+
+
+def _valid_update_ids(values: Iterable[Any]) -> List[str]:
+    return sorted({str(value) for value in values if _UUID.fullmatch(str(value))})
 
 
 def _number(value: Any) -> float:
@@ -23,61 +31,84 @@ def _number(value: Any) -> float:
         return 0.0
 
 
-def summarize_databricks_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+def summarize_databricks_billing(
+    rows: Iterable[Dict[str, Any]], pipeline_work_s: Optional[float]
+) -> Dict[str, Any]:
     rows = list(rows)
-    task_ms = sum(
-        _number((row.get("metrics") or {}).get("task_total_time_ms")) for row in rows
-    )
+    dbus = sum(_number(row.get("usage_quantity")) for row in rows)
     result = {
-        "status": "ok" if rows else "unavailable",
-        "source": "databricks_query_history_api",
-        "semantics": "sum(metrics.task_total_time_ms) across queries started in the batch window",
-        "task_time_s": task_ms / 1000.0,
+        "status": "ok" if pipeline_work_s is not None else "unavailable",
+        "source": "databricks_pipeline_events+system.billing.usage",
+        "semantics": (
+            "task_time_s is summed MV flow duration from pipeline events; "
+            "billing_quantity is billed serverless usage attributed by dlt_update_id"
+        ),
+        "task_time_s": pipeline_work_s,
         "cpu_time_s": None,
-        "query_count": len(rows),
-        "queries": rows,
+        "billing_quantity": dbus if rows else None,
+        "billing_unit": "DBU",
+        "billing_status": "ok" if rows else "pending",
+        "billing_row_count": len(rows),
+        "billing_rows": rows,
     }
-    if not rows:
-        result["error"] = "system.query.history returned no rows for the batch window"
+    if pipeline_work_s is None:
+        result["error"] = "Databricks pipeline flow-work telemetry is unavailable"
+    elif not rows:
+        result["error"] = (
+            "system.billing.usage has not published rows for these pipeline updates yet"
+        )
     return result
 
 
-def collect_databricks(start_ms: int, end_ms: int) -> Dict[str, Any]:
-    """Collect SQL task duration for queries started in ``[start_ms,end_ms]``.
-
-    The Query History REST API returns queries visible to the calling principal
-    without requiring grants on the ``system.query`` schema.  We intentionally
-    do not filter by warehouse: Dynamic Tables may execute on managed pipeline
-    compute rather than the SQL warehouse that submits DDL.
-    """
+def collect_databricks(
+    start_ms: int,
+    end_ms: int,
+    update_ids: Iterable[str],
+    pipeline_work_s: Optional[float],
+) -> Dict[str, Any]:
+    """Collect billed DBUs for the exact Lakeflow updates in one batch."""
     from services import databricks_enzyme_sources as src
 
-    api = src._workspace_client().api_client
-    query: Dict[str, Any] = {
-        "filter_by": {
-            "query_start_time_range": {
-                "start_time_ms": int(start_ms),
-                "end_time_ms": int(end_ms),
-            }
-        },
-        "include_metrics": True,
-        "max_results": 1000,
-    }
+    ids = _valid_update_ids(update_ids)
     rows: List[Dict[str, Any]] = []
-    while True:
-        response = api.do(
-            "GET",
-            "/api/2.0/sql/history/queries",
-            query=query,
-            headers={"Accept": "application/json"},
-        )
-        rows.extend(response.get("res") or [])
-        page_token = response.get("next_page_token")
-        if not page_token or not response.get("has_next_page"):
-            break
-        query = {"include_metrics": True, "max_results": 1000, "page_token": page_token}
-    result = summarize_databricks_rows(rows)
-    result.update({"window_start_ms": start_ms, "window_end_ms": end_ms})
+    query_error = None
+    if ids:
+        literals = ", ".join(f"'{value}'" for value in ids)
+        sql = f"""
+            SELECT usage_metadata.dlt_update_id AS update_id,
+                   sku_name,
+                   SUM(usage_quantity) AS usage_quantity
+              FROM system.billing.usage
+             WHERE billing_origin_product = 'SQL'
+               AND usage_metadata.dlt_update_id IN ({literals})
+             GROUP BY usage_metadata.dlt_update_id, sku_name
+        """
+        try:
+            conn = src._get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                columns = [str(column[0]) for column in (cursor.description or [])]
+                rows = [
+                    dict(zip((column.lower() for column in columns), values))
+                    for values in cursor.fetchall()
+                ]
+                for row in rows:
+                    row["usage_quantity"] = _number(row.get("usage_quantity"))
+        except Exception as exc:
+            query_error = str(exc)
+
+    result = summarize_databricks_billing(rows, pipeline_work_s)
+    if query_error:
+        result["error"] = f"system.billing.usage query failed: {query_error}"
+    elif not ids:
+        result["error"] = "no Databricks pipeline update IDs were supplied"
+    result.update(
+        {
+            "window_start_ms": start_ms,
+            "window_end_ms": end_ms,
+            "update_ids": ids,
+        }
+    )
     return result
 
 
@@ -112,6 +143,9 @@ def summarize_fabric_stages(stages: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "semantics": "sum of Spark StageData executor metrics for completed stages overlapping the batch window",
         "task_time_s": run_ms / 1000.0,
         "cpu_time_s": cpu_ns / 1_000_000_000.0,
+        "billing_status": "not_applicable",
+        "billing_quantity": None,
+        "billing_unit": None,
         "stage_count": len(stages),
         "task_count": int(task_count),
     }
@@ -188,9 +222,16 @@ def collect_fabric(engine: str, start_ms: int, end_ms: int) -> Dict[str, Any]:
     return result
 
 
-def collect(engine: str, start_ms: int, end_ms: int) -> Dict[str, Any]:
+def collect(
+    engine: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    update_ids: Iterable[str] = (),
+    pipeline_work_s: Optional[float] = None,
+) -> Dict[str, Any]:
     if engine == "databricks-enzyme":
-        return collect_databricks(start_ms, end_ms)
+        return collect_databricks(start_ms, end_ms, update_ids, pipeline_work_s)
     if engine in ("fabric-jvm-35", "fabric-openivm-jvm-35"):
         return collect_fabric(engine, start_ms, end_ms)
     raise ValueError(f"cloud compute metrics unsupported for engine {engine!r}")

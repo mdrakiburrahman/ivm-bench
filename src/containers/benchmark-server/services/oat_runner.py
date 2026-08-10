@@ -81,12 +81,16 @@ RESULTS_CSV_FIELDS = (
     "duration_s",
     "batch_error",
     "openivm_over_spark_duration_ratio",
-    "cloud_compute_status",
-    "cloud_task_time_s",
-    "cloud_cpu_time_s",
-    "cloud_compute_source",
-    "cloud_compute_error",
-    "cloud_compute_artifact",
+    "compute_status",
+    "compute_task_time_s",
+    "compute_cpu_time_s",
+    "compute_billing_status",
+    "compute_billing_quantity",
+    "compute_billing_unit",
+    "compute_source",
+    "compute_semantics",
+    "compute_error",
+    "compute_artifact",
     "storage_status",
     "visible_output_bytes",
     "helper_data_bytes",
@@ -558,9 +562,9 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                 batch_extra = batch.get("extra") or {}
                 if not isinstance(batch_extra, dict):
                     batch_extra = {}
-                cloud_compute = batch_extra.get("cloud_compute") or {}
-                if not isinstance(cloud_compute, dict):
-                    cloud_compute = {}
+                compute_metrics = batch_extra.get("compute_metrics") or {}
+                if not isinstance(compute_metrics, dict):
+                    compute_metrics = {}
                 storage = _storage_dict(experiment, engine, batch_num)
                 base_tables = storage.get("base_tables") or {}
                 if not isinstance(base_tables, dict):
@@ -630,12 +634,22 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "openivm_over_spark_duration_ratio": _duration_ratio(
                             experiment, batch_num
                         ),
-                        "cloud_compute_status": cloud_compute.get("status", ""),
-                        "cloud_task_time_s": cloud_compute.get("task_time_s", ""),
-                        "cloud_cpu_time_s": cloud_compute.get("cpu_time_s", ""),
-                        "cloud_compute_source": cloud_compute.get("source", ""),
-                        "cloud_compute_error": cloud_compute.get("error", ""),
-                        "cloud_compute_artifact": cloud_compute.get("artifact", ""),
+                        "compute_status": compute_metrics.get("status", ""),
+                        "compute_task_time_s": compute_metrics.get("task_time_s", ""),
+                        "compute_cpu_time_s": compute_metrics.get("cpu_time_s", ""),
+                        "compute_billing_status": compute_metrics.get(
+                            "billing_status", ""
+                        ),
+                        "compute_billing_quantity": compute_metrics.get(
+                            "billing_quantity", ""
+                        ),
+                        "compute_billing_unit": compute_metrics.get(
+                            "billing_unit", ""
+                        ),
+                        "compute_source": compute_metrics.get("source", ""),
+                        "compute_semantics": compute_metrics.get("semantics", ""),
+                        "compute_error": compute_metrics.get("error", ""),
+                        "compute_artifact": compute_metrics.get("artifact", ""),
                         "storage_status": storage.get("status", ""),
                         "visible_output_bytes": storage.get("visible_output_bytes", ""),
                         "helper_data_bytes": storage.get("helper_data_bytes", ""),

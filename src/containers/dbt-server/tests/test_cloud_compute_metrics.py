@@ -9,29 +9,70 @@ sys.path.insert(0, str(DBT_SERVER))
 
 from services.cloud_compute_metrics import (  # noqa: E402
     _overlaps_window,
-    summarize_databricks_rows,
+    _valid_update_ids,
+    summarize_databricks_billing,
     summarize_fabric_stages,
 )
+from services.container_stats import summarize_cpu_seconds  # noqa: E402
 
 
 class CloudComputeMetricsTest(unittest.TestCase):
-    def test_databricks_sums_task_time_without_claiming_cpu_time(self):
-        result = summarize_databricks_rows(
+    def test_databricks_reports_pipeline_work_and_billed_dbus(self):
+        result = summarize_databricks_billing(
             [
-                {"statement_id": "a", "metrics": {"task_total_time_ms": 1250}},
-                {"statement_id": "b", "metrics": {"task_total_time_ms": 2750}},
-            ]
+                {"update_id": "a", "usage_quantity": 1.25},
+                {"update_id": "b", "usage_quantity": 2.75},
+            ],
+            pipeline_work_s=42.0,
         )
 
-        self.assertEqual(result["task_time_s"], 4.0)
+        self.assertEqual(result["task_time_s"], 42.0)
         self.assertIsNone(result["cpu_time_s"])
-        self.assertEqual(result["query_count"], 2)
+        self.assertEqual(result["billing_quantity"], 4.0)
+        self.assertEqual(result["billing_unit"], "DBU")
 
-    def test_empty_databricks_history_is_not_reported_as_zero_work(self):
-        result = summarize_databricks_rows([])
+    def test_delayed_databricks_billing_is_pending_not_zero(self):
+        result = summarize_databricks_billing([], pipeline_work_s=42.0)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["billing_status"], "pending")
+        self.assertEqual(result["task_time_s"], 42.0)
+        self.assertIsNone(result["billing_quantity"])
+        self.assertIn("not published", result["error"])
+
+    def test_only_uuid_shaped_update_ids_can_enter_billing_query(self):
+        valid = "18929dd8-1f4b-426d-bec7-0075802fea08"
+        self.assertEqual(
+            _valid_update_ids([valid, "x' OR 1=1 --", "not-a-uuid"]),
+            [valid],
+        )
+
+    def test_docker_cpu_percentage_is_integrated_per_selected_service(self):
+        result = summarize_cpu_seconds(
+            [
+                {"timestamp_s": 0, "container": "engine", "cpu_pct": 100},
+                {"timestamp_s": 10, "container": "engine", "cpu_pct": 200},
+                {"timestamp_s": 0, "container": "dbt-server", "cpu_pct": 900},
+                {"timestamp_s": 10, "container": "dbt-server", "cpu_pct": 900},
+            ],
+            start_ms=0,
+            end_ms=10_000,
+            included_services=["engine"],
+        )
+
+        self.assertEqual(result["cpu_time_s"], 15.0)
+        self.assertEqual(result["included_services"], ["engine"])
+
+    def test_docker_samples_outside_window_are_unavailable(self):
+        result = summarize_cpu_seconds(
+            [{"timestamp_s": 20, "container": "engine", "cpu_pct": 100}],
+            start_ms=0,
+            end_ms=10_000,
+            included_services=["engine"],
+        )
 
         self.assertEqual(result["status"], "unavailable")
-        self.assertIn("no rows", result["error"])
+        self.assertIsNone(result["cpu_time_s"])
 
     def test_fabric_sums_executor_runtime_and_cpu_time(self):
         result = summarize_fabric_stages(

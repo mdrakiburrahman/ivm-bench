@@ -11,13 +11,19 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("cloud_compute_metrics", __name__)
 
 
-@bp.route("/cloud-compute/<engine>/<int:batch_num>", methods=["POST"])
+@bp.route("/compute-metrics/<engine>/<int:batch_num>", methods=["POST"])
 def collect(engine: str, batch_num: int):
     body = request.get_json(silent=True) or {}
     try:
         start_ms = int(body["start_ms"])
         end_ms = int(body["end_ms"])
-        result = cloud_compute_metrics.collect(engine, start_ms, end_ms)
+        result = cloud_compute_metrics.collect(
+            engine,
+            start_ms,
+            end_ms,
+            update_ids=body.get("update_ids") or [],
+            pipeline_work_s=body.get("pipeline_work_s"),
+        )
         result["engine"] = engine
         result["batch_num"] = batch_num
         return jsonify(result), 200
@@ -25,7 +31,9 @@ def collect(engine: str, batch_num: int):
         return jsonify({"status": "error", "error": str(exc)}), 400
     except Exception as exc:
         logger.exception(
-            "[cloud-compute] collection failed engine=%s batch=%d", engine, batch_num
+            "[compute-metrics] collection failed engine=%s batch=%d",
+            engine,
+            batch_num,
         )
         return jsonify({"status": "error", "error": str(exc)}), 500
 

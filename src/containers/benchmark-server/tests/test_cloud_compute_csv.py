@@ -11,8 +11,8 @@ sys.path.insert(0, str(BENCHMARK_SERVER))
 from services.oat_runner import generate_results_csv  # noqa: E402
 
 
-class CloudComputeCsvTest(unittest.TestCase):
-    def test_cloud_compute_fields_are_flattened(self):
+class ComputeMetricsCsvTest(unittest.TestCase):
+    def test_compute_fields_are_flattened(self):
         state = {
             "oat_run_id": "test",
             "experiments": [
@@ -25,12 +25,16 @@ class CloudComputeCsvTest(unittest.TestCase):
                                     "batch_num": 1,
                                     "status": "completed",
                                     "extra": {
-                                        "cloud_compute": {
+                                        "compute_metrics": {
                                             "status": "ok",
                                             "task_time_s": 12.5,
                                             "cpu_time_s": 4.25,
+                                            "billing_status": "ok",
+                                            "billing_quantity": 0.75,
+                                            "billing_unit": "DBU",
                                             "source": "fabric_spark_monitoring_api",
-                                            "artifact": "cloud.json",
+                                            "semantics": "test semantics",
+                                            "artifact": "compute.json",
                                         }
                                     },
                                 }
@@ -43,10 +47,14 @@ class CloudComputeCsvTest(unittest.TestCase):
 
         rows = list(csv.DictReader(io.StringIO(generate_results_csv(state))))
 
-        self.assertEqual(rows[0]["cloud_compute_status"], "ok")
-        self.assertEqual(rows[0]["cloud_task_time_s"], "12.5")
-        self.assertEqual(rows[0]["cloud_cpu_time_s"], "4.25")
-        self.assertEqual(rows[0]["cloud_compute_artifact"], "cloud.json")
+        self.assertEqual(rows[0]["compute_status"], "ok")
+        self.assertEqual(rows[0]["compute_task_time_s"], "12.5")
+        self.assertEqual(rows[0]["compute_cpu_time_s"], "4.25")
+        self.assertEqual(rows[0]["compute_billing_status"], "ok")
+        self.assertEqual(rows[0]["compute_billing_quantity"], "0.75")
+        self.assertEqual(rows[0]["compute_billing_unit"], "DBU")
+        self.assertEqual(rows[0]["compute_semantics"], "test semantics")
+        self.assertEqual(rows[0]["compute_artifact"], "compute.json")
 
 
 if __name__ == "__main__":
