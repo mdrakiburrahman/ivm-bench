@@ -26,13 +26,23 @@ class CloudComputeMetricsTest(unittest.TestCase):
             ],
             pipeline_work_s=42.0,
             event_rows=[
-                {"executor_cpu_time_ms": 1250},
-                {"executor_cpu_time_ms": 500},
+                {
+                    "executor_cpu_time_ms": 1250,
+                    "executor_time_ms": 2500,
+                    "output_bytes": 1024,
+                },
+                {
+                    "executor_cpu_time_ms": 500,
+                    "executor_time_ms": 1000,
+                    "output_bytes": 512,
+                },
             ],
         )
 
         self.assertEqual(result["task_time_s"], 42.0)
         self.assertEqual(result["cpu_time_s"], 1.75)
+        self.assertEqual(result["executor_time_s"], 3.5)
+        self.assertEqual(result["output_bytes"], 1536)
         self.assertEqual(result["billing_quantity"], 4.0)
         self.assertEqual(result["billing_unit"], "DBU")
 

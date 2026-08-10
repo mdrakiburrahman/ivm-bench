@@ -66,6 +66,16 @@ def summarize_databricks_billing(
         for row in event_rows
         if row.get("executor_cpu_time_ms") is not None
     ]
+    executor_values = [
+        _number(row["executor_time_ms"])
+        for row in event_rows
+        if row.get("executor_time_ms") is not None
+    ]
+    output_values = [
+        _number(row["output_bytes"])
+        for row in event_rows
+        if row.get("output_bytes") is not None
+    ]
     result = {
         "status": "ok" if pipeline_work_s is not None else "unavailable",
         "source": "databricks_mv_event_log+system.billing.usage",
@@ -77,6 +87,10 @@ def summarize_databricks_billing(
         ),
         "task_time_s": pipeline_work_s,
         "cpu_time_s": sum(cpu_values) / 1000.0 if cpu_values else None,
+        "executor_time_s": (
+            sum(executor_values) / 1000.0 if executor_values else None
+        ),
+        "output_bytes": sum(output_values) if output_values else None,
         "event_metric_row_count": len(event_rows),
         "event_metrics": event_rows,
         "billing_quantity": dbus if rows else None,
@@ -127,10 +141,27 @@ def collect_databricks(
               SUM(TRY_CAST(get_json_object(
                     details,
                     '$.flow_progress.metrics.num_output_bytes'
-                  ) AS DOUBLE)) AS output_bytes
+                  ) AS DOUBLE)) AS output_bytes,
+              SUM(TRY_CAST(get_json_object(
+                    details,
+                    '$.flow_progress.metrics.num_output_rows'
+                  ) AS DOUBLE)) AS output_rows,
+              SUM(TRY_CAST(get_json_object(
+                    details,
+                    '$.flow_progress.metrics.num_upserted_rows'
+                  ) AS DOUBLE)) AS upserted_rows,
+              SUM(TRY_CAST(get_json_object(
+                    details,
+                    '$.flow_progress.metrics.num_deleted_rows'
+                  ) AS DOUBLE)) AS deleted_rows,
+              CONCAT_WS('|||', COLLECT_LIST(get_json_object(
+                    details,
+                    '$.flow_progress.metrics'
+                  ))) AS flow_metrics_json
             FROM event_log(TABLE({fq}))
             WHERE origin.update_id = ?
               AND event_type = 'flow_progress'
+              AND level = 'METRICS'
         """
         try:
             with conn.cursor() as cursor:
@@ -149,6 +180,16 @@ def collect_databricks(
                             "output_bytes": (
                                 _number(values[2]) if values[2] is not None else None
                             ),
+                            "output_rows": (
+                                _number(values[3]) if values[3] is not None else None
+                            ),
+                            "upserted_rows": (
+                                _number(values[4]) if values[4] is not None else None
+                            ),
+                            "deleted_rows": (
+                                _number(values[5]) if values[5] is not None else None
+                            ),
+                            "flow_metrics_json": values[6],
                         }
                     )
         except Exception as exc:
