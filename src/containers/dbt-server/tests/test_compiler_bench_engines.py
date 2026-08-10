@@ -242,6 +242,24 @@ class DeterminismVerdictTest(unittest.TestCase):
         self.assertEqual(result.phase_reached, PHASE_VERIFY_FAILED)
         self.assertFalse(result.is_correct)
         self.assertFalse(result.is_likely_nondeterministic)
+        self.assertEqual(result.error, "MV contents differ from the base query")
+
+    def test_adapter_can_report_mismatch_details(self):
+        class DetailedAdapter(self.Adapter):
+            def verification_error(self):
+                return "digest 1 differs from digest 2"
+
+        corpus = Corpus(
+            dialect="duckdb",
+            engine="duckdb-openivm",
+            queries=[Query(name="q", sql="SELECT * FROM t", translated=True)],
+        )
+        result = CompilerBenchRunner(
+            DetailedAdapter(False), corpus, timeout_s=10
+        )._run_query(corpus.queries[0], "mv")
+
+        self.assertEqual(result.phase_reached, PHASE_VERIFY_FAILED)
+        self.assertEqual(result.error, "digest 1 differs from digest 2")
 
     def test_matching_flagged_query_remains_correct(self):
         result = self._run("SELECT avg(x) FROM t", True)
@@ -675,10 +693,12 @@ class FelderaBagDigestTest(unittest.TestCase):
     differing — and a duplicated base (3,6,...) vs (3,3,...).
     """
 
-    def _sql(self, relation="V", columns=("a", "s")):
+    def _sql(self, relation="V", columns=("a", "s"), column_types=()):
         from services.compiler_bench.engines_cloud import FelderaAdapter
 
-        return FelderaAdapter.bag_digest_sql(relation, list(columns))
+        return FelderaAdapter.bag_digest_sql(
+            relation, list(columns), list(column_types)
+        )
 
     def test_reports_groups_rows_and_checksum(self):
         sql = self._sql()
@@ -701,6 +721,52 @@ class FelderaBagDigestTest(unittest.TestCase):
 
     def test_nulls_use_a_sentinel_that_cannot_collide(self):
         self.assertIn("coalesce(cast(a AS VARCHAR), '\\x00NULL')", self._sql())
+
+    def test_decimal_columns_are_cast_to_one_declared_scale_before_hashing(self):
+        sql = self._sql(
+            columns=("amount",),
+            column_types=({"type": "DECIMAL", "precision": 12, "scale": 2},),
+        )
+        self.assertIn("cast(amount AS DECIMAL(12,2))", sql)
+
+    def test_program_schema_extracts_view_column_types(self):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        body = {
+            "program_info": {
+                "schema": {
+                    "outputs": [
+                        {
+                            "name": "CB_MV_1",
+                            "fields": [
+                                {"name": "id", "columntype": {"type": "INTEGER"}},
+                                {
+                                    "name": "amount",
+                                    "columntype": {
+                                        "type": "DECIMAL",
+                                        "precision": 12,
+                                        "scale": 2,
+                                    },
+                                },
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+
+        self.assertEqual(
+            FelderaAdapter._program_output_schemas(body),
+            {
+                "cb_mv_1": [
+                    ("id", {"type": "INTEGER"}),
+                    (
+                        "amount",
+                        {"type": "DECIMAL", "precision": 12, "scale": 2},
+                    ),
+                ]
+            },
+        )
 
     def test_groups_by_every_column(self):
         self.assertIn("GROUP BY a, s", self._sql())

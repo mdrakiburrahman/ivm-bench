@@ -329,7 +329,12 @@ class CompilerBenchRunner:
                     result.error = reason
                 else:
                     result.phase_reached = PHASE_VERIFY_FAILED
-                    result.error = result.error or "MV contents differ from the base query"
+                    detail = getattr(self._adapter, "verification_error", None)
+                    result.error = (
+                        result.error
+                        or (detail() if callable(detail) else "")
+                        or "MV contents differ from the base query"
+                    )
             else:
                 result.is_correct = None
                 result.phase_reached = PHASE_OK

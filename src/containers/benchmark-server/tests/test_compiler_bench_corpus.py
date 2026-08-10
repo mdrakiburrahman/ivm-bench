@@ -11,6 +11,7 @@ from services.compiler_bench_corpus import (  # noqa: E402
     CorpusPaths,
     CorpusQuery,
     Translator,
+    _render_type,
     prepare,
     read_corpus,
 )
@@ -43,6 +44,22 @@ class ReadCorpusTest(unittest.TestCase):
 
 
 class ResilientTranslationTest(unittest.TestCase):
+    def test_feldera_schema_uses_supported_numeric_type_names(self):
+        self.assertEqual(_render_type("FLOAT", "feldera"), "REAL")
+        self.assertEqual(_render_type("INT", "feldera"), "INTEGER")
+
+    def test_translation_wraps_query_to_make_duplicate_outputs_unique(self):
+        translator = Translator("duckdb", "lpts", [])
+        script = translator._script(
+            [CorpusQuery(name="dup", sql="SELECT a, a FROM t", meta={})],
+            "spark",
+        )
+
+        self.assertIn(
+            "PRAGMA lpts('SELECT * FROM (SELECT a, a FROM t) AS __lpts_input');",
+            script,
+        )
+
     def test_one_crashing_query_does_not_erase_the_rest_of_its_chunk(self):
         queries = [
             CorpusQuery(name=f"q{i}", sql=f"SELECT {i}", meta={})

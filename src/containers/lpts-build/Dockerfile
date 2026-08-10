@@ -25,9 +25,9 @@
 #  src/containers/duckdb-openivm/Dockerfile (v1.5.4 / v1.5-variegata). A
 #  mismatch fails at LOAD with an extension-version error.
 #
-#  LPTS_COMMIT MUST match the pin in src/containers/spark-openivm-build/Dockerfile
-#  so the transpiler used for the corpus is the same LPTS revision the openivm
-#  engines were compiled against.
+#  LPTS_COMMIT must remain source-compatible with the older LPTS revision
+#  embedded in spark-openivm. This standalone build owns target-SQL corpus
+#  translation; the embedded revision owns OpenIVM's internal refresh rewrite.
 # =============================================================================
 
 # Build on ubuntu:22.04 (GLIBC 2.35) — NOT 24.04 (GLIBC 2.39). The extension is
@@ -39,15 +39,14 @@ FROM ubuntu:22.04 AS lpts-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
-# cwida/lpts main. Carries two things the corpus translation needs:
+# cwida/lpts. Carries the target-dialect fixes the corpus translation needs:
 #   - lpts_output_catalog / _schema / _unqualified, without which LPTS bakes the
 #     local planning catalog into every emitted table reference
-#   - dialect-valid aggregates and datediff units. DuckDB's count_star(),
-#     arg_min() and datediff('day', ...) are rejected by Databricks/Spark/Calcite;
-#     aggregate names now go through the per-dialect remap.
-# Descends from 13786cbd (the LPTS revision the openivm engines are compiled
-# against), so the transpiler and the engines stay in sync.
-ARG LPTS_COMMIT=2aab9669d4d703b107db3d5c7ed4671eb67d325a
+#   - dialect-valid aggregates, types, intervals, and virtual-column handling.
+#     DuckDB's count_star(), synthetic rowid, and target-specific syntax are
+#     rejected by Databricks/Spark/Calcite unless rendered for that target.
+# Descends from 13786cbd (the LPTS revision embedded in spark-openivm).
+ARG LPTS_COMMIT=60c3115b8971f01af36962011cd8dafc1814a629
 ARG DUCKDB_COMMIT=08e34c447bae34eaee3723cac61f2878b6bdf787
 ARG EXTENSION_CI_TOOLS_COMMIT=72e76e99cd7fee45a99739cd118ec2db64e034ec
 # Must be the tag DUCKDB_COMMIT corresponds to. A loadable extension records the
@@ -118,7 +117,7 @@ RUN mkdir -p /artifacts && \
 FROM debian:bookworm-slim
 
 # Keep in step with the builder-stage pin above; this only feeds the label.
-ARG LPTS_COMMIT=2aab9669d4d703b107db3d5c7ed4671eb67d325a
+ARG LPTS_COMMIT=60c3115b8971f01af36962011cd8dafc1814a629
 LABEL org.lpts.commit="${LPTS_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile, mirroring the duckdb-openivm and

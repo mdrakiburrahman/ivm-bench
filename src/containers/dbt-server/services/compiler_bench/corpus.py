@@ -32,7 +32,7 @@ ENGINE_DIALECTS: Dict[str, str] = {
     "databricks-enzyme": "spark",
     "fabric-jvm-35": "spark",
     "fabric-openivm-jvm-35": "spark",
-    "feldera": "postgres",
+    "feldera": "feldera",
 }
 
 

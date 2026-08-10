@@ -261,6 +261,8 @@ class FelderaAdapter(EngineAdapter):
         #: views that survived the per-view SQL probe and are in the batch program
         self._accepted: dict = {}
         self._rejected: dict = {}
+        self._view_schemas: dict = {}
+        self._last_verification_error = ""
         self._deployed = False
 
     # ----- HTTP -----
@@ -469,9 +471,10 @@ class FelderaAdapter(EngineAdapter):
             timeout_s=timeout_s,
         )
         # The Rust stage is the expensive one and is paid exactly once here.
-        self._await_program(
+        compiled = self._await_program(
             self._pipeline, until=("Success",), timeout_s=max(timeout_s, 1800)
         )
+        self._view_schemas = self._program_output_schemas(compiled)
         self._request("POST", f"/v0/pipelines/{self._pipeline}/start", timeout_s=300)
         # Feldera tracks compilation and deployment separately: program_status
         # reaching Success only means the binary is built. Ingesting before
@@ -785,6 +788,24 @@ class FelderaAdapter(EngineAdapter):
             out.append(tuple(values))
         return sorted(out, key=repr)
 
+    @staticmethod
+    def _program_output_schemas(body: dict) -> dict:
+        """Materialized-view columns and types from Feldera's compiler output."""
+        outputs = (
+            ((body or {}).get("program_info") or {}).get("schema") or {}
+        ).get("outputs") or []
+        schemas = {}
+        for output in outputs:
+            name = str((output or {}).get("name") or "").lower()
+            if not name:
+                continue
+            schemas[name] = [
+                (str(field.get("name") or ""), field.get("columntype"))
+                for field in ((output or {}).get("fields") or [])
+                if field.get("name")
+            ]
+        return schemas
+
     def _view_columns(self, mv_name: str, *, timeout_s: float) -> List[str]:
         """Column names of a view, from a zero-row read."""
         rows = self._adhoc(
@@ -806,8 +827,38 @@ class FelderaAdapter(EngineAdapter):
         ]
         return "(" + " + ".join(terms) + ")"
 
+    @staticmethod
+    def _decimal_type_sql(column_type) -> Optional[str]:
+        if isinstance(column_type, str):
+            match = re.match(
+                r"^DECIMAL\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)$",
+                column_type,
+                re.IGNORECASE,
+            )
+            return f"DECIMAL({match.group(1)},{match.group(2)})" if match else None
+        if not isinstance(column_type, dict):
+            return None
+        kind = column_type.get("type") or column_type.get("name")
+        if isinstance(kind, dict):
+            nested = FelderaAdapter._decimal_type_sql(kind)
+            if nested:
+                return nested
+            kind = kind.get("type") or kind.get("name")
+        if str(kind or "").upper() not in ("DECIMAL", "NUMERIC"):
+            return None
+        precision = column_type.get("precision")
+        scale = column_type.get("scale")
+        if precision is None or scale is None:
+            return None
+        return f"DECIMAL({int(precision)},{int(scale)})"
+
     @classmethod
-    def bag_digest_sql(cls, relation: str, columns: Sequence[str]) -> str:
+    def bag_digest_sql(
+        cls,
+        relation: str,
+        columns: Sequence[str],
+        column_types: Optional[Sequence[object]] = None,
+    ) -> str:
         """One row summarising a relation as a bag — no join, no set operation.
 
         Groups by every column, then reduces the groups to three numbers: how
@@ -827,9 +878,17 @@ class FelderaAdapter(EngineAdapter):
         'NULL', so a NULL column and a literal 'NULL' hash differently.
         """
         cols = ", ".join(columns)
-        parts = ", ".join(
-            f"coalesce(cast({c} AS VARCHAR), '\\x00NULL')" for c in columns
-        )
+        types = list(column_types or [])
+        normalized = []
+        for index, column in enumerate(columns):
+            decimal_type = cls._decimal_type_sql(
+                types[index] if index < len(types) else None
+            )
+            value = f"cast({column} AS {decimal_type})" if decimal_type else column
+            normalized.append(
+                f"coalesce(cast({value} AS VARCHAR), '\\x00NULL')"
+            )
+        parts = ", ".join(normalized)
         hex_expr = f"substr(md5(concat_ws(chr(1), {parts})), 1, 8)"
         row_hash = cls._hex_prefix_to_int(hex_expr)
         return (
@@ -886,7 +945,13 @@ class FelderaAdapter(EngineAdapter):
         Falls back to reading both sides only when the column list cannot be
         established, since the grouped form needs the names.
         """
-        columns = self._view_columns(mv_name, timeout_s=timeout_s)
+        self._last_verification_error = ""
+        schema = self._view_schemas.get(mv_name.lower(), [])
+        columns = [name for name, _ in schema]
+        column_types = [column_type for _, column_type in schema]
+        if not columns:
+            columns = self._view_columns(mv_name, timeout_s=timeout_s)
+            column_types = []
         if not columns:
             view_rows = self._adhoc(
                 f"SELECT * FROM {mv_name}", timeout_s=timeout_s, label="view-read"
@@ -897,12 +962,12 @@ class FelderaAdapter(EngineAdapter):
             return self._normalize(view_rows) == self._normalize(expected_rows)
 
         view = self._adhoc(
-            self.bag_digest_sql(mv_name, columns),
+            self.bag_digest_sql(mv_name, columns, column_types),
             timeout_s=timeout_s,
             label="view-digest",
         )
         expected = self._adhoc(
-            self.bag_digest_sql(f"({sql}) __cb", columns),
+            self.bag_digest_sql(f"({sql}) __cb", columns, column_types),
             timeout_s=timeout_s,
             label="query-digest",
         )
@@ -913,7 +978,15 @@ class FelderaAdapter(EngineAdapter):
             raise QueryFailed(
                 f"{self.name}: digest missing fields; got {view[0]!r} / {expected[0]!r}"
             )
-        return all(view[0][k] == expected[0][k] for k in keys)
+        correct = all(view[0][k] == expected[0][k] for k in keys)
+        if not correct:
+            self._last_verification_error = (
+                f"MV digest {view[0]!r} differs from base-query digest {expected[0]!r}"
+            )
+        return correct
+
+    def verification_error(self) -> str:
+        return self._last_verification_error
 
     @staticmethod
     def _diff_value(row):

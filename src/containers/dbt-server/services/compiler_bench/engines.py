@@ -97,6 +97,9 @@ class EngineAdapter:
     def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
         raise NotImplementedError
 
+    def verification_error(self) -> str:
+        return ""
+
     def drop_mv(self, mv_name: str) -> None:
         return None
 

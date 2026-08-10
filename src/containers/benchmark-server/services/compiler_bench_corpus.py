@@ -58,8 +58,8 @@ CORPUS_SUBDIR = "tpcc"
 
 # Engine -> LPTS output dialect. Spark SQL covers the Spark-family engines
 # (Databricks SQL and Fabric Spark are Spark SQL supersets for the constructs
-# this corpus uses). Feldera's SQL is Calcite-based, for which LPTS's ANSI-ish
-# `postgres` rendering is the closest available target.
+# this corpus uses). Feldera has its own Calcite-based LPTS target because it
+# supports aggregates such as ARG_MIN/ARG_MAX that PostgreSQL does not.
 ENGINE_DIALECTS: Dict[str, str] = {
     "duckdb": "duckdb",
     "duckdb-openivm": "duckdb",
@@ -68,7 +68,7 @@ ENGINE_DIALECTS: Dict[str, str] = {
     "databricks-enzyme": "spark",
     "fabric-jvm-35": "spark",
     "fabric-openivm-jvm-35": "spark",
-    "feldera": "postgres",
+    "feldera": "feldera",
 }
 
 
@@ -163,7 +163,7 @@ def _render_type(portable_type: str, dialect: str) -> str:
         if portable_type.startswith(("VARCHAR", "CHAR")):
             return "STRING"
         return portable_type
-    if dialect == "postgres":
+    if dialect in ("postgres", "feldera"):
         if portable_type == "FLOAT":
             return "REAL"
         if portable_type == "INT":
@@ -341,7 +341,7 @@ def read_corpus(queries_dir: Path, *, include_ducklake: bool = False) -> List[Co
 # ---------------------------------------------------------------------------
 
 _TRANSLATE_MARKER = "__lpts_q__"
-_CORPUS_FORMAT_VERSION = 3
+_CORPUS_FORMAT_VERSION = 4
 
 
 class Translator:
@@ -387,7 +387,13 @@ class Translator:
         for query in queries:
             escaped = query.sql.replace("'", "''")
             lines.append(f"SELECT '{_TRANSLATE_MARKER}{query.name}' AS marker;")
-            lines.append(f"PRAGMA lpts('{escaped}');")
+            # A SELECT may legally expose the same name more than once, while
+            # Spark tables and Feldera verifier subqueries require unique names.
+            # DuckDB assigns stable positional suffixes at this subquery boundary
+            # (a, a_1, ...); LPTS then preserves those aliases in every target.
+            lines.append(
+                f"PRAGMA lpts('SELECT * FROM ({escaped}) AS __lpts_input');"
+            )
         return "\n".join(lines) + "\n"
 
     def _run_chunk(
