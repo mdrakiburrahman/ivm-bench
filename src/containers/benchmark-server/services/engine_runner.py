@@ -554,6 +554,7 @@ class EngineRunner:
                 writer.writeheader()
                 writer.writerows(existing)
                 temporary = fh.name
+            os.chmod(temporary, 0o644)
             os.replace(temporary, path)
 
     def _databricks_enzyme_drop_mvs(self) -> None:

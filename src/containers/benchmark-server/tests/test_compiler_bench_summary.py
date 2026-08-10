@@ -1,4 +1,5 @@
 import csv
+import stat
 import sys
 import tempfile
 import unittest
@@ -42,12 +43,14 @@ class CompilerBenchSummaryCsvTest(unittest.TestCase):
             )
             with (Path(directory) / "summary.csv").open(newline="") as handle:
                 rows = list(csv.DictReader(handle))
+            mode = stat.S_IMODE((Path(directory) / "summary.csv").stat().st_mode)
 
         self.assertEqual(
             [row["result_set"] for row in rows], ["duckdb", "feldera"]
         )
         self.assertEqual(rows[0]["timeout"], "2")
         self.assertEqual(rows[0]["verify_failed"], "3")
+        self.assertEqual(mode, 0o644)
 
 
 if __name__ == "__main__":
