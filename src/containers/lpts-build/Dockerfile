@@ -46,7 +46,7 @@ ARG LPTS_REPO=https://github.com/cwida/lpts.git
 #     DuckDB's count_star(), synthetic rowid, and target-specific syntax are
 #     rejected by Databricks/Spark/Calcite unless rendered for that target.
 # Descends from 13786cbd (the LPTS revision embedded in spark-openivm).
-ARG LPTS_COMMIT=60c3115b8971f01af36962011cd8dafc1814a629
+ARG LPTS_COMMIT=622e716f6113f6d18db27b1e91e5fd99c749c3b2
 ARG DUCKDB_COMMIT=08e34c447bae34eaee3723cac61f2878b6bdf787
 ARG EXTENSION_CI_TOOLS_COMMIT=72e76e99cd7fee45a99739cd118ec2db64e034ec
 # Must be the tag DUCKDB_COMMIT corresponds to. A loadable extension records the
@@ -117,7 +117,7 @@ RUN mkdir -p /artifacts && \
 FROM debian:bookworm-slim
 
 # Keep in step with the builder-stage pin above; this only feeds the label.
-ARG LPTS_COMMIT=60c3115b8971f01af36962011cd8dafc1814a629
+ARG LPTS_COMMIT=622e716f6113f6d18db27b1e91e5fd99c749c3b2
 LABEL org.lpts.commit="${LPTS_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile, mirroring the duckdb-openivm and
