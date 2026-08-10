@@ -5,12 +5,11 @@ engine maintain it incrementally, does the refresh run, and is the result
 right?* That mirrors openivm's own `benchmark/src/rewriter_benchmark.cpp`, but
 across every engine in this repo instead of DuckDB-OpenIVM alone.
 
-The corpus itself is not portable as-written: the queries are DuckDB SQL over a
-TPC-C schema. This module turns it into per-dialect corpora using
-LPTS, which plans each query through DuckDB's optimizer and re-renders the
-optimized logical plan as SQL in a target dialect. Every engine therefore
-receives an *equivalent* query, so a full-vs-incremental verdict reflects the
-engine's incrementalizer rather than its parser.
+The corpus is native DuckDB/OpenIVM SQL over a TPC-C schema.  DuckDB-family
+engines receive that source SQL directly; routing their own benchmark through a
+SQL translator would change what is being measured and can reject valid native
+constructs.  Only engines with a different SQL dialect receive an LPTS-rendered
+equivalent, planned through DuckDB's optimizer first.
 
 Two properties make the artifact cacheable and engine-agnostic:
 
@@ -18,18 +17,21 @@ Two properties make the artifact cacheable and engine-agnostic:
     per-dialect corpus works for every engine sharing that dialect regardless of
     its catalog/schema layout — each engine sets its own session default before
     running. (Without it the *local* planning catalog would leak into the SQL.)
-  * translation depends only on (corpus revision, lpts revision, dialect,
-    schema), none of which vary per experiment.
+  * target rendering depends only on (corpus revision, lpts revision, dialect,
+    schema), none of which vary per experiment.  The native DuckDB corpus does
+    not depend on LPTS.
 
-Queries LPTS cannot express in a dialect are recorded as ``translation_failed``
-and reported as their own bucket. They are NOT silently dropped: a query missing
-from an engine's corpus would otherwise inflate that engine's success rate.
+For cross-engine targets, queries LPTS cannot express in that target dialect are
+recorded as ``translation_failed`` and reported as their own bucket. They are
+NOT silently dropped: a query missing from an engine's corpus would otherwise
+inflate that engine's success rate.  Native DuckDB/OpenIVM queries never enter
+this bucket.
 
 Outputs, under ``mount/compiler-bench/corpus/``:
 
     meta.json                     pins + counts + per-dialect totals
-    common.txt                    queries translatable in EVERY dialect
-    <dialect>/queries/<name>.sql  translated query, one per file
+    common.txt                    queries available in EVERY requested dialect
+    <dialect>/queries/<name>.sql  native or target-rendered query, one per file
     <dialect>/translation.csv     per-query status + error for the whole corpus
     <dialect>/schema.sql          base-table DDL in that dialect
     <dialect>/deltas.sql          delta-pool DML in that dialect
@@ -302,9 +304,10 @@ class CorpusQuery:
 def read_corpus(queries_dir: Path, *, include_ducklake: bool = False) -> List[CorpusQuery]:
     """Read every query file in ``queries_dir``.
 
-    DuckLake variants are excluded by default: they hard-code a `dl.` catalog
-    prefix that only exists in openivm's own DuckLake harness, so they are not
-    a cross-engine corpus.
+    DuckLake variants are excluded by default. When requested, remove their
+    ``dl.`` catalog qualifier: it names storage in OpenIVM's source benchmark,
+    not part of the query semantics, and no other benchmark engine has that
+    catalog. The query itself then remains useful cross-engine coverage.
     """
     queries: List[CorpusQuery] = []
     for path in sorted(queries_dir.glob("*.sql")):
@@ -325,6 +328,8 @@ def read_corpus(queries_dir: Path, *, include_ducklake: bool = False) -> List[Co
                 continue
             body_lines.append(line)
         sql = "\n".join(body_lines).strip().rstrip(";").strip()
+        if include_ducklake and path.name.startswith("ducklake"):
+            sql = re.sub(r"\bdl\.", "", sql, flags=re.IGNORECASE)
         if not sql:
             continue
         queries.append(CorpusQuery(name=path.stem, sql=sql, meta=meta))
@@ -336,6 +341,7 @@ def read_corpus(queries_dir: Path, *, include_ducklake: bool = False) -> List[Co
 # ---------------------------------------------------------------------------
 
 _TRANSLATE_MARKER = "__lpts_q__"
+_CORPUS_FORMAT_VERSION = 3
 
 
 class Translator:
@@ -465,7 +471,7 @@ class Translator:
         out: Dict[str, Tuple[bool, str]] = {}
         for start in range(0, len(queries), self._chunk_size):
             chunk = queries[start : start + self._chunk_size]
-            out.update(self._run_chunk(chunk, dialect))
+            out.update(self._run_chunk_resilient(chunk, dialect))
             logger.info(
                 "[compiler-bench] translate %s: %d/%d queries",
                 dialect,
@@ -473,6 +479,25 @@ class Translator:
                 len(queries),
             )
         return out
+
+    def _run_chunk_resilient(
+        self, queries: Sequence[CorpusQuery], dialect: str
+    ) -> Dict[str, Tuple[bool, str]]:
+        """Retry halves when a CLI failure leaves queries unexplained."""
+        result = self._run_chunk(queries, dialect)
+        unexplained = any(
+            not success and reason in ("translation failed", "translation timeout")
+            for success, reason in result.values()
+        )
+        if not unexplained or len(queries) <= 1:
+            return result
+
+        # A process crash midway through a chunk otherwise marks every later
+        # query as unsupported. Bisect until only the pathological query fails.
+        midpoint = len(queries) // 2
+        recovered = self._run_chunk_resilient(queries[:midpoint], dialect)
+        recovered.update(self._run_chunk_resilient(queries[midpoint:], dialect))
+        return recovered
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +527,7 @@ def _cache_key(
     dialects: Sequence[str], queries: Sequence[CorpusQuery], lpts_sha: str
 ) -> str:
     digest = hashlib.sha256()
+    digest.update(str(_CORPUS_FORMAT_VERSION).encode())
     digest.update(b"\0".join(d.encode() for d in sorted(dialects)))
     digest.update(lpts_sha.encode())
     for query in queries:
@@ -554,7 +580,8 @@ def prepare(
             f"duckdb-openivm binary not found at {paths.duckdb_bin} — "
             "the duckdb-openivm build must run before compiler-bench prep"
         )
-    if not paths.lpts_extension.exists():
+    needs_lpts = any(dialect != "duckdb" for dialect in dialects)
+    if needs_lpts and not paths.lpts_extension.exists():
         raise RuntimeError(
             f"LPTS extension not found at {paths.lpts_extension} — "
             "the lpts build must run before compiler-bench prep"
@@ -571,7 +598,7 @@ def prepare(
     if not queries:
         raise RuntimeError(f"no queries found in {paths.corpus_src}")
 
-    lpts_sha = _lpts_sha(paths.lpts_extension)
+    lpts_sha = _lpts_sha(paths.lpts_extension) if needs_lpts else "not-used"
     key = _cache_key(dialects, queries, lpts_sha)
     meta_path = paths.root / "meta.json"
     if not force and meta_path.exists():
@@ -591,8 +618,10 @@ def prepare(
 
     setup_sql = tpcc_schema_ddl("duckdb")
 
-    translator = Translator(
-        str(paths.duckdb_bin), str(paths.lpts_extension), setup_sql
+    translator = (
+        Translator(str(paths.duckdb_bin), str(paths.lpts_extension), setup_sql)
+        if needs_lpts
+        else None
     )
 
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -600,7 +629,15 @@ def prepare(
     translatable: Dict[str, set] = {}
 
     for dialect in dialects:
-        results = translator.translate(queries, dialect)
+        if dialect == "duckdb":
+            # DuckDB and DuckDB-OpenIVM are the native source engines for this
+            # corpus. Replanning and re-rendering their already-valid SQL via
+            # LPTS can only lose coverage (and previously made one extreme
+            # query crash the translator, falsely excluding its whole batch).
+            results = {query.name: (True, query.sql) for query in queries}
+        else:
+            assert translator is not None
+            results = translator.translate(queries, dialect)
         dialect_dir = paths.root / dialect
         queries_dir = dialect_dir / "queries"
         if queries_dir.exists():

@@ -18,10 +18,12 @@ from flask import Blueprint, Flask, jsonify, request
 from handlers.base import BaseHandler
 from services.compiler_bench import (
     CSV_COLUMNS,
+    SUMMARY_CSV_COLUMNS,
     CompilerBenchRunner,
     get_adapter,
     load,
     result_to_row,
+    summary_to_row,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,8 @@ def _execute(run_id: str, engine: str, options: dict) -> None:
             run_id,
             status="completed",
             summary=summary,
+            summary_columns=SUMMARY_CSV_COLUMNS,
+            summary_row=summary_to_row(summary),
             columns=CSV_COLUMNS,
             rows=[result_to_row(r) for r in runner.results],
         )

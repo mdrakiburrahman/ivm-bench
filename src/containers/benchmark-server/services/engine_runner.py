@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import time
-from threading import Barrier
+from threading import Barrier, Lock
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
@@ -28,6 +28,7 @@ HEALTH_TIMEOUT = 300
 HEALTH_INTERVAL = 5
 
 _RETRY_DELAYS = [30, 60, 120]
+_COMPILER_BENCH_SUMMARY_LOCK = Lock()
 
 
 def _post_with_retry(
@@ -493,7 +494,67 @@ class EngineRunner:
                 writer.writerows(rows)
         with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
             json.dump(final.get("summary") or {}, fh, indent=2)
+        summary_columns = final.get("summary_columns") or []
+        summary_row = final.get("summary_row") or {}
+        if summary_columns and summary_row:
+            with open(
+                os.path.join(out_dir, "summary.csv"),
+                "w",
+                newline="",
+                encoding="utf-8",
+            ) as fh:
+                writer = csv.DictWriter(fh, fieldnames=summary_columns)
+                writer.writeheader()
+                writer.writerow(summary_row)
+            self._upsert_compiler_bench_summary(
+                os.path.dirname(out_dir),
+                engine_dir,
+                "ducklake" if options.ducklake else "native",
+                summary_columns,
+                summary_row,
+            )
         self._emit(f"[{self._engine.name}] compiler-bench artifacts -> {out_dir}")
+
+    @staticmethod
+    def _upsert_compiler_bench_summary(
+        results_dir: str,
+        result_set: str,
+        storage: str,
+        summary_columns: List[str],
+        summary_row: dict,
+    ) -> None:
+        """Atomically maintain one plot-ready row per engine/storage result."""
+        columns = ["result_set", "storage", *summary_columns]
+        path = os.path.join(results_dir, "summary.csv")
+        row = {"result_set": result_set, "storage": storage, **summary_row}
+        with _COMPILER_BENCH_SUMMARY_LOCK:
+            existing = []
+            if os.path.exists(path):
+                with open(path, newline="", encoding="utf-8") as fh:
+                    existing = [
+                        old for old in csv.DictReader(fh)
+                        if old.get("result_set") != result_set
+                    ]
+            existing.append(row)
+            existing.sort(key=lambda item: item.get("result_set", ""))
+            existing = [
+                {column: item.get(column, "") for column in columns}
+                for item in existing
+            ]
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=results_dir,
+                prefix=".compiler-bench-summary-",
+                suffix=".csv",
+                delete=False,
+                newline="",
+                encoding="utf-8",
+            ) as fh:
+                writer = csv.DictWriter(fh, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(existing)
+                temporary = fh.name
+            os.replace(temporary, path)
 
     def _databricks_enzyme_drop_mvs(self) -> None:
         """End-of-run: drop the databricks-enzyme MVs so REFRESH SCHEDULE

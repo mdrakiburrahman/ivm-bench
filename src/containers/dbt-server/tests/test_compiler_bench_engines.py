@@ -17,12 +17,24 @@ from services.compiler_bench.engines import (  # noqa: E402
     FULL,
     INCREMENTAL,
     UNKNOWN,
+    DuckDBAdapter,
     SparkOpenIVMAdapter,
     _is_float_type,
     _is_fatal,
     _tpcc_table_names,
     _verify_probe,
     _LivyAdapter,
+)
+from services.compiler_bench.corpus import Corpus, Query  # noqa: E402
+from services.compiler_bench.determinism import nondeterminism_reason  # noqa: E402
+from services.compiler_bench.runner import (  # noqa: E402
+    CompilerBenchRunner,
+    PHASE_NONDETERMINISTIC,
+    PHASE_OK,
+    PHASE_VERIFY_FAILED,
+    SUMMARY_CSV_COLUMNS,
+    summarize,
+    summary_to_row,
 )
 
 
@@ -71,6 +83,16 @@ class LivyRowExtractionTest(unittest.TestCase):
     def test_missing_and_malformed_responses(self):
         for response in ({}, {"output": {}}, {"output": {"data": {}}}, None):
             self.assertEqual(_LivyAdapter._rows(response), [])
+
+
+class DuckDBNativePreambleTest(unittest.TestCase):
+    def test_loads_revision_matched_icu_extension(self):
+        adapter = DuckDBAdapter()
+
+        self.assertEqual(
+            adapter._preamble()[0],
+            "LOAD '/data/bin/duckdb-openivm/icu.duckdb_extension'",
+        )
 
 
 class SparkOpenIVMClassifyTest(unittest.TestCase):
@@ -131,6 +153,101 @@ class VerifyProbeTest(unittest.TestCase):
         probe = _verify_probe("mv", "SELECT 1", [])
         self.assertIn("EXCEPT ALL", probe)
         self.assertNotIn("round(", probe)
+
+
+class DeterminismHeuristicTest(unittest.TestCase):
+    def test_matches_lpts_nondeterministic_shapes(self):
+        cases = (
+            "SELECT * FROM t LIMIT 1",
+            "SELECT avg(x) FROM t",
+            "SELECT row_number() OVER (ORDER BY x) FROM t",
+            "SELECT string_agg(x, ',') FROM t",
+            "SELECT random()",
+            "SELECT * FROM t TABLESAMPLE 10%",
+        )
+        for sql in cases:
+            with self.subTest(sql=sql):
+                self.assertIsNotNone(nondeterminism_reason(sql))
+
+    def test_function_names_require_a_word_boundary(self):
+        for sql in (
+            "SELECT moving_avg(x) FROM t",
+            "SELECT know()",
+            "SELECT watchlist(x) FROM t",
+        ):
+            with self.subTest(sql=sql):
+                self.assertIsNone(nondeterminism_reason(sql))
+
+    def test_plain_relational_query_is_deterministic(self):
+        self.assertIsNone(nondeterminism_reason("SELECT a, count(*) FROM t GROUP BY a"))
+
+
+class DeterminismVerdictTest(unittest.TestCase):
+    class Adapter:
+        supports_verify = True
+
+        def __init__(self, correct):
+            self.correct = correct
+
+        def run_base_query(self, sql, *, timeout_s):
+            return None
+
+        def create_mv(self, mv_name, sql, *, timeout_s):
+            return None
+
+        def classify(self, mv_name, sql, *, timeout_s):
+            return "incremental"
+
+        def apply_deltas(self, statements, *, timeout_s):
+            return None
+
+        def refresh(self, mv_name, sql, *, timeout_s):
+            return None
+
+        def observed_classification(self, mv_name, *, timeout_s):
+            return "unknown"
+
+        def verify(self, mv_name, sql, *, timeout_s):
+            return self.correct
+
+    @staticmethod
+    def _run(sql, correct):
+        corpus = Corpus(
+            dialect="duckdb",
+            engine="duckdb-openivm",
+            queries=[Query(name="q", sql=sql, translated=True)],
+        )
+        return CompilerBenchRunner(
+            DeterminismVerdictTest.Adapter(correct), corpus, timeout_s=10
+        )._run_query(corpus.queries[0], "mv")
+
+    def test_nondeterministic_mismatch_is_unverified(self):
+        result = self._run("SELECT * FROM t LIMIT 1", False)
+        self.assertEqual(result.phase_reached, PHASE_NONDETERMINISTIC)
+        self.assertIsNone(result.is_correct)
+        self.assertTrue(result.is_likely_nondeterministic)
+        self.assertIn("LIMIT", result.nondeterminism_reason)
+        totals = summarize([result], engine="test")["totals"]
+        self.assertEqual(totals["nondeterministic"], 1)
+        self.assertEqual(totals["verified"], 0)
+        self.assertEqual(totals["correct"], 0)
+        row = summary_to_row(summarize([result], engine="test"))
+        self.assertEqual(list(row), SUMMARY_CSV_COLUMNS)
+        self.assertEqual(row["nondeterministic"], 1)
+        self.assertEqual(row["verify_failed"], 0)
+        self.assertEqual(row["incorrect"], 0)
+
+    def test_deterministic_mismatch_remains_incorrect(self):
+        result = self._run("SELECT * FROM t", False)
+        self.assertEqual(result.phase_reached, PHASE_VERIFY_FAILED)
+        self.assertFalse(result.is_correct)
+        self.assertFalse(result.is_likely_nondeterministic)
+
+    def test_matching_flagged_query_remains_correct(self):
+        result = self._run("SELECT avg(x) FROM t", True)
+        self.assertEqual(result.phase_reached, PHASE_OK)
+        self.assertTrue(result.is_correct)
+        self.assertTrue(result.is_likely_nondeterministic)
 
 
 class ErrorClassificationTest(unittest.TestCase):
@@ -329,6 +446,107 @@ class FelderaDeltaParsingTest(unittest.TestCase):
             for stmt in module.tpcc_delta_pool(3, dialect):
                 self.assertIsNotNone(self._parse(stmt), f"unparsed: {stmt}")
 
+    def test_schema_columns_do_not_split_decimal_precision(self):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        adapter = FelderaAdapter.__new__(FelderaAdapter)
+        adapter._schema_sql = [
+            "CREATE TABLE HISTORY (H_C_ID INTEGER, H_DATE TIMESTAMP, "
+            "H_AMOUNT DECIMAL(6,2), H_DATA VARCHAR(24))"
+        ]
+        self.assertEqual(
+            adapter._columns_of("HISTORY"),
+            ["h_c_id", "h_date", "h_amount", "h_data"],
+        )
+
+
+class FelderaDecimalSchemaTest(unittest.TestCase):
+    """Feldera AVG must be able to represent its internal count constant."""
+
+    def _widen(self, ddl):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        return FelderaAdapter._widen_zero_integer_decimals(ddl)
+
+    def test_adds_one_integer_digit_when_precision_equals_scale(self):
+        ddl = "CREATE TABLE T (tax DECIMAL(4,4), ratio decimal ( 12 , 12 ))"
+        self.assertEqual(
+            self._widen(ddl),
+            "CREATE TABLE T (tax DECIMAL(5,4), ratio DECIMAL(13,12))",
+        )
+
+    def test_keeps_scale_and_existing_integer_digits_unchanged(self):
+        ddl = "CREATE TABLE T (amount DECIMAL(12,2), tax DECIMAL(5,4))"
+        self.assertEqual(self._widen(ddl), ddl)
+
+    def test_does_not_exceed_feldera_maximum_precision(self):
+        ddl = "CREATE TABLE T (fraction DECIMAL(38,38))"
+        self.assertEqual(self._widen(ddl), ddl)
+
+
+class FelderaIngressCompletionTest(unittest.TestCase):
+    """Ingress is asynchronous; dependent reads must wait for its token."""
+
+    class Response:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+            self.text = str(body)
+
+        def json(self):
+            return self._body
+
+    def test_push_waits_until_completion_before_returning(self):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        adapter = FelderaAdapter.__new__(FelderaAdapter)
+        adapter._pipeline = "p"
+        calls = []
+        responses = iter([
+            self.Response(200, {"token": "t"}),
+            self.Response(202, {"status": "inprogress"}),
+            self.Response(200, {"status": "complete"}),
+        ])
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs.get("params")))
+            return next(responses)
+
+        adapter._request = request
+        adapter._push("T", [{"insert": {"id": 1}}], timeout_s=1)
+
+        self.assertEqual(calls[0][0:2], ("POST", "/v0/pipelines/p/ingress/T"))
+        self.assertEqual(
+            calls[1:],
+            [
+                ("GET", "/v0/pipelines/p/completion_status", {"token": "t"}),
+                ("GET", "/v0/pipelines/p/completion_status", {"token": "t"}),
+            ],
+        )
+
+    def test_ingress_http_error_is_not_silently_ignored(self):
+        from services.compiler_bench.engines import QueryFailed
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        adapter = FelderaAdapter.__new__(FelderaAdapter)
+        with self.assertRaisesRegex(QueryFailed, "bad record"):
+            adapter._await_ingress(
+                self.Response(400, "bad record"), timeout_s=1
+            )
+
+    def test_apply_deltas_propagates_ingress_errors(self):
+        from services.compiler_bench.engines import QueryFailed
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        adapter = FelderaAdapter.__new__(FelderaAdapter)
+        adapter._deployed = True
+        adapter._schema_sql = ["CREATE TABLE T (ID INTEGER)"]
+        adapter._push = lambda *args, **kwargs: (_ for _ in ()).throw(
+            QueryFailed("ingress failed")
+        )
+        with self.assertRaisesRegex(QueryFailed, "ingress failed"):
+            adapter.apply_deltas(["INSERT INTO T VALUES (1)"], timeout_s=1)
+
 
 class FelderaDiffReadTest(unittest.TestCase):
     """Reading the probe's count out of a result row."""
@@ -428,22 +646,17 @@ class FelderaBagCompareSqlTest(unittest.TestCase):
         self.assertIn("count(*) AS __n", sql)
 
     def test_compares_multiplicity_not_membership(self):
-        # Bag equality: the difference is per-group counts.
         self.assertIn("v.__n IS DISTINCT FROM q.__n", self._sql())
 
     def test_full_join_so_either_side_missing_counts(self):
+        sql = self._sql()
         self.assertIn("FULL JOIN", self._sql())
 
     def test_join_predicates_are_null_safe_and_parenthesised(self):
-        # IS NOT DISTINCT FROM binds looser than AND in DataFusion; unbracketed
-        # this parsed as `v.a IS NOT DISTINCT FROM (q.a AND ...)` and failed with
-        # "Cannot infer common argument type for logical boolean operation".
         sql = self._sql()
         self.assertIn("(v.a IS NOT DISTINCT FROM q.a) AND (v.s IS NOT DISTINCT FROM q.s)", sql)
 
     def test_no_set_operation_is_used(self):
-        # A Feldera view is a Z-set; after deltas it holds negative-weight
-        # records, which the ad-hoc engine refuses inside EXCEPT/INTERSECT.
         sql = self._sql().upper()
         for banned in ("EXCEPT", "INTERSECT"):
             self.assertNotIn(banned, sql)
@@ -452,7 +665,6 @@ class FelderaBagCompareSqlTest(unittest.TestCase):
         sql = self._sql(columns=("a",))
         self.assertIn("GROUP BY a", sql)
         self.assertIn("(v.a IS NOT DISTINCT FROM q.a)", sql)
-
 
 class FelderaBagDigestTest(unittest.TestCase):
     """Join-free bag digest.
@@ -474,27 +686,20 @@ class FelderaBagDigestTest(unittest.TestCase):
             self.assertIn(f"AS {field}", sql)
 
     def test_multiplicity_is_inside_the_checksum(self):
-        # sum(__n * __h): a row present twice on one side and once on the other
-        # changes the checksum, which a set-based probe would miss.
         self.assertIn("sum(__n * __h)", self._sql())
 
     def test_no_join_and_no_set_operation(self):
-        # The FULL JOIN version hit "Unexpected record with negative weight" on
-        # million-row join views; aggregates over a Z-set survive retractions.
         upper = self._sql().upper()
         for banned in ("JOIN", "EXCEPT", "INTERSECT", "UNION"):
             self.assertNotIn(banned, upper)
 
     def test_hex_prefix_converted_without_a_cast(self):
-        # DataFusion cannot cast '0xf19fabb5' to Int64 and exposes no
-        # hash-to-number function, so the hex digits are converted via strpos.
         sql = self._sql()
         self.assertNotIn("0x", sql)
         self.assertEqual(sql.count("strpos('0123456789abcdef'"), 8)
-        self.assertIn("* 268435456", sql)  # 16^7, the leading digit's place value
+        self.assertIn("* 268435456", sql)
 
     def test_nulls_use_a_sentinel_that_cannot_collide(self):
-        # A NULL column and the literal string 'NULL' must hash differently.
         self.assertIn("coalesce(cast(a AS VARCHAR), '\\x00NULL')", self._sql())
 
     def test_groups_by_every_column(self):

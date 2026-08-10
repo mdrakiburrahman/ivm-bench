@@ -356,9 +356,37 @@ class FelderaAdapter(EngineAdapter):
 
     # ----- phases -----
 
+    _DECIMAL_TYPE = re.compile(
+        r"\bDECIMAL\s*\(\s*(?P<precision>\d+)\s*,\s*(?P<scale>\d+)\s*\)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _widen_zero_integer_decimals(cls, ddl: str) -> str:
+        """Give ``DECIMAL(p,p)`` one integer digit without changing its scale.
+
+        Feldera's AVG code generation derives a decimal representation for the
+        aggregate count.  With a zero-integer-digit input such as DECIMAL(4,4),
+        it generates a DECIMAL(12,12) constant and panics while constructing
+        the value 1.  DECIMAL(p+1,p) represents every original value exactly,
+        but leaves room for that count constant.  Keep DECIMAL(38,38) unchanged
+        because Feldera's maximum precision cannot be widened.
+        """
+        def widen(match: re.Match) -> str:
+            precision = int(match.group("precision"))
+            scale = int(match.group("scale"))
+            if precision != scale or precision >= 38:
+                return match.group(0)
+            return f"DECIMAL({precision + 1},{scale})"
+
+        return cls._DECIMAL_TYPE.sub(widen, ddl)
+
     def setup(self, corpus: Corpus) -> None:
         self._corpus = corpus
-        self._schema_sql = [stmt.rstrip(";") for stmt in corpus.schema_ddl]
+        self._schema_sql = [
+            self._widen_zero_integer_decimals(stmt.rstrip(";"))
+            for stmt in corpus.schema_ddl
+        ]
         # Clear any pipeline left by an earlier run so its program cannot be
         # mistaken for this one's.
         for pipeline in (self._pipeline, self._SQL_PROBE_PIPELINE):
@@ -465,13 +493,14 @@ class FelderaAdapter(EngineAdapter):
                     f"{self.name}: {csv_path} missing — corpus prep must emit CSV "
                     "for Feldera ingestion"
                 )
-            self._request(
+            response = self._request(
                 "POST",
                 f"/v0/pipelines/{self._pipeline}/ingress/{table}",
                 params={"format": "csv"},
                 data=csv_path.read_bytes(),
                 timeout_s=timeout_s,
             )
+            self._await_ingress(response, timeout_s=timeout_s)
 
     def run_base_query(self, sql: str, *, timeout_s: float) -> None:
         # Acceptance is decided by the SQL probe in build_batch, so there is no
@@ -510,7 +539,7 @@ class FelderaAdapter(EngineAdapter):
     @staticmethod
     def _split_top_level(text: str, sep: str) -> List[str]:
         """Split on `sep` outside quotes, so values containing it stay intact."""
-        parts, buf, quote = [], [], None
+        parts, buf, quote, depth = [], [], None, 0
         for ch in text:
             if quote:
                 buf.append(ch)
@@ -521,7 +550,11 @@ class FelderaAdapter(EngineAdapter):
                 quote = ch
                 buf.append(ch)
                 continue
-            if text[len(parts) : ] and ch == sep:
+            if ch == "(":
+                depth += 1
+            elif ch == ")" and depth:
+                depth -= 1
+            if ch == sep and depth == 0:
                 parts.append("".join(buf))
                 buf = []
                 continue
@@ -600,13 +633,53 @@ class FelderaAdapter(EngineAdapter):
         if not records:
             return
         body = "\n".join(json.dumps(r) for r in records)
-        self._request(
+        response = self._request(
             "POST",
             f"/v0/pipelines/{self._pipeline}/ingress/{table}",
             params={"format": "json", "update_format": "insert_delete"},
             data=body.encode(),
             timeout_s=timeout_s,
         )
+        self._await_ingress(response, timeout_s=timeout_s)
+
+    def _await_ingress(self, response, *, timeout_s: float) -> None:
+        """Wait until Feldera has processed one asynchronous ingress request."""
+        if response.status_code >= 400:
+            raise QueryFailed(f"{self.name}: ingress failed: {response.text[:400]}")
+        try:
+            token = response.json().get("token")
+        except (TypeError, ValueError):
+            token = None
+        if not token:
+            raise QueryFailed(f"{self.name}: ingress returned no completion token")
+
+        deadline = time.monotonic() + timeout_s
+        while True:
+            status = self._request(
+                "GET",
+                f"/v0/pipelines/{self._pipeline}/completion_status",
+                params={"token": token},
+                timeout_s=min(30.0, timeout_s),
+            )
+            if status.status_code >= 400:
+                raise QueryFailed(
+                    f"{self.name}: ingress completion failed: {status.text[:400]}"
+                )
+            try:
+                state = str(status.json().get("status", "")).lower()
+            except (TypeError, ValueError):
+                state = ""
+            if state == "complete":
+                return
+            if state != "inprogress":
+                raise QueryFailed(
+                    f"{self.name}: invalid ingress completion response: {status.text[:400]}"
+                )
+            if time.monotonic() >= deadline:
+                raise EngineTimeout(
+                    f"{self.name}: ingress was not processed within {timeout_s:.0f}s"
+                )
+            time.sleep(0.1)
 
     def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
         """Apply the delta batch as ingress records.
@@ -624,27 +697,32 @@ class FelderaAdapter(EngineAdapter):
                 logger.debug("[%s] skipping unrecognised delta: %s", self.name, statement[:120])
                 continue
             table = parsed["table"]
+            if parsed["op"] == "insert":
+                columns = self._columns_of(table)
+                values = parsed["values"]
+                if len(columns) != len(values):
+                    raise QueryFailed(
+                        f"{self.name}: {table} INSERT has {len(values)} values "
+                        f"for {len(columns)} columns"
+                    )
+                self._push(table, [{"insert": dict(zip(columns, values))}],
+                           timeout_s=timeout_s)
+                continue
             try:
-                if parsed["op"] == "insert":
-                    columns = self._columns_of(table)
-                    values = parsed["values"]
-                    if len(columns) != len(values):
-                        continue
-                    self._push(table, [{"insert": dict(zip(columns, values))}],
-                               timeout_s=timeout_s)
-                    continue
                 rows = self._select_rows(table, parsed["where"], timeout_s=timeout_s)
-                if not rows:
-                    continue
-                records = [{"delete": row} for row in rows]
-                if parsed["op"] == "update":
-                    for row in rows:
-                        records.append({"insert": {**row, **parsed["set"]}})
-                self._push(table, records, timeout_s=timeout_s)
             except QueryFailed:
                 # As in the C++ benchmark, a delta that does not apply is not a
                 # verdict on the query.
                 continue
+            if not rows:
+                continue
+            records = [{"delete": row} for row in rows]
+            if parsed["op"] == "update":
+                for row in rows:
+                    records.append({"insert": {**row, **parsed["set"]}})
+            # Ingress/completion errors are harness failures, not inapplicable
+            # DML, so deliberately let them propagate to the delta phase.
+            self._push(table, records, timeout_s=timeout_s)
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         # Continuous maintenance — the only meaningful wait is for the pipeline

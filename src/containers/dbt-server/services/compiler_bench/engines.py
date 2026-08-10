@@ -360,15 +360,17 @@ class _DuckDBCliAdapter(EngineAdapter):
         return "ducklake" if self._ducklake else "duckdb"
 
     def _preamble(self) -> List[str]:
-        # Deliberately NOT loading icu, even though the translation step does.
-        # icu changes string collation, which changes what EXCEPT ALL considers
-        # equal: with it loaded the verification probe reports differences for
-        # queries whose results are in fact identical (measured: 10 of 60 became
-        # spurious verify_failed). The C++ benchmark does not load it either, so
-        # leaving it out also keeps verdicts comparable with the reference. A
-        # query that genuinely needs icu to run fails as base_query_failed, which
-        # is an honest verdict.
-        lines = [f"SET temp_directory='{self._temp_dir}'"]
+        # Match rewriter_benchmark.cpp, which installs and loads ICU before the
+        # corpus. The build container exports the revision-matched extension so
+        # this runtime remains offline and reproducible.
+        icu_extension = os.environ.get(
+            "DUCKDB_ICU_EXTENSION",
+            "/data/bin/duckdb-openivm/icu.duckdb_extension",
+        )
+        lines = [
+            f"LOAD '{icu_extension}'",
+            f"SET temp_directory='{self._temp_dir}'",
+        ]
         if self._mem_limit:
             lines.append(f"SET memory_limit='{self._mem_limit}'")
         if self._threads:

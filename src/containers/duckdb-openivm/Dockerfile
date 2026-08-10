@@ -32,7 +32,12 @@ RUN git clone "${OPENIVM_REPO}" . && \
 ENV CC=gcc-13 \
     CXX=g++-13 \
     LDFLAGS="-static-libstdc++ -static-libgcc"
-RUN GEN=ninja make -j$(nproc)
+COPY icu_extension_config.cmake /tmp/icu_extension_config.cmake
+# Build ICU as a loadable-only extension. Linking it statically through
+# CORE_EXTENSIONS changes generated loader symbols for every OpenIVM benchmark
+# helper, whose link lines intentionally contain only OpenIVM's normal static
+# dependencies.
+RUN GEN=ninja EXTRA_EXTENSION_CONFIGS=/tmp/icu_extension_config.cmake make -j$(nproc)
 
 FROM debian:bookworm-slim
 
@@ -48,6 +53,7 @@ RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb
+COPY --from=builder /src/build/release/extension/icu/icu.duckdb_extension /opt/duckdb-openivm/icu.duckdb_extension
 
 # The compiler-bench query corpus travels with the binary so the queries are
 # always the ones OPENIVM_COMMIT ships — no submodule in this repo to drift out

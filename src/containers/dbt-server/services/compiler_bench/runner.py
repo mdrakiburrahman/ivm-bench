@@ -29,6 +29,7 @@ from services.compiler_bench.engines import (
     EngineTimeout,
     QueryFailed,
 )
+from services.compiler_bench.determinism import nondeterminism_reason
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ PHASE_DELTA_FAILED = 3
 PHASE_REFRESH_FAILED = 4
 PHASE_VERIFY_FAILED = 5
 PHASE_OK = 6
+PHASE_NONDETERMINISTIC = 96
 PHASE_TRANSLATION_FAILED = 97
 PHASE_TIMEOUT = 98
 PHASE_CRASH = 99
@@ -52,6 +54,7 @@ PHASE_NAMES = {
     PHASE_REFRESH_FAILED: "refresh_failed",
     PHASE_VERIFY_FAILED: "verify_failed",
     PHASE_OK: "ok",
+    PHASE_NONDETERMINISTIC: "nondeterministic",
     PHASE_TRANSLATION_FAILED: "translation_failed",
     PHASE_TIMEOUT: "timeout",
     PHASE_CRASH: "crash",
@@ -73,6 +76,8 @@ class QueryResult:
     meta_is_incremental: Optional[bool]
     is_correct: Optional[bool]
     in_common: bool
+    is_likely_nondeterministic: Optional[bool] = None
+    nondeterminism_reason: str = ""
     # Recorded when the phase actually succeeded, not inferred from
     # phase_reached: a crash during a later phase overwrites the code with 99
     # and would otherwise erase the fact that the view was created.
@@ -88,9 +93,23 @@ class QueryResult:
 CSV_COLUMNS = [
     "query_name", "engine", "dialect", "phase_reached", "phase_name",
     "classification", "meta_is_incremental", "actual_is_incremental",
-    "is_correct", "in_common", "mv_created", "refresh_ok",
+    "is_correct", "is_likely_nondeterministic", "nondeterminism_reason",
+    "in_common",
+    "mv_created", "refresh_ok",
     "time_base_query_ms", "time_mv_ms", "time_refresh_ms", "time_verify_ms",
     "error",
+]
+
+SUMMARY_CSV_COLUMNS = [
+    "engine", "dialect", "corpus", "attempted", "translation_failed",
+    "base_query_failed", "mv_creation_failed", "delta_failed",
+    "refresh_failed", "verify_failed", "nondeterministic", "ok", "crash",
+    "timeout", "mv_created", "incremental", "full_refresh",
+    "classification_unknown", "refresh_ok", "verified", "correct",
+    "incorrect", "common_size", "common_incremental", "common_full_refresh",
+    "pct_mv_created_of_attempted", "pct_incremental_of_attempted",
+    "pct_full_refresh_of_attempted", "pct_correct_of_verified",
+    "pct_common_incremental",
 ]
 
 
@@ -117,6 +136,8 @@ def result_to_row(result: QueryResult) -> Dict[str, object]:
         "meta_is_incremental": _csv_bool(result.meta_is_incremental),
         "actual_is_incremental": _csv_bool(actual),
         "is_correct": _csv_bool(result.is_correct),
+        "is_likely_nondeterministic": _csv_bool(result.is_likely_nondeterministic),
+        "nondeterminism_reason": result.nondeterminism_reason,
         "in_common": _csv_bool(result.in_common),
         "mv_created": _csv_bool(result.mv_created),
         "refresh_ok": _csv_bool(result.refresh_ok),
@@ -125,6 +146,49 @@ def result_to_row(result: QueryResult) -> Dict[str, object]:
         "time_refresh_ms": round(result.time_refresh_ms, 4),
         "time_verify_ms": round(result.time_verify_ms, 4),
         "error": result.error[:2000],
+    }
+
+
+def summary_to_row(summary: dict) -> Dict[str, object]:
+    """Flatten one summary into a stable, plot-friendly CSV row."""
+    totals = summary.get("totals") or {}
+    phases = summary.get("by_phase") or {}
+    attempted_pct = summary.get("pct_of_attempted") or {}
+    verified_pct = summary.get("pct_of_verified") or {}
+    common = summary.get("common_subset") or {}
+    verified = int(totals.get("verified", 0) or 0)
+    correct = int(totals.get("correct", 0) or 0)
+    return {
+        "engine": summary.get("engine"),
+        "dialect": summary.get("dialect"),
+        "corpus": totals.get("corpus", 0),
+        "attempted": totals.get("attempted", 0),
+        "translation_failed": totals.get("translation_failed", 0),
+        "base_query_failed": phases.get("base_query_failed", 0),
+        "mv_creation_failed": phases.get("mv_creation_failed", 0),
+        "delta_failed": phases.get("delta_failed", 0),
+        "refresh_failed": phases.get("refresh_failed", 0),
+        "verify_failed": phases.get("verify_failed", 0),
+        "nondeterministic": phases.get("nondeterministic", 0),
+        "ok": phases.get("ok", 0),
+        "crash": phases.get("crash", 0),
+        "timeout": phases.get("timeout", 0),
+        "mv_created": totals.get("mv_created", 0),
+        "incremental": totals.get("incremental", 0),
+        "full_refresh": totals.get("full_refresh", 0),
+        "classification_unknown": totals.get("classification_unknown", 0),
+        "refresh_ok": totals.get("refresh_ok", 0),
+        "verified": verified,
+        "correct": correct,
+        "incorrect": verified - correct,
+        "common_size": common.get("size", 0),
+        "common_incremental": common.get("incremental", 0),
+        "common_full_refresh": common.get("full_refresh", 0),
+        "pct_mv_created_of_attempted": attempted_pct.get("mv_created", 0),
+        "pct_incremental_of_attempted": attempted_pct.get("incremental", 0),
+        "pct_full_refresh_of_attempted": attempted_pct.get("full_refresh", 0),
+        "pct_correct_of_verified": verified_pct.get("correct", 0),
+        "pct_common_incremental": common.get("pct_incremental", 0),
     }
 
 
@@ -183,6 +247,10 @@ class CompilerBenchRunner:
             result.phase_name = PHASE_NAMES[PHASE_TRANSLATION_FAILED]
             result.error = query.translation_error
             return result
+
+        reason = nondeterminism_reason(query.sql)
+        result.is_likely_nondeterministic = reason is not None
+        result.nondeterminism_reason = reason or ""
 
         deadline = time.monotonic() + self._timeout_s
 
@@ -253,8 +321,14 @@ class CompilerBenchRunner:
                 correct = self._adapter.verify(mv_name, query.sql, timeout_s=remaining())
                 result.time_verify_ms = (time.monotonic() - start) * 1000.0
                 result.is_correct = correct
-                result.phase_reached = PHASE_OK if correct else PHASE_VERIFY_FAILED
-                if not correct:
+                if correct:
+                    result.phase_reached = PHASE_OK
+                elif reason:
+                    result.is_correct = None
+                    result.phase_reached = PHASE_NONDETERMINISTIC
+                    result.error = reason
+                else:
+                    result.phase_reached = PHASE_VERIFY_FAILED
                     result.error = result.error or "MV contents differ from the base query"
             else:
                 result.is_correct = None
@@ -366,6 +440,7 @@ def summarize(
     translation_failed = by_phase.get("translation_failed", 0)
     crashed = by_phase.get("crash", 0)
     timed_out = by_phase.get("timeout", 0)
+    nondeterministic = by_phase.get("nondeterministic", 0)
     attempted = total - translation_failed
 
     mv_created = sum(1 for r in results if r.mv_created)
@@ -399,6 +474,7 @@ def summarize(
             "refresh_ok": refresh_ok,
             "verified": len(verified),
             "correct": correct,
+            "nondeterministic": nondeterministic,
             "crashed": crashed,
             "timeout": timed_out,
         },

@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "One complete compiler-benchmark pass over every runnable local engine.",
+    "Includes the 319 ducklake_* query shapes after removing their OpenIVM-only dl. catalog qualifier.",
+    "Fabric is excluded because its compiler-benchmark adapter is not implemented; Databricks Enzyme is a separately billed cloud run."
+  ],
+  "baseline": {
+    "engines": [
+      "duckdb",
+      "duckdb-openivm",
+      "spark",
+      "spark-openivm",
+      "feldera"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "compiler_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": true,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "compiler_bench": {
+      "scale_factor": 3,
+      "timeout_s": 60,
+      "limit": 0,
+      "verify": true,
+      "delta_batch_size": 10,
+      "include_ducklake": true,
+      "ducklake": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "compiler-bench-complete",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1"
+    }
+  ]
+}
