@@ -22,6 +22,7 @@ def collect(engine: str, batch_num: int):
             start_ms,
             end_ms,
             update_ids=body.get("update_ids") or [],
+            updates=body.get("updates") or [],
             pipeline_work_s=body.get("pipeline_work_s"),
         )
         result["engine"] = engine

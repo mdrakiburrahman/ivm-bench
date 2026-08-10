@@ -10,6 +10,7 @@ sys.path.insert(0, str(DBT_SERVER))
 from services.cloud_compute_metrics import (  # noqa: E402
     _overlaps_window,
     _valid_update_ids,
+    _valid_updates,
     summarize_databricks_billing,
     summarize_fabric_stages,
 )
@@ -24,10 +25,14 @@ class CloudComputeMetricsTest(unittest.TestCase):
                 {"update_id": "b", "usage_quantity": 2.75},
             ],
             pipeline_work_s=42.0,
+            event_rows=[
+                {"executor_cpu_time_ms": 1250},
+                {"executor_cpu_time_ms": 500},
+            ],
         )
 
         self.assertEqual(result["task_time_s"], 42.0)
-        self.assertIsNone(result["cpu_time_s"])
+        self.assertEqual(result["cpu_time_s"], 1.75)
         self.assertEqual(result["billing_quantity"], 4.0)
         self.assertEqual(result["billing_unit"], "DBU")
 
@@ -45,6 +50,37 @@ class CloudComputeMetricsTest(unittest.TestCase):
         self.assertEqual(
             _valid_update_ids([valid, "x' OR 1=1 --", "not-a-uuid"]),
             [valid],
+        )
+
+    def test_only_safe_mv_updates_can_enter_event_log_query(self):
+        valid = "18929dd8-1f4b-426d-bec7-0075802fea08"
+        self.assertEqual(
+            _valid_updates(
+                [
+                    {
+                        "schema": "exp_1_gold",
+                        "table": "fact_trade",
+                        "update_id": valid,
+                    },
+                    {
+                        "schema": "exp_1_gold`; DROP SCHEMA system; --",
+                        "table": "fact_trade",
+                        "update_id": valid,
+                    },
+                    {
+                        "schema": "exp_1_gold",
+                        "table": "fact_trade",
+                        "update_id": "not-a-uuid",
+                    },
+                ]
+            ),
+            [
+                {
+                    "schema": "exp_1_gold",
+                    "table": "fact_trade",
+                    "update_id": valid,
+                }
+            ],
         )
 
     def test_docker_cpu_percentage_is_integrated_per_selected_service(self):

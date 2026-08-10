@@ -2,12 +2,13 @@
 
 The benchmark timer measures elapsed refresh latency.  This module separately
 collects the amount of distributed work performed during that wall-clock
-window. Databricks bills serverless MV pipelines in DBUs through
+window. Databricks exposes executor CPU time through each materialized
+view's Lakeflow event log and bills serverless MV pipelines in DBUs through
 ``system.billing.usage``; Fabric exposes Spark task metrics through its
 monitoring REST API.
 
-Task time is the sum across concurrently executing tasks and can therefore
-exceed wall time. Only Fabric exposes executor CPU time through this path.
+Task and CPU time are sums across concurrently executing tasks and can
+therefore exceed wall time.
 """
 
 from __future__ import annotations
@@ -18,10 +19,31 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 _UUID = re.compile(r"^[0-9a-fA-F-]{36}$")
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _valid_update_ids(values: Iterable[Any]) -> List[str]:
     return sorted({str(value) for value in values if _UUID.fullmatch(str(value))})
+
+
+def _valid_updates(values: Iterable[Any]) -> List[Dict[str, str]]:
+    updates = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        schema = str(value.get("schema", ""))
+        table = str(value.get("table", ""))
+        update_id = str(value.get("update_id", ""))
+        if (
+            _IDENTIFIER.fullmatch(schema)
+            and _IDENTIFIER.fullmatch(table)
+            and _UUID.fullmatch(update_id)
+        ):
+            updates.add((schema, table, update_id))
+    return [
+        {"schema": schema, "table": table, "update_id": update_id}
+        for schema, table, update_id in sorted(updates)
+    ]
 
 
 def _number(value: Any) -> float:
@@ -32,19 +54,31 @@ def _number(value: Any) -> float:
 
 
 def summarize_databricks_billing(
-    rows: Iterable[Dict[str, Any]], pipeline_work_s: Optional[float]
+    rows: Iterable[Dict[str, Any]],
+    pipeline_work_s: Optional[float],
+    event_rows: Iterable[Dict[str, Any]] = (),
 ) -> Dict[str, Any]:
     rows = list(rows)
+    event_rows = list(event_rows)
     dbus = sum(_number(row.get("usage_quantity")) for row in rows)
+    cpu_values = [
+        _number(row["executor_cpu_time_ms"])
+        for row in event_rows
+        if row.get("executor_cpu_time_ms") is not None
+    ]
     result = {
         "status": "ok" if pipeline_work_s is not None else "unavailable",
-        "source": "databricks_pipeline_events+system.billing.usage",
+        "source": "databricks_mv_event_log+system.billing.usage",
         "semantics": (
             "task_time_s is summed MV flow duration from pipeline events; "
+            "cpu_time_s is summed flow_progress executor_cpu_time_ms from "
+            "the exact MV update event logs; "
             "billing_quantity is billed serverless usage attributed by dlt_update_id"
         ),
         "task_time_s": pipeline_work_s,
-        "cpu_time_s": None,
+        "cpu_time_s": sum(cpu_values) / 1000.0 if cpu_values else None,
+        "event_metric_row_count": len(event_rows),
+        "event_metrics": event_rows,
         "billing_quantity": dbus if rows else None,
         "billing_unit": "DBU",
         "billing_status": "ok" if rows else "pending",
@@ -64,14 +98,64 @@ def collect_databricks(
     start_ms: int,
     end_ms: int,
     update_ids: Iterable[str],
+    updates: Iterable[Dict[str, Any]],
     pipeline_work_s: Optional[float],
 ) -> Dict[str, Any]:
-    """Collect billed DBUs for the exact Lakeflow updates in one batch."""
+    """Collect CPU time and billed DBUs for exact Lakeflow MV updates."""
     from services import databricks_enzyme_sources as src
 
     ids = _valid_update_ids(update_ids)
+    valid_updates = _valid_updates(updates)
     rows: List[Dict[str, Any]] = []
+    event_rows: List[Dict[str, Any]] = []
     query_error = None
+    event_errors: List[str] = []
+    conn = src._get_connection()
+
+    for update in valid_updates:
+        fq = f"`{src.CATALOG}`.`{update['schema']}`.`{update['table']}`"
+        sql = f"""
+            SELECT
+              SUM(TRY_CAST(get_json_object(
+                    details,
+                    '$.flow_progress.metrics.executor_cpu_time_ms'
+                  ) AS DOUBLE)) AS executor_cpu_time_ms,
+              SUM(TRY_CAST(get_json_object(
+                    details,
+                    '$.flow_progress.metrics.executor_time_ms'
+                  ) AS DOUBLE)) AS executor_time_ms,
+              SUM(TRY_CAST(get_json_object(
+                    details,
+                    '$.flow_progress.metrics.num_output_bytes'
+                  ) AS DOUBLE)) AS output_bytes
+            FROM event_log(TABLE({fq}))
+            WHERE origin.update_id = ?
+              AND event_type = 'flow_progress'
+        """
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, [update["update_id"]])
+                values = cursor.fetchone()
+                if values and any(value is not None for value in values):
+                    event_rows.append(
+                        {
+                            **update,
+                            "executor_cpu_time_ms": (
+                                _number(values[0]) if values[0] is not None else None
+                            ),
+                            "executor_time_ms": (
+                                _number(values[1]) if values[1] is not None else None
+                            ),
+                            "output_bytes": (
+                                _number(values[2]) if values[2] is not None else None
+                            ),
+                        }
+                    )
+        except Exception as exc:
+            event_errors.append(
+                f"{update['schema']}.{update['table']}: {exc}"
+            )
+
     if ids:
         literals = ", ".join(f"'{value}'" for value in ids)
         sql = f"""
@@ -84,7 +168,6 @@ def collect_databricks(
              GROUP BY usage_metadata.dlt_update_id, sku_name
         """
         try:
-            conn = src._get_connection()
             with conn.cursor() as cursor:
                 cursor.execute(sql)
                 columns = [str(column[0]) for column in (cursor.description or [])]
@@ -97,16 +180,31 @@ def collect_databricks(
         except Exception as exc:
             query_error = str(exc)
 
-    result = summarize_databricks_billing(rows, pipeline_work_s)
+    result = summarize_databricks_billing(rows, pipeline_work_s, event_rows)
+    if event_errors:
+        result["cpu_error"] = "; ".join(event_errors)
+    elif not valid_updates:
+        result["cpu_error"] = "no valid Databricks MV updates were supplied"
+    elif not any(
+        row.get("executor_cpu_time_ms") is not None for row in event_rows
+    ):
+        result["cpu_error"] = (
+            "materialized-view event logs returned no executor CPU metrics"
+        )
     if query_error:
-        result["error"] = f"system.billing.usage query failed: {query_error}"
+        result["billing_error"] = (
+            f"system.billing.usage query failed: {query_error}"
+        )
     elif not ids:
-        result["error"] = "no Databricks pipeline update IDs were supplied"
+        result["billing_error"] = (
+            "no Databricks pipeline update IDs were supplied"
+        )
     result.update(
         {
             "window_start_ms": start_ms,
             "window_end_ms": end_ms,
             "update_ids": ids,
+            "updates": valid_updates,
         }
     )
     return result
@@ -228,10 +326,17 @@ def collect(
     end_ms: int,
     *,
     update_ids: Iterable[str] = (),
+    updates: Iterable[Dict[str, Any]] = (),
     pipeline_work_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     if engine == "databricks-enzyme":
-        return collect_databricks(start_ms, end_ms, update_ids, pipeline_work_s)
+        return collect_databricks(
+            start_ms,
+            end_ms,
+            update_ids,
+            updates,
+            pipeline_work_s,
+        )
     if engine in ("fabric-jvm-35", "fabric-openivm-jvm-35"):
         return collect_fabric(engine, start_ms, end_ms)
     raise ValueError(f"cloud compute metrics unsupported for engine {engine!r}")

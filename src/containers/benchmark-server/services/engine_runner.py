@@ -749,6 +749,7 @@ class EngineRunner:
                     "start_ms": start_ms,
                     "end_ms": end_ms,
                     "update_ids": batch.extra.get("databricks_update_ids") or [],
+                    "updates": batch.extra.get("databricks_updates") or [],
                     "pipeline_work_s": batch.extra.get("compute_work_s"),
                 },
                 timeout=1200,
@@ -2257,6 +2258,16 @@ class EngineRunner:
             for update in updates
             if update.update_id and update.update_id != "unknown"
         })
+        batch.extra["databricks_updates"] = [
+            {
+                "schema": update.schema,
+                "table": update.table,
+                "update_id": update.update_id,
+            }
+            for updates in summary["tables"].values()
+            for update in updates
+            if update.update_id and update.update_id != "unknown"
+        ]
         if expected is not None:
             batch.extra["expected_tables"] = expected
 
