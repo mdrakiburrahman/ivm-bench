@@ -406,6 +406,13 @@ class FelderaChunkedProbeTest(unittest.TestCase):
         self.assertEqual(len(adapter._accepted), 50)
         self.assertEqual(adapter._rejected, {})
 
+    def test_full_corpus_compile_budget_scales_past_thirty_minutes(self):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        timeout = FelderaAdapter._batch_compile_timeout(600, 2505)
+
+        self.assertEqual(timeout, 7515)
+
     def test_single_bad_view_is_isolated_and_others_accepted(self):
         adapter = self._adapter(bad_names={"cb_mv_7"})
         adapter._partition(self._views(16), timeout_s=60)

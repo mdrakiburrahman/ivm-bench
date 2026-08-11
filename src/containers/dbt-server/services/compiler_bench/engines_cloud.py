@@ -253,6 +253,16 @@ class FelderaAdapter(EngineAdapter):
 
     _COMPILE_POLL_S = 5.0
     _SQL_PROBE_PIPELINE = "compiler_bench_probe"
+    _BATCH_COMPILE_MIN_S = 1800.0
+    _BATCH_COMPILE_PER_VIEW_S = 3.0
+
+    @classmethod
+    def _batch_compile_timeout(cls, requested_s: float, view_count: int) -> float:
+        return max(
+            requested_s,
+            cls._BATCH_COMPILE_MIN_S,
+            view_count * cls._BATCH_COMPILE_PER_VIEW_S,
+        )
 
     def __init__(self) -> None:
         self._base_url = os.environ.get("FELDERA_URL", "http://pipeline-manager:8080")
@@ -472,8 +482,15 @@ class FelderaAdapter(EngineAdapter):
             timeout_s=timeout_s,
         )
         # The Rust stage is the expensive one and is paid exactly once here.
+        # Its generated program grows with the number of views.  The old fixed
+        # 30-minute ceiling was enough for 500 views (~10 minutes) but could
+        # abort a healthy full-corpus compile.  Scale the allowance while
+        # retaining the same 30-minute floor for smaller validation runs.
+        compile_timeout_s = self._batch_compile_timeout(
+            timeout_s, len(self._accepted)
+        )
         compiled = self._await_program(
-            self._pipeline, until=("Success",), timeout_s=max(timeout_s, 1800)
+            self._pipeline, until=("Success",), timeout_s=compile_timeout_s
         )
         self._view_schemas = self._program_output_schemas(compiled)
         self._request("POST", f"/v0/pipelines/{self._pipeline}/start", timeout_s=300)
