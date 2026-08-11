@@ -24,6 +24,7 @@ from services.compiler_bench.engines import (
     EngineCrashed,
     EngineTimeout,
     QueryFailed,
+    VerificationUnsupported,
     _is_fatal,
     _tpcc_data_dir,
     _tpcc_table_names,
@@ -966,11 +967,21 @@ class FelderaAdapter(EngineAdapter):
             timeout_s=timeout_s,
             label="view-digest",
         )
-        expected = self._adhoc(
-            self.bag_digest_sql(f"({sql}) __cb", columns, column_types),
-            timeout_s=timeout_s,
-            label="query-digest",
-        )
+        try:
+            expected = self._adhoc(
+                self.bag_digest_sql(f"({sql}) __cb", columns, column_types),
+                timeout_s=timeout_s,
+                label="query-digest",
+            )
+        except QueryFailed as exc:
+            # Feldera's compiled SQL and ad-hoc query paths use different
+            # planners.  The pipeline can legitimately support a function
+            # (currently arg_min/arg_max and datediff) that the DataFusion
+            # ad-hoc endpoint rejects.  That leaves correctness unmeasured; it
+            # is not evidence that the materialized view itself failed.
+            if "Error during planning:" in str(exc):
+                raise VerificationUnsupported(str(exc)) from exc
+            raise
         if not view or not expected:
             raise QueryFailed(f"{self.name}: digest comparison produced no result")
         keys = ("groups", "rows_total", "checksum")

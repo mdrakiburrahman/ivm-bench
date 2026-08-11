@@ -38,6 +38,10 @@ class QueryFailed(Exception):
     """The engine rejected this query."""
 
 
+class VerificationUnsupported(QueryFailed):
+    """The view ran, but the engine's separate verifier cannot run the query."""
+
+
 class EngineTimeout(Exception):
     """The query exceeded its time budget."""
 

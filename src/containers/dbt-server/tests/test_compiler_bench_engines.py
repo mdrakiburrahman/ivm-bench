@@ -20,6 +20,7 @@ from services.compiler_bench.engines import (  # noqa: E402
     DuckDBAdapter,
     DuckDBOpenIVMAdapter,
     QueryFailed,
+    VerificationUnsupported,
     SparkOpenIVMAdapter,
     _is_float_type,
     _is_fatal,
@@ -33,6 +34,7 @@ from services.compiler_bench.runner import (  # noqa: E402
     CompilerBenchRunner,
     PHASE_NONDETERMINISTIC,
     PHASE_OK,
+    PHASE_VERIFY_UNSUPPORTED,
     PHASE_VERIFY_FAILED,
     SUMMARY_CSV_COLUMNS,
     summarize,
@@ -312,6 +314,34 @@ class DeterminismVerdictTest(unittest.TestCase):
         self.assertEqual(result.phase_reached, PHASE_OK)
         self.assertTrue(result.is_correct)
         self.assertTrue(result.is_likely_nondeterministic)
+
+    def test_verifier_capability_gap_is_not_counted_as_incorrect(self):
+        class UnsupportedAdapter(self.Adapter):
+            def verify(self, mv_name, sql, *, timeout_s):
+                raise VerificationUnsupported("ad-hoc planner lacks arg_min")
+
+        corpus = Corpus(
+            dialect="feldera",
+            engine="feldera",
+            queries=[
+                Query(
+                    name="q",
+                    sql="SELECT arg_min(a, b) FROM t",
+                    translated=True,
+                )
+            ],
+        )
+        result = CompilerBenchRunner(
+            UnsupportedAdapter(True), corpus, timeout_s=10
+        )._run_query(corpus.queries[0], "mv")
+        summary = summarize([result], engine="feldera")
+        row = summary_to_row(summary)
+
+        self.assertEqual(result.phase_reached, PHASE_VERIFY_UNSUPPORTED)
+        self.assertIsNone(result.is_correct)
+        self.assertEqual(row["verify_unsupported"], 1)
+        self.assertEqual(row["verify_failed"], 0)
+        self.assertEqual(row["incorrect"], 0)
 
 
 class ErrorClassificationTest(unittest.TestCase):
@@ -813,6 +843,26 @@ class FelderaBagDigestTest(unittest.TestCase):
                 ]
             },
         )
+
+    def test_base_query_planner_gap_is_verification_unsupported(self):
+        from services.compiler_bench.engines_cloud import FelderaAdapter
+
+        adapter = FelderaAdapter.__new__(FelderaAdapter)
+        adapter._view_schemas = {"v": [("a", {"type": "INTEGER"})]}
+        adapter._last_verification_error = ""
+
+        def adhoc(sql, *, timeout_s, label="query"):
+            if label == "query-digest":
+                raise QueryFailed(
+                    "feldera: [query-digest] Error during planning: "
+                    "Invalid function 'arg_min'"
+                )
+            return [{"groups": 1, "rows_total": 1, "checksum": 7}]
+
+        adapter._adhoc = adhoc
+
+        with self.assertRaises(VerificationUnsupported):
+            adapter.verify("v", "SELECT arg_min(a, b) FROM t", timeout_s=10)
 
     def test_groups_by_every_column(self):
         self.assertIn("GROUP BY a, s", self._sql())

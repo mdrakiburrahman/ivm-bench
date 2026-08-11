@@ -28,6 +28,7 @@ from services.compiler_bench.engines import (
     EngineCrashed,
     EngineTimeout,
     QueryFailed,
+    VerificationUnsupported,
 )
 from services.compiler_bench.determinism import nondeterminism_reason
 
@@ -41,6 +42,7 @@ PHASE_DELTA_FAILED = 3
 PHASE_REFRESH_FAILED = 4
 PHASE_VERIFY_FAILED = 5
 PHASE_OK = 6
+PHASE_VERIFY_UNSUPPORTED = 95
 PHASE_NONDETERMINISTIC = 96
 PHASE_TRANSLATION_FAILED = 97
 PHASE_TIMEOUT = 98
@@ -54,6 +56,7 @@ PHASE_NAMES = {
     PHASE_REFRESH_FAILED: "refresh_failed",
     PHASE_VERIFY_FAILED: "verify_failed",
     PHASE_OK: "ok",
+    PHASE_VERIFY_UNSUPPORTED: "verify_unsupported",
     PHASE_NONDETERMINISTIC: "nondeterministic",
     PHASE_TRANSLATION_FAILED: "translation_failed",
     PHASE_TIMEOUT: "timeout",
@@ -103,7 +106,8 @@ CSV_COLUMNS = [
 SUMMARY_CSV_COLUMNS = [
     "engine", "dialect", "corpus", "attempted", "translation_failed",
     "base_query_failed", "mv_creation_failed", "delta_failed",
-    "refresh_failed", "verify_failed", "nondeterministic", "ok", "crash",
+    "refresh_failed", "verify_failed", "verify_unsupported",
+    "nondeterministic", "ok", "crash",
     "timeout", "mv_created", "incremental", "full_refresh",
     "classification_unknown", "refresh_ok", "verified", "correct",
     "incorrect", "common_size", "common_incremental", "common_full_refresh",
@@ -169,6 +173,7 @@ def summary_to_row(summary: dict) -> Dict[str, object]:
         "delta_failed": phases.get("delta_failed", 0),
         "refresh_failed": phases.get("refresh_failed", 0),
         "verify_failed": phases.get("verify_failed", 0),
+        "verify_unsupported": phases.get("verify_unsupported", 0),
         "nondeterministic": phases.get("nondeterministic", 0),
         "ok": phases.get("ok", 0),
         "crash": phases.get("crash", 0),
@@ -344,6 +349,10 @@ class CompilerBenchRunner:
             result.error = str(exc)
         except EngineCrashed as exc:
             result.phase_reached = PHASE_CRASH
+            result.error = str(exc)
+        except VerificationUnsupported as exc:
+            result.phase_reached = PHASE_VERIFY_UNSUPPORTED
+            result.is_correct = None
             result.error = str(exc)
         except QueryFailed as exc:
             # The phase counter already holds the phase that was in flight.
