@@ -179,7 +179,7 @@ class DatabricksEnzymeAdapter(EngineAdapter):
         self._execute(f"SELECT * FROM ({sql}) __cb LIMIT 0", timeout_s=timeout_s)
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
-        probe = f"{self._fq(mv_name)}_explain"
+        probe = self._fq(f"{mv_name}_explain")
         try:
             self._execute(
                 f"EXPLAIN CREATE MATERIALIZED VIEW {probe} "
@@ -220,7 +220,7 @@ class DatabricksEnzymeAdapter(EngineAdapter):
     def drop_mv(self, mv_name: str) -> None:
         for stmt in (
             f"DROP MATERIALIZED VIEW IF EXISTS {self._fq(mv_name)}",
-            f"DROP MATERIALIZED VIEW IF EXISTS {self._fq(mv_name)}_explain",
+            f"DROP MATERIALIZED VIEW IF EXISTS {self._fq(f'{mv_name}_explain')}",
         ):
             try:
                 self._execute(stmt, timeout_s=300)

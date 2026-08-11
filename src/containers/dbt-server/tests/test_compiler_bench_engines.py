@@ -30,6 +30,7 @@ from services.compiler_bench.engines import (  # noqa: E402
 )
 from services.compiler_bench.corpus import Corpus, Query  # noqa: E402
 from services.compiler_bench.determinism import nondeterminism_reason  # noqa: E402
+from services.compiler_bench.engines_cloud import DatabricksEnzymeAdapter  # noqa: E402
 from services.compiler_bench.runner import (  # noqa: E402
     CompilerBenchRunner,
     PHASE_CLASSIFICATION_FAILED,
@@ -116,6 +117,45 @@ class DuckDBNativePreambleTest(unittest.TestCase):
         self.assertEqual(
             adapter._preamble()[0],
             "LOAD '/data/bin/duckdb-openivm/icu.duckdb_extension'",
+        )
+
+
+class DatabricksEnzymeIdentifierTest(unittest.TestCase):
+    def _adapter(self):
+        class Source:
+            CATALOG = "catalog"
+
+        adapter = DatabricksEnzymeAdapter.__new__(DatabricksEnzymeAdapter)
+        adapter._src = Source()
+        adapter._schema = "schema"
+        adapter.calls = []
+        adapter._execute = lambda sql, **kwargs: adapter.calls.append(sql)
+        return adapter
+
+    def test_classification_suffix_is_inside_quoted_view_name(self):
+        adapter = self._adapter()
+
+        self.assertEqual(adapter.classify("mv1", "SELECT 1", timeout_s=10), INCREMENTAL)
+        self.assertEqual(
+            adapter.calls,
+            [
+                "EXPLAIN CREATE MATERIALIZED VIEW "
+                "`catalog`.`schema`.`mv1_explain` "
+                "REFRESH POLICY INCREMENTAL STRICT AS SELECT 1"
+            ],
+        )
+
+    def test_drop_quotes_original_and_classification_names_separately(self):
+        adapter = self._adapter()
+
+        adapter.drop_mv("mv1")
+
+        self.assertEqual(
+            adapter.calls,
+            [
+                "DROP MATERIALIZED VIEW IF EXISTS `catalog`.`schema`.`mv1`",
+                "DROP MATERIALIZED VIEW IF EXISTS `catalog`.`schema`.`mv1_explain`",
+            ],
         )
 
 
