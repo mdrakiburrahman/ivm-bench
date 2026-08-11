@@ -525,7 +525,19 @@ class DuckDBOpenIVMAdapter(_DuckDBCliAdapter):
     name = "duckdb-openivm"
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        self._run([f"CREATE MATERIALIZED VIEW {mv_name} AS {sql}"], timeout_s=timeout_s)
+        try:
+            self._run(
+                [f"CREATE MATERIALIZED VIEW {mv_name} AS {sql}"],
+                timeout_s=timeout_s,
+            )
+        except QueryFailed as exc:
+            message = str(exc)
+            if (
+                "Warning: materialized view" in message
+                and "Full refresh will be used." in message
+            ):
+                return
+            raise
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
         # openivm_views.type 3 is FULL_REFRESH; other values are incremental
@@ -648,7 +660,7 @@ class _LivyAdapter(EngineAdapter):
 
         client = self._ensure_client()
         try:
-            return client.execute(sql)
+            return client.execute(sql, timeout_s=timeout_s)
         except TimeoutError as exc:
             raise EngineTimeout(f"{self.name}: {exc}") from exc
         except requests.RequestException as exc:

@@ -211,7 +211,7 @@ class LivyClient:
 
     # ----- statement execution -----
 
-    def execute(self, sql: str) -> dict:
+    def execute(self, sql: str, *, timeout_s: float | None = None) -> dict:
         """Submit a SINGLE SQL statement and block until it succeeds.
 
         Raises RuntimeError if Livy reports the statement failed.
@@ -227,7 +227,7 @@ class LivyClient:
         )
         resp.raise_for_status()
         stmt_id = resp.json()["id"]
-        return self._wait_for_statement(stmt_id, sql)
+        return self._wait_for_statement(stmt_id, sql, timeout_s=timeout_s)
 
     def execute_many(self, stmts: Iterable[str]) -> None:
         """Convenience: run statements sequentially, fail-fast."""
@@ -263,12 +263,17 @@ class LivyClient:
             f"Livy {kind} {self.session_id} did not reach {target_states} within {timeout_s}s"
         )
 
-    def _wait_for_statement(self, stmt_id: int, sql: str) -> dict:
+    def _wait_for_statement(
+        self, stmt_id: int, sql: str, *, timeout_s: float | None = None
+    ) -> dict:
         """Poll a statement until it succeeds; surface errors verbatim."""
         url = f"{self.base_url}/sessions/{self.session_id}/statements/{stmt_id}"
+        statement_timeout_s = (
+            LIVY_STMT_TIMEOUT_S if timeout_s is None else max(0.0, timeout_s)
+        )
         deadline = (
-            time.monotonic() + LIVY_STMT_TIMEOUT_S
-            if LIVY_STMT_TIMEOUT_S > 0
+            time.monotonic() + statement_timeout_s
+            if statement_timeout_s > 0
             else None
         )
         while True:
@@ -306,7 +311,7 @@ class LivyClient:
                     )
                 raise TimeoutError(
                     f"Livy statement {stmt_id} did not finish within "
-                    f"{LIVY_STMT_TIMEOUT_S:.0f}s.\nSQL: {sql[:1000]}"
+                    f"{statement_timeout_s:.0f}s.\nSQL: {sql[:1000]}"
                 )
             time.sleep(LIVY_STMT_POLL_INTERVAL_S)
 

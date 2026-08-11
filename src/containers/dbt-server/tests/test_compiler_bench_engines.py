@@ -18,6 +18,8 @@ from services.compiler_bench.engines import (  # noqa: E402
     INCREMENTAL,
     UNKNOWN,
     DuckDBAdapter,
+    DuckDBOpenIVMAdapter,
+    QueryFailed,
     SparkOpenIVMAdapter,
     _is_float_type,
     _is_fatal,
@@ -85,6 +87,25 @@ class LivyRowExtractionTest(unittest.TestCase):
             self.assertEqual(_LivyAdapter._rows(response), [])
 
 
+class LivyTimeoutPropagationTest(unittest.TestCase):
+    def test_adapter_passes_query_budget_to_livy_statement(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, *, timeout_s=None):
+                self.calls.append((sql, timeout_s))
+                return {"state": "available", "output": {"status": "ok"}}
+
+        adapter = _LivyAdapter.__new__(_LivyAdapter)
+        adapter._client = Client()
+        adapter._ensure_client = lambda: adapter._client
+
+        adapter._execute("SELECT 1", timeout_s=12.5)
+
+        self.assertEqual(adapter._client.calls, [("SELECT 1", 12.5)])
+
+
 class DuckDBNativePreambleTest(unittest.TestCase):
     def test_loads_revision_matched_icu_extension(self):
         adapter = DuckDBAdapter()
@@ -93,6 +114,31 @@ class DuckDBNativePreambleTest(unittest.TestCase):
             adapter._preamble()[0],
             "LOAD '/data/bin/duckdb-openivm/icu.duckdb_extension'",
         )
+
+
+class DuckDBOpenIVMWarningTest(unittest.TestCase):
+    def _adapter_raising(self, message):
+        adapter = DuckDBOpenIVMAdapter.__new__(DuckDBOpenIVMAdapter)
+
+        def fail(*args, **kwargs):
+            raise QueryFailed(message)
+
+        adapter._run = fail
+        return adapter
+
+    def test_full_refresh_warning_is_a_successful_creation(self):
+        adapter = self._adapter_raising(
+            "duckdb-openivm: Warning: materialized view 'mv' uses constructs "
+            "not supported for incremental maintenance. Full refresh will be used."
+        )
+
+        adapter.create_mv("mv", "SELECT 1 LIMIT 1", timeout_s=10)
+
+    def test_real_creation_error_is_not_swallowed(self):
+        adapter = self._adapter_raising("duckdb-openivm: Binder Error: missing table")
+
+        with self.assertRaises(QueryFailed):
+            adapter.create_mv("mv", "SELECT * FROM missing", timeout_s=10)
 
 
 class SparkOpenIVMClassifyTest(unittest.TestCase):
