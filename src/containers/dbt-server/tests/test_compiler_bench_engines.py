@@ -32,6 +32,7 @@ from services.compiler_bench.corpus import Corpus, Query  # noqa: E402
 from services.compiler_bench.determinism import nondeterminism_reason  # noqa: E402
 from services.compiler_bench.runner import (  # noqa: E402
     CompilerBenchRunner,
+    PHASE_CLASSIFICATION_FAILED,
     PHASE_NONDETERMINISTIC,
     PHASE_OK,
     PHASE_VERIFY_UNSUPPORTED,
@@ -358,6 +359,68 @@ class ErrorClassificationTest(unittest.TestCase):
             "Parser Error: syntax error at or near",
         ):
             self.assertFalse(_is_fatal(message))
+
+
+class ClassificationOnlyRunnerTest(unittest.TestCase):
+    class Adapter:
+        supports_verify = True
+
+        def __init__(self, verdict="incremental", error=None):
+            self.verdict = verdict
+            self.error = error
+
+        def classify(self, mv_name, sql, *, timeout_s):
+            if self.error:
+                raise QueryFailed(self.error)
+            return self.verdict
+
+        def __getattr__(self, name):
+            if name in (
+                "run_base_query", "create_mv", "apply_deltas", "refresh", "verify"
+            ):
+                raise AssertionError(f"classification-only mode called {name}")
+            raise AttributeError(name)
+
+    @staticmethod
+    def _run(adapter):
+        corpus = Corpus(
+            dialect="spark",
+            engine="databricks-enzyme",
+            queries=[Query(name="q", sql="SELECT * FROM t", translated=True)],
+        )
+        runner = CompilerBenchRunner(
+            adapter, corpus, timeout_s=10, verify=False, classify_only=True
+        )
+        result = runner._run_query(corpus.queries[0], "mv")
+        return result, summarize(
+            [result],
+            engine="databricks-enzyme",
+            corpus=corpus,
+            classification_only=True,
+        )
+
+    def test_records_planner_verdict_without_claiming_view_creation(self):
+        result, summary = self._run(self.Adapter())
+        row = summary_to_row(summary)
+
+        self.assertEqual(result.phase_reached, PHASE_OK)
+        self.assertEqual(result.classification, "incremental")
+        self.assertFalse(result.mv_created)
+        self.assertIsNone(result.is_correct)
+        self.assertEqual(row["mode"], "classification_only")
+        self.assertEqual(row["classified"], 1)
+        self.assertEqual(row["incremental"], 1)
+        self.assertEqual(row["mv_created"], 0)
+        self.assertEqual(row["verified"], 0)
+
+    def test_classification_error_has_its_own_phase(self):
+        result, summary = self._run(self.Adapter(error="planner rejected query"))
+        row = summary_to_row(summary)
+
+        self.assertEqual(result.phase_reached, PHASE_CLASSIFICATION_FAILED)
+        self.assertEqual(row["classification_failed"], 1)
+        self.assertEqual(row["classified"], 0)
+        self.assertEqual(row["incorrect"], 0)
 
 
 class SchemaHelperTest(unittest.TestCase):

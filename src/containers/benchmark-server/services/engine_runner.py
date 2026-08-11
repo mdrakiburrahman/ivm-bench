@@ -428,6 +428,7 @@ class EngineRunner:
                 "timeout_s": options.timeout_s,
                 "delta_batch_size": options.delta_batch_size,
                 "verify": options.verify,
+                "classify_only": options.classify_only,
             },
         )
         run_id = response.json()["run_id"]
@@ -467,6 +468,18 @@ class EngineRunner:
         summary = final.get("summary") or {}
         totals = summary.get("totals") or {}
         by_created = summary.get("pct_of_mv_created") or {}
+        if summary.get("mode") == "classification_only":
+            self._emit(
+                f"[{name}] compiler-bench classification: "
+                f"{totals.get('incremental', 0)} incremental / "
+                f"{totals.get('full_refresh', 0)} non-incremental of "
+                f"{totals.get('classified', 0)} classified; "
+                f"unknown={totals.get('classification_unknown', 0)} "
+                f"crash={totals.get('crashed', 0)} "
+                f"timeout={totals.get('timeout', 0)}"
+            )
+            self._result.extra["compiler_bench"] = summary
+            return
         self._emit(
             f"[{name}] compiler-bench: {totals.get('incremental', 0)} incremental / "
             f"{totals.get('full_refresh', 0)} full of {totals.get('mv_created', 0)} created "

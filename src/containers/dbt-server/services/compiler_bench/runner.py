@@ -42,6 +42,7 @@ PHASE_DELTA_FAILED = 3
 PHASE_REFRESH_FAILED = 4
 PHASE_VERIFY_FAILED = 5
 PHASE_OK = 6
+PHASE_CLASSIFICATION_FAILED = 94
 PHASE_VERIFY_UNSUPPORTED = 95
 PHASE_NONDETERMINISTIC = 96
 PHASE_TRANSLATION_FAILED = 97
@@ -56,6 +57,7 @@ PHASE_NAMES = {
     PHASE_REFRESH_FAILED: "refresh_failed",
     PHASE_VERIFY_FAILED: "verify_failed",
     PHASE_OK: "ok",
+    PHASE_CLASSIFICATION_FAILED: "classification_failed",
     PHASE_VERIFY_UNSUPPORTED: "verify_unsupported",
     PHASE_NONDETERMINISTIC: "nondeterministic",
     PHASE_TRANSLATION_FAILED: "translation_failed",
@@ -87,6 +89,7 @@ class QueryResult:
     mv_created: bool = False
     refresh_ok: bool = False
     time_base_query_ms: float = 0.0
+    time_classify_ms: float = 0.0
     time_mv_ms: float = 0.0
     time_refresh_ms: float = 0.0
     time_verify_ms: float = 0.0
@@ -99,17 +102,18 @@ CSV_COLUMNS = [
     "is_correct", "is_likely_nondeterministic", "nondeterminism_reason",
     "in_common",
     "mv_created", "refresh_ok",
-    "time_base_query_ms", "time_mv_ms", "time_refresh_ms", "time_verify_ms",
+    "time_base_query_ms", "time_classify_ms", "time_mv_ms",
+    "time_refresh_ms", "time_verify_ms",
     "error",
 ]
 
 SUMMARY_CSV_COLUMNS = [
-    "engine", "dialect", "corpus", "attempted", "translation_failed",
+    "engine", "dialect", "mode", "corpus", "attempted", "translation_failed",
     "base_query_failed", "mv_creation_failed", "delta_failed",
-    "refresh_failed", "verify_failed", "verify_unsupported",
+    "refresh_failed", "classification_failed", "verify_failed", "verify_unsupported",
     "nondeterministic", "ok", "crash",
     "timeout", "mv_created", "incremental", "full_refresh",
-    "classification_unknown", "refresh_ok", "verified", "correct",
+    "classification_unknown", "classified", "refresh_ok", "verified", "correct",
     "incorrect", "common_size", "common_incremental", "common_full_refresh",
     "pct_mv_created_of_attempted", "pct_incremental_of_attempted",
     "pct_full_refresh_of_attempted", "pct_correct_of_verified",
@@ -146,6 +150,7 @@ def result_to_row(result: QueryResult) -> Dict[str, object]:
         "mv_created": _csv_bool(result.mv_created),
         "refresh_ok": _csv_bool(result.refresh_ok),
         "time_base_query_ms": round(result.time_base_query_ms, 4),
+        "time_classify_ms": round(result.time_classify_ms, 4),
         "time_mv_ms": round(result.time_mv_ms, 4),
         "time_refresh_ms": round(result.time_refresh_ms, 4),
         "time_verify_ms": round(result.time_verify_ms, 4),
@@ -165,6 +170,7 @@ def summary_to_row(summary: dict) -> Dict[str, object]:
     return {
         "engine": summary.get("engine"),
         "dialect": summary.get("dialect"),
+        "mode": summary.get("mode", "execute"),
         "corpus": totals.get("corpus", 0),
         "attempted": totals.get("attempted", 0),
         "translation_failed": totals.get("translation_failed", 0),
@@ -172,6 +178,7 @@ def summary_to_row(summary: dict) -> Dict[str, object]:
         "mv_creation_failed": phases.get("mv_creation_failed", 0),
         "delta_failed": phases.get("delta_failed", 0),
         "refresh_failed": phases.get("refresh_failed", 0),
+        "classification_failed": phases.get("classification_failed", 0),
         "verify_failed": phases.get("verify_failed", 0),
         "verify_unsupported": phases.get("verify_unsupported", 0),
         "nondeterministic": phases.get("nondeterministic", 0),
@@ -182,6 +189,7 @@ def summary_to_row(summary: dict) -> Dict[str, object]:
         "incremental": totals.get("incremental", 0),
         "full_refresh": totals.get("full_refresh", 0),
         "classification_unknown": totals.get("classification_unknown", 0),
+        "classified": totals.get("classified", 0),
         "refresh_ok": totals.get("refresh_ok", 0),
         "verified": verified,
         "correct": correct,
@@ -208,6 +216,7 @@ class CompilerBenchRunner:
         timeout_s: float = 60.0,
         delta_batch_size: int = 10,
         verify: bool = True,
+        classify_only: bool = False,
         progress: Optional[Callable[[dict], None]] = None,
     ) -> None:
         self._adapter = adapter
@@ -215,6 +224,7 @@ class CompilerBenchRunner:
         self._timeout_s = timeout_s
         self._delta_batch_size = delta_batch_size
         self._verify = verify
+        self._classify_only = classify_only
         self._progress = progress
         self._delta_idx = 0
         self.results: List[QueryResult] = []
@@ -256,6 +266,9 @@ class CompilerBenchRunner:
         reason = nondeterminism_reason(query.sql)
         result.is_likely_nondeterministic = reason is not None
         result.nondeterminism_reason = reason or ""
+
+        if self._classify_only:
+            return self._classify_query(result, query, mv_name)
 
         deadline = time.monotonic() + self._timeout_s
 
@@ -368,6 +381,38 @@ class CompilerBenchRunner:
         result.phase_name = PHASE_NAMES.get(result.phase_reached, "unknown")
         return result
 
+    def _classify_query(
+        self, result: QueryResult, query: Query, mv_name: str
+    ) -> QueryResult:
+        """Run only the engine's planner verdict; create no materialized view."""
+        result.phase_reached = PHASE_CLASSIFICATION_FAILED
+        start = time.monotonic()
+        try:
+            result.classification = self._adapter.classify(
+                mv_name, query.sql, timeout_s=self._timeout_s
+            )
+            result.time_classify_ms = (time.monotonic() - start) * 1000.0
+            if result.classification == CLASSIFICATION_UNKNOWN:
+                raise QueryFailed("engine returned no classification verdict")
+            result.phase_reached = PHASE_OK
+        except EngineTimeout as exc:
+            result.phase_reached = PHASE_TIMEOUT
+            result.error = str(exc)
+        except EngineCrashed as exc:
+            result.phase_reached = PHASE_CRASH
+            result.error = str(exc)
+        except QueryFailed as exc:
+            result.error = str(exc)
+        except Exception as exc:
+            result.phase_reached = PHASE_CRASH
+            result.error = f"harness error: {exc}"
+            logger.exception(
+                "[compiler-bench] %s: unexpected classification error on %s",
+                self._corpus.engine, query.name,
+            )
+        result.phase_name = PHASE_NAMES.get(result.phase_reached, "unknown")
+        return result
+
     # ----- run loop --------------------------------------------------------
 
     def run(self) -> dict:
@@ -377,7 +422,7 @@ class CompilerBenchRunner:
         # Engines with no per-view DDL (Feldera: one program, one Rust compile)
         # build every view up front; the per-query loop then reports on each.
         build_batch = getattr(adapter, "build_batch", None)
-        if callable(build_batch):
+        if callable(build_batch) and not self._classify_only:
             translated = [(f"cb_mv_{i}", q.sql)
                           for i, q in enumerate(self._corpus.queries, start=1)
                           if q.translated]
@@ -391,13 +436,14 @@ class CompilerBenchRunner:
 
             # Always try to clean up: thousands of live MVs slow every engine's
             # catalog down, and on Databricks each one is a separate pipeline.
-            try:
-                adapter.drop_mv(mv_name)
-            except Exception:
-                logger.debug(
-                    "[compiler-bench] %s: drop of %s failed", self._corpus.engine, mv_name,
-                    exc_info=True,
-                )
+            if not self._classify_only:
+                try:
+                    adapter.drop_mv(mv_name)
+                except Exception:
+                    logger.debug(
+                        "[compiler-bench] %s: drop of %s failed",
+                        self._corpus.engine, mv_name, exc_info=True,
+                    )
 
             if result.phase_reached in (PHASE_CRASH, PHASE_TIMEOUT):
                 # A dead session would turn every later query into a phantom
@@ -428,7 +474,12 @@ class CompilerBenchRunner:
     # ----- summary ---------------------------------------------------------
 
     def summarize(self) -> dict:
-        return summarize(self.results, engine=self._corpus.engine, corpus=self._corpus)
+        return summarize(
+            self.results,
+            engine=self._corpus.engine,
+            corpus=self._corpus,
+            classification_only=self._classify_only,
+        )
 
 
 def _pct(numerator: int, denominator: int) -> float:
@@ -438,7 +489,8 @@ def _pct(numerator: int, denominator: int) -> float:
 
 
 def summarize(
-    results: List[QueryResult], *, engine: str, corpus: Optional[Corpus] = None
+    results: List[QueryResult], *, engine: str, corpus: Optional[Corpus] = None,
+    classification_only: bool = False,
 ) -> dict:
     """Aggregate per-query results.
 
@@ -461,6 +513,12 @@ def summarize(
     incremental = sum(1 for r in results if r.classification == CLASSIFICATION_INCREMENTAL)
     full = sum(1 for r in results if r.classification == CLASSIFICATION_FULL)
     unknown_class = mv_created - incremental - full
+    if classification_only:
+        unknown_class = sum(
+            1 for r in results
+            if r.phase_name == "ok" and r.classification == CLASSIFICATION_UNKNOWN
+        )
+    classified = incremental + full
 
     refresh_ok = sum(1 for r in results if r.refresh_ok)
     verified = [r for r in results if r.is_correct is not None]
@@ -477,6 +535,7 @@ def summarize(
     summary = {
         "engine": engine,
         "dialect": corpus.dialect if corpus else None,
+        "mode": "classification_only" if classification_only else "execute",
         "totals": {
             "corpus": total,
             "attempted": attempted,
@@ -485,6 +544,7 @@ def summarize(
             "incremental": incremental,
             "full_refresh": full,
             "classification_unknown": unknown_class,
+            "classified": classified,
             "refresh_ok": refresh_ok,
             "verified": len(verified),
             "correct": correct,

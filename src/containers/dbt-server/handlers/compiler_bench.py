@@ -54,6 +54,7 @@ def _execute(run_id: str, engine: str, options: dict) -> None:
             timeout_s=options["timeout_s"],
             delta_batch_size=options["delta_batch_size"],
             verify=options["verify"],
+            classify_only=options["classify_only"],
             progress=lambda p: _set(run_id, completed=p["completed"]),
         )
         summary = runner.run()
@@ -82,6 +83,7 @@ def start(engine: str):
         "timeout_s": float(body.get("timeout_s", 60.0)),
         "delta_batch_size": int(body.get("delta_batch_size", 10)),
         "verify": bool(body.get("verify", True)),
+        "classify_only": bool(body.get("classify_only", False)),
         "ducklake": bool(body.get("ducklake", False)),
     }
     run_id = str(uuid.uuid4())

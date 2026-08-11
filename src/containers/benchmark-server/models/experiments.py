@@ -152,6 +152,7 @@ class CompilerBenchOptions:
     timeout_s: float = 60.0          # per-query wall clock budget
     limit: int = 0                   # 0 = whole corpus
     verify: bool = True
+    classify_only: bool = False
     delta_batch_size: int = 10
     include_ducklake: bool = False
     #: Back the base tables with DuckLake instead of plain DuckDB tables. Only the
@@ -167,6 +168,7 @@ class CompilerBenchOptions:
             "COMPILER_BENCH_TIMEOUT_S": str(self.timeout_s),
             "COMPILER_BENCH_LIMIT": str(self.limit),
             "COMPILER_BENCH_VERIFY": "1" if self.verify else "0",
+            "COMPILER_BENCH_CLASSIFY_ONLY": "1" if self.classify_only else "0",
             "COMPILER_BENCH_DELTA_BATCH_SIZE": str(self.delta_batch_size),
             "COMPILER_BENCH_INCLUDE_DUCKLAKE": "1" if self.include_ducklake else "0",
             "COMPILER_BENCH_DUCKLAKE": "1" if self.ducklake else "0",
@@ -196,6 +198,9 @@ class CompilerBenchOptions:
             timeout_s=_num("COMPILER_BENCH_TIMEOUT_S", defaults.timeout_s, float),
             limit=_num("COMPILER_BENCH_LIMIT", defaults.limit, int),
             verify=_flag("COMPILER_BENCH_VERIFY", defaults.verify),
+            classify_only=_flag(
+                "COMPILER_BENCH_CLASSIFY_ONLY", defaults.classify_only
+            ),
             delta_batch_size=_num(
                 "COMPILER_BENCH_DELTA_BATCH_SIZE", defaults.delta_batch_size, int
             ),
@@ -369,6 +374,9 @@ class ExperimentInputs:
             timeout_s=float(cb_d.get("timeout_s", cb_base.timeout_s)),
             limit=int(cb_d.get("limit", cb_base.limit)),
             verify=_flag(cb_d.get("verify"), cb_base.verify),
+            classify_only=_flag(
+                cb_d.get("classify_only"), cb_base.classify_only
+            ),
             delta_batch_size=int(cb_d.get("delta_batch_size", cb_base.delta_batch_size)),
             include_ducklake=_flag(cb_d.get("include_ducklake"), cb_base.include_ducklake),
             ducklake=_flag(cb_d.get("ducklake"), cb_base.ducklake),
