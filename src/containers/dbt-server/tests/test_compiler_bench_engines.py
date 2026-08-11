@@ -121,7 +121,25 @@ class DuckDBNativePreambleTest(unittest.TestCase):
 
 
 class DatabricksEnzymeIdentifierTest(unittest.TestCase):
-    def _adapter(self):
+    class Frame:
+        def __init__(self, values):
+            self.values = values
+
+        @property
+        def empty(self):
+            return not self.values
+
+        @property
+        def iloc(self):
+            return self
+
+        def __getitem__(self, key):
+            return self
+
+        def tolist(self):
+            return self.values
+
+    def _adapter(self, response=None):
         class Source:
             CATALOG = "catalog"
 
@@ -129,11 +147,19 @@ class DatabricksEnzymeIdentifierTest(unittest.TestCase):
         adapter._src = Source()
         adapter._schema = "schema"
         adapter.calls = []
-        adapter._execute = lambda sql, **kwargs: adapter.calls.append(sql)
+        def execute(sql, **kwargs):
+            adapter.calls.append(sql)
+            return response
+
+        adapter._execute = execute
         return adapter
 
     def test_classification_suffix_is_inside_quoted_view_name(self):
-        adapter = self._adapter()
+        adapter = self._adapter(self.Frame([
+            "== Incremental Update Eligibility ==\n"
+            "The Materialized View can be incrementally refreshed.\n"
+            "== Detailed Incrementalization Info ==\nNo issues detected."
+        ]))
 
         self.assertEqual(adapter.classify("mv1", "SELECT 1", timeout_s=10), INCREMENTAL)
         self.assertEqual(
@@ -144,6 +170,23 @@ class DatabricksEnzymeIdentifierTest(unittest.TestCase):
                 "REFRESH POLICY INCREMENTAL STRICT AS SELECT 1"
             ],
         )
+
+    def test_classification_reads_negative_verdict_from_plan_text(self):
+        adapter = self._adapter(self.Frame([
+            "== Incremental Update Eligibility ==\n"
+            "The Materialized View cannot be incrementally refreshed.\n"
+            "== Detailed Incrementalization Info ==\n"
+            "- OPERATOR_NOT_INCREMENTALIZABLE: Window"
+        ]))
+
+        self.assertEqual(adapter.classify("mv1", "SELECT 1", timeout_s=10), FULL)
+
+    def test_classification_rejects_empty_or_unrecognized_plan(self):
+        for response in (None, self.Frame([]), self.Frame(["Physical Plan"])):
+            adapter = self._adapter(response)
+            with self.subTest(response=response):
+                with self.assertRaisesRegex(QueryFailed, "no incrementalization eligibility"):
+                    adapter.classify("mv1", "SELECT 1", timeout_s=10)
 
     def test_drop_quotes_original_and_classification_names_separately(self):
         adapter = self._adapter()

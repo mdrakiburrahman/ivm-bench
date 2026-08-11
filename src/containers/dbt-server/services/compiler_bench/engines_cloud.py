@@ -179,9 +179,11 @@ class DatabricksEnzymeAdapter(EngineAdapter):
         self._execute(f"SELECT * FROM ({sql}) __cb LIMIT 0", timeout_s=timeout_s)
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
+        from services.databricks_enzyme_plan import classify_incrementalization_plan
+
         probe = self._fq(f"{mv_name}_explain")
         try:
-            self._execute(
+            frame = self._execute(
                 f"EXPLAIN CREATE MATERIALIZED VIEW {probe} "
                 f"REFRESH POLICY INCREMENTAL STRICT AS {sql}",
                 timeout_s=timeout_s,
@@ -190,7 +192,13 @@ class DatabricksEnzymeAdapter(EngineAdapter):
             if _NOT_INCREMENTALIZABLE in str(exc):
                 return FULL
             raise
-        return INCREMENTAL
+        plan = "" if frame is None or frame.empty else "\n".join(
+            str(value) for value in frame.iloc[:, 0].tolist()
+        ).rstrip()
+        classification, error = classify_incrementalization_plan(plan)
+        if classification == UNKNOWN:
+            raise QueryFailed(f"{self.name}: {error}")
+        return classification
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         self._execute(
