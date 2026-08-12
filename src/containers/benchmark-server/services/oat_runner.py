@@ -82,11 +82,7 @@ RESULTS_CSV_FIELDS = (
     "batch_error",
     "openivm_over_spark_duration_ratio",
     "compute_status",
-    "compute_task_time_s",
     "compute_cpu_time_s",
-    "compute_billing_status",
-    "compute_billing_quantity",
-    "compute_billing_unit",
     "compute_source",
     "compute_semantics",
     "compute_error",
@@ -635,17 +631,7 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                             experiment, batch_num
                         ),
                         "compute_status": compute_metrics.get("status", ""),
-                        "compute_task_time_s": compute_metrics.get("task_time_s", ""),
                         "compute_cpu_time_s": compute_metrics.get("cpu_time_s", ""),
-                        "compute_billing_status": compute_metrics.get(
-                            "billing_status", ""
-                        ),
-                        "compute_billing_quantity": compute_metrics.get(
-                            "billing_quantity", ""
-                        ),
-                        "compute_billing_unit": compute_metrics.get(
-                            "billing_unit", ""
-                        ),
                         "compute_source": compute_metrics.get("source", ""),
                         "compute_semantics": compute_metrics.get("semantics", ""),
                         "compute_error": compute_metrics.get("error", ""),

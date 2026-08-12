@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
-from models.config import BenchmarkConfig, EngineConfig
+from models.config import BenchmarkConfig, EngineConfig, is_cloud_engine
 from models.result import EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
@@ -630,7 +630,7 @@ class EngineRunner:
             # wall-clock folds the one-time compile into the batch, and feldera's
             # Rust build is minutes — it would dwarf the actual batch-1 processing
             # (the "not included in duration" compile the log already reports
-            # separately). Mirrors the Databricks flow-coverage override.
+            # separately). Mirrors the databricks-enzyme pure-compute override.
             batch.duration_s = (
                 self._measured_duration_s
                 if self._measured_duration_s is not None
@@ -693,7 +693,7 @@ class EngineRunner:
                 and batch.status != "failed"
             ):
                 self._export_databricks_enzyme_metrics(batch_num)
-                # Derive comparable flow-work time from pipeline events.
+                # CRITICAL: derive pure-compute time from pipeline events.
                 # User mandate: report engine compute, NOT wall-clock that
                 # includes Lakeflow pipeline orchestration overhead.
                 # FAILS the batch if events are missing — never silently
@@ -702,16 +702,6 @@ class EngineRunner:
                 # ``DATABRICKS_COMPUTE_POLL_MAX_S`` seconds (default 300s)
                 # before failing, to absorb event-propagation lag.
                 self._apply_databricks_enzyme_pure_compute(batch_num, batch, run_id)
-
-            if (
-                name in (
-                    "databricks-enzyme",
-                    "fabric-jvm-35",
-                    "fabric-openivm-jvm-35",
-                )
-                and batch.status != "failed"
-            ):
-                self._capture_remote_compute_metrics(name, batch_num, batch)
 
             # Check status from the stream_progress result
             if batch.status != "failed":
@@ -728,63 +718,6 @@ class EngineRunner:
         finally:
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
-
-    def _capture_remote_compute_metrics(self, name: str, batch_num: int, batch) -> None:
-        """Collect remote task work after the timed batch, without failing it."""
-        start_ms = batch.extra.get("wall_window_start_ms")
-        end_ms = batch.extra.get("wall_window_end_ms")
-        artifact_rel = os.path.join(
-            "mount",
-            "results",
-            str(self._config.scale_factor),
-            "dbt-server",
-            f"compute-metrics-{name}-batch{batch_num}.json",
-        )
-        artifact_abs = os.path.join(self._config.repo_dir, artifact_rel)
-        os.makedirs(os.path.dirname(artifact_abs), exist_ok=True)
-        try:
-            response = requests.post(
-                f"{self._dbt_url}/compute-metrics/{name}/{batch_num}",
-                json={
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                    "update_ids": batch.extra.get("databricks_update_ids") or [],
-                    "updates": batch.extra.get("databricks_updates") or [],
-                    "pipeline_work_s": batch.extra.get("compute_work_s"),
-                },
-                timeout=1200,
-            )
-            data = response.json()
-            if response.status_code >= 400:
-                raise RuntimeError(
-                    f"HTTP {response.status_code}: {data.get('error', response.text[:300])}"
-                )
-            data["artifact"] = artifact_rel
-            batch.extra["compute_metrics"] = data
-            self._emit(
-                f"[{name}] compute metrics batch {batch_num}: "
-                f"task_time={data.get('task_time_s')}s, "
-                f"cpu_time={data.get('cpu_time_s')}s, "
-                f"billing={data.get('billing_quantity')} {data.get('billing_unit') or ''}"
-            )
-        except Exception as exc:
-            data = {
-                "status": "unavailable",
-                "engine": name,
-                "batch_num": batch_num,
-                "error": str(exc),
-                "task_time_s": None,
-                "cpu_time_s": None,
-                "billing_quantity": None,
-                "billing_unit": None,
-                "artifact": artifact_rel,
-            }
-            batch.extra["compute_metrics"] = data
-            self._emit(
-                f"[{name}] WARN compute metrics unavailable for batch {batch_num}: {exc}"
-            )
-        with open(artifact_abs, "w") as handle:
-            json.dump(data, handle, indent=2)
 
     def _save_openivm_ops_chart(self, name: str, batch_num: int) -> None:
         if name not in ("spark-openivm", "duckdb-openivm"):
@@ -1547,7 +1480,7 @@ class EngineRunner:
         real model bug — anything whose dbt error message does NOT
         match a transient signature — fails immediately. Returns the
         run_id of the FINAL attempt (whether success or final failure)
-        so downstream artifact collection / flow-work extraction
+        so downstream artifact collection / pure-compute extraction
         works against the right run.
         """
         sf = self._config.scale_factor
@@ -2133,7 +2066,7 @@ class EngineRunner:
         batch,
         run_id: Optional[str],
     ) -> None:
-        """Replace wall-clock timings with Databricks pipeline flow coverage.
+        """Replace wall-clock timings with Databricks pipeline pure-compute.
 
         After dbt finishes, POLL Databricks for pipeline events until they
         are complete (every expected MV has at least one COMPLETED flow
@@ -2145,7 +2078,7 @@ class EngineRunner:
            every MV update that ran within this batch's wall-clock
            window — i.e. the Databricks UI "Duration" column unioned).
         2. Patch ``run-databricks-enzyme-batch<N>.json`` so each model's
-           ``execution_time_s`` becomes the per-MV flow-work seconds
+           ``execution_time_s`` becomes the per-MV pure-compute seconds
            (Databricks-reported ``execution_duration_ms`` when present;
            ``COMPLETED_ts - QUEUED_ts`` otherwise — matches the UI
            Duration column for that flow).
@@ -2252,22 +2185,6 @@ class EngineRunner:
         batch.extra["segments_total"] = bsum["segments_total"]
         batch.extra["segments_fallback"] = bsum["segments_fallback"]
         batch.extra["compute_poll_attempts"] = attempt
-        batch.extra["databricks_update_ids"] = sorted({
-            update.update_id
-            for updates in summary["tables"].values()
-            for update in updates
-            if update.update_id and update.update_id != "unknown"
-        })
-        batch.extra["databricks_updates"] = [
-            {
-                "schema": update.schema,
-                "table": update.table,
-                "update_id": update.update_id,
-            }
-            for updates in summary["tables"].values()
-            for update in updates
-            if update.update_id and update.update_id != "unknown"
-        ]
         if expected is not None:
             batch.extra["expected_tables"] = expected
 
@@ -2300,7 +2217,7 @@ class EngineRunner:
             json.dump(persistence, f, indent=2)
 
         # Patch the per-node run JSON so the chart's per-model bars
-        # reflect pipeline flow work instead of dbt-reported wall time.
+        # reflect pure compute instead of dbt-reported wall time.
         if not run_id:
             self._emit(
                 f"[databricks-enzyme] no run_id for batch {batch_num}; "
@@ -2364,7 +2281,7 @@ class EngineRunner:
 
         self._emit(
             f"[databricks-enzyme] Patched run JSON batch {batch_num}: "
-            f"{patched} models swapped to pipeline flow work, "
+            f"{patched} models swapped to pure compute, "
             f"{len(skipped)} unpatched"
         )
         if skipped:
@@ -2763,13 +2680,6 @@ class EngineRunner:
     def _stop_stats(self) -> None:
         """Stop container stats and attach per-batch CPU-seconds locally."""
         try:
-            local_engines = {
-                "duckdb",
-                "duckdb-openivm",
-                "feldera",
-                "spark",
-                "spark-openivm",
-            }
             batch_windows = []
             for batch in self._result.batches:
                 start_ms = batch.extra.get("wall_window_start_ms")
@@ -2785,7 +2695,7 @@ class EngineRunner:
                 f"{self._dbt_url}/stats/containers/stop",
                 json={
                     "batch_windows": (
-                        batch_windows if self._engine.name in local_engines else []
+                        batch_windows if not is_cloud_engine(self._engine.name) else []
                     ),
                     "included_services": [execution_service],
                 },

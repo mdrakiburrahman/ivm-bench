@@ -118,22 +118,16 @@ abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,40960,1089536,1048576,40960
 
 Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.csv, outputs.json}`
 
-Every batch reports explicitly sourced compute metrics. Local engines integrate
-Docker CPU utilization for the primary execution container into CPU-seconds;
-orchestration and metastore containers are excluded. Fabric reports Spark
-executor task time and CPU time through its monitoring API. Databricks reports
-summed materialized-view flow duration from pipeline events and attributes
-serverless billing DBUs through `system.billing.usage` using the exact
-`dlt_update_id` values captured for that batch. Because billing rows can arrive
-after a run completes, missing Databricks DBUs are recorded as `pending`, never
-as zero. Remote sidecars are written as
-`compute-metrics-<engine>-batch<N>.json`; local samples remain under
-`mount/stats/<sf>/<engine>/container_stats.jsonl`.
+For engines executed in local containers, every batch reports CPU-seconds by
+integrating Docker CPU utilization over the measured batch window. Only the
+primary execution container is included; orchestration and metastore containers
+are excluded. Results are exposed in `results.csv`, while the source samples
+remain under `mount/stats/<sf>/<engine>/container_stats.jsonl`.
 
-Task time may exceed elapsed time because work from parallel tasks or flows is
-summed. The CSV keeps task seconds, CPU-seconds, and billed quantities in
-separate columns with their source and semantics; these values are not treated
-as interchangeable.
+Managed Databricks and Fabric engines are intentionally excluded from this
+metric. Their autoscalers do not expose fixed, comparable compute allocations,
+and local Docker statistics only measure the orchestration client. Use repeated
+end-to-end duration and within-engine incremental speedup for those systems.
 
 Each experiment runs 3 batches per engine (full load `batch1` → append `batch2` →
 append `batch3`). Set `BENCHMARK_RUNS` greater than 1 to repeat the full 3-batch

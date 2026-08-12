@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from flask import Flask, g, request
 
 from handlers.chart import ChartHandler
-from handlers.cloud_compute_metrics import CloudComputeMetricsHandler
 from handlers.container_stats import ContainerStatsHandler
 from handlers.databricks_enzyme import DatabricksEnzymeHandler
 from handlers.delta_stats import DeltaStatsHandler
@@ -76,7 +75,6 @@ def register_handlers(flask_app: Flask) -> None:
         RunsHandler(),
         FelderaHandler(),
         ChartHandler(),
-        CloudComputeMetricsHandler(),
         LineageHandler(),
         SQLAnalysisHandler(),
         ContainerStatsHandler(),

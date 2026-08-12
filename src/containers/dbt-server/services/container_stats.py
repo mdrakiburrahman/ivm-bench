@@ -83,11 +83,7 @@ def summarize_cpu_seconds(
             "integral of Docker cpu_pct over the batch window; "
             "100 percent equals one utilized CPU core"
         ),
-        "task_time_s": None,
         "cpu_time_s": total_cpu_s if samples_used else None,
-        "billing_status": "not_applicable",
-        "billing_quantity": None,
-        "billing_unit": None,
         "sample_count": samples_used,
         "included_services": sorted(selected),
         "service_cpu_time_s": service_cpu_s,
