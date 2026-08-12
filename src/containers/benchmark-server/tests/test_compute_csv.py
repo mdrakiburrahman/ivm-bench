@@ -13,6 +13,7 @@ BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from models.result import BenchmarkResult, EngineResult  # noqa: E402
+from models.config import ENGINE_COMPUTE_SERVICES  # noqa: E402
 from services.oat_runner import archive_compute_artifacts, generate_results_csv  # noqa: E402
 from services.docker_manager import compute_cpu_usage_delta  # noqa: E402
 from services.engine_runner import EngineRunner  # noqa: E402
@@ -20,6 +21,18 @@ from services.orchestrator import _average_compute_metrics  # noqa: E402
 
 
 class ComputeMetricsCsvTest(unittest.TestCase):
+    def test_controlled_engine_service_sets_are_explicit(self):
+        self.assertEqual(
+            ENGINE_COMPUTE_SERVICES["spark"], ("spark", "mssql-metastore")
+        )
+        self.assertEqual(
+            ENGINE_COMPUTE_SERVICES["spark-openivm"],
+            ("spark-openivm", "mssql-metastore"),
+        )
+        self.assertEqual(
+            ENGINE_COMPUTE_SERVICES["feldera"], ("pipeline-manager",)
+        )
+
     def test_local_cpu_fields_are_flattened(self):
         state = {
             "oat_run_id": "test",
