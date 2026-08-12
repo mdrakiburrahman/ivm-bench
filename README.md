@@ -135,9 +135,11 @@ benchmark from clean engine state and report averaged per-engine batch timings.
 ### Compiler bench (incrementalizability survey)
 
 Off by default. A port of openivm's `benchmark/src/rewriter_benchmark.cpp` to
-every engine: instead of timing one TPC-DI DAG, it pushes openivm's ~2.2k-query
-TPC-C corpus at an engine and reports what fraction its compiler can maintain
-incrementally.
+every engine: instead of timing one TPC-DI DAG, it pushes openivm's TPC-C query
+corpus at an engine and reports what fraction its compiler can maintain
+incrementally. The native corpus has 2,186 query shapes. Set
+`include_ducklake: true` to include 319 DuckLake-derived shapes for a complete
+2,505-query run.
 
 Enable with the `compiler_bench` feature flag (env `COMPILER_BENCH=1`). When on,
 an experiment runs the survey **instead of** the timed 3-batch benchmark —
@@ -161,7 +163,9 @@ Knobs live in a `compiler_bench` block in the experiments JSON:
 | `timeout_s` | `60` | Per-query wall-clock budget; exceeding it is a `timeout`, not a failure |
 | `limit` | `0` | `0` = whole corpus. Use a small value to smoke-test |
 | `verify` | `true` | Run the `EXCEPT ALL` correctness check |
+| `classify_only` | `false` | Ask only for the planner verdict; do not create, refresh, or verify materialized views |
 | `delta_batch_size` | `10` | Delta statements applied per query |
+| `include_ducklake` | `false` | Add the 319 `ducklake_*` query shapes after removing their OpenIVM-specific `dl.` qualifier |
 | `ducklake` | `false` | Back the base tables with DuckLake instead of plain DuckDB tables (DuckDB-family engines only) |
 
 **Queries are translated per engine dialect via LPTS**, which re-renders each
@@ -183,7 +187,7 @@ classification and phase.
 DuckLake-backed, and OpenIVM can classify a query differently when the scan is a
 DuckLake scan, so both are worth surveying. Because the translated corpus uses
 *unqualified* table names it is storage-agnostic: the same queries run either
-way, so all 2181 queries get DuckLake coverage rather than only openivm's 319
+way, so all 2,186 native queries get DuckLake coverage rather than only openivm's 319
 hand-written `ducklake_*` variants (which this harness therefore skips). Set
 `ducklake: true` on an experiment row; results land under
 `results/<engine>-ducklake/` so the two runs cannot overwrite each other.
