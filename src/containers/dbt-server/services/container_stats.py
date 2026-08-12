@@ -10,7 +10,6 @@ import socket
 import threading
 import time
 import urllib.parse
-from collections import defaultdict
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -18,81 +17,6 @@ logger = logging.getLogger(__name__)
 DOCKER_SOCKET = "/var/run/docker.sock"
 DEFAULT_POLL_INTERVAL = 15  # seconds
 STATS_OUTPUT_DIR = os.environ.get("STATS_DIR", "/data/stats")
-
-
-def summarize_cpu_seconds(
-    samples: list[dict[str, Any]],
-    start_ms: int,
-    end_ms: int,
-    included_services: list[str],
-) -> dict[str, Any]:
-    """Integrate sampled Docker CPU utilization over one batch window.
-
-    Docker CPU percentage is normalized so 100% represents one fully used
-    core. Each observation owns the interval halfway to its neighbours,
-    clipped to the batch boundaries.
-    """
-    if end_ms <= start_ms:
-        raise ValueError("end_ms must be greater than start_ms")
-
-    selected = set(included_services)
-    by_service: dict[str, list[tuple[float, float]]] = defaultdict(list)
-    for sample in samples:
-        service = str(sample.get("container", ""))
-        if service not in selected:
-            continue
-        try:
-            timestamp_ms = float(sample["timestamp_s"]) * 1000.0
-            cpu_pct = float(sample.get("cpu_pct", 0.0))
-        except (KeyError, TypeError, ValueError):
-            continue
-        by_service[service].append((timestamp_ms, max(0.0, cpu_pct)))
-
-    total_cpu_s = 0.0
-    samples_used = 0
-    service_cpu_s: dict[str, float] = {}
-    for service, points in sorted(by_service.items()):
-        points.sort()
-        if points[0][0] > end_ms or points[-1][0] < start_ms:
-            continue
-        service_total = 0.0
-        for index, (timestamp_ms, cpu_pct) in enumerate(points):
-            left = (
-                start_ms
-                if index == 0
-                else (points[index - 1][0] + timestamp_ms) / 2.0
-            )
-            right = (
-                end_ms
-                if index == len(points) - 1
-                else (timestamp_ms + points[index + 1][0]) / 2.0
-            )
-            overlap_ms = max(0.0, min(right, end_ms) - max(left, start_ms))
-            if overlap_ms <= 0:
-                continue
-            service_total += (cpu_pct / 100.0) * (overlap_ms / 1000.0)
-            samples_used += 1
-        if service_total > 0 or points:
-            service_cpu_s[service] = service_total
-            total_cpu_s += service_total
-
-    result = {
-        "status": "ok" if samples_used else "unavailable",
-        "source": "docker_stats_api",
-        "semantics": (
-            "integral of Docker cpu_pct over the batch window; "
-            "100 percent equals one utilized CPU core"
-        ),
-        "cpu_time_s": total_cpu_s if samples_used else None,
-        "sample_count": samples_used,
-        "included_services": sorted(selected),
-        "service_cpu_time_s": service_cpu_s,
-        "window_start_ms": start_ms,
-        "window_end_ms": end_ms,
-    }
-    if not samples_used:
-        result["error"] = "no selected container samples overlap the batch window"
-    return result
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -187,6 +111,9 @@ def _get_container_stats_snapshot(container_id: str) -> dict[str, Any] | None:
 
     return {
         "cpu_pct": cpu_pct,
+        "cpu_usage_ns": data.get("cpu_stats", {})
+        .get("cpu_usage", {})
+        .get("total_usage", 0),
         "mem_mb": mem_mb,
         "net_in_mb": _parse_size_bytes(net_in_bytes),
         "net_out_mb": _parse_size_bytes(net_out_bytes),
@@ -269,7 +196,6 @@ class ContainerStatsCollector:
         project = self._detect_compose_project()
 
         while not self._stop_event.is_set():
-            ts = time.time()
             containers = _discover_containers(project)
 
             for container in containers:
@@ -278,9 +204,10 @@ class ContainerStatsCollector:
                     continue
 
                 sample = {
-                    "timestamp_s": round(ts, 3),
+                    "timestamp_s": round(time.time(), 3),
                     "container": container["service"],
                     "cpu_pct": stats["cpu_pct"],
+                    "cpu_usage_ns": stats["cpu_usage_ns"],
                     "mem_mb": stats["mem_mb"],
                     "net_in_mb": stats["net_in_mb"],
                     "net_out_mb": stats["net_out_mb"],

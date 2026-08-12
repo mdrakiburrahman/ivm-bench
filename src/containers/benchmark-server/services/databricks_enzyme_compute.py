@@ -1,4 +1,4 @@
-"""Databricks Lakeflow pipeline-events → pure compute time extraction.
+"""Databricks Lakeflow pipeline-event diagnostics.
 
 Each ``REFRESH POLICY INCREMENTAL STRICT`` materialized view is backed by
 a Lakeflow Declarative Pipeline. The wall-clock time we measure around
@@ -10,30 +10,28 @@ overhead the engine itself does NOT pay for in production:
 * per-update planning + queue → STARTING latency,
 * harness setup (sweep-stale, init/<sf>, EXPLAIN pre-flight).
 
-For an honest comparison against engines that don't have a per-query
-remote pipeline (Spark/DuckDB/Feldera), we report **pure compute time**
-for ``databricks-enzyme``. This module derives those numbers from the
-pipeline-events JSON the dbt-server already captured to disk.
+These durations describe flow coverage and summed flow work. They are not
+CPU time: Databricks can autoscale the executor count during a refresh. The
+benchmark therefore keeps them as diagnostics and reports end-to-end latency.
 
-Per-MV pure compute (preferred path):
+Per-MV flow duration (preferred path):
     last ``flow_progress`` event with
     ``details.flow_progress.status == COMPLETED``
         → ``details.flow_progress.metrics.execution_duration_ms``
     Fallback: ``COMPLETED.timestamp − first RUNNING.timestamp`` for that
     ``(update_id, flow_id)``.
 
-Per-batch pure compute:
+Per-batch flow coverage:
     coverage-time = union (interval-merge) of every
     ``[RUNNING_start, COMPLETED_end]`` window across every flow that
     ran inside this batch's wall-clock window.
-    sum-of-compute = Σ per-MV compute (forensics secondary metric).
+    summed-flow-work = Σ per-MV flow duration (forensics secondary metric).
 
 Failure mode:
     If the pipeline-events directory is missing or no COMPLETED events
-    are found for the batch, this module raises. The caller (engine
-    runner) MUST surface that as a batch failure — silently falling
-    back to wall-clock would let inflated numbers (with pipeline
-    overhead) ship to the reviewer, which the user has forbidden.
+    are found for the batch, this module raises. The engine runner records
+    the diagnostic as unavailable while retaining the measured end-to-end
+    batch duration.
 """
 
 from __future__ import annotations
@@ -323,7 +321,7 @@ def compute_batch_summary(
     window_start_ms: Optional[int],
     window_end_ms: Optional[int],
 ) -> Dict[str, Any]:
-    """Aggregate per-MV pure compute and per-batch coverage-time.
+    """Aggregate per-MV flow duration and per-batch coverage time.
 
     ``window_start_ms`` and ``window_end_ms`` (epoch-ms) bracket the
     batch's measured wall-clock. Updates whose ``creation_time`` falls
@@ -335,8 +333,8 @@ def compute_batch_summary(
         ``{
             "tables": {"<schema>.<table>": [PerTableCompute, ...]},
             "batch": {
-                "compute_wall_ms": int,   # coverage-time, primary
-                "compute_work_ms": int,   # sum of per-MV compute, secondary
+                "compute_wall_ms": int,   # union of flow intervals
+                "compute_work_ms": int,   # sum of per-MV flow durations
                 "tables_with_compute": int,
                 "updates_considered": int,
                 "updates_in_window": int,
@@ -345,8 +343,8 @@ def compute_batch_summary(
             },
         }``
 
-    Raises ``RuntimeError`` if no per-update payloads were found on disk
-    (caller should surface this as a hard batch failure).
+    Raises ``RuntimeError`` if no per-update payloads were found on disk;
+    callers decide whether this optional diagnostic is required.
     """
     payloads = load_pipeline_events_for_batch(base_dir)
     if not payloads:
@@ -438,24 +436,9 @@ def compute_batch_summary(
     }
 
 
-def best_per_table_compute_ms(per_table: List[PerTableCompute]) -> Optional[int]:
-    """For a given MV, if multiple updates fell inside the window (e.g.
-    a transient REFRESH retry), prefer the LATEST one — that's the
-    update whose result is what the next batch sees. Returns the
-    chosen update's compute_ms.
-    """
-    if not per_table:
-        return None
-    sorted_updates = sorted(
-        per_table,
-        key=lambda p: (p.creation_time_ms or 0, p.update_id),
-    )
-    return sorted_updates[-1].compute_ms
-
-
 def summarize_for_persistence(summary: Dict[str, Any]) -> Dict[str, Any]:
     """Convert the structured PerTableCompute payloads into a
-    JSON-friendly forensics blob for ``databricks-compute-batch<N>.json``.
+    JSON-friendly forensics blob for ``databricks-flow-metrics-batch<N>.json``.
     """
     out_tables: Dict[str, List[Dict[str, Any]]] = {}
     for key, updates in summary["tables"].items():
@@ -486,6 +469,5 @@ __all__ = [
     "coverage_time_ms",
     "compute_batch_summary",
     "load_pipeline_events_for_batch",
-    "best_per_table_compute_ms",
     "summarize_for_persistence",
 ]

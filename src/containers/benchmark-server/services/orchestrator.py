@@ -8,6 +8,7 @@ import os
 import queue
 import re
 import shutil
+import statistics
 import subprocess
 import threading
 import time
@@ -28,6 +29,55 @@ from services.engine_runner import EngineRunner, OpenIvmValidationError
 from services.resource_calc import compute_engine_configs
 
 logger = logging.getLogger(__name__)
+
+
+def _average_compute_metrics(batch_extras: List[dict]) -> dict:
+    metrics = [extra.get("compute_metrics") for extra in batch_extras]
+    if not metrics or not all(isinstance(metric, dict) for metric in metrics):
+        return {
+            "status": "error",
+            "cpu_time_s": None,
+            "source": "docker_cpu_usage_total",
+            "error": "compute metrics missing from one or more repetitions",
+        }
+    if all(metric.get("status") == "excluded" for metric in metrics):
+        result = copy.deepcopy(metrics[-1])
+        result["repetition_count"] = len(metrics)
+        return result
+
+    cpu_values = [metric.get("cpu_time_s") for metric in metrics]
+    if not all(
+        metric.get("status") == "ok" and isinstance(cpu, (int, float))
+        for metric, cpu in zip(metrics, cpu_values)
+    ):
+        return {
+            "status": "error",
+            "cpu_time_s": None,
+            "source": "docker_cpu_usage_total",
+            "error": "compute metrics incomplete in one or more repetitions",
+            "repetition_statuses": [metric.get("status") for metric in metrics],
+        }
+
+    values = [float(value) for value in cpu_values]
+    result = copy.deepcopy(metrics[-1])
+    result.update({
+        "cpu_time_s": statistics.fmean(values),
+        "cpu_time_stddev_s": statistics.pstdev(values),
+        "repetition_count": len(values),
+        "repetition_cpu_time_s": values,
+        "repetition_artifacts": [metric.get("artifact") for metric in metrics],
+        "repetition_samples_statuses": [
+            metric.get("samples_status") for metric in metrics
+        ],
+    })
+    if not all(metric.get("samples_status") == "ok" for metric in metrics):
+        result["samples_status"] = "error"
+        result["samples_error"] = (
+            "diagnostic samples incomplete in one or more repetitions"
+        )
+    result.pop("start_snapshot", None)
+    result.pop("end_snapshot", None)
+    return result
 
 
 class Orchestrator:
@@ -613,8 +663,8 @@ class Orchestrator:
             self._phase2_benchmark()
             repetition_engines = copy.deepcopy(self._result.engines)
             repetitions.append(repetition_engines)
+            self._archive_repetition_outputs(run_idx, repetition_engines)
             self._save_repetition_result(run_idx, repetition_engines)
-            self._archive_repetition_outputs(run_idx)
 
         self._result.repetitions = repetitions
         self._result.engines = self._average_repetition_results(repetitions)
@@ -639,9 +689,10 @@ class Orchestrator:
                 durations = [er.batches[idx].duration_s for er in engine_runs]
                 statuses = [er.batches[idx].status for er in engine_runs]
                 errors = [er.batches[idx].error for er in engine_runs if er.batches[idx].error]
-                # Non-timing forensics describe the latest repetition; every
-                # repetition remains available in BenchmarkResult.repetitions.
                 batch_extra = copy.deepcopy(engine_runs[-1].batches[idx].extra)
+                batch_extra["compute_metrics"] = _average_compute_metrics(
+                    [er.batches[idx].extra for er in engine_runs]
+                )
                 batches.append(BatchResult(
                     batch_num=batch_num,
                     duration_s=sum(durations) / len(durations),
@@ -688,8 +739,10 @@ class Orchestrator:
         with open(os.path.join(results_dir, "benchmark-results.json"), "w") as f:
             json.dump(result.to_dict(), f, indent=2)
 
-    def _archive_repetition_outputs(self, run_idx: int) -> None:
-        """Copy dbt-server output files for one repetition before the next clean."""
+    def _archive_repetition_outputs(
+        self, run_idx: int, engines: Dict[str, EngineResult]
+    ) -> None:
+        """Archive one repetition's result files and diagnostic CPU samples."""
         sf = str(self._config.scale_factor)
         results_dir = os.path.join(
             self._config.repo_dir, "mount", "results", sf, "dbt-server",
@@ -702,6 +755,23 @@ class Orchestrator:
             if entry.startswith("repetition-") or os.path.isdir(src):
                 continue
             shutil.copy2(src, os.path.join(archive_dir, entry))
+
+        for engine, engine_result in engines.items():
+            stats_source = os.path.join(
+                self._config.repo_dir, "mount", "stats", sf, engine,
+                "container_stats.jsonl",
+            )
+            if not os.path.isfile(stats_source):
+                continue
+            stats_target = os.path.join(
+                archive_dir, f"container-stats-{engine}.jsonl"
+            )
+            shutil.copy2(stats_source, stats_target)
+            relative_target = os.path.relpath(stats_target, self._config.repo_dir)
+            for batch in engine_result.batches:
+                metrics = (batch.extra or {}).get("compute_metrics")
+                if isinstance(metrics, dict) and metrics.get("artifact"):
+                    metrics["artifact"] = relative_target
 
     # ----- Phase 2: Benchmarks -----
 
@@ -1283,8 +1353,18 @@ class Orchestrator:
                     result=self._result,
                 )
             except Exception as archive_error:
-                self.emit(f"  [oat-storage] WARN: artifact archive failed: {archive_error}")
+                self.emit(f"  [oat-storage] WARN: archive failed: {archive_error}")
                 logger.exception("OAT storage archive failed for exp %d", exp_idx)
+            try:
+                oat_runner.archive_compute_artifacts(
+                    repo_dir=repo,
+                    oat_run_id=self._oat_run_id,
+                    exp_idx=exp_idx,
+                    result=self._result,
+                )
+            except Exception as archive_error:
+                self.emit(f"  [oat-compute] WARN: archive failed: {archive_error}")
+                logger.exception("OAT compute archive failed for exp %d", exp_idx)
         # _save_benchmark_results() catches+logs internally; no extra wrap.
         self._save_benchmark_results()
 

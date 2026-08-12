@@ -3,7 +3,6 @@
 from flask import Blueprint, Flask, jsonify, request
 
 from handlers.base import BaseHandler
-from services import container_stats
 from services.container_stats import collector
 
 bp = Blueprint("container_stats", __name__)
@@ -33,23 +32,10 @@ def start_stats():
 @bp.route("/stats/containers/stop", methods=["POST"])
 def stop_stats():
     """Stop collecting container stats and persist results."""
-    body = request.get_json(silent=True) or {}
     samples = collector.stop()
-    summaries = []
-    services = body.get("included_services") or []
-    for window in body.get("batch_windows") or []:
-        summary = container_stats.summarize_cpu_seconds(
-            samples,
-            int(window["start_ms"]),
-            int(window["end_ms"]),
-            [str(service) for service in services],
-        )
-        summary["batch_num"] = int(window["batch_num"])
-        summaries.append(summary)
     return jsonify({
         "status": "stopped",
         "sample_count": len(samples),
-        "batch_summaries": summaries,
     }), 200
 
 
