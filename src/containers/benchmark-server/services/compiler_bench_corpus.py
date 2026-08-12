@@ -301,18 +301,16 @@ class CorpusQuery:
         return bool(value) if isinstance(value, bool) else None
 
 
-def read_corpus(queries_dir: Path, *, include_ducklake: bool = False) -> List[CorpusQuery]:
+def read_corpus(queries_dir: Path) -> List[CorpusQuery]:
     """Read every query file in ``queries_dir``.
 
-    DuckLake variants are excluded by default. When requested, remove their
-    ``dl.`` catalog qualifier: it names storage in OpenIVM's source benchmark,
-    not part of the query semantics, and no other benchmark engine has that
-    catalog. The query itself then remains useful cross-engine coverage.
+    Remove the ``dl.`` catalog qualifier from DuckLake variants: it names
+    storage in OpenIVM's source benchmark, not part of the query semantics, and
+    no other benchmark engine has that catalog. The query itself remains useful
+    cross-engine coverage.
     """
     queries: List[CorpusQuery] = []
     for path in sorted(queries_dir.glob("*.sql")):
-        if not include_ducklake and path.name.startswith("ducklake"):
-            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         meta: dict = {}
         body_lines: List[str] = []
@@ -328,7 +326,7 @@ def read_corpus(queries_dir: Path, *, include_ducklake: bool = False) -> List[Co
                 continue
             body_lines.append(line)
         sql = "\n".join(body_lines).strip().rstrip(";").strip()
-        if include_ducklake and path.name.startswith("ducklake"):
+        if path.name.startswith("ducklake"):
             sql = re.sub(r"\bdl\.", "", sql, flags=re.IGNORECASE)
         if not sql:
             continue
@@ -567,7 +565,6 @@ def prepare(
     engines: Sequence[str],
     scale_factor: int = 3,
     limit: int = 0,
-    include_ducklake: bool = False,
     force: bool = False,
 ) -> dict:
     """Translate the TPC-C corpus for every dialect ``engines`` need.
@@ -598,7 +595,7 @@ def prepare(
             "image must be rebuilt to export benchmark/queries (see its entrypoint)"
         )
 
-    queries = read_corpus(paths.corpus_src, include_ducklake=include_ducklake)
+    queries = read_corpus(paths.corpus_src)
     if limit:
         queries = queries[:limit]
     if not queries:
@@ -733,7 +730,6 @@ def prepare(
         "dialects": per_dialect,
         "engines": {e: ENGINE_DIALECTS[e] for e in engines if e in ENGINE_DIALECTS},
         "lpts_sha256": lpts_sha,
-        "include_ducklake": include_ducklake,
         "cached": False,
     }
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")

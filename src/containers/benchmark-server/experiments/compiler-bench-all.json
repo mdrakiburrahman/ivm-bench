@@ -28,7 +28,6 @@
       "limit": 0,
       "verify": true,
       "delta_batch_size": 10,
-      "include_ducklake": true,
       "ducklake": false
     }
   },

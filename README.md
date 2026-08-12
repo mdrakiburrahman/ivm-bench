@@ -137,9 +137,8 @@ benchmark from clean engine state and report averaged per-engine batch timings.
 Off by default. A port of openivm's `benchmark/src/rewriter_benchmark.cpp` to
 every engine: instead of timing one TPC-DI DAG, it pushes openivm's TPC-C query
 corpus at an engine and reports what fraction its compiler can maintain
-incrementally. The native corpus has 2,186 query shapes. Set
-`include_ducklake: true` to include 319 DuckLake-derived shapes for a complete
-2,505-query run.
+incrementally. Every run includes 2,186 native query shapes and 319
+DuckLake-derived shapes, for a 2,505-query corpus.
 
 Enable with the `compiler_bench` feature flag (env `COMPILER_BENCH=1`). When on,
 an experiment runs the survey **instead of** the timed 3-batch benchmark —
@@ -165,13 +164,11 @@ Knobs live in a `compiler_bench` block in the experiments JSON:
 | `verify` | `true` | Run the `EXCEPT ALL` correctness check |
 | `classify_only` | `false` | Ask only for the planner verdict; do not create, refresh, or verify materialized views |
 | `delta_batch_size` | `10` | Delta statements applied per query |
-| `include_ducklake` | `false` | Add the 319 `ducklake_*` query shapes after removing their OpenIVM-specific `dl.` qualifier |
 | `ducklake` | `false` | Back the base tables with DuckLake instead of plain DuckDB tables (DuckDB-family engines only) |
 
-**Queries are translated per engine dialect via LPTS**, which re-renders each
-query from DuckDB's optimized logical plan into the target dialect. Every engine
-therefore sees an equivalent query, so a full-vs-incremental verdict reflects the
-engine's compiler rather than its SQL parser. Translation is a one-time cached
+DuckDB-family engines receive OpenIVM's native SQL. Queries for other engine
+dialects are translated via LPTS, which re-renders each query from DuckDB's
+optimized logical plan into the target dialect. Translation is a one-time cached
 step keyed on the corpus and LPTS revisions.
 
 The measurement is therefore *incrementalizability of the LPTS-normalized query*,
@@ -186,9 +183,9 @@ classification and phase.
 **Storage modes.** The timed `duckdb` / `duckdb-openivm` benchmark is
 DuckLake-backed, and OpenIVM can classify a query differently when the scan is a
 DuckLake scan, so both are worth surveying. Because the translated corpus uses
-*unqualified* table names it is storage-agnostic: the same queries run either
-way, so all 2,186 native queries get DuckLake coverage rather than only openivm's 319
-hand-written `ducklake_*` variants (which this harness therefore skips). Set
+*unqualified* table names it is storage-agnostic: the same 2,505 queries run on
+plain DuckDB tables or DuckLake-backed tables. The 319 `ducklake_*` shapes have
+their source-only `dl.` qualifier removed and are always part of the corpus. Set
 `ducklake: true` on an experiment row; results land under
 `results/<engine>-ducklake/` so the two runs cannot overwrite each other.
 
@@ -215,13 +212,11 @@ considers equal, and turned 10 of 60 correct results into spurious
 Reading the numbers:
 
 - Queries LPTS cannot express in a dialect are reported as `translation_failed`,
-  never skipped — skipping would inflate an engine's success rate. Measured
-  coverage over the 2186-query TPC-C corpus: `duckdb` 2186 (100%), `spark` 2088
-  (95.5%), `postgres` 2082 (95.2%). What the non-DuckDB dialects lose is
-  SEMI/ANTI joins, ASOF/POSITIONAL joins, `SAMPLE`, and `HUGEINT`.
+  never skipped — skipping would inflate an engine's success rate. Native
+  DuckDB coverage is always all 2,505 queries.
 - Because the dialects lose *different* queries, cross-engine percentages are
-  only comparable over `summary.json → common_subset` — 2082 queries here.
-  Per-engine percentages use that engine's own corpus.
+  only comparable over `summary.json → common_subset`. Per-engine percentages
+  use that engine's own corpus.
 - Every percentage names its denominator: `pct_of_attempted` divides by the whole
   corpus, `pct_of_mv_created` only by queries the engine accepted as a view.
 - `classification: unknown` means the engine could not be interrogated. It is
@@ -242,7 +237,7 @@ base tables, so each one stands alone. openivm's TPC-DI query set is a dbt DAG
 whose queries read each other's outputs (`dim_company` reads `companies`,
 `fact_*` read `dim_*`), which would require materializing the whole DAG in
 topological order before any single query could be planned — and it is 45
-queries rather than ~2.2k.
+queries rather than 2,505.
 
 ## Mount layout
 

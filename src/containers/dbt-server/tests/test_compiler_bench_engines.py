@@ -520,7 +520,7 @@ class FelderaChunkedProbeTest(unittest.TestCase):
     """Chunked pre-filter: accept whole chunks, bisect only what fails.
 
     Per-view probing measured ~5s/query (one full SQL compilation each), which
-    projects to ~3h for the 2186-query corpus. These tests pin the two
+    projects to ~3h for the 2505-query corpus. These tests pin the two
     properties that make chunking correct: every view still gets an individual
     verdict, and a passing chunk costs one compile.
     """

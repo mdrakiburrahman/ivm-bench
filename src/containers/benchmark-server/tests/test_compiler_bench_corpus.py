@@ -18,7 +18,7 @@ from services.compiler_bench_corpus import (  # noqa: E402
 
 
 class ReadCorpusTest(unittest.TestCase):
-    def test_ducklake_queries_are_optional_and_storage_agnostic(self):
+    def test_ducklake_queries_are_always_included_and_storage_agnostic(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "query_0001.sql").write_text(
@@ -29,16 +29,14 @@ class ReadCorpusTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            generic = read_corpus(root)
-            complete = read_corpus(root, include_ducklake=True)
+            queries = read_corpus(root)
 
-        self.assertEqual([query.name for query in generic], ["query_0001"])
         self.assertEqual(
-            [query.name for query in complete],
+            [query.name for query in queries],
             ["ducklake_0001", "query_0001"],
         )
         self.assertEqual(
-            complete[0].sql,
+            queries[0].sql,
             "SELECT * FROM WAREHOUSE JOIN DISTRICT USING (W_ID)",
         )
 

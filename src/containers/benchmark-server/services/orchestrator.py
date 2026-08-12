@@ -586,7 +586,6 @@ class Orchestrator:
                 engines=self._config.engines,
                 scale_factor=options.scale_factor,
                 limit=options.limit,
-                include_ducklake=options.include_ducklake,
             )
         self.emit(
             f"  [compiler-bench] corpus {'(cached)' if meta.get('cached') else 'translated'}: "

@@ -154,7 +154,6 @@ class CompilerBenchOptions:
     verify: bool = True
     classify_only: bool = False
     delta_batch_size: int = 10
-    include_ducklake: bool = False
     #: Back the base tables with DuckLake instead of plain DuckDB tables. Only the
     #: DuckDB-family engines have a DuckLake mode; others ignore it. This is the
     #: storage the timed duckdb / duckdb-openivm benchmark actually uses, so it is
@@ -170,7 +169,6 @@ class CompilerBenchOptions:
             "COMPILER_BENCH_VERIFY": "1" if self.verify else "0",
             "COMPILER_BENCH_CLASSIFY_ONLY": "1" if self.classify_only else "0",
             "COMPILER_BENCH_DELTA_BATCH_SIZE": str(self.delta_batch_size),
-            "COMPILER_BENCH_INCLUDE_DUCKLAKE": "1" if self.include_ducklake else "0",
             "COMPILER_BENCH_DUCKLAKE": "1" if self.ducklake else "0",
         }
 
@@ -203,9 +201,6 @@ class CompilerBenchOptions:
             ),
             delta_batch_size=_num(
                 "COMPILER_BENCH_DELTA_BATCH_SIZE", defaults.delta_batch_size, int
-            ),
-            include_ducklake=_flag(
-                "COMPILER_BENCH_INCLUDE_DUCKLAKE", defaults.include_ducklake
             ),
             ducklake=_flag("COMPILER_BENCH_DUCKLAKE", defaults.ducklake),
         )
@@ -378,7 +373,6 @@ class ExperimentInputs:
                 cb_d.get("classify_only"), cb_base.classify_only
             ),
             delta_batch_size=int(cb_d.get("delta_batch_size", cb_base.delta_batch_size)),
-            include_ducklake=_flag(cb_d.get("include_ducklake"), cb_base.include_ducklake),
             ducklake=_flag(cb_d.get("ducklake"), cb_base.ducklake),
         )
 

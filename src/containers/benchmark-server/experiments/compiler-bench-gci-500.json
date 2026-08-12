@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "GCI staging run for compiler-bench over the first 500 native OpenIVM queries.",
+    "GCI staging run for compiler-bench over the first 500 corpus queries.",
     "Run this before the complete 2,505-query experiment to validate the remote runner,",
     "all five local engine adapters, and uploaded CSV artifacts."
   ],
@@ -28,7 +28,6 @@
       "limit": 500,
       "verify": true,
       "delta_batch_size": 10,
-      "include_ducklake": false,
       "ducklake": false
     }
   },

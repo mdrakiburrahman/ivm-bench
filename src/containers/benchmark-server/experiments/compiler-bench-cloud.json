@@ -6,7 +6,7 @@
     "so they cannot be exercised on a dev box. Dispatch GCI with",
     "  experiments_file=src/containers/benchmark-server/experiments/compiler-bench-cloud.json",
     "",
-    "COST: limit is deliberately 25, not the full 2186-query corpus. Every Databricks",
+    "COST: limit is deliberately 25, not the full 2,505-query corpus. Every Databricks",
     "materialized view is backed by its own Lakeflow pipeline, so N queries means N",
     "pipelines created and dropped. Raise the limit only once a small run is green.",
     "",

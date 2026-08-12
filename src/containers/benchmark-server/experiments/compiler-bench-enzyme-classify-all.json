@@ -22,8 +22,7 @@
       "limit": 0,
       "verify": false,
       "classify_only": true,
-      "delta_batch_size": 0,
-      "include_ducklake": true
+      "delta_batch_size": 0
     }
   },
   "experiments": [
