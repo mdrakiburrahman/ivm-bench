@@ -25,6 +25,7 @@ from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
 from handlers.duckdb_openivm import DuckDBOpenIVMHandler
 from handlers.query_plans import QueryPlansHandler
+from handlers.compiler_bench import CompilerBenchHandler
 from handlers.spark_openivm import SparkOpenIVMHandler
 from handlers.storage_metrics import StorageMetricsHandler
 from handlers.runs import RunsHandler
@@ -77,6 +78,7 @@ def register_handlers(flask_app: Flask) -> None:
         ChartHandler(),
         LineageHandler(),
         SQLAnalysisHandler(),
+        CompilerBenchHandler(),
         ContainerStatsHandler(),
         DeltaStatsHandler(),
         StorageMetricsHandler(),

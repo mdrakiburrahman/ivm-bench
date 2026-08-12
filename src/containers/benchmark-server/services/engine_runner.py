@@ -1,12 +1,13 @@
 """Per-engine benchmark execution logic."""
 
+import csv
 import json
 import logging
 import os
 import shutil
 import tempfile
 import time
-from threading import Barrier
+from threading import Barrier, Lock
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
@@ -32,6 +33,7 @@ HEALTH_TIMEOUT = 300
 HEALTH_INTERVAL = 5
 
 _RETRY_DELAYS = [30, 60, 120]
+_COMPILER_BENCH_SUMMARY_LOCK = Lock()
 
 
 def _post_with_retry(
@@ -296,7 +298,16 @@ class EngineRunner:
             # via Livy. Under `spark.openivm.changeFeed.mode=cdf` the INSERT
             # writes Delta CDF records that the next REFRESH consumes — no DML
             # interception in this mode.
-            if name not in ("duckdb", "duckdb-openivm") and not self._parallel:
+            # compiler-bench never reads the TPC-DI Delta sources (it loads its
+            # own TPC-C data), and the orchestrator skips their generation — so
+            # staging them would fail on the missing input rather than merely
+            # waste time.
+            compiler_bench = self._compiler_bench_enabled()
+            if (
+                name not in ("duckdb", "duckdb-openivm")
+                and not self._parallel
+                and not compiler_bench
+            ):
                 self._batch_loader_init()
 
             # Start engine stack
@@ -310,7 +321,19 @@ class EngineRunner:
 
             # Start container stats
             self._start_stats()
-            self._capture_delta_stats(1)
+            if not compiler_bench:
+                # Also TPC-DI-only: nothing to measure when those tables are
+                # neither generated nor read.
+                self._capture_delta_stats(1)
+
+            if compiler_bench:
+                # The survey creates and drops thousands of views, so it replaces
+                # the timed batches rather than sharing an engine with them.
+                self._run_compiler_bench()
+                self._stop_stats()
+                self._result.status = "completed"
+                self._emit(f"[{name}] compiler-bench completed successfully")
+                return self._result
 
             # Run 3 batches
             for batch_num in range(1, 4):
@@ -376,6 +399,188 @@ class EngineRunner:
                     logger.warning("Engine %s unlink %s failed: %s", name, f, ce)
 
         return self._result
+
+    # ------------------------------------------------------------------
+    # compiler-bench
+    # ------------------------------------------------------------------
+
+    def _compiler_bench_enabled(self) -> bool:
+        return os.environ.get("COMPILER_BENCH", "0").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    def _run_compiler_bench(self) -> None:
+        """Drive the survey on this engine and persist its artifacts.
+
+        Polls rather than blocking on one request: a full corpus is thousands of
+        queries. There is no overall deadline beyond the per-query budget the
+        dbt-server enforces, so a wedged engine is bounded by
+        COMPILER_BENCH_RUN_TIMEOUT_S.
+        """
+        from models.experiments import CompilerBenchOptions
+
+        name = self._engine.name
+        options = CompilerBenchOptions.from_env()
+        run_timeout_s = float(os.environ.get("COMPILER_BENCH_RUN_TIMEOUT_S", "86400"))
+
+        self._emit(
+            f"[{name}] compiler-bench: sf={options.scale_factor} "
+            f"timeout={options.timeout_s:.0f}s limit={options.limit or 'all'} "
+            f"storage={'ducklake' if options.ducklake else 'native'}"
+        )
+
+        response = _post_with_retry(
+            f"{self._dbt_url}/compiler-bench/{name}",
+            120,
+            self._emit,
+            f"{name} compiler-bench start",
+            json={
+                "limit": options.limit,
+                "ducklake": options.ducklake,
+                "timeout_s": options.timeout_s,
+                "delta_batch_size": options.delta_batch_size,
+                "verify": options.verify,
+                "classify_only": options.classify_only,
+            },
+        )
+        run_id = response.json()["run_id"]
+
+        deadline = time.time() + run_timeout_s
+        last_completed = -1
+        while True:
+            if time.time() > deadline:
+                raise RuntimeError(
+                    f"{name} compiler-bench exceeded {run_timeout_s:.0f}s"
+                )
+            time.sleep(10)
+            status_resp = requests.get(
+                f"{self._dbt_url}/compiler-bench/runs/{run_id}", timeout=60
+            )
+            status_resp.raise_for_status()
+            payload = status_resp.json()
+            state = payload.get("status")
+            completed = payload.get("completed", 0)
+            if completed != last_completed:
+                self._emit(
+                    f"[{name}] compiler-bench {completed}/{payload.get('total', '?')}"
+                )
+                last_completed = completed
+            if state == "completed":
+                break
+            if state == "error":
+                raise RuntimeError(f"{name} compiler-bench failed: {payload.get('error')}")
+
+        rows_resp = requests.get(
+            f"{self._dbt_url}/compiler-bench/runs/{run_id}?include_rows=1", timeout=600
+        )
+        rows_resp.raise_for_status()
+        final = rows_resp.json()
+        self._write_compiler_bench_artifacts(options, final)
+
+        summary = final.get("summary") or {}
+        totals = summary.get("totals") or {}
+        by_created = summary.get("pct_of_mv_created") or {}
+        if summary.get("mode") == "classification_only":
+            self._emit(
+                f"[{name}] compiler-bench classification: "
+                f"{totals.get('incremental', 0)} incremental / "
+                f"{totals.get('full_refresh', 0)} non-incremental of "
+                f"{totals.get('classified', 0)} classified; "
+                f"unknown={totals.get('classification_unknown', 0)} "
+                f"crash={totals.get('crashed', 0)} "
+                f"timeout={totals.get('timeout', 0)}"
+            )
+            self._result.extra["compiler_bench"] = summary
+            return
+        self._emit(
+            f"[{name}] compiler-bench: {totals.get('incremental', 0)} incremental / "
+            f"{totals.get('full_refresh', 0)} full of {totals.get('mv_created', 0)} created "
+            f"({by_created.get('incremental', 0)}% incremental); "
+            f"crash={totals.get('crashed', 0)} timeout={totals.get('timeout', 0)} "
+            f"translation_failed={totals.get('translation_failed', 0)}"
+        )
+        self._result.extra["compiler_bench"] = summary
+
+    def _write_compiler_bench_artifacts(self, options, final: dict) -> None:
+        # DuckLake and native runs of the same engine must not overwrite each
+        # other — they are two different measurements.
+        engine_dir = self._engine.name + ("-ducklake" if options.ducklake else "")
+        out_dir = os.path.join(
+            self._config.repo_dir, "mount", "compiler-bench", "results", engine_dir,
+        )
+        os.makedirs(out_dir, exist_ok=True)
+
+        columns = final.get("columns") or []
+        rows = final.get("rows") or []
+        if columns and rows:
+            with open(os.path.join(out_dir, "results.csv"), "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(rows)
+        with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as fh:
+            json.dump(final.get("summary") or {}, fh, indent=2)
+        summary_columns = final.get("summary_columns") or []
+        summary_row = final.get("summary_row") or {}
+        if summary_columns and summary_row:
+            with open(
+                os.path.join(out_dir, "summary.csv"),
+                "w",
+                newline="",
+                encoding="utf-8",
+            ) as fh:
+                writer = csv.DictWriter(fh, fieldnames=summary_columns)
+                writer.writeheader()
+                writer.writerow(summary_row)
+            self._upsert_compiler_bench_summary(
+                os.path.dirname(out_dir),
+                engine_dir,
+                "ducklake" if options.ducklake else "native",
+                summary_columns,
+                summary_row,
+            )
+        self._emit(f"[{self._engine.name}] compiler-bench artifacts -> {out_dir}")
+
+    @staticmethod
+    def _upsert_compiler_bench_summary(
+        results_dir: str,
+        result_set: str,
+        storage: str,
+        summary_columns: List[str],
+        summary_row: dict,
+    ) -> None:
+        """Atomically maintain one plot-ready row per engine/storage result."""
+        columns = ["result_set", "storage", *summary_columns]
+        path = os.path.join(results_dir, "summary.csv")
+        row = {"result_set": result_set, "storage": storage, **summary_row}
+        with _COMPILER_BENCH_SUMMARY_LOCK:
+            existing = []
+            if os.path.exists(path):
+                with open(path, newline="", encoding="utf-8") as fh:
+                    existing = [
+                        old for old in csv.DictReader(fh)
+                        if old.get("result_set") != result_set
+                    ]
+            existing.append(row)
+            existing.sort(key=lambda item: item.get("result_set", ""))
+            existing = [
+                {column: item.get(column, "") for column in columns}
+                for item in existing
+            ]
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=results_dir,
+                prefix=".compiler-bench-summary-",
+                suffix=".csv",
+                delete=False,
+                newline="",
+                encoding="utf-8",
+            ) as fh:
+                writer = csv.DictWriter(fh, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(existing)
+                temporary = fh.name
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, path)
 
     def _databricks_enzyme_drop_mvs(self) -> None:
         """End-of-run: drop the databricks-enzyme MVs so REFRESH SCHEDULE

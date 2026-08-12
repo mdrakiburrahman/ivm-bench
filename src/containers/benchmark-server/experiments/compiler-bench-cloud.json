@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "compiler-bench on the cloud engines: databricks-enzyme + both fabric engines.",
+    "",
+    "Purpose: debug the cloud adapters remotely. Their code paths need live credentials,",
+    "so they cannot be exercised on a dev box. Dispatch GCI with",
+    "  experiments_file=src/containers/benchmark-server/experiments/compiler-bench-cloud.json",
+    "",
+    "COST: limit is deliberately 25, not the full 2,505-query corpus. Every Databricks",
+    "materialized view is backed by its own Lakeflow pipeline, so N queries means N",
+    "pipelines created and dropped. Raise the limit only once a small run is green.",
+    "",
+    "EXPECTED FAILURES on the first run:",
+    "  - fabric-openivm-jvm-35 / fabric-jvm-35 fail immediately and by design: the repo",
+    "    drives Fabric through dbt-over-Livy and has no direct SQL statement client, so",
+    "    the adapter raises instead of reporting zeros that would read as 'nothing",
+    "    incrementalizable'. The fix is a Fabric equivalent of",
+    "    spark_openivm_sources.LivyClient. See engines_cloud._FabricAdapter.",
+    "  - databricks-enzyme is written against the real APIs (EXPLAIN CREATE MATERIALIZED",
+    "    VIEW ... REFRESH POLICY INCREMENTAL STRICT for the up-front verdict, then a real",
+    "    CREATE + REFRESH) but has never run against a live warehouse.",
+    "",
+    "Artifacts to read afterwards:",
+    "  mount/compiler-bench/results/<engine>/results.csv   per-query phase + classification",
+    "  mount/compiler-bench/results/<engine>/summary.json  aggregate percentages",
+    "  mount/compiler-bench/corpus/spark/translation.csv   which queries LPTS could express"
+  ],
+  "baseline": {
+    "engines": ["databricks-enzyme", "fabric-openivm-jvm-35", "fabric-jvm-35"],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "compiler_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": false,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "compiler_bench": {
+      "scale_factor": 3,
+      "timeout_s": 300,
+      "limit": 25,
+      "verify": true,
+      "delta_batch_size": 10
+    }
+  },
+  "experiments": [
+    {
+      "label": "compiler-bench-cloud-smoke",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1"
+    }
+  ]
+}

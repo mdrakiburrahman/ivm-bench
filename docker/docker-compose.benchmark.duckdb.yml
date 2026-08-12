@@ -9,7 +9,12 @@ services:
       DUCKDB_MEM_LIMIT: "${DUCKDB_MEM_LIMIT:-115GB}"
       DUCKDB_THREADS: "${DUCKDB_THREADS:-32}"
       DUCKDB_TEMP_DIR: "${DUCKDB_TEMP_DIR:-/data/processed/duckdb/_tmp}"
+      # compiler-bench only: the benchmark itself runs DuckDB in-process via the
+      # Python module, but the survey shells out to a CLI so a query that
+      # segfaults takes down one subprocess instead of the dbt-server.
+      DUCKDB_BIN: /data/bin/duckdb-openivm/duckdb
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/duckdb:/data/processed/duckdb
       - ../mount/stats/${SCALE_FACTOR:-3}/duckdb:/data/stats
+      - ../mount/bin/duckdb-openivm:/data/bin/duckdb-openivm:ro

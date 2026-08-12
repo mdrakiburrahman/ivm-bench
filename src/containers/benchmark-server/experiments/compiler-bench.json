@@ -1,0 +1,119 @@
+{
+  "_comment": [
+    "compiler-bench: per-engine incrementalizability survey over openivm's TPC-C query corpus.",
+    "",
+    "A port of openivm's benchmark/src/rewriter_benchmark.cpp to every engine: instead of",
+    "timing one TPC-DI DAG, it pushes 2,505 queries at an engine and reports what fraction",
+    "its compiler can maintain incrementally.",
+    "",
+    "With feature_flags.compiler_bench on, an experiment runs the survey INSTEAD of the",
+    "timed 3-batch benchmark - thousands of created/dropped views would otherwise pollute",
+    "timings. batch_*_pct are still required by the schema but unused.",
+    "",
+    "Per query: run the SELECT -> CREATE MATERIALIZED VIEW -> ask the engine whether it",
+    "will maintain it incrementally -> apply base-table deltas -> refresh -> verify the",
+    "view equals a re-run of the query. The phase a query stops at is its result.",
+    "",
+    "DuckDB and DuckDB-OpenIVM run OpenIVM's source SQL directly. Only engines with a",
+    "different SQL dialect receive an LPTS-rendered equivalent. Target-rendering failures",
+    "are reported as translation_failed, never skipped. Cross-engine percentages are only",
+    "comparable over the common subset (summary.json -> common_subset).",
+    "",
+    "compiler_bench.scale_factor is separate from the experiment's: incrementalizability",
+    "does not depend on data volume, so the survey stays small (3 warehouses).",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/compiler-bench.json \\",
+    "    bash src/.scripts/benchmark.sh",
+    "Storage: the DuckDB-family engines can run the survey against plain DuckDB tables or",
+    "DuckLake (the storage the timed benchmark actually uses). The native corpus is",
+    "storage-agnostic - table names are unqualified - so the SAME queries run either way,",
+    "and all 2,505 queries get DuckLake coverage rather than only OpenIVM's hand-written",
+    "ducklake_* variants. Results land under results/<engine>-ducklake/ so the two runs do",
+    "not overwrite each other. OpenIVM can classify a query differently when the scan is a",
+    "DuckLake scan, which is the point of surveying both.",
+    "",
+    "Artifacts:",
+    "  mount/compiler-bench/corpus/<dialect>/            native/rendered queries + translation.csv",
+    "  mount/compiler-bench/results/<engine>[-ducklake]/ results.csv + summary.json"
+  ],
+  "baseline": {
+    "engines": [
+      "duckdb",
+      "duckdb-openivm",
+      "spark",
+      "spark-openivm"
+    ],
+    "parallel": false,
+    "feature_flags": {
+      "compiler_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": true,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "compiler_bench": {
+      "scale_factor": 3,
+      "timeout_s": 60,
+      "limit": 200,
+      "verify": true,
+      "delta_batch_size": 10
+    }
+  },
+  "experiments": [
+    {
+      "label": "compiler-bench-smoke",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "compiler_bench": {
+        "limit": 200
+      }
+    },
+    {
+      "_comment": "Same corpus on DuckLake-backed tables - the storage the timed benchmark uses.",
+      "label": "compiler-bench-smoke-ducklake",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "engines": [
+        "duckdb",
+        "duckdb-openivm"
+      ],
+      "compiler_bench": {
+        "limit": 200,
+        "ducklake": true
+      }
+    },
+    {
+      "_comment": "Full 2,505-query corpus. Run after the smoke rows pass.",
+      "label": "compiler-bench-full",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "compiler_bench": {
+        "limit": 0
+      }
+    },
+    {
+      "_comment": "Full corpus on DuckLake.",
+      "label": "compiler-bench-full-ducklake",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "engines": [
+        "duckdb",
+        "duckdb-openivm"
+      ],
+      "compiler_bench": {
+        "limit": 0,
+        "ducklake": true
+      }
+    }
+  ]
+}

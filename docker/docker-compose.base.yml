@@ -23,6 +23,10 @@ services:
       STORAGE_COLLECTION_TIMEOUT_S: "${STORAGE_COLLECTION_TIMEOUT_S:-}"
     volumes:
       - ../mount/logs/${SCALE_FACTOR:-3}:/data/logs
+      # compiler-bench corpus + TPC-C Parquet, prepared once by the
+      # benchmark-server. Read-only: results come back over HTTP so the
+      # benchmark-server stays the only writer of artifact layout.
+      - ../mount/compiler-bench:/data/compiler-bench:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
       test: curl -sf http://localhost:5000/health || exit 1

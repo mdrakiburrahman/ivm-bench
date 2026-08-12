@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Classify the complete compiler corpus with Databricks Enzyme.",
+    "This issues planner-only EXPLAIN statements and creates no materialized views",
+    "or separately billed Lakeflow refresh pipelines."
+  ],
+  "baseline": {
+    "engines": ["databricks-enzyme"],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "compiler_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": false,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "compiler_bench": {
+      "scale_factor": 3,
+      "timeout_s": 300,
+      "limit": 0,
+      "verify": false,
+      "classify_only": true,
+      "delta_batch_size": 0
+    }
+  },
+  "experiments": [
+    {
+      "label": "compiler-bench-enzyme-classify-all",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1"
+    }
+  ]
+}

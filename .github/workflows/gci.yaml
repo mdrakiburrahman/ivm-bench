@@ -8,6 +8,10 @@ on:
         description: "Path under repo root of a pre-built OAT experiments JSON (overrides the per-knob inputs below if set; e.g. src/containers/benchmark-server/experiments/sf-sweep.json)"
         default: ""
         type: string
+      experiments_engines:
+        description: "Optional comma-separated engine override for a pre-built experiments file"
+        default: ""
+        type: string
       scale_factor:
         description: "TPC-DI scale factor"
         default: "10"
@@ -102,7 +106,7 @@ on:
         type: string
 
 concurrency:
-  group: gci-${{ github.ref }}
+  group: gci-${{ github.ref }}-${{ inputs.experiments_engines || 'default' }}
   cancel-in-progress: true
 
 permissions:
@@ -155,6 +159,7 @@ jobs:
       - name: "🧬 Resolve experiments file"
         env:
           INPUT_EXPERIMENTS_FILE: ${{ inputs.experiments_file || '' }}
+          INPUT_EXPERIMENTS_ENGINES: ${{ inputs.experiments_engines || '' }}
           SPARK_DBT_THREADS_INPUT: ${{ inputs.spark_dbt_threads || '' }}
         run: |
           set -euo pipefail
@@ -167,6 +172,14 @@ jobs:
               exit 1
             fi
             echo "Using pre-built experiments file: $EXP_FILE"
+            if [[ -n "${INPUT_EXPERIMENTS_ENGINES}" ]]; then
+              engines_json="$(printf '%s' "$INPUT_EXPERIMENTS_ENGINES" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; ""))')"
+              RESOLVED_EXP_FILE="$REPO_ROOT/gci-experiments.json"
+              jq --argjson engines "$engines_json" '.baseline.engines = $engines' \
+                "$EXP_FILE" > "$RESOLVED_EXP_FILE"
+              EXP_FILE="$RESOLVED_EXP_FILE"
+              echo "Overrode pre-built experiment engines: $INPUT_EXPERIMENTS_ENGINES"
+            fi
           else
             EXP_FILE="$REPO_ROOT/gci-experiments.json"
             engines_json="$(printf '%s' "$ENGINES" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; ""))')"
@@ -269,6 +282,14 @@ jobs:
             mount/oat-state/
             mount/imgs/
             imgs/
+            # compiler-bench: per-query results/summary plus the translation
+            # report, which carries the per-query reason a query was not
+            # expressible in a dialect. Without it a cloud run that fails
+            # translation gives only the aggregate count.
+            mount/compiler-bench/results/
+            mount/compiler-bench/corpus/*/translation.csv
+            mount/compiler-bench/corpus/*/meta.json
+            mount/compiler-bench/corpus/meta.json
             gci-experiments.json
           if-no-files-found: warn
           retention-days: 30

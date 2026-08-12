@@ -439,7 +439,9 @@ class Orchestrator:
             elif os.path.exists(path):
                 os.remove(path)
 
-    def _phase1_prep(self, include_datagen: bool = True) -> None:
+    def _phase1_prep(
+        self, include_datagen: bool = True, compiler_bench: Optional[bool] = None
+    ) -> None:
         """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
 
         ``include_datagen=False`` runs ONLY the build steps. The OAT runner
@@ -456,10 +458,18 @@ class Orchestrator:
         if include_datagen:
             callables.append(self._run_datagen)
         callables.append(self._build_batch_loader)
-        if "duckdb-openivm" in self._config.engines:
+        # At phase 0 the per-experiment env is not applied yet, so the caller
+        # passes the decision in from the experiments list; None means "read env".
+        if compiler_bench is None:
+            compiler_bench = self._compiler_bench_enabled()
+        # compiler-bench needs the duckdb-openivm image whatever the engine list:
+        # it ships the query corpus, and its CLI drives corpus translation.
+        if "duckdb-openivm" in self._config.engines or compiler_bench:
             callables.append(self._run_duckdb_openivm_build)
         if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
             callables.append(self._run_spark_openivm_build)
+        if compiler_bench:
+            callables.append(self._run_lpts_build)
 
         with ThreadPoolExecutor(max_workers=len(callables)) as pool:
             tasks = [pool.submit(fn) for fn in callables]
@@ -560,6 +570,84 @@ class Orchestrator:
             raise RuntimeError("DuckDB-OpenIVM binary not found at mount/bin/duckdb-openivm/duckdb")
 
         self.emit("  [duckdb-openivm-build] Complete")
+
+    def _compiler_bench_enabled(self) -> bool:
+        return os.environ.get("COMPILER_BENCH", "0").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    def _run_lpts_build(self) -> None:
+        """Build the standalone LPTS extension used for corpus translation."""
+        self.emit("  [lpts-build] Building")
+        repo = self._config.repo_dir
+        dockerfile = os.path.join(repo, "src/containers/lpts-build/Dockerfile")
+        with open(dockerfile, "r", encoding="utf-8") as f:
+            dockerfile_hash = hashlib.sha256(f.read().encode("utf-8")).hexdigest()
+        mgr = DockerManager(
+            os.path.join(repo, "docker/docker-compose.lpts-build.yml"),
+            project_name="lpts-build",
+            env={"LPTS_BUILD_DOCKERFILE_HASH": dockerfile_hash},
+            cwd=repo,
+        )
+        image_hash = subprocess.run(
+            [
+                "docker", "image", "inspect", "lpts-build-lpts-builder:latest",
+                "--format", "{{ index .Config.Labels \"org.lpts.dockerfile_hash\" }}",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=repo,
+        )
+        if image_hash.returncode != 0 or image_hash.stdout.strip() != dockerfile_hash:
+            self.emit("  [lpts-build] Cold cache: compiling DuckDB+LPTS from source (~10 min)")
+            with self._heartbeat("lpts-build/build"):
+                mgr.build()
+        else:
+            self.emit(f"  [lpts-build] Reusing image (dockerfile {dockerfile_hash[:7]})")
+        with self._heartbeat("lpts-build/run"):
+            mgr.up(
+                services=["lpts-builder"],
+                detach=False,
+                stream_callback=lambda line: logger.debug("[lpts-build] %s", line),
+            )
+        mgr.down()
+
+        extension = os.path.join(repo, "mount", "bin", "lpts", "lpts.duckdb_extension")
+        if not os.path.exists(extension):
+            raise RuntimeError(f"LPTS extension not found at {extension}")
+        self.emit("  [lpts-build] Complete")
+
+    def _run_compiler_bench_prep(self, inputs: "ExperimentInputs") -> None:
+        """Translate the corpus (and generate TPC-C data) before engines run."""
+        from services import compiler_bench_corpus
+
+        options = inputs.compiler_bench
+        self.emit("")
+        self.emit("=== compiler-bench prep ===")
+
+        data = compiler_bench_corpus.generate_tpcc_parquet(
+            repo_dir=self._config.repo_dir, scale_factor=options.scale_factor
+        )
+        self.emit(f"  [compiler-bench] TPC-C data: {data['status']} ({data['path']})")
+
+        with self._heartbeat("compiler-bench/translate"):
+            meta = compiler_bench_corpus.prepare(
+                repo_dir=self._config.repo_dir,
+                engines=self._config.engines,
+                scale_factor=options.scale_factor,
+                limit=options.limit,
+            )
+        self.emit(
+            f"  [compiler-bench] corpus {'(cached)' if meta.get('cached') else 'translated'}: "
+            f"{meta['query_count']} queries, {meta['common_count']} common to all dialects"
+        )
+        for dialect, stats in (meta.get("dialects") or {}).items():
+            self.emit(
+                f"    {dialect}: {stats['translated']} translated, "
+                f"{stats['translation_failed']} untranslatable "
+                f"({stats['pct_translated']}%)"
+            )
+        self.emit("=== compiler-bench prep: Complete ===")
 
     def _run_spark_openivm_build(self) -> None:
         """Build the spark-openivm assembly jar + duckdb extension + CLI (idempotent).
@@ -1204,7 +1292,14 @@ class Orchestrator:
             self._config.scale_factor = first.scale_factor
             self._pre_create_dirs()
             # Builds only — no datagen here. Each experiment runs its own datagen.
-            self._phase1_prep(include_datagen=False)
+            # The compiler-bench decision comes from the experiments themselves:
+            # per-experiment env is applied later, in the loop.
+            self._phase1_prep(
+                include_datagen=False,
+                compiler_bench=any(
+                    inp.feature_flags.compiler_bench for inp in experiments
+                ),
+            )
         finally:
             self._config.engines = original_engines
 
@@ -1265,7 +1360,12 @@ class Orchestrator:
 
             # Datagen for THIS SF. Idempotent — but raw/<sf>/ is usually
             # empty because the previous experiment cleanup wiped it.
-            self._run_datagen()
+            # compiler-bench runs on its own generated TPC-C data and never reads
+            # the TPC-DI Delta sources, so generating them would be pure cost.
+            if self._compiler_bench_enabled():
+                self.emit("  [datagen] Skipped: compiler-bench uses its own TPC-C data")
+            else:
+                self._run_datagen()
 
             # Re-check disk AFTER datagen. SF=1000 may blow the threshold
             # during datagen alone; bailing here is much cheaper than
@@ -1276,6 +1376,11 @@ class Orchestrator:
                     f"disk_free {post_dg_pct:.1f}% < {min_free_pct:.1f}% after datagen — "
                     f"aborting experiment to keep host alive"
                 )
+
+            # Translate the corpus before any engine starts, so a translation
+            # failure surfaces once here rather than N times mid-run.
+            if self._compiler_bench_enabled():
+                self._run_compiler_bench_prep(inputs)
 
             # Repeat the full engine benchmark BENCHMARK_RUNS times and average
             # the per-engine/per-batch timings. With BENCHMARK_RUNS=1 this is a
