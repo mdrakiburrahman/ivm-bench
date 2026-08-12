@@ -81,6 +81,14 @@ RESULTS_CSV_FIELDS = (
     "duration_s",
     "batch_error",
     "openivm_over_spark_duration_ratio",
+    "compute_status",
+    "compute_cpu_time_s",
+    "compute_cpu_stddev_s",
+    "compute_repetition_count",
+    "compute_source",
+    "compute_semantics",
+    "compute_error",
+    "compute_artifact",
     "storage_status",
     "visible_output_bytes",
     "helper_data_bytes",
@@ -293,6 +301,95 @@ def archive_storage_artifacts(
     archive_engines(result.engines)
     for repetition, engines in enumerate(result.repetitions, start=1):
         archive_engines(engines, repetition=repetition)
+
+
+def archive_compute_artifacts(
+    *, repo_dir: str, oat_run_id: str, exp_idx: int, result: BenchmarkResult
+) -> None:
+    """Copy diagnostic CPU samples to immutable experiment-scoped paths."""
+    destination = os.path.join(
+        repo_dir, "mount", "oat-state", oat_run_id, f"exp-{exp_idx:03d}", "compute"
+    )
+    os.makedirs(destination, exist_ok=True)
+
+    copied: Dict[Tuple[str, str], Optional[str]] = {}
+
+    def copy_metric(engine: str, metric: dict, target_dir: str) -> Optional[str]:
+        original = str(metric["artifact"])
+        cache_key = (target_dir, original)
+        if cache_key in copied:
+            archived = copied[cache_key]
+            if archived:
+                metric["artifact"] = archived
+            else:
+                metric.pop("artifact", None)
+            return archived
+        source = os.path.join(repo_dir, original)
+        repo_real = os.path.realpath(repo_dir)
+        source_real = os.path.realpath(source)
+        if not source_real.startswith(repo_real + os.sep):
+            raise ValueError(f"compute artifact escapes repository: {original}")
+        if not os.path.isfile(source):
+            metric["samples_status"] = "error"
+            metric["samples_error"] = f"compute artifact missing: {original}"
+            metric.pop("artifact", None)
+            copied[cache_key] = None
+            return None
+        target = os.path.join(target_dir, f"{engine}-{os.path.basename(original)}")
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            shutil.copy2(source, target)
+        except OSError as exc:
+            metric["samples_status"] = "error"
+            metric["samples_error"] = f"compute artifact archive failed: {exc}"
+            metric.pop("artifact", None)
+            copied[cache_key] = None
+            return None
+        archived = os.path.relpath(target, repo_dir)
+        copied[cache_key] = archived
+        metric["artifact"] = archived
+        return archived
+
+    repetition_paths: Dict[Tuple[int, str, str], Optional[str]] = {}
+    for repetition, engines in enumerate(result.repetitions, start=1):
+        target_dir = os.path.join(destination, f"repetition-{repetition}")
+        for engine, engine_result in engines.items():
+            for batch in engine_result.batches:
+                metric = (batch.extra or {}).get("compute_metrics")
+                if not isinstance(metric, dict) or not metric.get("artifact"):
+                    continue
+                original = str(metric["artifact"])
+                repetition_paths[(repetition, engine, original)] = copy_metric(
+                    engine, metric, target_dir
+                )
+
+    for engine, engine_result in result.engines.items():
+        for batch in engine_result.batches:
+            metric = (batch.extra or {}).get("compute_metrics")
+            if not isinstance(metric, dict):
+                continue
+            originals = metric.get("repetition_artifacts") or []
+            if result.repetitions and originals:
+                archived = []
+                for index, original in enumerate(originals, start=1):
+                    if not original:
+                        archived.append(None)
+                        continue
+                    archived.append(
+                        repetition_paths.get((index, engine, str(original)))
+                    )
+                metric["repetition_artifacts"] = archived
+                available = [path for path in archived if path]
+                if available:
+                    metric["artifact"] = available[-1]
+                else:
+                    metric.pop("artifact", None)
+                    metric["samples_status"] = "error"
+                    metric["samples_error"] = (
+                        "diagnostic samples unavailable for every repetition"
+                    )
+            elif metric.get("artifact"):
+                copy_metric(engine, metric, destination)
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +646,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
         for engine in engines:
             for batch_num in _BATCH_NUMBERS:
                 batch = _batch_dict(experiment, engine, batch_num)
+                batch_extra = batch.get("extra") or {}
+                if not isinstance(batch_extra, dict):
+                    batch_extra = {}
+                compute_metrics = batch_extra.get("compute_metrics") or {}
+                if not isinstance(compute_metrics, dict):
+                    compute_metrics = {}
                 storage = _storage_dict(experiment, engine, batch_num)
                 base_tables = storage.get("base_tables") or {}
                 if not isinstance(base_tables, dict):
@@ -618,6 +721,18 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "openivm_over_spark_duration_ratio": _duration_ratio(
                             experiment, batch_num
                         ),
+                        "compute_status": compute_metrics.get("status", ""),
+                        "compute_cpu_time_s": compute_metrics.get("cpu_time_s", ""),
+                        "compute_cpu_stddev_s": compute_metrics.get(
+                            "cpu_time_stddev_s", ""
+                        ),
+                        "compute_repetition_count": compute_metrics.get(
+                            "repetition_count", ""
+                        ),
+                        "compute_source": compute_metrics.get("source", ""),
+                        "compute_semantics": compute_metrics.get("semantics", ""),
+                        "compute_error": compute_metrics.get("error", ""),
+                        "compute_artifact": compute_metrics.get("artifact", ""),
                         "storage_status": storage.get("status", ""),
                         "visible_output_bytes": storage.get("visible_output_bytes", ""),
                         "helper_data_bytes": storage.get("helper_data_bytes", ""),

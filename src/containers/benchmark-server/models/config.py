@@ -115,6 +115,17 @@ ENGINE_MAIN_SERVICES = {
     "fabric-jvm-35": None,
 }
 
+# Containers whose CPU contributes to the controlled local-system metric.
+# Spark's metastore is part of query execution and is therefore included;
+# dbt-server is excluded for engines where it only orchestrates remote calls.
+ENGINE_COMPUTE_SERVICES = {
+    "spark": ("spark", "mssql-metastore"),
+    "duckdb": ("dbt-server",),
+    "duckdb-openivm": ("dbt-server",),
+    "feldera": ("pipeline-manager",),
+    "spark-openivm": ("spark-openivm", "mssql-metastore"),
+}
+
 # Cloud-consuming engines: the heavy query compute is offloaded to a remote
 # service (Databricks Serverless SQL / Fabric Spark Livy), so their host
 # footprint is just the light dbt-server (+ imds-router) orchestration

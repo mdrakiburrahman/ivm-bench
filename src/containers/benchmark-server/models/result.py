@@ -11,9 +11,8 @@ class BatchResult:
     duration_s: float = 0.0
     status: str = "pending"  # pending, running, completed, failed
     error: Optional[str] = None
-    # Forensics-only extras (e.g. databricks-enzyme pure-compute breakdown).
-    # Chart consumers ignore this; it's serialized into benchmark-results.json
-    # so reviewers can audit the swap between wall-clock and pure-compute.
+    # Forensics-only extras (e.g. diagnostic pipeline-flow metrics).
+    # Chart consumers ignore this; it is serialized into benchmark-results.json.
     extra: Dict[str, Any] = field(default_factory=dict)
 
 

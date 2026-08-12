@@ -111,6 +111,9 @@ def _get_container_stats_snapshot(container_id: str) -> dict[str, Any] | None:
 
     return {
         "cpu_pct": cpu_pct,
+        "cpu_usage_ns": data.get("cpu_stats", {})
+        .get("cpu_usage", {})
+        .get("total_usage", 0),
         "mem_mb": mem_mb,
         "net_in_mb": _parse_size_bytes(net_in_bytes),
         "net_out_mb": _parse_size_bytes(net_out_bytes),
@@ -193,7 +196,6 @@ class ContainerStatsCollector:
         project = self._detect_compose_project()
 
         while not self._stop_event.is_set():
-            ts = time.time()
             containers = _discover_containers(project)
 
             for container in containers:
@@ -202,9 +204,10 @@ class ContainerStatsCollector:
                     continue
 
                 sample = {
-                    "timestamp_s": round(ts, 3),
+                    "timestamp_s": round(time.time(), 3),
                     "container": container["service"],
                     "cpu_pct": stats["cpu_pct"],
+                    "cpu_usage_ns": stats["cpu_usage_ns"],
                     "mem_mb": stats["mem_mb"],
                     "net_in_mb": stats["net_in_mb"],
                     "net_out_mb": stats["net_out_mb"],

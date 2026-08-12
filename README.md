@@ -118,6 +118,20 @@ abc123,completed,0,smoke-sf3,spark-openivm,1,18.2,40960,1089536,1048576,40960
 
 Artifacts: `mount/oat-state/latest/{chart-oat.png, chart-per-model.png, results.csv, outputs.json}`
 
+For engines executed in controlled local containers, every batch reports
+CPU-seconds by subtracting Docker's cumulative CPU counters at the exact batch
+boundaries. DuckDB measures its in-process `dbt-server`; Feldera measures its
+pipeline manager; Spark measures both its runtime and metastore. Periodic CPU,
+memory, and network samples remain diagnostic artifacts but are not interpolated
+to produce the reported CPU value. Results are exposed in `results.csv`.
+
+Managed Databricks and Fabric engines are intentionally excluded from this
+metric. Their autoscalers do not expose fixed, comparable compute allocations,
+and local Docker statistics only measure the orchestration client. Their batch
+metric is explicitly marked `excluded`; use repeated end-to-end duration and
+within-engine incremental speedup for those systems. Databricks pipeline-flow
+durations remain diagnostics and do not replace the end-to-end timer.
+
 Each experiment runs 3 batches per engine (full load `batch1` → append `batch2` →
 append `batch3`). Set `BENCHMARK_RUNS` greater than 1 to repeat the full 3-batch
 benchmark from clean engine state and report averaged per-engine batch timings.
