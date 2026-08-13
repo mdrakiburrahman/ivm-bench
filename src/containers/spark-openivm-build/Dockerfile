@@ -36,7 +36,7 @@ FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/mdrakiburrahman/openivm.git
-ARG OPENIVM_BRANCH=openivm-spark
+ARG OPENIVM_BRANCH=main
 ARG OPENIVM_COMMIT=a2a680ec833de43c34ad8808ec611845d524f0b0
 ARG LPTS_REPO=https://github.com/mdrakiburrahman/lpts.git
 ARG LPTS_BRANCH=openivm-spark
@@ -60,7 +60,7 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
 
 WORKDIR /src
 
-# Clone openivm at the pinned commit on the openivm-spark branch, then
+# Clone openivm at the pinned commit from a branch that contains it, then
 # override the lpts submodule to point at OUR fork so we never need to
 # commit a submodule-URL bump into openivm to pick up new lpts work.
 RUN git clone --branch "${OPENIVM_BRANCH}" --depth 50 "${OPENIVM_REPO}" . && \
@@ -93,8 +93,8 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=dev/mdrrahman/implementations
-ARG OPENIVM_SPARK_COMMIT=03098b1f8588e592ad59795d6de1232c2386ea33
+ARG OPENIVM_SPARK_BRANCH=codex/issue-31-rocksdb-telemetry
+ARG OPENIVM_SPARK_COMMIT=d1cbc6c4be2850f6a42654e41571ef009f4eb037
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -139,7 +139,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=03098b1f8588e592ad59795d6de1232c2386ea33
+ARG OPENIVM_SPARK_COMMIT=d1cbc6c4be2850f6a42654e41571ef009f4eb037
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu

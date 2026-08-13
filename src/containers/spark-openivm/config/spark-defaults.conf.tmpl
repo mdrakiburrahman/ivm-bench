@@ -67,7 +67,7 @@ spark.openivm.queryLog.enabled=${OPENIVM_QUERY_LOG_BOOL}
 #   `Try { … }.getOrElse(false)`-swallows `RocksDBException`,
 #   degrading INSERTs to silent un-teed writes) — NOT a reason to
 #   re-enable multi-process mode.
-spark.openivm.rocksdb.multiProcess=false
+spark.openivm.rocksdb.multiProcess=true
 
 # The openivm-spark assembly jar is symlinked into /opt/spark/jars/ by the
 # entrypoint so it's on the default Spark classpath at session start
