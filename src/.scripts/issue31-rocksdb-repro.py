@@ -163,6 +163,25 @@ def summarize_telemetry(rows, prefix):
     return totals, by_scope
 
 
+def summarize_steps(rows, prefix):
+    selected = [
+        row for row in rows if prefix + "_mv_" in str(row.get("view_name", ""))
+    ]
+    by_step = {}
+    for row in selected:
+        step = row.get("step_name", "unknown")
+        by_step.setdefault(step, []).append(int(row.get("duration_ms", 0)))
+    return {
+        step: {
+            "count": len(durations),
+            "sum_ms": sum(durations),
+            "median_ms": statistics.median(durations),
+            "max_ms": max(durations),
+        }
+        for step, durations in sorted(by_step.items())
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://localhost:8998")
@@ -173,6 +192,11 @@ def main():
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("--output")
     parser.add_argument("--profile-only", action="store_true")
+    parser.add_argument(
+        "--warm-source",
+        action="store_true",
+        help="resolve the source concurrently in every session before timing CREATE MV",
+    )
     parser.add_argument("--catalog-path")
     parser.add_argument("--warehouse-path")
     args = parser.parse_args()
@@ -206,6 +230,7 @@ def main():
                 "backend": args.backend,
                 "rocksdb_telemetry": telemetry,
                 "rocksdb_telemetry_by_scope": telemetry_by_scope,
+                "profile_steps": summarize_steps(profile_rows, args.prefix),
             }
             rendered = json.dumps(result, indent=2, sort_keys=True)
             print(rendered)
@@ -223,6 +248,24 @@ def main():
             args.timeout,
         )
         print(f"source ready in {source_wall:.3f}s", file=sys.stderr)
+
+        warm_source_wall = None
+        if args.warm_source:
+            warm_started_at = time.monotonic()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.drivers) as pool:
+                list(
+                    pool.map(
+                        lambda session_id: run_sql(
+                            args.base_url,
+                            session_id,
+                            f"SELECT * FROM {source} LIMIT 0",
+                            args.timeout,
+                        ),
+                        sessions,
+                    )
+                )
+            warm_source_wall = time.monotonic() - warm_started_at
+            print(f"source warmed in {warm_source_wall:.3f}s", file=sys.stderr)
 
         ready_at = time.monotonic()
 
@@ -250,6 +293,7 @@ def main():
             "rows": args.rows,
             "sessions": sessions,
             "source_wall_seconds": source_wall,
+            "warm_source_wall_seconds": warm_source_wall,
             "ctas_batch_wall_seconds": batch_wall,
             "ctas_wall_seconds": {
                 "min": min(walls),
@@ -260,6 +304,7 @@ def main():
             "per_view": per_view,
             "rocksdb_telemetry": telemetry,
             "rocksdb_telemetry_by_scope": telemetry_by_scope,
+            "profile_steps": summarize_steps(profile_rows, args.prefix),
         }
         rendered = json.dumps(result, indent=2, sort_keys=True)
         print(rendered)

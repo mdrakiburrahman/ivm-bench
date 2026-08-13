@@ -56,6 +56,9 @@ DEFAULT_PARALLELISM="${SPARK_SUBMIT_DEFAULT_PARALLELISM:-$(yq eval '.parallelism
 
 export SPARK_DRIVER_MEMORY="$(calc_ram_min "$DRIVER_PCT_RAM" "$TOTAL_RAM_GB" 10)g"
 export SPARK_DRIVER_CORES=$(calc_cores_clamped "$DRIVER_PCT_CORES" "$TOTAL_CORES" "$MIN_CORES")
+# Preserve local[*] semantics by default while allowing multi-driver benchmarks
+# to bound each JVM explicitly (for example, 10 drivers x 3 threads on 32 cores).
+export SPARK_LOCAL_THREADS="${SPARK_LOCAL_THREADS:-$TOTAL_CORES}"
 export SPARK_EXECUTOR_MEMORY="$(calc_ram "$EXECUTOR_PCT_RAM" "$TOTAL_RAM_GB")g"
 export SPARK_EXECUTOR_CORES=$(calc_cores_clamped "$EXECUTOR_PCT_CORES" "$TOTAL_CORES" "$MIN_CORES")
 export SPARK_SUBMIT_SHUFFLE_PARTITIONS=$SHUFFLE_PARTITIONS
@@ -94,8 +97,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  SPARK-OPENIVM BENCHMARK CONTAINER"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Host:     ${TOTAL_RAM_GB}GB RAM, ${TOTAL_CORES} cores"
-echo "  Driver:   ${SPARK_DRIVER_MEMORY} RAM, ${SPARK_DRIVER_CORES} cores (single JVM hosts driver+executor in local[*])"
-echo "  Executor: ${SPARK_EXECUTOR_MEMORY} RAM, ${SPARK_EXECUTOR_CORES} cores (decorative — local[*] ignores these)"
+echo "  Driver:   ${SPARK_DRIVER_MEMORY} RAM, local[${SPARK_LOCAL_THREADS}] worker threads"
+echo "  Executor: ${SPARK_EXECUTOR_MEMORY} RAM, ${SPARK_EXECUTOR_CORES} cores (decorative in local mode)"
 echo "  Shuffle:  ${SHUFFLE_PARTITIONS}, Parallelism: ${DEFAULT_PARALLELISM}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 

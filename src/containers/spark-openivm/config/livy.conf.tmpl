@@ -1,4 +1,4 @@
-livy.spark.master = local[*]
+livy.spark.master = local[${SPARK_LOCAL_THREADS}]
 livy.spark.deploy-mode = client
 livy.file.local-dir-whitelist = /
 livy.server.session.timeout = 3h
