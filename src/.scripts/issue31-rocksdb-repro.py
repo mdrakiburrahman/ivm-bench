@@ -39,9 +39,16 @@ def wait_until(fetch, done, timeout, label):
         time.sleep(1)
 
 
-def create_session(base_url, backend, timeout, catalog_path=None, warehouse_path=None):
+def create_session(
+    base_url,
+    backend,
+    timeout,
+    catalog_path=None,
+    warehouse_path=None,
+    multi_process=True,
+):
     conf = {
-        "spark.openivm.rocksdb.multiProcess": "true",
+        "spark.openivm.rocksdb.multiProcess": str(multi_process).lower(),
         "spark.openivm.profile.refresh": "true",
         "spark.openivm.catalog.backend": backend,
     }
@@ -62,13 +69,13 @@ def create_session(base_url, backend, timeout, catalog_path=None, warehouse_path
     return session_id
 
 
-def run_sql(base_url, session_id, sql, timeout):
+def run_sql(base_url, session_id, sql, timeout, kind="sql"):
     submitted_at = time.monotonic()
     statement = request(
         base_url,
         "POST",
         f"/sessions/{session_id}/statements",
-        {"code": sql, "kind": "sql"},
+        {"code": sql, "kind": kind},
     )
     statement_id = statement["id"]
     result = wait_until(
@@ -193,6 +200,22 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--profile-only", action="store_true")
     parser.add_argument(
+        "--single-process-rocksdb",
+        action="store_true",
+        help="reuse cached RocksDB handles when all jobs share one driver process",
+    )
+    topology_group = parser.add_mutually_exclusive_group()
+    topology_group.add_argument(
+        "--shared-session",
+        action="store_true",
+        help="submit all concurrent CTAS statements to one Livy/Spark session",
+    )
+    topology_group.add_argument(
+        "--in-driver-parallel",
+        action="store_true",
+        help="submit one Scala statement that launches every CTAS from driver threads",
+    )
+    parser.add_argument(
         "--warm-source",
         action="store_true",
         help="resolve the source concurrently in every session before timing CREATE MV",
@@ -200,11 +223,26 @@ def main():
     parser.add_argument("--catalog-path")
     parser.add_argument("--warehouse-path")
     args = parser.parse_args()
+    if args.single_process_rocksdb and not (
+        args.shared_session or args.in_driver_parallel
+    ):
+        parser.error("--single-process-rocksdb requires a single-session topology")
 
     sessions = []
     try:
-        print(f"starting {args.drivers} independent Livy drivers", file=sys.stderr)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.drivers) as pool:
+        session_count = 1 if args.shared_session or args.in_driver_parallel else args.drivers
+        if args.in_driver_parallel:
+            topology = "in_driver_parallel"
+        elif args.shared_session:
+            topology = "shared"
+        else:
+            topology = "independent"
+        print(
+            f"starting {session_count} {topology} Livy session(s) for "
+            f"{args.drivers} CTAS jobs",
+            file=sys.stderr,
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=session_count) as pool:
             sessions = list(
                 pool.map(
                     lambda _: create_session(
@@ -213,8 +251,9 @@ def main():
                         args.timeout,
                         args.catalog_path,
                         args.warehouse_path,
+                        not args.single_process_rocksdb,
                     ),
-                    range(args.drivers),
+                    range(session_count),
                 )
             )
         print(f"sessions={sessions}", file=sys.stderr)
@@ -252,7 +291,7 @@ def main():
         warm_source_wall = None
         if args.warm_source:
             warm_started_at = time.monotonic()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=args.drivers) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=session_count) as pool:
                 list(
                     pool.map(
                         lambda session_id: run_sql(
@@ -269,15 +308,46 @@ def main():
 
         ready_at = time.monotonic()
 
-        def create_mv(index_session):
-            index, session_id = index_session
+        def mv_sql(index):
             mv = f"{args.prefix}_mv_{index + 1}"
-            sql = f"CREATE MATERIALIZED VIEW {mv} AS SELECT id, id AS value FROM {source}"
+            return mv, f"CREATE MATERIALIZED VIEW {mv} AS SELECT id, id AS value FROM {source}"
+
+        def create_mv(index):
+            session_id = sessions[index % session_count]
+            mv, sql = mv_sql(index)
             _, wall = run_sql(args.base_url, session_id, sql, args.timeout)
             return {"view": mv, "session_id": session_id, "wall_seconds": wall}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.drivers) as pool:
-            per_view = list(pool.map(create_mv, enumerate(sessions)))
+        if args.in_driver_parallel:
+            quoted_queries = ",\n".join(
+                json.dumps(mv_sql(index)[1]) for index in range(args.drivers)
+            )
+            scala = f"""
+import java.util.concurrent.Executors
+import scala.concurrent.{{Await, ExecutionContext, Future}}
+import scala.concurrent.duration.Duration
+val openivmExecutor = Executors.newFixedThreadPool({args.drivers})
+implicit val openivmEc: ExecutionContext = ExecutionContext.fromExecutorService(openivmExecutor)
+val openivmQueries = Seq({quoted_queries})
+try {{
+  Await.result(Future.sequence(openivmQueries.map(query => Future {{ spark.sql(query).collect() }})), Duration.Inf)
+}} finally {{
+  openivmExecutor.shutdown()
+}}
+"""
+            _, wall = run_sql(
+                args.base_url, sessions[0], scala, args.timeout, kind="spark"
+            )
+            per_view = [
+                {
+                    "view": "in_driver_batch",
+                    "session_id": sessions[0],
+                    "wall_seconds": wall,
+                }
+            ]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.drivers) as pool:
+                per_view = list(pool.map(create_mv, range(args.drivers)))
         batch_wall = time.monotonic() - ready_at
 
         profile_statement, _ = run_sql(
@@ -290,6 +360,7 @@ def main():
             "prefix": args.prefix,
             "backend": args.backend,
             "drivers": args.drivers,
+            "session_topology": topology,
             "rows": args.rows,
             "sessions": sessions,
             "source_wall_seconds": source_wall,
