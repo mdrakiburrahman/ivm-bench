@@ -216,6 +216,11 @@ def main():
         help="submit one Scala statement that launches every CTAS from driver threads",
     )
     parser.add_argument(
+        "--dispatch-width",
+        type=int,
+        help="maximum concurrent driver threads for --in-driver-parallel",
+    )
+    parser.add_argument(
         "--warm-source",
         action="store_true",
         help="resolve the source concurrently in every session before timing CREATE MV",
@@ -227,6 +232,10 @@ def main():
         args.shared_session or args.in_driver_parallel
     ):
         parser.error("--single-process-rocksdb requires a single-session topology")
+    if args.dispatch_width is not None and not args.in_driver_parallel:
+        parser.error("--dispatch-width requires --in-driver-parallel")
+    if args.dispatch_width is not None and args.dispatch_width < 1:
+        parser.error("--dispatch-width must be positive")
 
     sessions = []
     try:
@@ -319,6 +328,7 @@ def main():
             return {"view": mv, "session_id": session_id, "wall_seconds": wall}
 
         if args.in_driver_parallel:
+            dispatch_width = args.dispatch_width or args.drivers
             quoted_queries = ",\n".join(
                 json.dumps(mv_sql(index)[1]) for index in range(args.drivers)
             )
@@ -326,7 +336,7 @@ def main():
 import java.util.concurrent.Executors
 import scala.concurrent.{{Await, ExecutionContext, Future}}
 import scala.concurrent.duration.Duration
-val openivmExecutor = Executors.newFixedThreadPool({args.drivers})
+val openivmExecutor = Executors.newFixedThreadPool({dispatch_width})
 implicit val openivmEc: ExecutionContext = ExecutionContext.fromExecutorService(openivmExecutor)
 val openivmQueries = Seq({quoted_queries})
 try {{
@@ -360,6 +370,11 @@ try {{
             "prefix": args.prefix,
             "backend": args.backend,
             "drivers": args.drivers,
+            "dispatch_width": (
+                args.dispatch_width or args.drivers
+                if args.in_driver_parallel
+                else None
+            ),
             "session_topology": topology,
             "rows": args.rows,
             "sessions": sessions,
