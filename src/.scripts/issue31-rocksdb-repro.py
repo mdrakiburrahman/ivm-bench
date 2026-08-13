@@ -46,12 +46,15 @@ def create_session(
     catalog_path=None,
     warehouse_path=None,
     multi_process=True,
+    fair_scheduler=False,
 ):
     conf = {
         "spark.openivm.rocksdb.multiProcess": str(multi_process).lower(),
         "spark.openivm.profile.refresh": "true",
         "spark.openivm.catalog.backend": backend,
     }
+    if fair_scheduler:
+        conf["spark.scheduler.mode"] = "FAIR"
     if catalog_path:
         conf["spark.openivm.catalog.path"] = catalog_path
     if warehouse_path:
@@ -114,6 +117,27 @@ def parse_detail(detail):
             key, value = token.split("=", 1)
             fields[key] = value
     return fields
+
+
+def parse_admission_telemetry(statement):
+    rendered = json.dumps((statement.get("output") or {}).get("data") or {})
+    marker = "OPENIVM_CTAS_ADMISSION|"
+    marker_at = rendered.find(marker)
+    if marker_at < 0:
+        return None
+    payload = rendered[marker_at + len(marker) :].split("\\", 1)[0]
+    fields = {}
+    for token in payload.split("|"):
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields[key] = value
+    return {
+        "scheduler_mode": fields.get("schedulerMode"),
+        "initial_limit": int(fields["initialLimit"]),
+        "learned_limit": int(fields["learnedLimit"]),
+        "max_inflight": int(fields["maxInflight"]),
+        "batch_wall_ms": int(fields["batchWallMs"]),
+    }
 
 
 def summarize_telemetry(rows, prefix):
@@ -221,6 +245,11 @@ def main():
         help="maximum concurrent driver threads for --in-driver-parallel",
     )
     parser.add_argument(
+        "--adaptive-dispatch",
+        action="store_true",
+        help="use optimistic AIMD admission and distinct Spark FAIR pools",
+    )
+    parser.add_argument(
         "--warm-source",
         action="store_true",
         help="resolve the source concurrently in every session before timing CREATE MV",
@@ -236,6 +265,10 @@ def main():
         parser.error("--dispatch-width requires --in-driver-parallel")
     if args.dispatch_width is not None and args.dispatch_width < 1:
         parser.error("--dispatch-width must be positive")
+    if args.adaptive_dispatch and not args.in_driver_parallel:
+        parser.error("--adaptive-dispatch requires --in-driver-parallel")
+    if args.adaptive_dispatch and args.dispatch_width is not None:
+        parser.error("--adaptive-dispatch cannot be combined with --dispatch-width")
 
     sessions = []
     try:
@@ -261,6 +294,7 @@ def main():
                         args.catalog_path,
                         args.warehouse_path,
                         not args.single_process_rocksdb,
+                        args.in_driver_parallel,
                     ),
                     range(session_count),
                 )
@@ -327,12 +361,26 @@ def main():
             _, wall = run_sql(args.base_url, session_id, sql, args.timeout)
             return {"view": mv, "session_id": session_id, "wall_seconds": wall}
 
+        admission_telemetry = None
         if args.in_driver_parallel:
-            dispatch_width = args.dispatch_width or args.drivers
             quoted_queries = ",\n".join(
                 json.dumps(mv_sql(index)[1]) for index in range(args.drivers)
             )
-            scala = f"""
+            if args.adaptive_dispatch:
+                scala = f"""
+import org.openivm.spark.common.{{CtasAdmissionController, CtasBatchDispatcher, CtasBatchTask}}
+val openivmQueries = Seq({quoted_queries})
+val openivmController = CtasAdmissionController.optimistic(openivmQueries.size)
+val openivmTasks = openivmQueries.zipWithIndex.map {{ case (query, index) =>
+  CtasBatchTask(s"mv-${{index + 1}}", () => spark.sql(query).collect())
+}}
+val openivmBatch = CtasBatchDispatcher.run(spark, openivmTasks, openivmController)
+val openivmTelemetry = openivmBatch.telemetry
+s"OPENIVM_CTAS_ADMISSION|schedulerMode=${{openivmTelemetry.schedulerMode}}|initialLimit=${{openivmTelemetry.initialLimit}}|learnedLimit=${{openivmTelemetry.learnedLimit}}|maxInflight=${{openivmTelemetry.maxInflight}}|batchWallMs=${{openivmTelemetry.batchWallNanos / 1000000L}}"
+"""
+            else:
+                dispatch_width = args.dispatch_width or args.drivers
+                scala = f"""
 import java.util.concurrent.Executors
 import scala.concurrent.{{Await, ExecutionContext, Future}}
 import scala.concurrent.duration.Duration
@@ -340,14 +388,22 @@ val openivmExecutor = Executors.newFixedThreadPool({dispatch_width})
 implicit val openivmEc: ExecutionContext = ExecutionContext.fromExecutorService(openivmExecutor)
 val openivmQueries = Seq({quoted_queries})
 try {{
-  Await.result(Future.sequence(openivmQueries.map(query => Future {{ spark.sql(query).collect() }})), Duration.Inf)
+  Await.result(Future.sequence(openivmQueries.map(query => Future {{
+    spark.sparkContext.setLocalProperty("spark.scheduler.pool", s"openivm-ctas-${{Thread.currentThread().getId}}")
+    try spark.sql(query).collect()
+    finally spark.sparkContext.setLocalProperty("spark.scheduler.pool", null)
+  }})), Duration.Inf)
 }} finally {{
   openivmExecutor.shutdown()
 }}
 """
-            _, wall = run_sql(
+            batch_statement, wall = run_sql(
                 args.base_url, sessions[0], scala, args.timeout, kind="spark"
             )
+            if args.adaptive_dispatch:
+                admission_telemetry = parse_admission_telemetry(batch_statement)
+                if admission_telemetry is None:
+                    raise RuntimeError("adaptive dispatcher returned no admission telemetry")
             per_view = [
                 {
                     "view": "in_driver_batch",
@@ -360,6 +416,23 @@ try {{
                 per_view = list(pool.map(create_mv, range(args.drivers)))
         batch_wall = time.monotonic() - ready_at
 
+        validation_sql = " UNION ALL ".join(
+            f"SELECT '{mv_sql(index)[0]}' AS view, COUNT(*) AS row_count "
+            f"FROM {mv_sql(index)[0]}"
+            for index in range(args.drivers)
+        )
+        validation_statement, _ = run_sql(
+            args.base_url, sessions[0], validation_sql, args.timeout
+        )
+        view_row_counts = {
+            row["view"]: int(row["row_count"])
+            for row in table_rows(validation_statement)
+        }
+        if len(view_row_counts) != args.drivers or any(
+            count != args.rows for count in view_row_counts.values()
+        ):
+            raise RuntimeError(f"CTAS validation failed: {view_row_counts}")
+
         profile_statement, _ = run_sql(
             args.base_url, sessions[0], "SHOW OPENIVM REFRESH PROFILE", args.timeout
         )
@@ -370,9 +443,11 @@ try {{
             "prefix": args.prefix,
             "backend": args.backend,
             "drivers": args.drivers,
+            "adaptive_dispatch": args.adaptive_dispatch,
             "dispatch_width": (
-                args.dispatch_width or args.drivers
-                if args.in_driver_parallel
+                None
+                if args.adaptive_dispatch
+                else args.dispatch_width or args.drivers if args.in_driver_parallel
                 else None
             ),
             "session_topology": topology,
@@ -391,6 +466,8 @@ try {{
             "rocksdb_telemetry": telemetry,
             "rocksdb_telemetry_by_scope": telemetry_by_scope,
             "profile_steps": summarize_steps(profile_rows, args.prefix),
+            "admission_telemetry": admission_telemetry,
+            "view_row_counts": view_row_counts,
         }
         rendered = json.dumps(result, indent=2, sort_keys=True)
         print(rendered)
