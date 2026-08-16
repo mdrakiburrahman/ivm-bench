@@ -257,6 +257,15 @@ class RisingWaveAdapter(EngineAdapter):
                 return round(float(value), 10)
             if isinstance(value, (datetime.datetime, datetime.date)):
                 return value.isoformat()
+            # RisingWave returns ARRAY columns as Python lists and composite
+            # types as dicts, neither of which is hashable — Counter then raises
+            # "unhashable type: 'list'", which the runner reports as an engine
+            # CRASH even though the engine answered fine. Recurse so nested
+            # arrays normalise too.
+            if isinstance(value, (list, tuple)):
+                return tuple(norm(v) for v in value)
+            if isinstance(value, dict):
+                return tuple(sorted((k, norm(v)) for k, v in value.items()))
             return value
 
         return Counter(tuple(norm(c) for c in row) for row in rows)
