@@ -21,7 +21,11 @@ services:
       - ../mount/results/${SCALE_FACTOR:-3}/risingwave/state:/root/.risingwave
       - ../src/containers/risingwave/risingwave.toml:/risingwave.toml:ro
     healthcheck:
-      test: ["CMD-SHELL", "psql -h localhost -p 4566 -d dev -U root -c 'SELECT 1' || exit 1"]
+      # A bash TCP probe against the pgwire port, NOT psql: the RisingWave image
+      # ships neither psql nor nc, so a psql-based check can never pass and the
+      # container stays "health: starting" forever, blocking dbt-server's
+      # depends_on until compose times out.
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/4566' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
