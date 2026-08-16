@@ -50,6 +50,82 @@ def strip_type_params(sql: str) -> str:
     return _PARAM_DECIMAL.sub("DECIMAL", sql)
 
 
+# ---------------------------------------------------------------------------
+# RisingWave deviations from PostgreSQL
+# ---------------------------------------------------------------------------
+# The corpus is rendered into LPTS's `postgres` dialect, which is correct
+# PostgreSQL. These rewrites cover places where RisingWave does NOT implement
+# something PostgreSQL has, so they belong here rather than in LPTS — fixing
+# them in the postgres renderer would make its output wrong for real Postgres.
+#
+# Counts are from the 2,505-query corpus run and are what these are sized
+# against: stddev 47, variance 22, round(double,int) 11, corr 2.
+_RW_AGG_ALIASES = (
+    # PostgreSQL's STDDEV/VARIANCE are the sample forms; RisingWave only
+    # implements the explicit *_samp spellings.
+    (re.compile(r"\bSTDDEV\s*\(", re.I), "STDDEV_SAMP("),
+    (re.compile(r"\bVARIANCE\s*\(", re.I), "VAR_SAMP("),
+)
+
+
+def _rewrite_round_to_numeric(sql: str) -> str:
+    """Give two-argument ROUND a DECIMAL first argument.
+
+    `round(double precision, integer)` does not exist in RisingWave — the error
+    names its internal `round_digit`. The two-argument form is DECIMAL-only, so
+    the value is cast. Casting an already-DECIMAL argument is a no-op.
+    """
+    out = []
+    i = 0
+    pattern = re.compile(r"\bROUND\s*\(", re.I)
+    while True:
+        match = pattern.search(sql, i)
+        if not match:
+            out.append(sql[i:])
+            return "".join(out)
+        open_paren = sql.index("(", match.start())
+        depth = 0
+        args: List[str] = []
+        current = ""
+        j = open_paren
+        while j < len(sql):
+            ch = sql[j]
+            if ch == "(":
+                depth += 1
+                if depth == 1:
+                    j += 1
+                    continue
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    args.append(current)
+                    break
+            elif ch == "," and depth == 1:
+                args.append(current)
+                current = ""
+                j += 1
+                continue
+            current += ch
+            j += 1
+        if depth != 0 or len(args) != 2:
+            # Unbalanced, or the single-argument form which is fine as-is.
+            out.append(sql[i:match.end()])
+            i = match.end()
+            continue
+        value, digits = args[0].strip(), args[1].strip()
+        out.append(sql[i:match.start()])
+        out.append(f"ROUND(CAST({value} AS NUMERIC), {digits})")
+        i = j + 1
+
+
+def to_risingwave_sql(sql: str) -> str:
+    """Apply every RisingWave-specific adaptation to corpus SQL."""
+    sql = strip_type_params(sql)
+    for pattern, replacement in _RW_AGG_ALIASES:
+        sql = pattern.sub(replacement, sql)
+    return _rewrite_round_to_numeric(sql)
+
+
 class RisingWaveAdapter(EngineAdapter):
     name = "risingwave"
     supports_verify = True
@@ -132,7 +208,7 @@ class RisingWaveAdapter(EngineAdapter):
                 except Exception:
                     self.reset()
                     cur = self._cursor()
-            self._execute(strip_type_params(stmt.rstrip(";")), timeout_s=120)
+            self._execute(to_risingwave_sql(stmt.rstrip(";")), timeout_s=120)
         self._load_tpcc(cur)
 
     def _load_tpcc(self, cur) -> None:
@@ -181,12 +257,12 @@ class RisingWaveAdapter(EngineAdapter):
 
     def run_base_query(self, sql: str, *, timeout_s: float) -> None:
         cur = self._execute(
-            f"SELECT * FROM ({strip_type_params(sql)}) __cb LIMIT 0", timeout_s=timeout_s
+            f"SELECT * FROM ({to_risingwave_sql(sql)}) __cb LIMIT 0", timeout_s=timeout_s
         )
         cur.fetchall()
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        sql = strip_type_params(sql)
+        sql = to_risingwave_sql(sql)
         cur = self._execute(f"SELECT * FROM ({sql}) __cb LIMIT 0", timeout_s=timeout_s)
         cur.fetchall()
         ncols = len(cur.description or ())
@@ -206,7 +282,7 @@ class RisingWaveAdapter(EngineAdapter):
     def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
         for stmt in statements:
             try:
-                self._execute(strip_type_params(stmt), timeout_s=timeout_s)
+                self._execute(to_risingwave_sql(stmt), timeout_s=timeout_s)
             except EngineCrashed:
                 raise
             except Exception:
@@ -229,7 +305,7 @@ class RisingWaveAdapter(EngineAdapter):
         cur = self._execute(f"SELECT * FROM {mv_name}", timeout_s=timeout_s)
         got = self._multiset(cur.fetchall())
         cur = self._execute(
-            f"SELECT * FROM ({strip_type_params(sql)}) __q", timeout_s=timeout_s
+            f"SELECT * FROM ({to_risingwave_sql(sql)}) __q", timeout_s=timeout_s
         )
         want = self._multiset(cur.fetchall())
         if got == want:

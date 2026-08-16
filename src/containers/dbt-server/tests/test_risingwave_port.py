@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from services.compiler_bench.engines_risingwave import (  # noqa: E402
     RisingWaveAdapter,
     strip_type_params,
+    to_risingwave_sql,
 )
 
 
@@ -49,6 +50,53 @@ class StripTypeParamsTest(unittest.TestCase):
 
     def test_is_case_insensitive(self):
         self.assertEqual(strip_type_params("a varchar(9)"), "a VARCHAR")
+
+
+class RisingWaveDialectTest(unittest.TestCase):
+    """Places RisingWave lacks something PostgreSQL has.
+
+    These belong in the adapter, not in LPTS: the corpus is rendered as correct
+    PostgreSQL, and "fixing" these in the postgres renderer would make its
+    output wrong for real Postgres. Counts below are from the 2,505-query run.
+    """
+
+    def test_stddev_becomes_stddev_samp(self):
+        # 47 queries. PostgreSQL's STDDEV is the sample form; RisingWave only
+        # implements the explicit spelling.
+        self.assertEqual(to_risingwave_sql("select STDDEV(x) from t"),
+                         "select STDDEV_SAMP(x) from t")
+
+    def test_variance_becomes_var_samp(self):
+        # 22 queries.
+        self.assertEqual(to_risingwave_sql("select variance(x) from t"),
+                         "select VAR_SAMP(x) from t")
+
+    def test_two_arg_round_gets_a_numeric_cast(self):
+        # 11 queries, reported as the internal name: "function
+        # round_digit(double precision, integer) does not exist".
+        self.assertEqual(to_risingwave_sql("select round(x, 4) from t"),
+                         "select ROUND(CAST(x AS NUMERIC), 4) from t")
+
+    def test_single_arg_round_untouched(self):
+        self.assertEqual(to_risingwave_sql("select round(x) from t"),
+                         "select round(x) from t")
+
+    def test_round_handles_nested_parens(self):
+        self.assertEqual(
+            to_risingwave_sql("select round(sum(a) / nullif(count(b), 0), 6) from t"),
+            "select ROUND(CAST(sum(a) / nullif(count(b), 0) AS NUMERIC), 6) from t")
+
+    def test_round_handles_two_calls_in_one_query(self):
+        self.assertEqual(to_risingwave_sql("select round(a,1), round(b,2) from t"),
+                         "select ROUND(CAST(a AS NUMERIC), 1), ROUND(CAST(b AS NUMERIC), 2) from t")
+
+    def test_still_strips_type_params(self):
+        self.assertEqual(to_risingwave_sql("cast(x as NUMERIC(38, 6))"),
+                         "cast(x as DECIMAL)")
+
+    def test_leaves_unrelated_sql_alone(self):
+        sql = "select a, b from t where c = 1 group by a"
+        self.assertEqual(to_risingwave_sql(sql), sql)
 
 
 class MultisetVerifyTest(unittest.TestCase):
