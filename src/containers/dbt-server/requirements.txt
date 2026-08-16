@@ -1,7 +1,12 @@
 flask>=3.0
 gunicorn>=22.0
 matplotlib>=3.8
-dbt-core~=1.11
+# Upper-bounded to <1.12 (~=1.11.0, not ~=1.11). dbt-risingwave requires
+# dbt-core~=1.11.0, and with the looser ~=1.11 (which permits <2.0) pip fetches a
+# 1.12.x wheel, then aborts with InconsistentCandidate instead of backtracking to
+# a 1.11.x that satisfies both. Every adapter here already resolves to 1.11.x, so
+# this only makes the existing bound explicit.
+dbt-core~=1.11.0
 https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
 dbt-duckdb>=1.9
 dbt-databricks~=1.11
