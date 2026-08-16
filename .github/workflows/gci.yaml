@@ -72,18 +72,12 @@ on:
         description: "Cap spark/spark-openivm dbt build concurrency (SPARK_DBT_THREADS). Empty = engine default (30). Mirrors full.json's high-SF gimping."
         default: ""
         type: string
-      risingwave_cpus:
-        description: "CPUs for the RisingWave container. Backfill parallelism scales with this, and large Hummock upload bursts overrun the object-store write timeout on a slow volume; 8 is the validated value."
-        default: "8"
-        type: string
-      risingwave_mem:
-        description: "Memory limit for the RisingWave container (e.g. 32g)"
-        default: "32g"
-        type: string
-      risingwave_threads:
-        description: "dbt build concurrency for RisingWave (RISINGWAVE_THREADS). 1 serialises CREATE MATERIALIZED VIEW, which keeps concurrent backfills from competing for disk."
-        default: "1"
-        type: string
+      # NOTE: workflow_dispatch is at GitHub's input ceiling. 25 inputs validate;
+      # 28 make the whole file invalid — every push then produces a zero-job
+      # "failure" run and the workflow cannot be dispatched at all. Verified by
+      # pushing 28 trivial inputs on a branch off main. RisingWave's container
+      # sizing therefore lives in docker/docker-compose.benchmark.risingwave.yml
+      # (RISINGWAVE_CPUS / RISINGWAVE_MEM defaults) instead of as knobs here.
       engines:
         description: "Comma-separated engine list"
         default: "databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35,risingwave"
@@ -153,9 +147,6 @@ jobs:
       OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
       STORAGE_METRICS: ${{ inputs.storage_metrics || '1' }}
       OAT_MIN_FREE_PCT: ${{ inputs.oat_min_free_pct || '10' }}
-      RISINGWAVE_CPUS: ${{ inputs.risingwave_cpus || '8' }}
-      RISINGWAVE_MEM: ${{ inputs.risingwave_mem || '32g' }}
-      RISINGWAVE_THREADS: ${{ inputs.risingwave_threads || '1' }}
 
     steps:
       - name: "🧹 Clean Docker-owned files"
