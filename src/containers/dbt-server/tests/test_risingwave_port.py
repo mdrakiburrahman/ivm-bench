@@ -66,6 +66,22 @@ class MultisetVerifyTest(unittest.TestCase):
         ms = RisingWaveAdapter._multiset
         self.assertEqual(ms([(1,), (2,)]), ms([(2,), (1,)]))
 
+    def test_array_columns_do_not_crash_the_comparison(self):
+        # RisingWave returns ARRAY columns as lists, which are unhashable;
+        # Counter then raised "unhashable type: 'list'" and the runner recorded
+        # it as an engine CRASH even though the engine had answered correctly.
+        ms = RisingWaveAdapter._multiset
+        self.assertEqual(ms([([1, 2],)]), ms([([1, 2],)]))
+        self.assertNotEqual(ms([([1, 2],)]), ms([([2, 1],)]))
+
+    def test_nested_arrays_normalise(self):
+        ms = RisingWaveAdapter._multiset
+        self.assertEqual(ms([([[0.1 + 0.2]],)]), ms([([[0.3]],)]))
+
+    def test_composite_columns_do_not_crash_the_comparison(self):
+        ms = RisingWaveAdapter._multiset
+        self.assertEqual(ms([({"a": 1},)]), ms([({"a": 1},)]))
+
     def test_floats_compare_with_tolerance(self):
         # Mirrors the runner's SQL probe: an incrementally maintained SUM/COUNT
         # cannot reproduce a batch AVG bit-for-bit.
