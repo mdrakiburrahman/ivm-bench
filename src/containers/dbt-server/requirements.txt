@@ -10,4 +10,8 @@ databricks-sdk>=0.40
 duckdb>=1.5.2
 deltalake>=0.18
 dbt-feldera @ git+https://github.com/mdrakiburrahman/feldera.git@41548878813d750a25f531280517b96ede7b56a1#subdirectory=python/dbt-feldera
+dbt-risingwave~=1.11
+# RisingWave speaks the PostgreSQL wire protocol; the source loader streams the
+# Delta payload into it directly rather than through dbt.
+psycopg[binary]>=3.2
 sqlglot>=26.0

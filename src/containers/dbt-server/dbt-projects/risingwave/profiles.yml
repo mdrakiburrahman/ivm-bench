@@ -1,0 +1,13 @@
+tpcdi:
+  target: risingwave
+  outputs:
+    risingwave:
+      type: risingwave
+      host: "{{ env_var('RISINGWAVE_HOST', 'risingwave') }}"
+      port: "{{ env_var('RISINGWAVE_PORT', '4566') | int }}"
+      user: "{{ env_var('RISINGWAVE_USER', 'root') }}"
+      pass: "{{ env_var('RISINGWAVE_PASSWORD', '') }}"
+      dbname: "{{ env_var('RISINGWAVE_DATABASE', 'dev') }}"
+      schema: tpcdi
+      threads: "{{ env_var('RISINGWAVE_THREADS', '1') | int }}"
+      connect_timeout: 60

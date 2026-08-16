@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Smallest useful RisingWave run.",
+    "RisingWave differs from the other engines in what the batches mean: batch 1",
+    "loads the source tables and runs dbt, which creates one MATERIALIZED VIEW per",
+    "model; batches 2 and 3 only append to those source tables. There is no dbt run",
+    "and no REFRESH in batches 2-3 — the MV graph maintains itself, and the batch",
+    "duration is the append plus the FLUSH that waits for it to propagate.",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/risingwave-smoke.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["risingwave"],
+    "parallel": false,
+    "feature_flags": {
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "risingwave-sf3",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "2"
+    }
+  ]
+}

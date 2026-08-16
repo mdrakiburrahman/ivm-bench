@@ -1,0 +1,48 @@
+services:
+  risingwave:
+    image: risingwavelabs/risingwave:${RISINGWAVE_VERSION:-v3.0.2}
+    # The tuned config is not optional: with RisingWave's defaults this workload
+    # fails on a local volume. See src/containers/risingwave/risingwave.toml for
+    # the three defaults it overrides and the failure each one causes.
+    command: single_node --config-path /risingwave.toml
+    # 8, not the host's full core count. Backfill parallelism scales with cores,
+    # and the resulting Hummock upload bursts are what overran the object-store
+    # write timeout (~940 MB upload against a ~140 MB/s volume) and took the
+    # whole cluster into failure_recovery.
+    cpus: ${RISINGWAVE_CPUS:-8}
+    mem_limit: ${RISINGWAVE_MEM:-32g}
+    ports:
+      - "4566:4566"
+    volumes:
+      # RisingWave keeps its own state (hummock object store + meta) here. It
+      # never reads the raw Delta payload directly: `file_scan` supports only
+      # s3/gcs/azblob and there is no Delta source connector, so the dbt-server
+      # streams the data in over pgwire instead.
+      - ../mount/results/${SCALE_FACTOR:-3}/risingwave/state:/root/.risingwave
+      - ../src/containers/risingwave/risingwave.toml:/risingwave.toml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "psql -h localhost -p 4566 -d dev -U root -c 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    depends_on:
+      risingwave:
+        condition: service_healthy
+    cpus: ${DBT_SERVER_CPUS:-8}
+    mem_limit: ${DBT_SERVER_MEM:-16g}
+    environment:
+      RISINGWAVE_HOST: risingwave
+      RISINGWAVE_PORT: "4566"
+      RISINGWAVE_USER: root
+      RISINGWAVE_DATABASE: dev
+      RISINGWAVE_THREADS: "${RISINGWAVE_THREADS:-1}"
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/risingwave:/data/processed/risingwave
+      - ../mount/stats/${SCALE_FACTOR:-3}/risingwave:/data/stats
