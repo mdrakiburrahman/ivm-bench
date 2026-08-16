@@ -145,6 +145,7 @@ benchmark from clean engine state and report averaged per-engine batch timings.
 | DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA refresh`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1`                                                          |
 | Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                                                                                                                   |
 | Spark-OpenIVM  | `docker/docker-compose.benchmark.spark-openivm.yml`  | Spark IVM            | Spark + MSSQL metastore + the openivm-spark SQL extension. Built from source in a container (`docker/docker-compose.spark-openivm-build.yml`) at a pinned `mdrakiburrahman/openivm-spark` commit. dbt issues `CREATE MATERIALIZED VIEW` (batch 1) / `REFRESH MATERIALIZED VIEW` (batches 2-3) |
+| RisingWave     | `docker/docker-compose.benchmark.risingwave.yml`     | Streaming IVM        | Single-node `risingwavelabs/risingwave`, Apache-2.0. Every bronze/silver/gold model is a `MATERIALIZED VIEW`, so batches 2-3 append to the source tables and the DAG maintains itself — no dbt run and no REFRESH. RisingWave cannot read the generated Delta tables (`file_scan` is s3/gcs/azblob only, and there is no Delta source connector), so `services/risingwave_sources.py` streams them in over pgwire |
 
 ### Compiler bench (incrementalizability survey)
 
@@ -241,6 +242,16 @@ Reading the numbers:
   against the query that built it is tautological.
 - Feldera is hardcoded `incremental`: DBSP has no full-recompute mode, so the
   informative measurement there is whether its compiler accepts the SQL at all.
+- RisingWave is hardcoded `incremental` for the same reason: a `MATERIALIZED
+  VIEW` is a streaming dataflow, so a query its planner accepts is maintained
+  incrementally and one it rejects is not maintained at all. Its adapter strips
+  the length/precision type parameters RisingWave's parser rejects
+  (`VARCHAR(n)`, `DECIMAL(p,s)`) and gives each view an explicit positional
+  column list, because a corpus query that does `SELECT *` over a join repeats
+  output names and RisingWave refuses `column "..." specified more than once`.
+  Both are SQL-surface adaptations, not incrementalization limits: without them
+  115 of the 499 corpus queries fail for reasons unrelated to whether the
+  engine could maintain them.
 
 Requires two builder images, both cached on their Dockerfile hash:
 `docker/docker-compose.lpts-build.yml` (the standalone LPTS extension, which

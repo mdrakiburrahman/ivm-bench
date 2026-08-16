@@ -33,6 +33,9 @@ ENGINE_DIALECTS: Dict[str, str] = {
     "fabric-jvm-35": "spark",
     "fabric-openivm-jvm-35": "spark",
     "feldera": "feldera",
+    # RisingWave speaks PostgreSQL; the adapter strips the
+    # length/precision type parameters its parser rejects.
+    "risingwave": "postgres",
 }
 
 

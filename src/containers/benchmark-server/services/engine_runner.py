@@ -809,7 +809,9 @@ class EngineRunner:
             # spark-openivm DOES use the batch-loader (so mount/raw/<SF>/delta/batchN
             # gets populated with the correct CDC shape), then _run_spark_openivm
             # additionally fires INSERT INTO via Livy AFTER the timer starts.
-            if batch_num > 1 and name not in ("duckdb", "duckdb-openivm") and not (name == "feldera" and batch_num > 1):
+            # RisingWave, like the DuckDB engines, appends its own sources
+            # inside the measured batch path (_run_risingwave).
+            if batch_num > 1 and name not in ("duckdb", "duckdb-openivm", "risingwave") and not (name == "feldera" and batch_num > 1):
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
 
@@ -833,6 +835,8 @@ class EngineRunner:
                     self._run_feldera_wait(batch_num)
             elif name == "duckdb":
                 self._run_duckdb_ducklake(batch_num)
+            elif name == "risingwave":
+                run_id = self._run_risingwave(batch_num)
             elif name == "duckdb-openivm":
                 run_id = self._run_duckdb_openivm(batch_num)
             elif name == "spark-openivm":
@@ -995,6 +999,43 @@ class EngineRunner:
             )
 
         self._run_dbt(batch_num)
+
+    def _run_risingwave(self, batch_num: int) -> Optional[str]:
+        """RisingWave: build the MV graph once, then only feed it.
+
+        Batch 1 loads the source tables and runs dbt, which creates one
+        MATERIALIZED VIEW per model. Batches 2 and 3 append to those source
+        tables and wait — there is no dbt run and no REFRESH, because every model
+        is a streaming dataflow that maintains itself. FLUSH returns once the
+        appended rows are visible downstream, which is what makes the batch
+        duration comparable with the other engines' refresh time.
+        """
+        if batch_num == 1:
+            self._emit("[risingwave] Loading source tables")
+            resp = requests.post(f"{self._dbt_url}/sources/risingwave/init", timeout=7200)
+            resp.raise_for_status()
+            src_result = resp.json()
+            self._emit(
+                f"[risingwave] Sources loaded: "
+                f"{src_result.get('tables_created', '?')} tables"
+            )
+            return self._run_dbt(batch_num)
+
+        self._emit(f"[risingwave] Appending batch {batch_num} sources")
+        resp = _post_with_retry(
+            f"{self._dbt_url}/sources/risingwave/append/{batch_num}",
+            timeout=7200,
+            emit=self._emit,
+            label="risingwave",
+        )
+        src_result = resp.json()
+        self._emit(
+            f"[risingwave] Batch {batch_num} appended: "
+            f"{src_result.get('tables_appended', '?')} tables; waiting for propagation"
+        )
+        resp = requests.post(f"{self._dbt_url}/sources/risingwave/flush", timeout=7200)
+        resp.raise_for_status()
+        return None
 
     def _run_feldera_batch1(self) -> None:
         """Feldera batch 1: compile pipeline (paused), resume, then poll for processing.

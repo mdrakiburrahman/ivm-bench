@@ -854,6 +854,12 @@ _LOCAL_ADAPTERS = {
 def get_adapter(engine: str) -> EngineAdapter:
     if engine in _LOCAL_ADAPTERS:
         return _LOCAL_ADAPTERS[engine]()
+    if engine == "risingwave":
+        # Imported lazily: the adapter needs psycopg, which the other local
+        # engines do not.
+        from services.compiler_bench.engines_risingwave import RisingWaveAdapter
+
+        return RisingWaveAdapter()
     from services.compiler_bench import engines_cloud
 
     adapter = engines_cloud.get_adapter(engine)
