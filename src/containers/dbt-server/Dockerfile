@@ -53,6 +53,12 @@ RUN cd /app/dbt-projects/spark-openivm && dbt deps --profiles-dir . 2>/dev/null 
 RUN cd /app/dbt-projects/databricks-enzyme && dbt deps --profiles-dir . 2>/dev/null || true
 RUN cd /app/dbt-projects/fabric-openivm-jvm-35 && dbt deps --profiles-dir . 2>/dev/null || true
 RUN cd /app/dbt-projects/fabric-jvm-35 && dbt deps --profiles-dir . 2>/dev/null || true
+# NOT `|| true`, unlike the lines above: the risingwave project's models call
+# dbt_utils.generate_surrogate_key, so a swallowed deps failure does not surface
+# until dbt runs, where it appears as "exited 2 with 0 node errors and 0 parsed
+# nodes" — two hours into a benchmark, with nothing pointing at the real cause.
+# Fail the image build instead.
+RUN cd /app/dbt-projects/risingwave && dbt deps --profiles-dir .
 
 # Preinstall DuckDB extensions to avoid runtime download
 RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL ducklake; INSTALL sqlite'); c.close()"
