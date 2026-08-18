@@ -42,9 +42,12 @@ vacuum_interval_sec = 15
 hummock_time_travel_snapshot_interval = 0
 
 [storage]
-# Default is much larger; a smaller buffer means more frequent, smaller uploads.
-# 256 MB at 140 MB/s is a ~2 s write, comfortably inside the timeouts below.
-shared_buffer_capacity_mb = 256
+# Bounded, but not as tightly as it once was. The point of capping this is to
+# keep any single Hummock upload well inside the timeouts below: 1 GB at the
+# ~140 MB/s measured on a local volume is a ~7 s write, a 16x margin under the
+# 120 s attempt timeout. It was briefly 256 MB, which was safe but cost
+# throughput by flushing four times as often.
+shared_buffer_capacity_mb = 1024
 # Flush earlier so the buffer does not reach capacity in one burst.
 shared_buffer_flush_ratio = 0.5
 
