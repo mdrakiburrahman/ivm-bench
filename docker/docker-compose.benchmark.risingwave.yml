@@ -56,6 +56,11 @@ services:
       # overlap. At 1, batch 1 used 3.95 of 8 allocated cores (49 %) — it was
       # serialised, not compute-bound.
       RISINGWAVE_THREADS: "${RISINGWAVE_THREADS:-8}"
+      # Backfill parallelism, the documented knob for MV-creation speed. Set here
+      # so it can be swept without rebuilding the image. Steady-state parallelism
+      # is deliberately left at RisingWave's default so batches 2/3 stay
+      # comparable with earlier runs.
+      RISINGWAVE_BACKFILL_PARALLELISM: "${RISINGWAVE_BACKFILL_PARALLELISM:-16}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/risingwave:/data/processed/risingwave
