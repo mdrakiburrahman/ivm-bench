@@ -831,7 +831,14 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
         timing_rows.append(row)
     lines.append(_markdown_table(timing_headers, timing_rows))
 
-    lines.extend(["", "## Per-engine storage overhead", ""])
+    lines.extend([
+        "",
+        "## Per-engine storage overhead",
+        "",
+        "For RisingWave, visible/helper/source are logical pre-compression bytes; "
+        "physical is allocated state-directory space.",
+        "",
+    ])
     storage_rows = []
     for idx, exp in enumerate(experiments):
         for engine in _engine_names_for_exp(exp):
@@ -844,6 +851,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
                         _scale_factor(exp),
                         engine,
                         batch,
+                        _MISSING,
                         _MISSING,
                         _MISSING,
                         _MISSING,
@@ -864,12 +872,13 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
                     _format_bytes(summary.get("helper_data_bytes")),
                     _format_bytes(summary.get("metadata_bytes")),
                     _format_bytes(summary.get("source_bytes")),
+                    _format_bytes(summary.get("physical_state_bytes")),
                     _MISSING if ratio is None else f"{ratio:.2f}",
                 ])
     lines.append(_markdown_table(
         [
             "#", "label", "SF", "engine", "batch", "status",
-            "visible", "helper", "metadata", "source", "helper/visible",
+            "visible", "helper", "metadata", "source", "physical", "helper/visible",
         ],
         storage_rows,
     ))

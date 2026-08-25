@@ -324,6 +324,50 @@ def _collect_local_root(
     return items, totals, errors
 
 
+def _collect_physical_root(
+    root: Path, *, deadline: float
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Return actual allocated blocks and apparent bytes beneath ``root``.
+
+    Unlike RisingWave's logical ``rw_table_stats``, allocated blocks measure
+    the host volume consumption that can make a benchmark run out of disk.
+    Directory blocks are included to match ``du``.
+    """
+    summary: Dict[str, Any] = {
+        "path": str(root),
+        "allocated_bytes": 0,
+        "measurement": "filesystem_st_blocks",
+    }
+    if not root.is_dir():
+        return summary, [f"physical storage root does not exist: {root}"]
+
+    errors: List[str] = []
+    stack = [root]
+    while stack:
+        expired = _deadline_error(deadline)
+        if expired:
+            errors.append(expired)
+            break
+        current = stack.pop()
+        try:
+            current_stat = current.stat(follow_symlinks=False)
+            summary["allocated_bytes"] += int(current_stat.st_blocks) * 512
+            entries = list(os.scandir(current))
+        except OSError as exc:
+            errors.append(f"cannot scan physical storage path {current}: {exc}")
+            continue
+        for entry in entries:
+            try:
+                entry_stat = entry.stat(follow_symlinks=False)
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                summary["allocated_bytes"] += int(entry_stat.st_blocks) * 512
+            except OSError as exc:
+                errors.append(f"cannot stat physical storage path {entry.path}: {exc}")
+    return summary, errors
+
+
 def _collect_feldera_helper_data(
     *, deadline: float
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[str]]:
@@ -1007,6 +1051,13 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
     _merge_totals(totals, local_totals)
     errors.extend(local_errors)
 
+    physical_state: Optional[Dict[str, Any]] = None
+    if engine in RISINGWAVE_ENGINES:
+        physical_state, physical_errors = _collect_physical_root(
+            PROCESSED_ROOTS[engine] / "state", deadline=deadline
+        )
+        errors.extend(physical_errors)
+
     if engine == "feldera" and time.monotonic() < deadline:
         helper_items, helper_totals, helper_errors = _collect_feldera_helper_data(
             deadline=deadline
@@ -1055,6 +1106,8 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
             key=lambda item: (item["category"], item["name"], item["kind"]),
         ),
     }
+    if physical_state is not None:
+        result["physical_state"] = physical_state
     if engine in PROCESSED_ROOTS:
         result["roots"] = {"processed": str(PROCESSED_ROOTS[engine])}
     result.setdefault("roots", {})["raw_base_reference"] = str(RAW_DELTA_ROOT)

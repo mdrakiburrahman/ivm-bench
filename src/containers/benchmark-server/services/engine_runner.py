@@ -2964,6 +2964,9 @@ class EngineRunner:
                 "metadata_bytes": totals.get("metadata_bytes", 0),
                 "source_bytes": totals.get("source_bytes", 0),
                 "total_bytes": totals.get("total_bytes", 0),
+                "physical_state_bytes": (data.get("physical_state") or {}).get(
+                    "allocated_bytes"
+                ),
                 "overhead_ratio_helper_to_visible": data.get(
                     "overhead_ratio_helper_to_visible"
                 ),
@@ -2974,10 +2977,14 @@ class EngineRunner:
             elif data.get("error"):
                 batch.extra["storage"]["errors"] = [str(data["error"])]
             status = batch.extra["storage"]["status"]
+            physical_bytes = batch.extra["storage"]["physical_state_bytes"]
+            physical_log = (
+                f" physical={physical_bytes}B" if physical_bytes is not None else ""
+            )
             self._emit(
                 f"[{name}] Storage metrics captured for batch {batch_num}: "
                 f"visible={totals.get('visible_output_bytes', 0)}B "
-                f"helper={totals.get('helper_data_bytes', 0)}B"
+                f"helper={totals.get('helper_data_bytes', 0)}B{physical_log}"
             )
             require_complete_storage_metrics(status, name, batch_num)
         except StorageMetricsError:

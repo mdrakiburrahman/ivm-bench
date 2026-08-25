@@ -35,12 +35,33 @@ services:
       retries: 30
       start_period: 30s
 
+  risingwave-tuner:
+    image: risingwavelabs/risingwave:${RISINGWAVE_VERSION:-v3.0.2}
+    entrypoint: ["/bin/bash", "/tune-compaction.sh"]
+    depends_on:
+      risingwave:
+        condition: service_healthy
+    # single_node binds the meta API to loopback, so the ctl process must share
+    # RisingWave's network namespace rather than connecting by service DNS.
+    network_mode: service:risingwave
+    environment:
+      RW_META_ADDR: http://127.0.0.1:5690
+    volumes:
+      - ../src/containers/risingwave/tune-compaction.sh:/tune-compaction.sh:ro
+    cpus: 0.25
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/risingwave-tuner-ready"]
+      interval: 2s
+      timeout: 1s
+      retries: 60
+
   dbt-server:
     extends:
       file: docker-compose.base.yml
       service: dbt-server-base
     depends_on:
-      risingwave:
+      risingwave-tuner:
         condition: service_healthy
     cpus: ${DBT_SERVER_CPUS:-8}
     mem_limit: ${DBT_SERVER_MEM:-16g}
