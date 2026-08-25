@@ -8,6 +8,7 @@ is being added to produce — so the categorisation is what these tests pin.
 """
 
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -127,6 +128,26 @@ class RisingWaveStorageTest(unittest.TestCase):
 
     def test_risingwave_is_a_supported_engine(self):
         self.assertIn("risingwave", storage_metrics.SUPPORTED_ENGINES)
+
+    def test_physical_state_counts_allocated_blocks_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "state_store"
+            nested.mkdir()
+            state_file = nested / "1.data"
+            state_file.write_bytes(b"state" * 1000)
+
+            summary, errors = storage_metrics._collect_physical_root(
+                root, deadline=time.monotonic() + 60
+            )
+            expected_allocated = sum(
+                path.stat(follow_symlinks=False).st_blocks * 512
+                for path in (root, nested, state_file)
+            )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(summary["allocated_bytes"], expected_allocated)
+        self.assertEqual(summary["measurement"], "filesystem_st_blocks")
 
 
 if __name__ == "__main__":
