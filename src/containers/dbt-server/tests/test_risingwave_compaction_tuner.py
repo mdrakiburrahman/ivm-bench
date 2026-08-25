@@ -25,7 +25,8 @@ class RisingWaveCompactionTunerTest(unittest.TestCase):
 import os
 import sys
 
-if sys.argv[1:] == ["ctl", "hummock", "list-compaction-group"]:
+args = sys.argv[1:]
+if args == ["ctl", "hummock", "list-compaction-group"]:
     print(r"""
 CompactionGroupInfo {
     id: 1,
@@ -44,9 +45,12 @@ CompactionGroupInfo {
     ],
 }
 """)
-else:
+elif args[:3] == ["ctl", "hummock", "update-compaction-config"]:
     with open(os.environ["CALLS_FILE"], "a") as handle:
-        handle.write(" ".join(sys.argv[1:]) + "\\n")
+        handle.write(" ".join(args) + "\\n")
+else:
+    print(f"unexpected command: {args}", file=sys.stderr)
+    sys.exit(2)
 '''
             )
             fake_ctl.chmod(0o755)
@@ -69,8 +73,8 @@ else:
 
         self.assertEqual(len(recorded), 3)
         for level, call in enumerate(recorded):
-            self.assertIn("update-compaction-configs", call)
-            self.assertIn("--ids 2", call)
+            self.assertIn("update-compaction-config", call)
+            self.assertIn("--compaction-group-ids 2", call)
             self.assertIn(f"--compression-level {level}", call)
             self.assertIn("--compression-algorithm Lz4", call)
 

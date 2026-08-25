@@ -50,8 +50,8 @@ while true; do
 	if [[ -n "${group_ids}" ]]; then
 		for level in 0 1 2; do
 			if ! "${RW_CTL_BIN}" ctl hummock \
-				update-compaction-configs \
-				--ids "${group_ids}" \
+				update-compaction-config \
+				--compaction-group-ids "${group_ids}" \
 				--compression-level "${level}" \
 				--compression-algorithm "${COMPRESSION_ALGORITHM}"; then
 				updated=0
