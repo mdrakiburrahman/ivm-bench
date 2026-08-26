@@ -117,7 +117,9 @@ services:
       # is deliberately left at RisingWave's default so batches 2/3 stay
       # comparable with earlier runs.
       RISINGWAVE_BACKFILL_PARALLELISM: "${RISINGWAVE_BACKFILL_PARALLELISM:-8}"
-      RISINGWAVE_LOCALITY_BACKFILL: "${RISINGWAVE_LOCALITY_BACKFILL:-true}"
+      # Locality backfill is a premium feature. The bundled development license
+      # is limited to four cores, while benchmark hosts are intentionally larger.
+      RISINGWAVE_LOCALITY_BACKFILL: "${RISINGWAVE_LOCALITY_BACKFILL:-false}"
       RISINGWAVE_JOIN_ENCODING: "${RISINGWAVE_JOIN_ENCODING:-cpu_optimized}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
