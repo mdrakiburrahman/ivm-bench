@@ -60,8 +60,10 @@ RUN cd /app/dbt-projects/fabric-jvm-35 && dbt deps --profiles-dir . 2>/dev/null 
 # Fail the image build instead.
 RUN cd /app/dbt-projects/risingwave && dbt deps --profiles-dir .
 
-# Preinstall DuckDB extensions to avoid runtime download
-RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL ducklake; INSTALL sqlite'); c.close()"
+# Preinstall DuckDB extensions to avoid runtime download. The RisingWave batch
+# loader opens several Delta readers concurrently, so delta must be present
+# before those workers start rather than racing to install it at runtime.
+RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL ducklake; INSTALL sqlite; INSTALL delta'); c.close()"
 
 EXPOSE 5000
 

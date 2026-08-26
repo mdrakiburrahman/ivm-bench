@@ -19,4 +19,4 @@ tpcdi:
       # streaming_parallelism, so the incremental measurement is untouched.
       #
       # Unset means "leave RisingWave's default", which is what earlier runs used.
-      streaming_parallelism_for_backfill: "{{ env_var('RISINGWAVE_BACKFILL_PARALLELISM', '16') | int }}"
+      streaming_parallelism_for_backfill: "{{ env_var('RISINGWAVE_BACKFILL_PARALLELISM', '8') | int }}"

@@ -1012,7 +1012,7 @@ class EngineRunner:
         """
         if batch_num == 1:
             self._emit("[risingwave] Loading source tables")
-            resp = requests.post(f"{self._dbt_url}/sources/risingwave/init", timeout=7200)
+            resp = requests.post(f"{self._dbt_url}/sources/risingwave/init", timeout=14400)
             resp.raise_for_status()
             src_result = resp.json()
             self._emit(
@@ -1024,7 +1024,7 @@ class EngineRunner:
         self._emit(f"[risingwave] Appending batch {batch_num} sources")
         resp = _post_with_retry(
             f"{self._dbt_url}/sources/risingwave/append/{batch_num}",
-            timeout=7200,
+            timeout=14400,
             emit=self._emit,
             label="risingwave",
         )
@@ -1033,7 +1033,7 @@ class EngineRunner:
             f"[risingwave] Batch {batch_num} appended: "
             f"{src_result.get('tables_appended', '?')} tables; waiting for propagation"
         )
-        resp = requests.post(f"{self._dbt_url}/sources/risingwave/flush", timeout=7200)
+        resp = requests.post(f"{self._dbt_url}/sources/risingwave/flush", timeout=14400)
         resp.raise_for_status()
         return None
 

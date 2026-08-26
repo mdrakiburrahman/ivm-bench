@@ -1,4 +1,17 @@
 services:
+  minio:
+    image: minio/minio:${MINIO_VERSION:-RELEASE.2025-09-07T16-13-09Z}
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}
+      MINIO_ROOT_PASSWORD: ${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}
+    volumes:
+      # Object storage is only a transient bulk-load transport. The loader
+      # deletes every object after RisingWave has copied it into Hummock.
+      - ../mount/results/${SCALE_FACTOR:-3}/risingwave/minio:/data
+    cpus: ${MINIO_CPUS:-4}
+    mem_limit: ${MINIO_MEM:-4g}
+
   risingwave:
     image: risingwavelabs/risingwave:${RISINGWAVE_VERSION:-v3.0.2}
     # The tuned config is not optional: with RisingWave's defaults this workload
@@ -19,9 +32,9 @@ services:
       - "4566:4566"
     volumes:
       # RisingWave keeps its own state (hummock object store + meta) here. It
-      # never reads the raw Delta payload directly: `file_scan` supports only
-      # s3/gcs/azblob and there is no Delta source connector, so the dbt-server
-      # streams the data in over pgwire instead.
+      # never reads the raw Delta payload directly: DuckDB resolves the Delta
+      # snapshots and MinIO exposes temporary Parquet through RisingWave's S3
+      # connector. The resulting source tables themselves live in Hummock.
       - ../mount/results/${SCALE_FACTOR:-3}/risingwave/state:/root/.risingwave
       - ../src/containers/risingwave/risingwave.toml:/risingwave.toml:ro
     healthcheck:
@@ -46,6 +59,10 @@ services:
     network_mode: service:risingwave
     environment:
       RW_META_ADDR: http://127.0.0.1:5690
+      # A ctl process registers a temporary RiseCtl worker on every poll. One
+      # second produced thousands of meta-node registrations during source
+      # loading; compaction groups do not appear at that cadence.
+      RW_TUNER_INTERVAL_SECONDS: "${RW_TUNER_INTERVAL_SECONDS:-15}"
     volumes:
       - ../src/containers/risingwave/tune-compaction.sh:/tune-compaction.sh:ro
     cpus: 0.25
@@ -63,6 +80,8 @@ services:
     depends_on:
       risingwave-tuner:
         condition: service_healthy
+      minio:
+        condition: service_started
     cpus: ${DBT_SERVER_CPUS:-8}
     mem_limit: ${DBT_SERVER_MEM:-16g}
     environment:
@@ -70,18 +89,36 @@ services:
       RISINGWAVE_PORT: "4566"
       RISINGWAVE_USER: root
       RISINGWAVE_DATABASE: dev
+      # Resolve Delta snapshots with DuckDB, stage Parquet in local MinIO, and
+      # let RisingWave perform a parallel INSERT ... SELECT from its documented
+      # S3 connector. The fallback uses the same workers over pgwire.
+      RISINGWAVE_BULK_LOAD: "${RISINGWAVE_BULK_LOAD:-1}"
+      RISINGWAVE_BULK_FALLBACK: "${RISINGWAVE_BULK_FALLBACK:-1}"
+      RISINGWAVE_LOAD_WORKERS: "${RISINGWAVE_LOAD_WORKERS:-4}"
+      RISINGWAVE_STAGE_THREADS: "${RISINGWAVE_STAGE_THREADS:-4}"
+      RISINGWAVE_BATCH_PARALLELISM: "${RISINGWAVE_BATCH_PARALLELISM:-32}"
+      RISINGWAVE_SOURCE_PARALLELISM: "${RISINGWAVE_SOURCE_PARALLELISM:-4}"
+      RISINGWAVE_MAX_BIND_PARAMS: "${RISINGWAVE_MAX_BIND_PARAMS:-20000}"
+      RISINGWAVE_S3_ENDPOINT: http://minio:9000
+      RISINGWAVE_S3_ACCESS_KEY: "${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}"
+      RISINGWAVE_S3_SECRET_KEY: "${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}"
+      RISINGWAVE_S3_BUCKET: ivm-bench
       # dbt build concurrency. Unlike duckdb (in-process, parallel via
       # DUCKDB_THREADS) and feldera (one compiled program, so dbt threads do
       # nothing), RisingWave's 49 models are independent CREATE MATERIALIZED VIEW
       # statements and dbt threads is the only thing that lets their backfills
       # overlap. At 1, batch 1 used 3.95 of 8 allocated cores (49 %) — it was
-      # serialised, not compute-bound.
-      RISINGWAVE_THREADS: "${RISINGWAVE_THREADS:-8}"
+      # serialised, not compute-bound. Four concurrent jobs at backfill
+      # parallelism eight supply 32 actor slots without the 8 x 16 = 128-way
+      # oversubscription used by the failed SF100 run.
+      RISINGWAVE_THREADS: "${RISINGWAVE_THREADS:-4}"
       # Backfill parallelism, the documented knob for MV-creation speed. Set here
       # so it can be swept without rebuilding the image. Steady-state parallelism
       # is deliberately left at RisingWave's default so batches 2/3 stay
       # comparable with earlier runs.
-      RISINGWAVE_BACKFILL_PARALLELISM: "${RISINGWAVE_BACKFILL_PARALLELISM:-16}"
+      RISINGWAVE_BACKFILL_PARALLELISM: "${RISINGWAVE_BACKFILL_PARALLELISM:-8}"
+      RISINGWAVE_LOCALITY_BACKFILL: "${RISINGWAVE_LOCALITY_BACKFILL:-true}"
+      RISINGWAVE_JOIN_ENCODING: "${RISINGWAVE_JOIN_ENCODING:-cpu_optimized}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/risingwave:/data/processed/risingwave
