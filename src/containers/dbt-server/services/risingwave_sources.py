@@ -61,7 +61,7 @@ S3_ACCESS_KEY = os.environ.get("RISINGWAVE_S3_ACCESS_KEY", "ivmbench")
 S3_SECRET_KEY = os.environ.get("RISINGWAVE_S3_SECRET_KEY", "ivmbench-secret")
 S3_BUCKET = os.environ.get("RISINGWAVE_S3_BUCKET", "ivm-bench")
 S3_REGION = os.environ.get("RISINGWAVE_S3_REGION", "us-east-1")
-S3_CONNECTOR = os.environ.get("RISINGWAVE_S3_CONNECTOR", "s3_v2")
+S3_CONNECTOR = os.environ.get("RISINGWAVE_S3_CONNECTOR", "s3")
 S3_READY_TIMEOUT_S = max(1, int(os.environ.get("RISINGWAVE_S3_READY_TIMEOUT_S", "120")))
 
 _S3_READY = False

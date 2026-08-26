@@ -47,10 +47,17 @@ class RisingWaveSourceLoaderTest(unittest.TestCase):
         )
 
         self.assertIn("CREATE SOURCE", sql)
-        self.assertIn("connector = 's3_v2'", sql)
+        self.assertIn("connector = 's3'", sql)
         self.assertIn("match_pattern = 'tpcdi/trade/run-id/*.parquet'", sql)
         self.assertIn("s3.endpoint_url = 'http://minio:9000'", sql)
         self.assertIn("FORMAT PLAIN ENCODE PARQUET", sql)
+
+    def test_unlicensed_locality_backfill_is_disabled_by_default(self):
+        project = (DBT_SERVER / "dbt-projects" / "risingwave" / "dbt_project.yml").read_text()
+        compose = (DBT_SERVER.parents[2] / "docker" / "docker-compose.benchmark.risingwave.yml").read_text()
+
+        self.assertEqual(project.count("RISINGWAVE_LOCALITY_BACKFILL', 'false'"), 3)
+        self.assertIn('RISINGWAVE_LOCALITY_BACKFILL:-false', compose)
 
     def test_initial_load_falls_back_to_pgwire_before_returning(self):
         spec = sources.LoadSpec("staging_trade", "SELECT 1")

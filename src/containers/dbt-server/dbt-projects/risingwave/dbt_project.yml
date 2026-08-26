@@ -30,19 +30,19 @@ models:
       +schema: bronze
       +materialized: materialized_view
       +sql_header: |
-        SET enable_locality_backfill = {{ env_var('RISINGWAVE_LOCALITY_BACKFILL', 'true') }};
+        SET enable_locality_backfill = {{ env_var('RISINGWAVE_LOCALITY_BACKFILL', 'false') }};
         SET streaming_join_encoding = '{{ env_var('RISINGWAVE_JOIN_ENCODING', 'cpu_optimized') }}';
     silver:
       +schema: silver
       +materialized: materialized_view
       +sql_header: |
-        SET enable_locality_backfill = {{ env_var('RISINGWAVE_LOCALITY_BACKFILL', 'true') }};
+        SET enable_locality_backfill = {{ env_var('RISINGWAVE_LOCALITY_BACKFILL', 'false') }};
         SET streaming_join_encoding = '{{ env_var('RISINGWAVE_JOIN_ENCODING', 'cpu_optimized') }}';
     gold:
       +schema: gold
       +materialized: materialized_view
       +sql_header: |
-        SET enable_locality_backfill = {{ env_var('RISINGWAVE_LOCALITY_BACKFILL', 'true') }};
+        SET enable_locality_backfill = {{ env_var('RISINGWAVE_LOCALITY_BACKFILL', 'false') }};
         SET streaming_join_encoding = '{{ env_var('RISINGWAVE_JOIN_ENCODING', 'cpu_optimized') }}';
     work:
       +schema: work
