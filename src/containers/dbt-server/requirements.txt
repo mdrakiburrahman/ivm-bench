@@ -19,4 +19,7 @@ dbt-risingwave~=1.11
 # RisingWave speaks the PostgreSQL wire protocol; the source loader streams the
 # Delta payload into it directly rather than through dbt.
 psycopg[binary]>=3.2
+# Batch-1 RisingWave loading stages resolved Delta snapshots through the local
+# MinIO service; boto3 provides bounded multipart uploads and path-style S3.
+boto3>=1.35
 sqlglot>=26.0
