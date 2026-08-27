@@ -73,7 +73,7 @@ class RisingWaveSourceLoaderTest(unittest.TestCase):
 
         self.assertEqual(
             image,
-            "ivm-bench/risingwave:eceb7a9e97979634d910a339cb37ba1719b1271b",
+            "ivm-bench/risingwave:fd769195b25fb663c80b85d753d5e14bf170c74d",
         )
         self.assertEqual(compose.count(f"${{RISINGWAVE_IMAGE:-{image}}}"), 2)
         self.assertIn("build-pinned-image.sh", workflow)
