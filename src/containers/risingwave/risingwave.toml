@@ -1,0 +1,67 @@
+# RisingWave tuning for ivm-bench on a local-EBS single node.
+#
+# Why this exists: the stock configuration fails this workload. Backfilling the
+# TPC-DI DAG produced a single ~940 MB Hummock upload task, and the root volume
+# sustains ~140 MB/s, so the write ran past the default object-store timeout:
+#
+#   upload task failed task_size: 940391718
+#   err=ObjectStore ... at write, path: hummock_001/238/17687.data
+#       => write position timeout
+#
+# A failed upload fails the epoch sync, which fails the barrier, which triggers
+# a cluster-wide failure_recovery — and every CREATE MATERIALIZED VIEW in flight
+# dies with "the cluster is recovering". It presents as an engine fault but is
+# really a storage-throughput mismatch.
+#
+# Two changes, both aimed at that:
+#   1. cap the shared buffer so flushes are split into many small upload tasks
+#      instead of one huge one;
+#   2. give each attempt a timeout that a slow local disk can actually meet.
+
+# Reclaim superseded SSTs promptly.
+#
+# The defaults are tuned for a production cluster where time-travel reads matter
+# more than disk: an SST that compaction has superseded is retained for
+# min_sst_retention_time_sec = 21600, i.e. SIX HOURS, and full GC only sweeps
+# hourly. A benchmark run rewrites the same tables repeatedly inside a few
+# minutes, so that retention window means nothing is ever reclaimed while the
+# run is in flight — the state store grew to 89 GB at SF3 (from a 114 MB source)
+# and filled the volume. Nothing here reads historical versions, so the window
+# can be short.
+[meta]
+# NOT lower than this. At 300 s a backfill SST that took 302 s between write and
+# commit was rejected -- "object N is rejected from being committed since it's
+# below watermark" -- which itself triggers a cluster recovery. The retention
+# window must exceed the slowest write-to-commit span in the workload; 1800 s is
+# ~6x the longest observed, and still 12x faster than the 21600 s default.
+min_sst_retention_time_sec = 1800
+full_gc_interval_sec = 600
+periodic_compaction_interval_sec = 60
+vacuum_interval_sec = 15
+# Time travel retains an extra version history on top of the SSTs themselves.
+hummock_time_travel_snapshot_interval = 0
+
+[storage]
+# 256 MB, not larger. This is measured, not cautious: at 1024 MB the SF10 batch-2
+# FLUSH went 79.7 s -> 356.4 s and batch 3 83.7 s -> 184.1 s. FLUSH *is* the
+# incremental measurement, and a bigger shared buffer accumulates more dirty
+# state before flushing, so each barrier commits more. 256 MB at the measured
+# ~140 MB/s is a ~2 s write, far inside the 120 s attempt timeouts below.
+#
+# Backfill throughput is NOT tuned from here — see streaming_parallelism_for_backfill
+# in the risingwave dbt profile, which is the documented knob for that.
+shared_buffer_capacity_mb = 256
+# Flush earlier so the buffer does not reach capacity in one burst.
+shared_buffer_flush_ratio = 0.5
+
+[storage.object_store.retry]
+# The defaults assume S3-class latency on small objects. These are generous
+# enough for a contended local volume without masking a genuinely stuck write.
+upload_attempt_timeout_ms = 120000
+upload_retry_attempts = 5
+streaming_upload_attempt_timeout_ms = 120000
+streaming_upload_retry_attempts = 5
+read_attempt_timeout_ms = 120000
+read_retry_attempts = 5
+streaming_read_attempt_timeout_ms = 120000
+streaming_read_retry_attempts = 5

@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "Complete 2,505-query compiler-benchmark pass over every runnable local engine.",
+    "Correctness verification is disabled: this run measures compilation and",
+    "incrementalization classification without the EXCEPT ALL verifier."
+  ],
+  "baseline": {
+    "engines": [
+      "duckdb",
+      "duckdb-openivm",
+      "spark",
+      "spark-openivm",
+      "feldera"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "compiler_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": true,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "compiler_bench": {
+      "scale_factor": 3,
+      "timeout_s": 60,
+      "limit": 0,
+      "verify": false,
+      "delta_batch_size": 10,
+      "ducklake": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "compiler-bench-complete-no-verify",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1"
+    }
+  ]
+}

@@ -1,7 +1,12 @@
 flask>=3.0
 gunicorn>=22.0
 matplotlib>=3.8
-dbt-core~=1.11
+# Upper-bounded to <1.12 (~=1.11.0, not ~=1.11). dbt-risingwave requires
+# dbt-core~=1.11.0, and with the looser ~=1.11 (which permits <2.0) pip fetches a
+# 1.12.x wheel, then aborts with InconsistentCandidate instead of backtracking to
+# a 1.11.x that satisfies both. Every adapter here already resolves to 1.11.x, so
+# this only makes the existing bound explicit.
+dbt-core~=1.11.0
 https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
 dbt-duckdb>=1.9
 dbt-databricks~=1.11
@@ -10,4 +15,11 @@ databricks-sdk>=0.40
 duckdb>=1.5.2
 deltalake>=0.18
 dbt-feldera @ git+https://github.com/mdrakiburrahman/feldera.git@41548878813d750a25f531280517b96ede7b56a1#subdirectory=python/dbt-feldera
+dbt-risingwave~=1.11
+# RisingWave speaks the PostgreSQL wire protocol; the source loader streams the
+# Delta payload into it directly rather than through dbt.
+psycopg[binary]>=3.2
+# Batch-1 RisingWave loading stages resolved Delta snapshots through the local
+# MinIO service; boto3 provides bounded multipart uploads and path-style S3.
+boto3>=1.35
 sqlglot>=26.0

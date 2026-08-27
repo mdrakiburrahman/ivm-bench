@@ -1,0 +1,22 @@
+tpcdi:
+  target: risingwave
+  outputs:
+    risingwave:
+      type: risingwave
+      host: "{{ env_var('RISINGWAVE_HOST', 'risingwave') }}"
+      port: "{{ env_var('RISINGWAVE_PORT', '4566') | int }}"
+      user: "{{ env_var('RISINGWAVE_USER', 'root') }}"
+      pass: "{{ env_var('RISINGWAVE_PASSWORD', '') }}"
+      dbname: "{{ env_var('RISINGWAVE_DATABASE', 'dev') }}"
+      schema: tpcdi
+      threads: "{{ env_var('RISINGWAVE_THREADS', '1') | int }}"
+      connect_timeout: 60
+      # The documented lever for batch-1 (backfill) throughput. RisingWave runs
+      # the backfill phase at this parallelism and then switches to
+      # streaming_parallelism once the job is caught up, so raising it speeds up
+      # MV creation without changing steady-state behaviour — which keeps batches
+      # 2 and 3 comparable across runs. Deliberately does NOT set
+      # streaming_parallelism, so the incremental measurement is untouched.
+      #
+      # Unset means "leave RisingWave's default", which is what earlier runs used.
+      streaming_parallelism_for_backfill: "{{ env_var('RISINGWAVE_BACKFILL_PARALLELISM', '8') | int }}"

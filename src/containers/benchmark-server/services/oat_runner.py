@@ -95,6 +95,7 @@ RESULTS_CSV_FIELDS = (
     "metadata_bytes",
     "source_bytes",
     "total_bytes",
+    "physical_state_bytes",
     "helper_over_visible_ratio",
     "storage_errors",
     "storage_artifact",
@@ -739,6 +740,9 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "metadata_bytes": storage.get("metadata_bytes", ""),
                         "source_bytes": storage.get("source_bytes", ""),
                         "total_bytes": storage.get("total_bytes", ""),
+                        "physical_state_bytes": storage.get(
+                            "physical_state_bytes", ""
+                        ),
                         "helper_over_visible_ratio": storage.get(
                             "overhead_ratio_helper_to_visible", ""
                         ),

@@ -1,0 +1,64 @@
+{
+  "_comment": [
+    "compiler-bench for RisingWave only.",
+    "",
+    "RisingWave consumes the postgres dialect of the corpus (it speaks pgwire), and the",
+    "adapter strips the length/precision type parameters its parser rejects and gives each",
+    "view an explicit positional column list — a corpus query that does SELECT * over a",
+    "join otherwise fails with 'column \"w_id\" specified more than once'. Both are SQL",
+    "surface adaptations, not incrementalization limits.",
+    "",
+    "Classification is constant: a MATERIALIZED VIEW is a streaming dataflow, so a query",
+    "the planner accepts is maintained incrementally and one it rejects is not maintained",
+    "at all. The informative number is the acceptance rate.",
+    "",
+    "The smoke row runs first so a dialect or connection problem surfaces in minutes",
+    "rather than after the full corpus.",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/compiler-bench-risingwave.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["risingwave"],
+    "parallel": false,
+    "feature_flags": {
+      "compiler_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": false,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "compiler_bench": {
+      "scale_factor": 3,
+      "timeout_s": 60,
+      "limit": 200,
+      "verify": true,
+      "delta_batch_size": 10
+    }
+  },
+  "experiments": [
+    {
+      "label": "compiler-bench-risingwave-smoke",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "compiler_bench": {
+        "limit": 200
+      }
+    },
+    {
+      "_comment": "Full corpus. Run after the smoke row passes.",
+      "label": "compiler-bench-risingwave-full",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "compiler_bench": {
+        "limit": 0
+      }
+    }
+  ]
+}

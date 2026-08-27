@@ -1,0 +1,13 @@
+ARG RISINGWAVE_BUILDER_IMAGE
+ARG RISINGWAVE_BASE_IMAGE
+
+FROM ${RISINGWAVE_BUILDER_IMAGE} AS builder
+FROM ${RISINGWAVE_BASE_IMAGE}
+ARG RISINGWAVE_GIT_SHA
+
+LABEL org.opencontainers.image.revision=${RISINGWAVE_GIT_SHA}
+
+# RisingWave's production binary is statically linked. Reusing the released
+# runtime keeps Java connectors and OS libraries identical to stock v3.0.2.
+COPY --from=builder /risingwave/bin/risingwave /risingwave/bin/risingwave
+COPY --from=builder /risingwave/bin/risingwave.dwp /risingwave/bin/risingwave.dwp

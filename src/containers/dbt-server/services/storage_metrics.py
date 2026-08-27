@@ -8,6 +8,7 @@ returned as structured errors.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -20,9 +21,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
 LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "databricks-enzyme"}
+# RisingWave is measured through its own catalog rather than by walking a
+# directory, so it is its own case rather than part of LOCAL_ENGINES.
+RISINGWAVE_ENGINES = {"risingwave"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
-SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES
+SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES | RISINGWAVE_ENGINES
 
 PROCESSED_ROOTS = {
     "spark": Path("/data/processed/spark"),
@@ -31,6 +35,7 @@ PROCESSED_ROOTS = {
     "duckdb-openivm": Path("/data/processed/duckdb-openivm"),
     "feldera": Path("/data/processed/feldera"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
+    "risingwave": Path("/data/processed/risingwave"),
 }
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
 RAW_BACKED_ENGINES = {"spark", "feldera"}
@@ -318,6 +323,50 @@ def _collect_local_root(
             kind=kind,
         )
     return items, totals, errors
+
+
+def _collect_physical_root(
+    root: Path, *, deadline: float
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Return actual allocated blocks and apparent bytes beneath ``root``.
+
+    Unlike RisingWave's logical ``rw_table_stats``, allocated blocks measure
+    the host volume consumption that can make a benchmark run out of disk.
+    Directory blocks are included to match ``du``.
+    """
+    summary: Dict[str, Any] = {
+        "path": str(root),
+        "allocated_bytes": 0,
+        "measurement": "filesystem_st_blocks",
+    }
+    if not root.is_dir():
+        return summary, [f"physical storage root does not exist: {root}"]
+
+    errors: List[str] = []
+    stack = [root]
+    while stack:
+        expired = _deadline_error(deadline)
+        if expired:
+            errors.append(expired)
+            break
+        current = stack.pop()
+        try:
+            current_stat = current.stat(follow_symlinks=False)
+            summary["allocated_bytes"] += int(current_stat.st_blocks) * 512
+            entries = list(os.scandir(current))
+        except OSError as exc:
+            errors.append(f"cannot scan physical storage path {current}: {exc}")
+            continue
+        for entry in entries:
+            try:
+                entry_stat = entry.stat(follow_symlinks=False)
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                summary["allocated_bytes"] += int(entry_stat.st_blocks) * 512
+            except OSError as exc:
+                errors.append(f"cannot stat physical storage path {entry.path}: {exc}")
+    return summary, errors
 
 
 def _collect_feldera_helper_data(
@@ -869,6 +918,166 @@ def _fabric_storage(
     return items, totals, errors
 
 
+def _collect_risingwave_storage(
+    *, deadline: float
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[str]]:
+    """Measure RisingWave's state through its own catalog, not the filesystem.
+
+    Walking /root/.risingwave would only give one opaque Hummock blob total, and
+    the interesting split is inside it. RisingWave names every state table in
+    `rw_catalog`, and `rw_table_stats` carries per-table key/value bytes, so the
+    three categories fall out directly:
+
+      visible_output — the MV result tables (`rw_materialized_views`)
+      helper_data    — the streaming operator state backing those MVs
+                       (`rw_internal_tables`: join/agg/window state). This is the
+                       IVM overhead the benchmark is trying to price.
+      source         — the loaded TPC-DI base tables (`rw_tables`)
+
+    Hummock counts logical bytes before compression, so these are an upper bound
+    on what the object store actually holds; the ratio between them is the
+    comparable number, not the absolute size.
+    """
+    from services import risingwave_sources
+
+    items: List[Dict[str, Any]] = []
+    totals = _empty_totals()
+    errors: List[str] = []
+
+    expired = _deadline_error(deadline)
+    if expired:
+        return items, totals, [expired]
+
+    # (catalog view, storage category, kind) — each row becomes one item.
+    sources = (
+        ("rw_materialized_views", "visible_output", "materialized_view"),
+        ("rw_internal_tables", "helper_data", "operator_state"),
+        ("rw_tables", "source", "table"),
+    )
+    try:
+        conn = risingwave_sources._connect()
+    except Exception as exc:
+        return items, totals, [f"RisingWave storage unavailable: {exc}"]
+    try:
+        cur = conn.cursor()
+        for view, category, kind in sources:
+            if _deadline_error(deadline):
+                errors.append(f"deadline reached before reading {view}")
+                break
+            try:
+                cur.execute(
+                    "SELECT c.id, c.name, "
+                    "       COALESCE(st.total_key_size, 0) "
+                    "     + COALESCE(st.total_value_size, 0) AS bytes, "
+                    "       COALESCE(st.total_key_count, 0) AS rows "
+                    f"FROM rw_catalog.{view} c "
+                    "JOIN rw_catalog.rw_table_stats st ON st.id = c.id"
+                )
+                rows = cur.fetchall()
+            except Exception as exc:
+                errors.append(f"cannot read rw_catalog.{view}: {exc}")
+                continue
+            for relation_id, name, bytes_, row_count in rows:
+                _add_item(
+                    items,
+                    totals,
+                    engine="risingwave",
+                    name=str(name),
+                    category=category,
+                    bytes_=_safe_int(bytes_),
+                    file_count=0,
+                    path=f"hummock://{view}/{name}",
+                    kind=kind,
+                )
+                items[-1]["relation_id"] = _safe_int(relation_id)
+                del row_count
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # The meta store is a local SQLite file, not part of Hummock.
+    meta_root = PROCESSED_ROOTS["risingwave"] / "state" / "meta_store"
+    if meta_root.is_dir():
+        meta_items, meta_totals, meta_errors = _collect_local_root(
+            "risingwave", meta_root, root_category="metadata", deadline=deadline
+        )
+        items.extend(meta_items)
+        _merge_totals(totals, meta_totals)
+        errors.extend(meta_errors)
+
+    return items, totals, errors
+
+
+def _collect_risingwave_current_ssts(
+    *, deadline: float
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Measure the compressed SSTs referenced by the current Hummock version.
+
+    The filesystem footprint also contains obsolete SSTs waiting for GC. Keeping
+    the two numbers separate tells us whether shorter retention can recover the
+    space or whether the live streaming state itself is the limiting factor.
+    """
+    from services import risingwave_sources
+
+    expired = _deadline_error(deadline)
+    if expired:
+        return None, [expired]
+    try:
+        conn = risingwave_sources._connect()
+    except Exception as exc:
+        return None, [f"RisingWave SST storage unavailable: {exc}"]
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT CAST(table_ids AS VARCHAR), "
+            "       COALESCE(SUM(file_size), 0), "
+            "       COALESCE(SUM(uncompressed_file_size), 0), "
+            "       COALESCE(SUM(total_key_count), 0), "
+            "       COUNT(*) "
+            "FROM rw_catalog.rw_hummock_sstables "
+            "GROUP BY table_ids "
+            "ORDER BY SUM(file_size) DESC"
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return None, ["rw_catalog.rw_hummock_sstables returned no rows"]
+        groups = []
+        for raw_table_ids, file_bytes, uncompressed_bytes, key_count, sst_count in rows:
+            try:
+                parsed_table_ids = json.loads(str(raw_table_ids))
+            except (TypeError, ValueError):
+                parsed_table_ids = []
+            if not isinstance(parsed_table_ids, list):
+                parsed_table_ids = []
+            groups.append(
+                {
+                    "table_ids": [_safe_int(value) for value in parsed_table_ids],
+                    "file_bytes": _safe_int(file_bytes),
+                    "uncompressed_bytes": _safe_int(uncompressed_bytes),
+                    "key_count": _safe_int(key_count),
+                    "file_count": _safe_int(sst_count),
+                }
+            )
+        return {
+            "file_bytes": sum(group["file_bytes"] for group in groups),
+            "uncompressed_bytes": sum(
+                group["uncompressed_bytes"] for group in groups
+            ),
+            "key_count": sum(group["key_count"] for group in groups),
+            "file_count": sum(group["file_count"] for group in groups),
+            "groups": groups,
+        }, []
+    except Exception as exc:
+        return None, [f"cannot read rw_catalog.rw_hummock_sstables: {exc}"]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     totals = _empty_totals()
@@ -900,6 +1109,10 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
         local_items, local_totals, local_errors = _fabric_storage(
             engine, deadline=deadline
         )
+    elif engine in RISINGWAVE_ENGINES:
+        local_items, local_totals, local_errors = _collect_risingwave_storage(
+            deadline=deadline
+        )
     else:
         local_items, local_totals, local_errors = _collect_local_root(
             engine, PROCESSED_ROOTS[engine], deadline=deadline
@@ -907,6 +1120,23 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
     items.extend(local_items)
     _merge_totals(totals, local_totals)
     errors.extend(local_errors)
+
+    physical_state: Optional[Dict[str, Any]] = None
+    if engine in RISINGWAVE_ENGINES:
+        physical_state, physical_errors = _collect_physical_root(
+            PROCESSED_ROOTS[engine] / "state", deadline=deadline
+        )
+        errors.extend(physical_errors)
+        current_ssts, sst_errors = _collect_risingwave_current_ssts(
+            deadline=deadline
+        )
+        errors.extend(sst_errors)
+        if physical_state is not None and current_ssts is not None:
+            physical_state["current_ssts"] = current_ssts
+            physical_state["non_current_sst_allocated_bytes"] = max(
+                0,
+                physical_state["allocated_bytes"] - current_ssts["file_bytes"],
+            )
 
     if engine == "feldera" and time.monotonic() < deadline:
         helper_items, helper_totals, helper_errors = _collect_feldera_helper_data(
@@ -956,6 +1186,8 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
             key=lambda item: (item["category"], item["name"], item["kind"]),
         ),
     }
+    if physical_state is not None:
+        result["physical_state"] = physical_state
     if engine in PROCESSED_ROOTS:
         result["roots"] = {"processed": str(PROCESSED_ROOTS[engine])}
     result.setdefault("roots", {})["raw_base_reference"] = str(RAW_DELTA_ROOT)

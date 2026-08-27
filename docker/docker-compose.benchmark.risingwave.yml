@@ -1,0 +1,134 @@
+services:
+  minio:
+    image: minio/minio:${MINIO_VERSION:-RELEASE.2025-09-07T16-13-09Z}
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}
+      MINIO_ROOT_PASSWORD: ${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}
+    volumes:
+      # Object storage is only a transient bulk-load transport. The loader
+      # deletes every object after RisingWave has copied it into Hummock.
+      - ../mount/results/${SCALE_FACTOR:-3}/risingwave/minio:/data
+    cpus: ${MINIO_CPUS:-4}
+    mem_limit: ${MINIO_MEM:-4g}
+
+  risingwave:
+    # GCI builds this exact source revision from pins.env. Fail if the image is
+    # absent; silently falling back to stock v3.0.2 would invalidate the run.
+    image: ${RISINGWAVE_IMAGE:-ivm-bench/risingwave:fd769195b25fb663c80b85d753d5e14bf170c74d}
+    # The tuned config is not optional: with RisingWave's defaults this workload
+    # fails on a local volume. See src/containers/risingwave/risingwave.toml for
+    # the three defaults it overrides and the failure each one causes.
+    command: single_node --config-path /risingwave.toml
+    # Matches the other host engines (feldera, duckdb, spark all take 32 cpus /
+    # 120g) so cross-engine batch timings are comparable. These were held at
+    # 8/32g while the Hummock write-timeout bug was unfixed; risingwave.toml now
+    # addresses that directly with 120 s object-store timeouts, so the cap is
+    # redundant — and it made RisingWave's batch 1 look far worse than a
+    # like-for-like comparison. RisingWave also sizes actor parallelism from the
+    # host rather than the cgroup, so an 8-cpu limit left ~24 actors
+    # oversubscribed on 8 cores.
+    cpus: ${RISINGWAVE_CPUS:-32}
+    mem_limit: ${RISINGWAVE_MEM:-120g}
+    ports:
+      - "4566:4566"
+    volumes:
+      # RisingWave keeps its own state (hummock object store + meta) here. It
+      # never reads the raw Delta payload directly: DuckDB resolves the Delta
+      # snapshots and MinIO exposes temporary Parquet through RisingWave's S3
+      # connector. The resulting source tables themselves live in Hummock.
+      - ../mount/results/${SCALE_FACTOR:-3}/risingwave/state:/root/.risingwave
+      - ../src/containers/risingwave/risingwave.toml:/risingwave.toml:ro
+    healthcheck:
+      # A bash TCP probe against the pgwire port, NOT psql: the RisingWave image
+      # ships neither psql nor nc, so a psql-based check can never pass and the
+      # container stays "health: starting" forever, blocking dbt-server's
+      # depends_on until compose times out.
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/4566' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  risingwave-tuner:
+    image: ${RISINGWAVE_IMAGE:-ivm-bench/risingwave:fd769195b25fb663c80b85d753d5e14bf170c74d}
+    entrypoint: ["/bin/bash", "/tune-compaction.sh"]
+    depends_on:
+      risingwave:
+        condition: service_healthy
+    # single_node binds the meta API to loopback, so the ctl process must share
+    # RisingWave's network namespace rather than connecting by service DNS.
+    network_mode: service:risingwave
+    environment:
+      RW_META_ADDR: http://127.0.0.1:5690
+      # TPC-DI's anti-join and history-join states are highly repetitive. The
+      # stock v3.0.2 policy leaves L0-L2 uncompressed and uses Lz4 at L3-L4;
+      # force Zstd at every level because SF100 is disk-bound, not CPU-bound.
+      RW_COMPRESSION_ALGORITHM: "${RW_COMPRESSION_ALGORITHM:-Zstd}"
+      RW_COMPRESSION_LEVELS: "${RW_COMPRESSION_LEVELS:-0 1 2 3 4 5 6}"
+      # A ctl process registers a temporary RiseCtl worker on every poll. One
+      # second produced thousands of meta-node registrations during source
+      # loading; compaction groups do not appear at that cadence.
+      RW_TUNER_INTERVAL_SECONDS: "${RW_TUNER_INTERVAL_SECONDS:-15}"
+    volumes:
+      - ../src/containers/risingwave/tune-compaction.sh:/tune-compaction.sh:ro
+    cpus: 0.25
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/risingwave-tuner-ready"]
+      interval: 2s
+      timeout: 1s
+      retries: 60
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    depends_on:
+      risingwave-tuner:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    cpus: ${DBT_SERVER_CPUS:-8}
+    mem_limit: ${DBT_SERVER_MEM:-16g}
+    environment:
+      RISINGWAVE_HOST: risingwave
+      RISINGWAVE_PORT: "4566"
+      RISINGWAVE_USER: root
+      RISINGWAVE_DATABASE: dev
+      # Resolve Delta snapshots with DuckDB, stage Parquet in local MinIO, and
+      # let RisingWave perform a parallel INSERT ... SELECT from its documented
+      # S3 connector. The fallback uses the same workers over pgwire.
+      RISINGWAVE_BULK_LOAD: "${RISINGWAVE_BULK_LOAD:-1}"
+      RISINGWAVE_BULK_FALLBACK: "${RISINGWAVE_BULK_FALLBACK:-1}"
+      RISINGWAVE_LOAD_WORKERS: "${RISINGWAVE_LOAD_WORKERS:-4}"
+      RISINGWAVE_STAGE_THREADS: "${RISINGWAVE_STAGE_THREADS:-4}"
+      RISINGWAVE_BATCH_PARALLELISM: "${RISINGWAVE_BATCH_PARALLELISM:-32}"
+      RISINGWAVE_SOURCE_PARALLELISM: "${RISINGWAVE_SOURCE_PARALLELISM:-4}"
+      RISINGWAVE_MAX_BIND_PARAMS: "${RISINGWAVE_MAX_BIND_PARAMS:-20000}"
+      RISINGWAVE_S3_ENDPOINT: http://minio:9000
+      RISINGWAVE_S3_ACCESS_KEY: "${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}"
+      RISINGWAVE_S3_SECRET_KEY: "${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}"
+      RISINGWAVE_S3_BUCKET: ivm-bench
+      # dbt build concurrency. Unlike duckdb (in-process, parallel via
+      # DUCKDB_THREADS) and feldera (one compiled program, so dbt threads do
+      # nothing), RisingWave's 49 models are independent CREATE MATERIALIZED VIEW
+      # statements and dbt threads is the only thing that lets their backfills
+      # overlap. At 1, batch 1 used 3.95 of 8 allocated cores (49 %) — it was
+      # serialised, not compute-bound. Four concurrent jobs at backfill
+      # parallelism eight supply 32 actor slots without the 8 x 16 = 128-way
+      # oversubscription used by the failed SF100 run.
+      RISINGWAVE_THREADS: "${RISINGWAVE_THREADS:-4}"
+      # Backfill parallelism, the documented knob for MV-creation speed. Set here
+      # so it can be swept without rebuilding the image. Steady-state parallelism
+      # is deliberately left at RisingWave's default so batches 2/3 stay
+      # comparable with earlier runs.
+      RISINGWAVE_BACKFILL_PARALLELISM: "${RISINGWAVE_BACKFILL_PARALLELISM:-8}"
+      # Locality backfill is a premium feature. The bundled development license
+      # is limited to four cores, while benchmark hosts are intentionally larger.
+      RISINGWAVE_LOCALITY_BACKFILL: "${RISINGWAVE_LOCALITY_BACKFILL:-false}"
+      RISINGWAVE_JOIN_ENCODING: "${RISINGWAVE_JOIN_ENCODING:-cpu_optimized}"
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/risingwave:/data/processed/risingwave
+      - ../mount/stats/${SCALE_FACTOR:-3}/risingwave:/data/stats

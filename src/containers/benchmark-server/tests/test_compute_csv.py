@@ -74,6 +74,36 @@ class ComputeMetricsCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["compute_semantics"], "test semantics")
         self.assertEqual(rows[0]["compute_artifact"], "container_stats.jsonl")
 
+    def test_physical_state_bytes_are_flattened_separately_from_logical_bytes(self):
+        state = {
+            "experiments": [
+                {
+                    "inputs": {"engines": ["risingwave"]},
+                    "engines": {
+                        "risingwave": {
+                            "batches": [
+                                {
+                                    "batch_num": 1,
+                                    "status": "completed",
+                                    "extra": {
+                                        "storage": {
+                                            "total_bytes": 346_000,
+                                            "physical_state_bytes": 39_000,
+                                        }
+                                    },
+                                }
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+
+        rows = list(csv.DictReader(io.StringIO(generate_results_csv(state))))
+
+        self.assertEqual(rows[0]["total_bytes"], "346000")
+        self.assertEqual(rows[0]["physical_state_bytes"], "39000")
+
     def test_cumulative_cpu_counters_are_subtracted_exactly(self):
         start = {
             "containers": {
