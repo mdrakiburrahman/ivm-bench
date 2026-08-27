@@ -1019,6 +1019,12 @@ class EngineRunner:
                 f"[risingwave] Sources loaded: "
                 f"{src_result.get('tables_created', '?')} tables"
             )
+            for metric in src_result.get("load_metrics") or []:
+                self._emit(
+                    f"[risingwave] Source load {metric.get('table', '?')}: "
+                    f"{metric.get('rows', '?')} rows via {metric.get('mode', '?')} "
+                    f"in {metric.get('duration_s', '?')}s"
+                )
             return self._run_dbt(batch_num)
 
         self._emit(f"[risingwave] Appending batch {batch_num} sources")
