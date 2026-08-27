@@ -1,6 +1,7 @@
 """Behavior tests for the RisingWave source-loading paths."""
 
 import importlib.util
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -58,6 +59,24 @@ class RisingWaveSourceLoaderTest(unittest.TestCase):
 
         self.assertEqual(project.count("RISINGWAVE_LOCALITY_BACKFILL', 'false'"), 3)
         self.assertIn('RISINGWAVE_LOCALITY_BACKFILL:-false', compose)
+
+    def test_gci_uses_exact_patched_risingwave_image(self):
+        repo_root = DBT_SERVER.parents[2]
+        risingwave_dir = repo_root / "src" / "containers" / "risingwave"
+        compose = (repo_root / "docker" / "docker-compose.benchmark.risingwave.yml").read_text()
+        workflow = (repo_root / ".github" / "workflows" / "gci.yaml").read_text()
+
+        image = subprocess.check_output(
+            ["bash", str(risingwave_dir / "build-pinned-image.sh"), "--print-image"],
+            text=True,
+        ).strip()
+
+        self.assertEqual(
+            image,
+            "ivm-bench/risingwave:eceb7a9e97979634d910a339cb37ba1719b1271b",
+        )
+        self.assertEqual(compose.count(f"${{RISINGWAVE_IMAGE:-{image}}}"), 2)
+        self.assertIn("build-pinned-image.sh", workflow)
 
     def test_initial_load_falls_back_to_pgwire_before_returning(self):
         spec = sources.LoadSpec("staging_trade", "SELECT 1")
