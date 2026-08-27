@@ -67,9 +67,9 @@ def run_collector(by_view, fail_on=(), deadline_offset=60):
 
 
 CATALOG = {
-    "rw_materialized_views": [("dim_customer", 300, 10), ("fact_trade", 700, 20)],
-    "rw_internal_tables": [("__internal_join_0", 1500, 40)],
-    "rw_tables": [("staging_trade", 250, 5)],
+    "rw_materialized_views": [(1, "dim_customer", 300, 10), (2, "fact_trade", 700, 20)],
+    "rw_internal_tables": [(3, "__internal_join_0", 1500, 40)],
+    "rw_tables": [(4, "staging_trade", 250, 5)],
 }
 
 
@@ -90,6 +90,7 @@ class RisingWaveStorageTest(unittest.TestCase):
         internal = next(i for i in items if i["name"] == "__internal_join_0")
         self.assertEqual(internal["category"], "helper_data")
         self.assertEqual(internal["kind"], "operator_state")
+        self.assertEqual(internal["relation_id"], 3)
 
     def test_base_tables_are_source_not_visible_output(self):
         items, _, _ = run_collector(CATALOG)
@@ -131,7 +132,12 @@ class RisingWaveStorageTest(unittest.TestCase):
 
     def test_current_ssts_report_live_compressed_and_uncompressed_bytes(self):
         cursor = FakeCursor(
-            {"rw_hummock_sstables": [(1234, 5678, 90, 12)]}
+            {
+                "rw_hummock_sstables": [
+                    ("[10]", 1000, 4000, 70, 8),
+                    ("[20, 21]", 234, 1678, 20, 4),
+                ]
+            }
         )
         conn = FakeConn(cursor)
         fake_sources = Mock()
@@ -149,6 +155,22 @@ class RisingWaveStorageTest(unittest.TestCase):
                 "uncompressed_bytes": 5678,
                 "key_count": 90,
                 "file_count": 12,
+                "groups": [
+                    {
+                        "table_ids": [10],
+                        "file_bytes": 1000,
+                        "uncompressed_bytes": 4000,
+                        "key_count": 70,
+                        "file_count": 8,
+                    },
+                    {
+                        "table_ids": [20, 21],
+                        "file_bytes": 234,
+                        "uncompressed_bytes": 1678,
+                        "key_count": 20,
+                        "file_count": 4,
+                    },
+                ],
             },
         )
         self.assertTrue(conn.closed)
