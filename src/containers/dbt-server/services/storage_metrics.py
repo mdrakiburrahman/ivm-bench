@@ -8,6 +8,7 @@ returned as structured errors.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -965,7 +966,7 @@ def _collect_risingwave_storage(
                 break
             try:
                 cur.execute(
-                    "SELECT c.name, "
+                    "SELECT c.id, c.name, "
                     "       COALESCE(st.total_key_size, 0) "
                     "     + COALESCE(st.total_value_size, 0) AS bytes, "
                     "       COALESCE(st.total_key_count, 0) AS rows "
@@ -976,7 +977,7 @@ def _collect_risingwave_storage(
             except Exception as exc:
                 errors.append(f"cannot read rw_catalog.{view}: {exc}")
                 continue
-            for name, bytes_, row_count in rows:
+            for relation_id, name, bytes_, row_count in rows:
                 _add_item(
                     items,
                     totals,
@@ -988,6 +989,7 @@ def _collect_risingwave_storage(
                     path=f"hummock://{view}/{name}",
                     kind=kind,
                 )
+                items[-1]["relation_id"] = _safe_int(relation_id)
                 del row_count
     finally:
         try:
@@ -1010,7 +1012,7 @@ def _collect_risingwave_storage(
 
 def _collect_risingwave_current_ssts(
     *, deadline: float
-) -> Tuple[Optional[Dict[str, int]], List[str]]:
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """Measure the compressed SSTs referenced by the current Hummock version.
 
     The filesystem footprint also contains obsolete SSTs waiting for GC. Keeping
@@ -1029,21 +1031,43 @@ def _collect_risingwave_current_ssts(
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT COALESCE(SUM(file_size), 0), "
+            "SELECT CAST(table_ids AS VARCHAR), "
+            "       COALESCE(SUM(file_size), 0), "
             "       COALESCE(SUM(uncompressed_file_size), 0), "
             "       COALESCE(SUM(total_key_count), 0), "
             "       COUNT(*) "
-            "FROM rw_catalog.rw_hummock_sstables"
+            "FROM rw_catalog.rw_hummock_sstables "
+            "GROUP BY table_ids "
+            "ORDER BY SUM(file_size) DESC"
         )
         rows = cur.fetchall()
         if not rows:
-            return None, ["rw_catalog.rw_hummock_sstables returned no summary row"]
-        file_bytes, uncompressed_bytes, key_count, sst_count = rows[0]
+            return None, ["rw_catalog.rw_hummock_sstables returned no rows"]
+        groups = []
+        for raw_table_ids, file_bytes, uncompressed_bytes, key_count, sst_count in rows:
+            try:
+                parsed_table_ids = json.loads(str(raw_table_ids))
+            except (TypeError, ValueError):
+                parsed_table_ids = []
+            if not isinstance(parsed_table_ids, list):
+                parsed_table_ids = []
+            groups.append(
+                {
+                    "table_ids": [_safe_int(value) for value in parsed_table_ids],
+                    "file_bytes": _safe_int(file_bytes),
+                    "uncompressed_bytes": _safe_int(uncompressed_bytes),
+                    "key_count": _safe_int(key_count),
+                    "file_count": _safe_int(sst_count),
+                }
+            )
         return {
-            "file_bytes": _safe_int(file_bytes),
-            "uncompressed_bytes": _safe_int(uncompressed_bytes),
-            "key_count": _safe_int(key_count),
-            "file_count": _safe_int(sst_count),
+            "file_bytes": sum(group["file_bytes"] for group in groups),
+            "uncompressed_bytes": sum(
+                group["uncompressed_bytes"] for group in groups
+            ),
+            "key_count": sum(group["key_count"] for group in groups),
+            "file_count": sum(group["file_count"] for group in groups),
+            "groups": groups,
         }, []
     except Exception as exc:
         return None, [f"cannot read rw_catalog.rw_hummock_sstables: {exc}"]
