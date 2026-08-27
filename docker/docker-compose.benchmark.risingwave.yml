@@ -13,7 +13,9 @@ services:
     mem_limit: ${MINIO_MEM:-4g}
 
   risingwave:
-    image: risingwavelabs/risingwave:${RISINGWAVE_VERSION:-v3.0.2}
+    # GCI builds this exact source revision from pins.env. Fail if the image is
+    # absent; silently falling back to stock v3.0.2 would invalidate the run.
+    image: ${RISINGWAVE_IMAGE:-ivm-bench/risingwave:eceb7a9e97979634d910a339cb37ba1719b1271b}
     # The tuned config is not optional: with RisingWave's defaults this workload
     # fails on a local volume. See src/containers/risingwave/risingwave.toml for
     # the three defaults it overrides and the failure each one causes.
@@ -49,7 +51,7 @@ services:
       start_period: 30s
 
   risingwave-tuner:
-    image: risingwavelabs/risingwave:${RISINGWAVE_VERSION:-v3.0.2}
+    image: ${RISINGWAVE_IMAGE:-ivm-bench/risingwave:eceb7a9e97979634d910a339cb37ba1719b1271b}
     entrypoint: ["/bin/bash", "/tune-compaction.sh"]
     depends_on:
       risingwave:

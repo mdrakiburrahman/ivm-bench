@@ -250,6 +250,19 @@ jobs:
           fi
           echo "BENCHMARK_EXPERIMENTS_FILE=$EXP_FILE" >> "$GITHUB_ENV"
 
+      - name: "🌊 Build pinned RisingWave image"
+        run: |
+          set -euo pipefail
+          if ! jq -e '.baseline.engines | index("risingwave") != null' \
+            "$BENCHMARK_EXPERIMENTS_FILE" >/dev/null; then
+            echo "Resolved experiment does not use RisingWave; skipping image build."
+            exit 0
+          fi
+          bash src/containers/risingwave/build-pinned-image.sh
+          image="$(bash src/containers/risingwave/build-pinned-image.sh --print-image)"
+          echo "RISINGWAVE_IMAGE=$image" >> "$GITHUB_ENV"
+          docker image inspect "$image" --format 'Pinned RisingWave image {{.Id}} ({{.Size}} bytes)'
+
       - name: "🔐 Write .env from BASE64_ENV secret"
         env:
           BASE64_ENV: ${{ secrets.BASE64_ENV }}
