@@ -1008,6 +1008,52 @@ def _collect_risingwave_storage(
     return items, totals, errors
 
 
+def _collect_risingwave_current_ssts(
+    *, deadline: float
+) -> Tuple[Optional[Dict[str, int]], List[str]]:
+    """Measure the compressed SSTs referenced by the current Hummock version.
+
+    The filesystem footprint also contains obsolete SSTs waiting for GC. Keeping
+    the two numbers separate tells us whether shorter retention can recover the
+    space or whether the live streaming state itself is the limiting factor.
+    """
+    from services import risingwave_sources
+
+    expired = _deadline_error(deadline)
+    if expired:
+        return None, [expired]
+    try:
+        conn = risingwave_sources._connect()
+    except Exception as exc:
+        return None, [f"RisingWave SST storage unavailable: {exc}"]
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(SUM(file_size), 0), "
+            "       COALESCE(SUM(uncompressed_file_size), 0), "
+            "       COALESCE(SUM(total_key_count), 0), "
+            "       COUNT(*) "
+            "FROM rw_catalog.rw_hummock_sstables"
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return None, ["rw_catalog.rw_hummock_sstables returned no summary row"]
+        file_bytes, uncompressed_bytes, key_count, sst_count = rows[0]
+        return {
+            "file_bytes": _safe_int(file_bytes),
+            "uncompressed_bytes": _safe_int(uncompressed_bytes),
+            "key_count": _safe_int(key_count),
+            "file_count": _safe_int(sst_count),
+        }, []
+    except Exception as exc:
+        return None, [f"cannot read rw_catalog.rw_hummock_sstables: {exc}"]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     totals = _empty_totals()
@@ -1057,6 +1103,16 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
             PROCESSED_ROOTS[engine] / "state", deadline=deadline
         )
         errors.extend(physical_errors)
+        current_ssts, sst_errors = _collect_risingwave_current_ssts(
+            deadline=deadline
+        )
+        errors.extend(sst_errors)
+        if physical_state is not None and current_ssts is not None:
+            physical_state["current_ssts"] = current_ssts
+            physical_state["non_current_sst_allocated_bytes"] = max(
+                0,
+                physical_state["allocated_bytes"] - current_ssts["file_bytes"],
+            )
 
     if engine == "feldera" and time.monotonic() < deadline:
         helper_items, helper_totals, helper_errors = _collect_feldera_helper_data(

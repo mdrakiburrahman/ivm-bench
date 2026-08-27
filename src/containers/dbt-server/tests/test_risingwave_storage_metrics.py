@@ -129,6 +129,30 @@ class RisingWaveStorageTest(unittest.TestCase):
     def test_risingwave_is_a_supported_engine(self):
         self.assertIn("risingwave", storage_metrics.SUPPORTED_ENGINES)
 
+    def test_current_ssts_report_live_compressed_and_uncompressed_bytes(self):
+        cursor = FakeCursor(
+            {"rw_hummock_sstables": [(1234, 5678, 90, 12)]}
+        )
+        conn = FakeConn(cursor)
+        fake_sources = Mock()
+        fake_sources._connect = Mock(return_value=conn)
+        with patch.dict(sys.modules, {"services.risingwave_sources": fake_sources}):
+            summary, errors = storage_metrics._collect_risingwave_current_ssts(
+                deadline=time.monotonic() + 60
+            )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            summary,
+            {
+                "file_bytes": 1234,
+                "uncompressed_bytes": 5678,
+                "key_count": 90,
+                "file_count": 12,
+            },
+        )
+        self.assertTrue(conn.closed)
+
     def test_physical_state_counts_allocated_blocks_separately(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
