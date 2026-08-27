@@ -59,6 +59,11 @@ services:
     network_mode: service:risingwave
     environment:
       RW_META_ADDR: http://127.0.0.1:5690
+      # TPC-DI's anti-join and history-join states are highly repetitive. The
+      # stock v3.0.2 policy leaves L0-L2 uncompressed and uses Lz4 at L3-L4;
+      # force Zstd at every level because SF100 is disk-bound, not CPU-bound.
+      RW_COMPRESSION_ALGORITHM: "${RW_COMPRESSION_ALGORITHM:-Zstd}"
+      RW_COMPRESSION_LEVELS: "${RW_COMPRESSION_LEVELS:-0 1 2 3 4 5 6}"
       # A ctl process registers a temporary RiseCtl worker on every poll. One
       # second produced thousands of meta-node registrations during source
       # loading; compaction groups do not appear at that cadence.

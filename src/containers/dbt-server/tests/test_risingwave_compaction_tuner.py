@@ -15,7 +15,7 @@ TUNER = (
 
 
 class RisingWaveCompactionTunerTest(unittest.TestCase):
-    def test_updates_only_groups_whose_first_three_levels_are_not_lz4(self):
+    def test_updates_only_groups_not_using_zstd_at_every_level(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             calls = work / "calls"
@@ -31,9 +31,13 @@ if args == ["ctl", "hummock", "list-compaction-group"]:
 CompactionGroupInfo {
     id: 1,
     compression_algorithm: [
-        "Lz4",
-        "Lz4",
-        "Lz4",
+        "Zstd",
+        "Zstd",
+        "Zstd",
+        "Zstd",
+        "Zstd",
+        "Zstd",
+        "Zstd",
     ],
 }
 CompactionGroupInfo {
@@ -42,6 +46,10 @@ CompactionGroupInfo {
         "None",
         "None",
         "Lz4",
+        "Lz4",
+        "Lz4",
+        "Zstd",
+        "Zstd",
     ],
 }
 """)
@@ -71,12 +79,12 @@ else:
             recorded = calls.read_text().splitlines()
             self.assertTrue((work / "ready").is_file())
 
-        self.assertEqual(len(recorded), 3)
+        self.assertEqual(len(recorded), 7)
         for level, call in enumerate(recorded):
             self.assertIn("update-compaction-config", call)
             self.assertIn("--compaction-group-ids 2", call)
             self.assertIn(f"--compression-level {level}", call)
-            self.assertIn("--compression-algorithm Lz4", call)
+            self.assertIn("--compression-algorithm Zstd", call)
 
 
 if __name__ == "__main__":
