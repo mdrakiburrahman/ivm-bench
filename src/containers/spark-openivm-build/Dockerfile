@@ -111,9 +111,9 @@ RUN mkdir -p /artifacts && \
 FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
-ARG OPENIVM_SPARK_REPO=https://github.com/ila/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=codex/generic-insert-only-aggregate
-ARG OPENIVM_SPARK_COMMIT=3e0e1feff0a9a251bab9b584bfb87d83a7a7038f
+ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
+ARG OPENIVM_SPARK_BRANCH=main
+ARG OPENIVM_SPARK_COMMIT=eb6d8d14fb5222e509d50abb0674f7030ced17fd
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -162,7 +162,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=3e0e1feff0a9a251bab9b584bfb87d83a7a7038f
+ARG OPENIVM_SPARK_COMMIT=eb6d8d14fb5222e509d50abb0674f7030ced17fd
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
