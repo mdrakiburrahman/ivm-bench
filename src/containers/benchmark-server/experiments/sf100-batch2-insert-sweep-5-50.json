@@ -1,0 +1,52 @@
+{
+  "_design_notes": [
+    "Batch-2 insertion-size sensitivity sweep at TPC-DI SF100.",
+    "Every row starts from clean engine state; compare batch 2 only.",
+    "batch_N_pct is the fraction of the official TPC-DI batch ingested, not the fraction of accumulated database rows.",
+    "Batch 3 is fixed at 0.01% because the current harness always executes three batches.",
+    "Set BENCHMARK_RUNS=2 to collect two independent repetitions per engine and insertion percentage."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "databricks-enzyme",
+      "spark",
+      "spark-openivm",
+      "duckdb",
+      "duckdb-openivm",
+      "feldera",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    { "label": "sf100-batch2-5pct",  "batch_2_pct": "5" },
+    { "label": "sf100-batch2-10pct", "batch_2_pct": "10" },
+    { "label": "sf100-batch2-15pct", "batch_2_pct": "15" },
+    { "label": "sf100-batch2-20pct", "batch_2_pct": "20" },
+    { "label": "sf100-batch2-25pct", "batch_2_pct": "25" },
+    { "label": "sf100-batch2-30pct", "batch_2_pct": "30" },
+    { "label": "sf100-batch2-35pct", "batch_2_pct": "35" },
+    { "label": "sf100-batch2-40pct", "batch_2_pct": "40" },
+    { "label": "sf100-batch2-45pct", "batch_2_pct": "45" },
+    { "label": "sf100-batch2-50pct", "batch_2_pct": "50" }
+  ]
+}
