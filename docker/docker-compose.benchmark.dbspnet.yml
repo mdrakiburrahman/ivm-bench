@@ -3,6 +3,17 @@
 # like the other built engines (duckdb-openivm, spark-openivm) the build container clones
 # the engine repo at a pinned commit itself — no sibling checkout needed. Override
 # DBSPNET_COMMIT to bump the engine, or DBSPNET_REPO for a fork.
+#
+# Deliberately NO DBSPNET_SNAPSHOT_DIR: leaving it unset keeps DbspNet's per-batch
+# checkpoint OFF, which is what makes this comparison apples-to-apples. Feldera writes
+# no checkpoint during an ivm-bench run — no `fault_tolerance` model is configured
+# anywhere in this repo, so `checkpoint_interval()` is None, a checkpoint cannot start
+# while a transaction is open, and every spilled file is a temporary with no recovery
+# value. Feldera's batch-window I/O is spill I/O; a DbspNet snapshot buys a recovery
+# point the other side never pays for. Turning ours on "for honesty" previously charged
+# us ~18.7 s/batch against an engine paying nothing for it — it makes the comparison
+# less fair, not more. Set it only for a deliberate persistence experiment, and do not
+# quote those batch timings against Feldera.
 services:
   dbspnet-server:
     build:
