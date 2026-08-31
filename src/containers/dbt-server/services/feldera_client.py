@@ -185,7 +185,18 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
         # Feldera holds an open DBSP transaction across all snapshot input
         # while ``transaction_mode: always`` is set. Even after every record
         # has flowed through the circuit, the transaction must walk every
-        # operator (~47k for our SQL) and persist its state to storage.
+        # operator (~47k across all workers) and evaluate it against the
+        # accumulated input. This walk is computation, not persistence:
+        # under ``transaction_mode: always`` ingest does only minimal work
+        # (resolving primary keys, indexing inputs) and the commit phase is
+        # where all view computation happens, so it maps to another
+        # engine's *step*, not to its checkpoint. Batches do spill to
+        # storage here, but that is memory management with no recovery
+        # value — no ``fault_tolerance`` model is configured anywhere in
+        # ivm-bench, so ``checkpoint_interval()`` is None and recoverable
+        # state at the end of a batch is zero. The ~47k is
+        # ``CommitProgressSummary`` summed over workers (~4k circuit nodes
+        # x 12), not 47k SQL operators.
         # This commit phase is reflected in ``transaction_status`` and
         # ``commit_progress``. We block any "done" decision while a commit
         # is in flight, otherwise the outstanding commit work bleeds into
