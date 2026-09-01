@@ -39,14 +39,25 @@ def deploy(project_dir: str | None = None) -> dict:
     """
     project_dir = project_dir or DBSPNET_PROJECT_DIR
     prog = build_program(project_dir)
+
+    # Views dbt declares but does not bind to a sink: `+stored: true` with the output
+    # connector removed (fact_market_history, daily_market_pulse — at SF=100 their
+    # truncate-mode writers never drain). Feldera computes them and the benchmark measures
+    # that compute; only the Delta write is skipped. DbspNet prunes any view that is not an
+    # output, together with its upstream chain, so these have to be named explicitly or the
+    # two engines are not running the same workload.
+    bound = {b["view"] for b in prog["output_bindings"]}
+    stored_views = [v for v in prog["outputs"] if v not in bound]
     spec = {
         "program": prog["program"],
         "inputs": prog["inputs"],
         "outputs": prog["output_bindings"],
+        "storedViews": stored_views,
     }
     logger.info(
-        "Deploying DbspNet program: %d statements, %d inputs, %d outputs",
+        "Deploying DbspNet program: %d statements, %d inputs, %d outputs, %d stored-only (%s)",
         len(spec["program"]), len(spec["inputs"]), len(spec["outputs"]),
+        len(stored_views), ", ".join(stored_views) or "none",
     )
     return _api_request("POST", "/deploy", spec, timeout=1800)
 
