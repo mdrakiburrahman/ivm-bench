@@ -164,6 +164,7 @@ def ensure_az_login(
     timeout: Optional[float] = None,
     deadline: Optional[float] = None,
     warm_livy: bool = True,
+    force: bool = False,
 ) -> None:
     """Idempotently ``az login --identity`` through the imds-router sidecar, then
     pre-warm the Livy token and start the keep-warm daemon.
@@ -172,13 +173,16 @@ def ensure_az_login(
     out to ``az account get-access-token``, which requires a logged-in ``az``.
     Safe to call repeatedly — a live login short-circuits.
     """
-    probe = subprocess.run(
-        ["az", "account", "show"],
-        capture_output=True,
-        text=True,
-        timeout=_bounded_timeout(deadline, timeout),
-    )
-    if probe.returncode != 0:
+    logged_in = False
+    if not force:
+        probe = subprocess.run(
+            ["az", "account", "show"],
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(deadline, timeout),
+        )
+        logged_in = probe.returncode == 0
+    if not logged_in:
         cmd = ["az", "login", "--identity", "--allow-no-subscriptions"]
         if UAMI_CLIENT_ID:
             cmd += ["--client-id", UAMI_CLIENT_ID]
@@ -208,16 +212,19 @@ def get_token(
         deadline=deadline,
         warm_livy=warm_livy,
     )
-    res = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", resource,
-         "--query", "accessToken", "-o", "tsv"],
-        capture_output=True,
-        text=True,
-        timeout=_bounded_timeout(deadline, timeout),
-    )
-    if res.returncode != 0:
-        raise RuntimeError(f"az token for {resource} failed: {res.stderr[:300]}")
-    return res.stdout.strip()
+    for attempt in range(2):
+        res = subprocess.run(
+            ["az", "account", "get-access-token", "--resource", resource,
+             "--query", "accessToken", "-o", "tsv"],
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(deadline, timeout),
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+        if attempt == 0:
+            ensure_az_login(timeout=timeout, deadline=deadline, warm_livy=warm_livy, force=True)
+    raise RuntimeError(f"az token for {resource} failed: {res.stderr[:300]}")
 
 
 def _fabric_headers() -> Dict[str, str]:
