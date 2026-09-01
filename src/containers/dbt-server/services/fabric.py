@@ -8,8 +8,8 @@ Consolidates everything the dbt-server does *around* the dbt-fabricspark build:
 * Environment manager — upload the openivm JAR + push a fresh Spark-config set
   into Fabric Environment "35", then publish (openivm engine only);
 * shared cache — stage the locally-generated TPC-DI Delta dirs into the
-  lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/`` area via azcopy
-  (mirrors the databricks-enzyme UC-Volume cache);
+  lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/batch<M>_pct=<P>/``
+  area via azcopy (mirrors the databricks-enzyme UC-Volume cache);
 * blow-up — drop the lakehouse ``Tables/`` contents + the openivm state
   (``Files/_openivm``) between runs so each experiment starts clean.
 
@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
+
+from services.source_cache import batch_cache_root
 
 logger = logging.getLogger(__name__)
 
@@ -523,10 +525,13 @@ def onelake_abfss(rel_path: str, lakehouse_id: Optional[str] = None) -> str:
     return f"abfss://{WORKSPACE_ID}@{ONELAKE_HOST}/{lid}/{rel_path.lstrip('/')}"
 
 
-def cache_section_abfss(sf: int, section: str) -> str:
+def cache_section_abfss(sf: int, batch_num: int, section: str) -> str:
     """ABFSS URI of a cache section (``batch1/<t>``, ``staging/<t>``,
     ``staging_batch<N>/<t>``, ``audit``) — read from the shared CACHE lakehouse."""
-    return onelake_abfss(f"{CACHE_ROOT}/sf={sf}/{section}", lakehouse_id=resolve_cache_lakehouse())
+    root = batch_cache_root(CACHE_ROOT, sf, batch_num)
+    return onelake_abfss(
+        f"{root}/{section}", lakehouse_id=resolve_cache_lakehouse()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -724,10 +729,10 @@ def _all_init_sections() -> List[Tuple[str, str]]:
 
 def seed_cache_init(sf: int) -> dict:
     """Idempotently stage the batch-1 + initial-staging + audit Delta dirs into
-    the shared CACHE lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/``.
-    Marker-guarded (reused across same-SF runs)."""
+    a percentage-keyed path in the shared CACHE lakehouse. Marker-guarded."""
     cache_lh = resolve_cache_lakehouse()
-    marker = f"{CACHE_ROOT}/sf={sf}/_UPLOADED_INIT"
+    root = batch_cache_root(CACHE_ROOT, sf, 1)
+    marker = f"{root}/_UPLOADED_INIT"
     if _dfs_exists(marker, lakehouse_id=cache_lh):
         return {"status": "ok", "files_uploaded": 0, "already_seeded": True}
     total = 0
@@ -735,18 +740,21 @@ def seed_cache_init(sf: int) -> dict:
         local = Path(RAW_DELTA_DIR) / subdir
         if not local.is_dir():
             continue
-        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/{section}", lakehouse_id=cache_lh)
+        total += _azcopy(
+            local, f"{root}/{section}", lakehouse_id=cache_lh
+        )
     _dfs_put_marker(marker, lakehouse_id=cache_lh)
     return {"status": "ok", "files_uploaded": total, "already_seeded": False}
 
 
 def seed_cache_batch(sf: int, batch_num: int) -> dict:
     """Idempotently stage the per-batch staging Delta into the shared CACHE
-    lakehouse ``sf=<N>/staging_batch<N>/``. Marker-guarded."""
+    lakehouse's percentage-keyed ``staging_batch<N>/``. Marker-guarded."""
     if batch_num not in (2, 3):
         raise ValueError(f"seed_cache_batch supports batch 2/3, got {batch_num}")
     cache_lh = resolve_cache_lakehouse()
-    marker = f"{CACHE_ROOT}/sf={sf}/_UPLOADED_BATCH{batch_num}"
+    root = batch_cache_root(CACHE_ROOT, sf, batch_num)
+    marker = f"{root}/_UPLOADED_BATCH{batch_num}"
     if _dfs_exists(marker, lakehouse_id=cache_lh):
         return {"status": "ok", "files_uploaded": 0, "already_seeded": True}
     total = 0
@@ -755,7 +763,11 @@ def seed_cache_batch(sf: int, batch_num: int) -> dict:
         local = local_batch if local_batch.is_dir() else Path(RAW_DELTA_DIR) / "staging" / t
         if not local.is_dir():
             continue
-        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/staging_batch{batch_num}/{t}", lakehouse_id=cache_lh)
+        total += _azcopy(
+            local,
+            f"{root}/staging_batch{batch_num}/{t}",
+            lakehouse_id=cache_lh,
+        )
     _dfs_put_marker(marker, lakehouse_id=cache_lh)
     return {"status": "ok", "files_uploaded": total, "already_seeded": False}
 
