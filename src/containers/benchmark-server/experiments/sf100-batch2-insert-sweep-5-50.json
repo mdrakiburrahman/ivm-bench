@@ -38,6 +38,7 @@
     }
   },
   "experiments": [
+    { "label": "sf100-batch2-1pct",  "batch_2_pct": "1" },
     { "label": "sf100-batch2-5pct",  "batch_2_pct": "5" },
     { "label": "sf100-batch2-10pct", "batch_2_pct": "10" },
     { "label": "sf100-batch2-15pct", "batch_2_pct": "15" },
