@@ -52,6 +52,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         preamble_lines.append(f"SET threads={int(THREADS)};")
     preamble_lines.extend([
         "LOAD openivm;",
+        "SET openivm_running_window_incremental=true;",
     ])
     if PROFILE_REFRESH:
         preamble_lines.append("SET openivm_profile_refresh=true;")
