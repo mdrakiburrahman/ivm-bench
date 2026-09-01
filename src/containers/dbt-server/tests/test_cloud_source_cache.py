@@ -46,6 +46,7 @@ class DatabricksAppendTest(unittest.TestCase):
                 "databricks.sdk",
                 "databricks.sdk.core",
                 "databricks.sdk.errors",
+                "pandas",
             )
         }
         databricks = types.ModuleType("databricks")
@@ -64,6 +65,7 @@ class DatabricksAppendTest(unittest.TestCase):
             "databricks.sdk": sdk,
             "databricks.sdk.core": core,
             "databricks.sdk.errors": errors,
+            "pandas": types.ModuleType("pandas"),
         })
         spec = importlib.util.spec_from_file_location(
             "_test_databricks_enzyme_sources",
