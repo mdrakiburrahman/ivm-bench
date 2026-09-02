@@ -12,6 +12,10 @@ on:
         description: "Optional comma-separated engine override for a pre-built experiments file"
         default: ""
         type: string
+      experiment_batch_2_pcts:
+        description: "Optional JSON array of batch-2 percentages; runs one filtered pre-built experiment per queued job"
+        default: ""
+        type: string
       scale_factor:
         description: "TPC-DI scale factor"
         default: "10"
@@ -116,6 +120,12 @@ permissions:
 
 jobs:
   benchmark:
+    name: benchmark${{ matrix.batch_2_pct && format('-batch2-{0}pct', matrix.batch_2_pct) || '' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        batch_2_pct: ${{ fromJSON(inputs.experiment_batch_2_pcts || '[""]') }}
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
@@ -141,6 +151,7 @@ jobs:
       OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
       STORAGE_METRICS: ${{ inputs.storage_metrics || '1' }}
       OAT_MIN_FREE_PCT: ${{ inputs.oat_min_free_pct || '10' }}
+      MATRIX_BATCH_2_PCT: ${{ matrix.batch_2_pct }}
 
     steps:
       - name: "🧹 Clean Docker-owned files"
@@ -179,6 +190,15 @@ jobs:
                 "$EXP_FILE" > "$RESOLVED_EXP_FILE"
               EXP_FILE="$RESOLVED_EXP_FILE"
               echo "Overrode pre-built experiment engines: $INPUT_EXPERIMENTS_ENGINES"
+            fi
+            if [[ -n "${MATRIX_BATCH_2_PCT}" ]]; then
+              RESOLVED_EXP_FILE="$REPO_ROOT/gci-experiment-batch2-${MATRIX_BATCH_2_PCT}pct.json"
+              jq --arg pct "$MATRIX_BATCH_2_PCT" \
+                '.experiments |= map(select((.batch_2_pct | tostring) == $pct)) |
+                 if (.experiments | length) == 1 then . else error("expected exactly one matching experiment") end' \
+                "$EXP_FILE" > "$RESOLVED_EXP_FILE"
+              EXP_FILE="$RESOLVED_EXP_FILE"
+              echo "Selected batch-2 experiment percentage: $MATRIX_BATCH_2_PCT"
             fi
           else
             EXP_FILE="$REPO_ROOT/gci-experiments.json"
@@ -271,7 +291,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results-sf${{ env.SCALE_FACTOR }}
+          name: benchmark-results-sf${{ env.SCALE_FACTOR }}${{ matrix.batch_2_pct && format('-batch2-{0}pct', matrix.batch_2_pct) || '' }}
           path: |
             mount/logs/
             mount/results/
@@ -291,6 +311,7 @@ jobs:
             mount/compiler-bench/corpus/*/meta.json
             mount/compiler-bench/corpus/meta.json
             gci-experiments.json
+            gci-experiment-*.json
           if-no-files-found: warn
           retention-days: 30
 
