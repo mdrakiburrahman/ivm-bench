@@ -188,15 +188,24 @@ def ensure_az_login(
         cmd = ["az", "login", "--identity", "--allow-no-subscriptions"]
         if UAMI_CLIENT_ID:
             cmd += ["--client-id", UAMI_CLIENT_ID]
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=_bounded_timeout(deadline, timeout),
-        )
-        if res.returncode != 0:
-            raise RuntimeError(f"`az login --identity` failed: {res.stderr[:500]}")
-        logger.info("[fabric] az login --identity OK")
+        for attempt in range(3):
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_bounded_timeout(deadline, timeout),
+            )
+            if res.returncode == 0:
+                logger.info("[fabric] az login --identity OK")
+                break
+            if attempt == 2:
+                raise RuntimeError(f"`az login --identity` failed: {res.stderr[:500]}")
+            delay = 5 * (2 ** attempt)
+            logger.warning(
+                "[fabric] az login --identity failed (attempt %d/3), retrying in %ds: %s",
+                attempt + 1, delay, res.stderr[:300],
+            )
+            time.sleep(delay)
     if warm_livy:
         _warm_livy_token(timeout=_bounded_timeout(deadline, timeout))
     _start_keepwarm()
