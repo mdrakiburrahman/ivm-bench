@@ -1,0 +1,53 @@
+{
+  "_design_notes": [
+    "Repair incomplete fixed-pin SF100 insertion-sweep points.",
+    "The 15% host engines already completed twice, so only its cloud engines are rerun.",
+    "The 25% point completed only one host repetition and no cloud repetition, so all engines are rerun."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "databricks-enzyme",
+      "spark",
+      "spark-openivm",
+      "duckdb",
+      "duckdb-openivm",
+      "feldera",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    {
+      "label": "sf100-batch2-15pct-cloud-repair",
+      "batch_2_pct": "15",
+      "engines": [
+        "databricks-enzyme",
+        "fabric-jvm-35",
+        "fabric-openivm-jvm-35"
+      ]
+    },
+    {
+      "label": "sf100-batch2-25pct-repair",
+      "batch_2_pct": "25"
+    }
+  ]
+}
