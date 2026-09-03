@@ -2,7 +2,8 @@
   "_design_notes": [
     "Repair incomplete fixed-pin SF100 insertion-sweep points.",
     "The 15% host engines already completed twice, so only its cloud engines are rerun.",
-    "The 25% and 30% points completed only one host repetition and no cloud repetition, so all engines are rerun."
+    "The 25% and 30% points completed only one host repetition and no cloud repetition, so all engines are rerun.",
+    "The 35% point was interrupted and 40-50% never started, so all engines are run twice."
   ],
   "baseline": {
     "scale_factor": 100,
@@ -52,6 +53,22 @@
     {
       "label": "sf100-batch2-30pct-repair",
       "batch_2_pct": "30"
+    },
+    {
+      "label": "sf100-batch2-35pct-repair",
+      "batch_2_pct": "35"
+    },
+    {
+      "label": "sf100-batch2-40pct-repair",
+      "batch_2_pct": "40"
+    },
+    {
+      "label": "sf100-batch2-45pct-repair",
+      "batch_2_pct": "45"
+    },
+    {
+      "label": "sf100-batch2-50pct-repair",
+      "batch_2_pct": "50"
     }
   ]
 }
