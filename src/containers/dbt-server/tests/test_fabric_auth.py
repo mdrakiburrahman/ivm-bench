@@ -7,10 +7,26 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services.fabric import get_token  # noqa: E402
+from services.fabric import ensure_az_login, get_token  # noqa: E402
 
 
 class FabricAuthTest(unittest.TestCase):
+    @patch("services.fabric.time.sleep")
+    @patch("services.fabric._start_keepwarm")
+    @patch("services.fabric.subprocess.run")
+    def test_login_retries_transient_failures(self, run, _start_keepwarm, sleep):
+        run.side_effect = [
+            subprocess.CompletedProcess([], 1),
+            subprocess.CompletedProcess([], 1, stderr="transient"),
+            subprocess.CompletedProcess([], 1, stderr="transient"),
+            subprocess.CompletedProcess([], 0),
+        ]
+
+        ensure_az_login(warm_livy=False)
+
+        self.assertEqual(run.call_count, 4)
+        self.assertEqual(sleep.call_args_list, [unittest.mock.call(5), unittest.mock.call(10)])
+
     @patch("services.fabric._start_keepwarm")
     @patch("services.fabric.subprocess.run")
     def test_token_failure_forces_login_and_retries(self, run, _start_keepwarm):
