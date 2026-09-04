@@ -27,6 +27,23 @@ class FabricAuthTest(unittest.TestCase):
         self.assertEqual(run.call_count, 4)
         self.assertEqual(sleep.call_args_list, [unittest.mock.call(5), unittest.mock.call(10)])
 
+    @patch("services.fabric.time.sleep")
+    @patch("services.fabric.subprocess.run")
+    def test_login_exhausts_five_attempts(self, run, sleep):
+        run.side_effect = [
+            subprocess.CompletedProcess([], 1),
+            *[subprocess.CompletedProcess([], 1, stderr="transient") for _ in range(5)],
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "az login --identity"):
+            ensure_az_login(warm_livy=False)
+
+        self.assertEqual(run.call_count, 6)
+        self.assertEqual(
+            sleep.call_args_list,
+            [unittest.mock.call(delay) for delay in (5, 10, 20, 40)],
+        )
+
     @patch("services.fabric._start_keepwarm")
     @patch("services.fabric.subprocess.run")
     def test_token_failure_forces_login_and_retries(self, run, _start_keepwarm):

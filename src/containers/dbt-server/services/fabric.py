@@ -101,6 +101,7 @@ _HTTP_TIMEOUT = 300
 _KEEPWARM_INTERVAL = 30
 _KEEPWARM_SCOPES = (LIVY_SCOPE,)
 _KEEPWARM_RESOURCES = (STORAGE_RESOURCE, FABRIC_RESOURCE)
+_AZ_LOGIN_ATTEMPTS = 5
 _keepwarm_started = False
 _keepwarm_lock = threading.Lock()
 
@@ -188,7 +189,7 @@ def ensure_az_login(
         cmd = ["az", "login", "--identity", "--allow-no-subscriptions"]
         if UAMI_CLIENT_ID:
             cmd += ["--client-id", UAMI_CLIENT_ID]
-        for attempt in range(3):
+        for attempt in range(_AZ_LOGIN_ATTEMPTS):
             res = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -198,12 +199,12 @@ def ensure_az_login(
             if res.returncode == 0:
                 logger.info("[fabric] az login --identity OK")
                 break
-            if attempt == 2:
+            if attempt == _AZ_LOGIN_ATTEMPTS - 1:
                 raise RuntimeError(f"`az login --identity` failed: {res.stderr[:500]}")
             delay = 5 * (2 ** attempt)
             logger.warning(
-                "[fabric] az login --identity failed (attempt %d/3), retrying in %ds: %s",
-                attempt + 1, delay, res.stderr[:300],
+                "[fabric] az login --identity failed (attempt %d/%d), retrying in %ds: %s",
+                attempt + 1, _AZ_LOGIN_ATTEMPTS, delay, res.stderr[:300],
             )
             time.sleep(delay)
     if warm_livy:
