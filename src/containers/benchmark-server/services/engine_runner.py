@@ -34,6 +34,7 @@ HEALTH_INTERVAL = 5
 
 _RETRY_DELAYS = [30, 60, 120]
 _COMPILER_BENCH_SUMMARY_LOCK = Lock()
+_FABRIC_CACHE_LOCK = Lock()
 
 
 def _post_with_retry(
@@ -71,6 +72,16 @@ def _post_with_retry(
             emit(f"[{label}] connection error: {exc} — will retry")
             continue
     raise last_exc
+
+
+def _post_fabric_cache_with_retry(
+    url: str,
+    emit: Callable[[str], None],
+    label: str,
+) -> requests.Response:
+    """Let only one parallel Fabric engine populate the shared OneLake cache."""
+    with _FABRIC_CACHE_LOCK:
+        return _post_with_retry(url, 7200, emit, label)
 
 
 # Databricks-enzyme dbt-build retry policy for transient DLT pipeline
@@ -687,13 +698,11 @@ class EngineRunner:
                     self._emit(f"[{name}] cleanup-cache/{last_sf} WARN: {e}")
 
             self._emit(f"[{name}] Staging sources into OneLake cache (sf={sf})")
-            resp = requests.post(
-                f"{self._dbt_url}/sources/fabric/init/{sf}", timeout=7200
+            resp = _post_fabric_cache_with_retry(
+                f"{self._dbt_url}/sources/fabric/init/{sf}",
+                self._emit,
+                f"{name} Fabric cache init",
             )
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"fabric init/{sf} failed: HTTP {resp.status_code} {resp.text[:500]}"
-                )
             data = resp.json()
             self._emit(
                 f"[{name}] Cache init: files_uploaded={data.get('files_uploaded')} "
@@ -703,14 +712,11 @@ class EngineRunner:
             self._emit(
                 f"[{name}] Staging batch {batch_num} increment into OneLake cache (sf={sf})"
             )
-            resp = requests.post(
-                f"{self._dbt_url}/sources/fabric/append/{batch_num}/{sf}", timeout=7200
+            resp = _post_fabric_cache_with_retry(
+                f"{self._dbt_url}/sources/fabric/append/{batch_num}/{sf}",
+                self._emit,
+                f"{name} Fabric cache batch {batch_num}",
             )
-            if resp.status_code != 200:
-                raise RuntimeError(
-                    f"fabric append/{batch_num}/{sf} failed: "
-                    f"HTTP {resp.status_code} {resp.text[:500]}"
-                )
             data = resp.json()
             self._emit(
                 f"[{name}] Cache batch {batch_num}: files_uploaded={data.get('files_uploaded')} "
