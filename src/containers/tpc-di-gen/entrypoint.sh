@@ -26,7 +26,7 @@ echo "=== DIGen: Generating TPC-DI data (SF=$SCALE_FACTOR, incremental batches=$
 # generator untouched in the image and set the property in its runtime copy.
 SCHEMA="$DIGEN_DIR/pdgf/config/tpc-di-schema.xml"
 sed -i -E \
-  's#(<property name="\$\{NUMBER_OF_INCREMENTAL_BATCHES\}" type="double">)[0-9]+(</property>)#\1'"$DIGEN_INCREMENTAL_BATCHES"'\2#' \
+  's#^([[:space:]]*<property name="\$\{NUMBER_OF_INCREMENTAL_BATCHES\}" type="double">)[0-9]+(</property>)#\1'"$DIGEN_INCREMENTAL_BATCHES"'\2#' \
   "$SCHEMA"
 if ! grep -Fq '<property name="${NUMBER_OF_INCREMENTAL_BATCHES}" type="double">'"$DIGEN_INCREMENTAL_BATCHES"'</property>' "$SCHEMA"; then
   echo "ERROR: failed to configure NUMBER_OF_INCREMENTAL_BATCHES=$DIGEN_INCREMENTAL_BATCHES"
