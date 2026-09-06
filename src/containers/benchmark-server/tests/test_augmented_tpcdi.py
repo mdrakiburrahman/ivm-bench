@@ -36,6 +36,14 @@ class AugmentedTpcdiTest(unittest.TestCase):
             [37, 73, 110, 146, 183],
         )
 
+    def test_sf10_gci_sweep_uses_5_and_50_percent_windows(self):
+        config = BENCHMARK_SERVER / "experiments" / "sf10-augmented-5-50.json"
+        experiments = parse_experiments_json(config.read_text())
+        self.assertEqual(
+            [(experiment.scale_factor, experiment.batch_2_days) for experiment in experiments],
+            [(10, 18), (10, 183)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
