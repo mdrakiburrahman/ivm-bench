@@ -149,6 +149,7 @@ class BenchmarkConfig:
     """Top-level benchmark configuration."""
     scale_factor: int = 3
     benchmark_runs: int = 1
+    batch_2_days: int = 0
     batch_1_pct: str = "1"
     batch_2_pct: str = "0.001"
     batch_3_pct: str = "0.002"
@@ -177,12 +178,16 @@ class BenchmarkConfig:
 
     def __post_init__(self):
         self.benchmark_runs = max(1, int(self.benchmark_runs))
+        self.batch_2_days = int(self.batch_2_days)
+        if self.batch_2_days < 0 or self.batch_2_days > 365:
+            raise ValueError("batch_2_days must be between 0 and 365")
 
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
         return {
             "SCALE_FACTOR": str(self.scale_factor),
             "BENCHMARK_RUNS": str(self.benchmark_runs),
+            "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),
             "BATCH_1_INSERT_PCT": self.batch_1_pct,
             "BATCH_2_INSERT_PCT": self.batch_2_pct,
             "BATCH_3_INSERT_PCT": self.batch_3_pct,

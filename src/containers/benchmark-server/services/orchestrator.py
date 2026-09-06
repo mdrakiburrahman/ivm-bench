@@ -17,12 +17,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from models.config import BenchmarkConfig, is_cloud_engine
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BatchResult, BenchmarkResult, EngineResult
 from services import oat_runner
+from services.source_row_counts import collect_source_row_counts
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner, OpenIvmValidationError
@@ -108,6 +109,7 @@ class Orchestrator:
         # _run_oat checks this after every experiment and aborts the sweep
         # immediately — a single MV-correctness diff is unrecoverable.
         self._oat_fatal_validation_error: Optional[str] = None
+        self._current_source_row_counts: Optional[Dict[str, Any]] = None
 
     @property
     def config(self) -> BenchmarkConfig:
@@ -234,6 +236,7 @@ class Orchestrator:
             "parallel": self._config.parallel,
             "batch_1_pct": self._config.batch_1_pct,
             "batch_2_pct": self._config.batch_2_pct,
+            "batch_2_days": self._config.batch_2_days,
             "batch_3_pct": self._config.batch_3_pct,
             "batch_2_update_pct": self._config.batch_2_update_pct,
             "batch_2_delete_pct": self._config.batch_2_delete_pct,
@@ -407,6 +410,7 @@ class Orchestrator:
             f"mount/bin/duckdb-openivm",
             f"mount/bin/spark-openivm",
         ])
+        dirs.append(f"mount/datagen-cache/{sf}/2/digen")
         for d in dirs:
             full = os.path.join(repo, d)
             os.makedirs(full, exist_ok=True)
@@ -482,10 +486,11 @@ class Orchestrator:
         """Run TPC-DI data generation (idempotent)."""
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
+        datagen_env = self._config.base_env()
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.datagen.yml"),
             project_name="datagen",
-            env=self._config.base_env(),
+            env=datagen_env,
             cwd=repo,
         )
         with self._heartbeat("datagen/build"):
@@ -521,6 +526,47 @@ class Orchestrator:
         sf = str(self._config.scale_factor)
         delta_dir = os.path.join(repo, "mount", "raw", sf, "delta")
         os.system(f"docker run --rm -v {delta_dir}:/data alpine chmod -R 777 /data")
+
+    def _record_source_row_counts(
+        self, exp_idx: int, inputs: ExperimentInputs,
+    ) -> None:
+        """Log and preserve the exact physical rows generated for each batch."""
+        repo = self._config.repo_dir
+        delta_dir = os.path.join(
+            repo, "mount", "raw", str(inputs.scale_factor), "delta",
+        )
+        counts = collect_source_row_counts(delta_dir)
+        counts.update({
+            "scale_factor": inputs.scale_factor,
+            "batch_2_days": inputs.batch_2_days,
+            "configured_insert_pct": {
+                "1": inputs.batch_1_pct,
+                "2": inputs.batch_2_pct,
+                "3": inputs.batch_3_pct,
+            },
+        })
+        self._current_source_row_counts = counts
+        for batch_num in (1, 2, 3):
+            batch = counts["batches"][str(batch_num)]
+            tables = ", ".join(
+                f"{table}={rows:,}" for table, rows in batch["tables"].items()
+            )
+            self.emit(
+                f"  [datagen] Batch {batch_num} physical insert rows="
+                f"{batch['total_rows']:,} (configured="
+                f"{counts['configured_insert_pct'][str(batch_num)]}%; {tables})"
+            )
+        if self._oat_run_id is not None:
+            out_dir = os.path.join(
+                repo, "mount", "oat-state", self._oat_run_id,
+                f"exp-{exp_idx:03d}",
+            )
+            os.makedirs(out_dir, exist_ok=True)
+            with open(
+                os.path.join(out_dir, "source-row-counts.json"),
+                "w", encoding="utf-8",
+            ) as out_file:
+                json.dump(counts, out_file, indent=2, sort_keys=True)
 
     def _run_duckdb_openivm_build(self) -> None:
         """Build DuckDB-OpenIVM binary (idempotent)."""
@@ -1347,6 +1393,7 @@ class Orchestrator:
         # experiment's `self._result` in place and the post-finally save
         # below would write stale data.
         self._result = BenchmarkResult(status="running")
+        self._current_source_row_counts = None
         try:
             self._apply_experiment(inputs)
             self._init_benchmark_run_record_from_config()
@@ -1366,6 +1413,7 @@ class Orchestrator:
                 self.emit("  [datagen] Skipped: compiler-bench uses its own TPC-C data")
             else:
                 self._run_datagen()
+                self._record_source_row_counts(exp_idx, inputs)
 
             # Re-check disk AFTER datagen. SF=1000 may blow the threshold
             # during datagen alone; bailing here is much cheaper than
@@ -1490,6 +1538,8 @@ class Orchestrator:
             error=error, skip_reason=None,
             repo_dir=repo, benchmark_id=self._benchmark_id,
         )
+        if self._current_source_row_counts is not None:
+            exp_dict["source_row_counts"] = self._current_source_row_counts
         self._oat_per_exp_dicts.append(exp_dict)
         try:
             oat_runner.write_per_experiment_outputs(repo, self._oat_run_id, exp_idx, exp_dict)
@@ -1509,6 +1559,7 @@ class Orchestrator:
     def _apply_experiment(self, inputs: ExperimentInputs) -> None:
         """Mutate ``self._config`` + ``os.environ`` to match this experiment's knobs."""
         self._config.scale_factor = inputs.scale_factor
+        self._config.batch_2_days = inputs.batch_2_days
         self._config.batch_1_pct = inputs.batch_1_pct
         self._config.batch_2_pct = inputs.batch_2_pct
         self._config.batch_3_pct = inputs.batch_3_pct
@@ -1537,7 +1588,8 @@ class Orchestrator:
                 dml_extras.append(f"b{ix}u={u}/b{ix}d={d}")
         dml_str = f" dml={','.join(dml_extras)}" if dml_extras else ""
         self.emit(
-            f"  [oat-apply] SF={inputs.scale_factor} batches={inputs.batch_1_pct}/"
+            f"  [oat-apply] SF={inputs.scale_factor} b2_days={inputs.batch_2_days} "
+            f"batches={inputs.batch_1_pct}/"
             f"{inputs.batch_2_pct}/{inputs.batch_3_pct}{dml_str} "
             f"engines={','.join(inputs.engines)} parallel={inputs.parallel} "
             f"databricks_exp_id={experiment_id}"
@@ -1622,6 +1674,10 @@ class Orchestrator:
         # Chart + results.csv generation (best-effort — never fail the run).
         self._phase3_oat_chart()
         self._dump_server_log_into_oat_state()
+        try:
+            oat_runner.disk_cleanup_datagen_cache(repo, self.emit)
+        except OSError as e:
+            self.emit(f"  [oat-cleanup] WARN failed to wipe datagen cache: {e}")
 
         completed_n = sum(1 for d in self._oat_per_exp_dicts if d.get("status") == "completed")
         skipped_n = sum(1 for d in self._oat_per_exp_dicts if d.get("status") == "skipped")
@@ -1752,7 +1808,7 @@ class Orchestrator:
             logger.exception("spark-metrics oat-state copy failed for exp %d", exp_idx)
 
     def _oat_write_per_experiment_imgs(self, inputs: ExperimentInputs) -> None:
-        """Write imgs/scale-factor-<sf>-<b1>-<b2>-<b3>.png + imgs/benchmark-heuristics.png.
+        """Write a scale-factor chart and imgs/benchmark-heuristics.png.
 
         Mirrors the pre-OAT single-experiment chart generation that used to
         live in the orchestrator. Best-effort: any failure here is logged
@@ -1781,6 +1837,8 @@ class Orchestrator:
             if png:
                 os.makedirs(imgs_dir, exist_ok=True)
                 slug = f"{sf}-{b1.replace('.', '_')}-{b2.replace('.', '_')}-{b3.replace('.', '_')}"
+                if inputs.batch_2_days > 0:
+                    slug += f"-{inputs.batch_2_days}days"
                 out_path = os.path.join(imgs_dir, f"scale-factor-{slug}.png")
                 with open(out_path, "wb") as f:
                     f.write(png)

@@ -55,6 +55,7 @@ RESULTS_CSV_FIELDS = (
     "experiment_error",
     "skip_reason",
     "scale_factor",
+    "batch_2_days",
     "batch_1_pct",
     "batch_2_pct",
     "batch_3_pct",
@@ -62,6 +63,7 @@ RESULTS_CSV_FIELDS = (
     "batch_2_delete_pct",
     "batch_3_update_pct",
     "batch_3_delete_pct",
+    "source_rows",
     "schedule",
     "parallel",
     "openivm_validate",
@@ -195,6 +197,19 @@ def disk_cleanup_after_experiment(
             emit(f"  [oat-cleanup] wiped {os.path.relpath(target, repo_dir)}")
         except OSError as e:
             emit(f"  [oat-cleanup] WARN failed to wipe {target}: {e}")
+
+
+def disk_cleanup_datagen_cache(
+    repo_dir: str, emit: Callable[[str], None] = logger.info,
+) -> None:
+    """Remove the sweep-scoped DIGen cache after the final experiment."""
+    mount = os.path.realpath(os.path.join(repo_dir, "mount"))
+    target = os.path.realpath(os.path.join(mount, "datagen-cache"))
+    if not target.startswith(mount + os.sep):
+        raise RuntimeError(f"refusing to delete outside mount: {target}")
+    if os.path.exists(target):
+        shutil.rmtree(target)
+        emit("  [oat-cleanup] wiped mount/datagen-cache")
 
 
 def _archive_failure_forensics(
@@ -632,6 +647,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
         tunables = inputs.get("spark_tunables") or {}
         if not isinstance(tunables, dict):
             tunables = {}
+        source_row_counts = experiment.get("source_row_counts") or {}
+        if not isinstance(source_row_counts, dict):
+            source_row_counts = {}
+        source_batches = source_row_counts.get("batches") or {}
+        if not isinstance(source_batches, dict):
+            source_batches = {}
         configured_engines = inputs.get("engines") or []
         engines_data = experiment.get("engines") or {}
         if isinstance(configured_engines, str):
@@ -687,6 +708,7 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "scale_factor": inputs.get(
                             "scale_factor", experiment.get("scale_factor", "")
                         ),
+                        "batch_2_days": inputs.get("batch_2_days", ""),
                         "batch_1_pct": inputs.get("batch_1_pct", ""),
                         "batch_2_pct": inputs.get("batch_2_pct", ""),
                         "batch_3_pct": inputs.get("batch_3_pct", ""),
@@ -694,6 +716,9 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "batch_2_delete_pct": inputs.get("batch_2_delete_pct", ""),
                         "batch_3_update_pct": inputs.get("batch_3_update_pct", ""),
                         "batch_3_delete_pct": inputs.get("batch_3_delete_pct", ""),
+                        "source_rows": source_batches.get(
+                            str(batch_num), {}
+                        ).get("total_rows", ""),
                         "schedule": inputs.get("schedule", ""),
                         "parallel": inputs.get("parallel", ""),
                         "openivm_validate": flags.get("openivm_validate", ""),

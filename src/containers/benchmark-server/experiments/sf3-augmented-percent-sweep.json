@@ -1,0 +1,33 @@
+{
+  "_design_notes": [
+    "TPC-DI SF3 sensitivity to accumulated days from the Databricks augmented workload.",
+    "10/20/30/40/50 percent of the 365-day window map to 37/73/110/146/183 whole days.",
+    "Batch 3 contains the immediately following day.",
+    "Set BENCHMARK_RUNS=2 for two repetitions per engine and point."
+  ],
+  "baseline": {
+    "scale_factor": 3,
+    "batch_1_pct": "100",
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "engines": [
+      "duckdb",
+      "duckdb-openivm"
+    ],
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    { "label": "sf3-augmented-10pct-37days", "batch_2_days": 37 },
+    { "label": "sf3-augmented-20pct-73days", "batch_2_days": 73 },
+    { "label": "sf3-augmented-30pct-110days", "batch_2_days": 110 },
+    { "label": "sf3-augmented-40pct-146days", "batch_2_days": 146 },
+    { "label": "sf3-augmented-50pct-183days", "batch_2_days": 183 }
+  ]
+}

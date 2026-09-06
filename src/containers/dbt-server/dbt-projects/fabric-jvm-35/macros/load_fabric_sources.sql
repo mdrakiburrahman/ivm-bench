@@ -19,7 +19,7 @@
   {% set lh = env_var('FABRIC_CACHE_LAKEHOUSE_ID', '') %}
   {% set onelake = env_var('FABRIC_ONELAKE_HOST', 'msit-onelake.dfs.fabric.microsoft.com') %}
   {% set db = target.schema %}
-  {% set cache = 'abfss://' ~ ws ~ '@' ~ onelake ~ '/' ~ lh ~ '/Files/_shared_cache/tpcdi_raw_cache/sf=' ~ sf %}
+  {% set cache = 'abfss://' ~ ws ~ '@' ~ onelake ~ '/' ~ lh ~ '/' ~ env_var('FABRIC_CACHE_ROOT') %}
 
   {% set batch1_tables = ['customer_mgmt','date','finwire','hr','industry','status_type','tax_rate','trade_history','trade_type'] %}
   {% set staging_tables = ['cash_transaction','daily_market','holding_history','prospect','trade','watch_history','account','customer','batch_date'] %}

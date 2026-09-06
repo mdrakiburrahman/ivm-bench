@@ -8,8 +8,8 @@ Consolidates everything the dbt-server does *around* the dbt-fabricspark build:
 * Environment manager — upload the openivm JAR + push a fresh Spark-config set
   into Fabric Environment "35", then publish (openivm engine only);
 * shared cache — stage the locally-generated TPC-DI Delta dirs into the
-  lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/`` area via azcopy
-  (mirrors the databricks-enzyme UC-Volume cache);
+  lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/batch<M>_pct=<P>/``
+  area via azcopy (mirrors the databricks-enzyme UC-Volume cache);
 * blow-up — drop the lakehouse ``Tables/`` contents + the openivm state
   (``Files/_openivm``) between runs so each experiment starts clean.
 
@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests
+
+from services.source_cache import batch_cache_root
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,7 @@ _HTTP_TIMEOUT = 300
 _KEEPWARM_INTERVAL = 30
 _KEEPWARM_SCOPES = (LIVY_SCOPE,)
 _KEEPWARM_RESOURCES = (STORAGE_RESOURCE, FABRIC_RESOURCE)
+_AZ_LOGIN_ATTEMPTS = 5
 _keepwarm_started = False
 _keepwarm_lock = threading.Lock()
 
@@ -164,6 +167,7 @@ def ensure_az_login(
     timeout: Optional[float] = None,
     deadline: Optional[float] = None,
     warm_livy: bool = True,
+    force: bool = False,
 ) -> None:
     """Idempotently ``az login --identity`` through the imds-router sidecar, then
     pre-warm the Livy token and start the keep-warm daemon.
@@ -172,25 +176,37 @@ def ensure_az_login(
     out to ``az account get-access-token``, which requires a logged-in ``az``.
     Safe to call repeatedly — a live login short-circuits.
     """
-    probe = subprocess.run(
-        ["az", "account", "show"],
-        capture_output=True,
-        text=True,
-        timeout=_bounded_timeout(deadline, timeout),
-    )
-    if probe.returncode != 0:
-        cmd = ["az", "login", "--identity", "--allow-no-subscriptions"]
-        if UAMI_CLIENT_ID:
-            cmd += ["--client-id", UAMI_CLIENT_ID]
-        res = subprocess.run(
-            cmd,
+    logged_in = False
+    if not force:
+        probe = subprocess.run(
+            ["az", "account", "show"],
             capture_output=True,
             text=True,
             timeout=_bounded_timeout(deadline, timeout),
         )
-        if res.returncode != 0:
-            raise RuntimeError(f"`az login --identity` failed: {res.stderr[:500]}")
-        logger.info("[fabric] az login --identity OK")
+        logged_in = probe.returncode == 0
+    if not logged_in:
+        cmd = ["az", "login", "--identity", "--allow-no-subscriptions"]
+        if UAMI_CLIENT_ID:
+            cmd += ["--client-id", UAMI_CLIENT_ID]
+        for attempt in range(_AZ_LOGIN_ATTEMPTS):
+            res = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_bounded_timeout(deadline, timeout),
+            )
+            if res.returncode == 0:
+                logger.info("[fabric] az login --identity OK")
+                break
+            if attempt == _AZ_LOGIN_ATTEMPTS - 1:
+                raise RuntimeError(f"`az login --identity` failed: {res.stderr[:500]}")
+            delay = 5 * (2 ** attempt)
+            logger.warning(
+                "[fabric] az login --identity failed (attempt %d/%d), retrying in %ds: %s",
+                attempt + 1, _AZ_LOGIN_ATTEMPTS, delay, res.stderr[:300],
+            )
+            time.sleep(delay)
     if warm_livy:
         _warm_livy_token(timeout=_bounded_timeout(deadline, timeout))
     _start_keepwarm()
@@ -208,16 +224,19 @@ def get_token(
         deadline=deadline,
         warm_livy=warm_livy,
     )
-    res = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", resource,
-         "--query", "accessToken", "-o", "tsv"],
-        capture_output=True,
-        text=True,
-        timeout=_bounded_timeout(deadline, timeout),
-    )
-    if res.returncode != 0:
-        raise RuntimeError(f"az token for {resource} failed: {res.stderr[:300]}")
-    return res.stdout.strip()
+    for attempt in range(2):
+        res = subprocess.run(
+            ["az", "account", "get-access-token", "--resource", resource,
+             "--query", "accessToken", "-o", "tsv"],
+            capture_output=True,
+            text=True,
+            timeout=_bounded_timeout(deadline, timeout),
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+        if attempt == 0:
+            ensure_az_login(timeout=timeout, deadline=deadline, warm_livy=warm_livy, force=True)
+    raise RuntimeError(f"az token for {resource} failed: {res.stderr[:300]}")
 
 
 def _fabric_headers() -> Dict[str, str]:
@@ -516,10 +535,13 @@ def onelake_abfss(rel_path: str, lakehouse_id: Optional[str] = None) -> str:
     return f"abfss://{WORKSPACE_ID}@{ONELAKE_HOST}/{lid}/{rel_path.lstrip('/')}"
 
 
-def cache_section_abfss(sf: int, section: str) -> str:
+def cache_section_abfss(sf: int, batch_num: int, section: str) -> str:
     """ABFSS URI of a cache section (``batch1/<t>``, ``staging/<t>``,
     ``staging_batch<N>/<t>``, ``audit``) — read from the shared CACHE lakehouse."""
-    return onelake_abfss(f"{CACHE_ROOT}/sf={sf}/{section}", lakehouse_id=resolve_cache_lakehouse())
+    root = batch_cache_root(CACHE_ROOT, sf, batch_num)
+    return onelake_abfss(
+        f"{root}/{section}", lakehouse_id=resolve_cache_lakehouse()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -717,10 +739,10 @@ def _all_init_sections() -> List[Tuple[str, str]]:
 
 def seed_cache_init(sf: int) -> dict:
     """Idempotently stage the batch-1 + initial-staging + audit Delta dirs into
-    the shared CACHE lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/``.
-    Marker-guarded (reused across same-SF runs)."""
+    a percentage-keyed path in the shared CACHE lakehouse. Marker-guarded."""
     cache_lh = resolve_cache_lakehouse()
-    marker = f"{CACHE_ROOT}/sf={sf}/_UPLOADED_INIT"
+    root = batch_cache_root(CACHE_ROOT, sf, 1)
+    marker = f"{root}/_UPLOADED_INIT"
     if _dfs_exists(marker, lakehouse_id=cache_lh):
         return {"status": "ok", "files_uploaded": 0, "already_seeded": True}
     total = 0
@@ -728,18 +750,21 @@ def seed_cache_init(sf: int) -> dict:
         local = Path(RAW_DELTA_DIR) / subdir
         if not local.is_dir():
             continue
-        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/{section}", lakehouse_id=cache_lh)
+        total += _azcopy(
+            local, f"{root}/{section}", lakehouse_id=cache_lh
+        )
     _dfs_put_marker(marker, lakehouse_id=cache_lh)
     return {"status": "ok", "files_uploaded": total, "already_seeded": False}
 
 
 def seed_cache_batch(sf: int, batch_num: int) -> dict:
     """Idempotently stage the per-batch staging Delta into the shared CACHE
-    lakehouse ``sf=<N>/staging_batch<N>/``. Marker-guarded."""
+    lakehouse's percentage-keyed ``staging_batch<N>/``. Marker-guarded."""
     if batch_num not in (2, 3):
         raise ValueError(f"seed_cache_batch supports batch 2/3, got {batch_num}")
     cache_lh = resolve_cache_lakehouse()
-    marker = f"{CACHE_ROOT}/sf={sf}/_UPLOADED_BATCH{batch_num}"
+    root = batch_cache_root(CACHE_ROOT, sf, batch_num)
+    marker = f"{root}/_UPLOADED_BATCH{batch_num}"
     if _dfs_exists(marker, lakehouse_id=cache_lh):
         return {"status": "ok", "files_uploaded": 0, "already_seeded": True}
     total = 0
@@ -748,7 +773,11 @@ def seed_cache_batch(sf: int, batch_num: int) -> dict:
         local = local_batch if local_batch.is_dir() else Path(RAW_DELTA_DIR) / "staging" / t
         if not local.is_dir():
             continue
-        total += _azcopy(local, f"{CACHE_ROOT}/sf={sf}/staging_batch{batch_num}/{t}", lakehouse_id=cache_lh)
+        total += _azcopy(
+            local,
+            f"{root}/staging_batch{batch_num}/{t}",
+            lakehouse_id=cache_lh,
+        )
     _dfs_put_marker(marker, lakehouse_id=cache_lh)
     return {"status": "ok", "files_uploaded": total, "already_seeded": False}
 

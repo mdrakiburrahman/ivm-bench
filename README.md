@@ -66,6 +66,20 @@ outside the timed batch window. Environment feature flags form the baseline;
 an explicit `feature_flags` value in the experiments JSON overrides that
 baseline for the corresponding row.
 
+### Accumulated daily updates
+
+Set `batch_2_days` to a positive integer to measure one Batch 2 containing
+that many distinct consecutive days from Databricks' augmented TPC-DI window,
+which starts on 2016-07-06. Batch 3 contains the immediately following day;
+`0` preserves the standard three-batch workload. The self-contained converter
+uses the same seven daily datasets and initial-state boundary as Databricks,
+without importing its repository as a submodule.
+
+The built-in augmented sweeps map 10, 20, 30, 40, and 50 percent of the
+365-day window to 37, 73, 110, 146, and 183 days. The
+`smoke-augmented-daily.json` file is the focused SF3 integration test. Set
+`BENCHMARK_RUNS=2` for two repetitions per point.
+
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden
 intermediate state required by the engine (for example Feldera DBSP storage or
@@ -371,6 +385,7 @@ Per-OAT artifacts land under `mount/oat-state/<oat_run_id>/` with a
 | `results.csv`            | One row per experiment/engine/batch with raw timing and storage metrics  |
 | `benchmark-server.log`   | Copy of the orchestrator log for that run                                |
 | `exp-<NNN>/outputs.json` | One per experiment — same shape as a per-experiment entry in master      |
+| `exp-<NNN>/source-row-counts.json` | Exact generated insert rows per batch and source table       |
 | `exp-<NNN>/storage/storage-<engine>-batch<N>.json` | Immutable per-experiment storage snapshot; repeated runs are under `storage/repetition-<N>/` |
 
 To write your own sweep, copy `experiments/smoke.json` as a starting point

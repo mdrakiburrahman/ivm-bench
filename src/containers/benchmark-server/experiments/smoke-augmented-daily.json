@@ -1,0 +1,27 @@
+{
+  "_design_notes": [
+    "Focused end-to-end test for accumulated daily TPC-DI updates."
+  ],
+  "baseline": {
+    "scale_factor": 3,
+    "batch_1_pct": "1",
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "batch_2_days": 3,
+    "engines": [
+      "duckdb",
+      "duckdb-openivm"
+    ],
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": false,
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    { "label": "smoke-augmented-3days" }
+  ]
+}

@@ -13,6 +13,7 @@ lazy val root = (project in file("."))
       "org.apache.spark"  %% "spark-sql"    % sparkVersion,
       "io.delta"          %% "delta-spark"  % deltaVersion,
       "com.databricks"    %% "spark-xml"    % "0.18.0",
+      "org.scalatest"     %% "scalatest"    % "3.2.19" % Test,
     ),
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "services", _*) => MergeStrategy.concat

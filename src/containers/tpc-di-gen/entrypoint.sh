@@ -82,7 +82,6 @@ fi
 # Copy generated files to output path (host mount)
 echo "=== DIGen: Copying generated data to $DIGEN_PATH ==="
 cp -a "$LOCAL_GEN"/. "$DIGEN_PATH"/
-rm -rf "$LOCAL_GEN"
 
 # PDGF's BucketSort deadlock can prevent the TradeType generator (16/16)
 # from running. TradeType is a fixed 5-row lookup table — create it as
@@ -92,5 +91,7 @@ if [[ ! -f "$DIGEN_PATH/Batch1/TradeType.txt" ]]; then
   printf 'TMB|Market Buy|0|1\nTMS|Market Sell|1|1\nTSL|Stop Loss|1|1\nTLS|Limit Sell|1|0\nTLB|Limit Buy|0|0\n' \
     > "$DIGEN_PATH/Batch1/TradeType.txt"
 fi
+
+rm -rf "$LOCAL_GEN"
 
 echo "=== DIGen: Data generation complete ==="
