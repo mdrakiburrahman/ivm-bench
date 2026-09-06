@@ -77,7 +77,7 @@ the requested source days into each experiment; it does not import the
 Databricks augmented-workload implementation.
 
 The built-in `sf100-augmented-daily-sweep.json` covers 1, 7, 30, 90, 180, and
-365 days; `smoke-augmented-daily.json` is the focused SF1 integration test.
+365 days; `smoke-augmented-daily.json` is the focused SF3 integration test.
 Set `BENCHMARK_RUNS=2` for two repetitions per point. Generation of long
 horizons uses an 80-hour timeout by default; override
 `DIGEN_AUGMENTED_TIMEOUT` when needed.
