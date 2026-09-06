@@ -7,6 +7,18 @@ import java.io.File
 
 object TpcdiToDelta {
 
+  def SourceBatches(outputBatch: Int, batch2Days: Int): Seq[Int] = {
+    require(batch2Days >= 0, "TPCDI_BATCH_2_DAYS must be non-negative")
+    require(outputBatch >= 1 && outputBatch <= 3, "output batch must be 1, 2, or 3")
+    if (outputBatch == 1 || batch2Days == 0) {
+      Seq(outputBatch)
+    } else if (outputBatch == 2) {
+      2 to (batch2Days + 1)
+    } else {
+      Seq(batch2Days + 2)
+    }
+  }
+
   private def deltaExists(path: String): Boolean =
     new File(s"$path/_delta_log").isDirectory
 
@@ -16,6 +28,31 @@ object TpcdiToDelta {
   def main(args: Array[String]): Unit = {
     val digenPath = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
     val deltaPath = sys.env.getOrElse("DELTA_PATH", "/data/delta")
+    val batch2Days = sys.env.getOrElse("TPCDI_BATCH_2_DAYS", "0").toInt
+    val digenIncrementalBatches = sys.env.getOrElse("DIGEN_INCREMENTAL_BATCHES", "2").toInt
+    val requiredIncrementalBatches = if (batch2Days == 0) 2 else batch2Days + 1
+    require(
+      digenIncrementalBatches >= requiredIncrementalBatches,
+      s"DIGEN_INCREMENTAL_BATCHES=$digenIncrementalBatches is too small for " +
+        s"TPCDI_BATCH_2_DAYS=$batch2Days; need at least $requiredIncrementalBatches"
+    )
+    println(
+      s"=== Source batches: B1=${SourceBatches(1, batch2Days).mkString(",")}; " +
+        s"B2=${SourceBatches(2, batch2Days).mkString(",")}; " +
+        s"B3=${SourceBatches(3, batch2Days).mkString(",")} ==="
+    )
+
+    if (batch2Days > 0) {
+      val expectedDailyBatches = 2 to (digenIncrementalBatches + 1)
+      val missingBatchDates = expectedDailyBatches.filterNot { batch =>
+        new File(s"$digenPath/Batch$batch/BatchDate.txt").isFile
+      }
+      require(
+        missingBatchDates.isEmpty,
+        s"DIGen output is incomplete; missing BatchDate.txt for source batches " +
+          missingBatchDates.mkString(",")
+      )
+    }
 
     def insertPct(batch: Int): Double =
       sys.env
@@ -67,12 +104,29 @@ object TpcdiToDelta {
       }
     }
 
-    def readCsv(path: String, schema: StructType, delimiter: String = "|"): DataFrame =
+    def sourcePaths(outputBatch: Int, file: String): Seq[String] =
+      SourceBatches(outputBatch, batch2Days)
+        .map(batch => s"$digenPath/Batch$batch/$file")
+        .filter(sourceExists)
+
+    def readCsv(paths: Seq[String], schema: StructType, delimiter: String = "|"): DataFrame =
       spark.read
         .option("header", "false")
         .option("delimiter", delimiter)
         .schema(schema)
-        .csv(path)
+        .csv(paths: _*)
+
+    def writeSources(outputBatch: Int, file: String, schema: StructType, table: String,
+                     delimiter: String = "|"): Unit = {
+      val paths = sourcePaths(outputBatch, file)
+      if (paths.nonEmpty) {
+        val label = s"batch$outputBatch/$table"
+        println(s"  SOURCES: $label <- ${paths.mkString(", ")}")
+        writeDelta(readCsv(paths, schema, delimiter), s"$deltaPath/batch$outputBatch/$table", label, outputBatch)
+      } else {
+        println(s"  WARN: No sources found for batch$outputBatch/$table")
+      }
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // Reference tables — Batch1 only
@@ -142,7 +196,7 @@ object TpcdiToDelta {
     for ((file, schema, table) <- refTables) {
       val src = s"$digenPath/Batch1/$file"
       if (sourceExists(src))
-        writeDelta(readCsv(src, schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
+        writeDelta(readCsv(Seq(src), schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
       else
         println(s"  WARN: Source not found: $src")
     }
@@ -161,7 +215,7 @@ object TpcdiToDelta {
 
     val hrSrc = s"$digenPath/Batch1/HR.csv"
     if (sourceExists(hrSrc))
-      writeDelta(readCsv(hrSrc, hrSchema, ","), s"$deltaPath/batch1/hr", "batch1/hr", 1)
+      writeDelta(readCsv(Seq(hrSrc), hrSchema, ","), s"$deltaPath/batch1/hr", "batch1/hr", 1)
 
     // ════════════════════════════════════════════════════════════════════════
     // BatchDate — all batches, same schema
@@ -171,11 +225,8 @@ object TpcdiToDelta {
     val batchDateSchema = new StructType()
       .add("batchdate", DateType)
 
-    for (b <- 1 to 3) {
-      val src = s"$digenPath/Batch$b/BatchDate.txt"
-      if (sourceExists(src))
-        writeDelta(readCsv(src, batchDateSchema), s"$deltaPath/batch$b/batch_date", s"batch$b/batch_date", b)
-    }
+    for (b <- 1 to 3)
+      writeSources(b, "BatchDate.txt", batchDateSchema, "batch_date")
 
     // ════════════════════════════════════════════════════════════════════════
     // Batch1 historical transactional tables (no CDC columns)
@@ -240,7 +291,7 @@ object TpcdiToDelta {
     for ((file, schema, table) <- batch1Txn) {
       val src = s"$digenPath/Batch1/$file"
       if (sourceExists(src))
-        writeDelta(readCsv(src, schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
+        writeDelta(readCsv(Seq(src), schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
       else
         println(s"  WARN: Source not found: $src")
     }
@@ -309,13 +360,8 @@ object TpcdiToDelta {
       ("HoldingHistory.txt",  holdingIncrSchema,      "holding_history"),
       ("CashTransaction.txt", cashTxnIncrSchema,      "cash_transaction"),
     )
-    for (b <- 2 to 3; (file, schema, table) <- incrTxn) {
-      val src = s"$digenPath/Batch$b/$file"
-      if (sourceExists(src))
-        writeDelta(readCsv(src, schema), s"$deltaPath/batch$b/$table", s"batch$b/$table", b)
-      else
-        println(s"  WARN: Source not found: $src")
-    }
+    for (b <- 2 to 3; (file, schema, table) <- incrTxn)
+      writeSources(b, file, schema, table)
 
     // ════════════════════════════════════════════════════════════════════════
     // Customer.txt — all batches, CDC schema
@@ -357,11 +403,8 @@ object TpcdiToDelta {
       .add("lcl_tx_id", StringType)
       .add("nat_tx_id", StringType)
 
-    for (b <- 1 to 3) {
-      val src = s"$digenPath/Batch$b/Customer.txt"
-      if (sourceExists(src))
-        writeDelta(readCsv(src, customerSchema), s"$deltaPath/batch$b/customer", s"batch$b/customer", b)
-    }
+    for (b <- 1 to 3)
+      writeSources(b, "Customer.txt", customerSchema, "customer")
 
     // ════════════════════════════════════════════════════════════════════════
     // Account.txt — all batches, CDC schema
@@ -378,11 +421,8 @@ object TpcdiToDelta {
       .add("taxstatus", ByteType)
       .add("ca_st_id", StringType)
 
-    for (b <- 1 to 3) {
-      val src = s"$digenPath/Batch$b/Account.txt"
-      if (sourceExists(src))
-        writeDelta(readCsv(src, accountSchema), s"$deltaPath/batch$b/account", s"batch$b/account", b)
-    }
+    for (b <- 1 to 3)
+      writeSources(b, "Account.txt", accountSchema, "account")
 
     // ════════════════════════════════════════════════════════════════════════
     // Prospect.csv — all batches, comma-delimited, no CDC
@@ -413,11 +453,8 @@ object TpcdiToDelta {
       .add("numbercreditcards", IntegerType)
       .add("networth", IntegerType)
 
-    for (b <- 1 to 3) {
-      val src = s"$digenPath/Batch$b/Prospect.csv"
-      if (sourceExists(src))
-        writeDelta(readCsv(src, prospectSchema, ","), s"$deltaPath/batch$b/prospect", s"batch$b/prospect", b)
-    }
+    for (b <- 1 to 3 if batch2Days == 0 || b == 1)
+      writeSources(b, "Prospect.csv", prospectSchema, "prospect", ",")
 
     // ════════════════════════════════════════════════════════════════════════
     // FINWIRE — Batch1 only, fixed-width text lines
