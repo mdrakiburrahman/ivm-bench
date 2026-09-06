@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from models.config import BenchmarkConfig, is_cloud_engine
 from models.experiments import ExperimentInputs, parse_experiments_json
@@ -27,6 +27,7 @@ from services.augmented_tpcdi import (
     STANDARD_INCREMENTAL_BATCHES,
     digen_horizons_by_scale_factor,
 )
+from services.source_row_counts import collect_source_row_counts
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner, OpenIvmValidationError
@@ -113,6 +114,7 @@ class Orchestrator:
         # immediately — a single MV-correctness diff is unrecoverable.
         self._oat_fatal_validation_error: Optional[str] = None
         self._digen_horizons: Dict[int, int] = {}
+        self._current_source_row_counts: Optional[Dict[str, Any]] = None
 
     @property
     def config(self) -> BenchmarkConfig:
@@ -545,6 +547,47 @@ class Orchestrator:
         sf = str(self._config.scale_factor)
         delta_dir = os.path.join(repo, "mount", "raw", sf, "delta")
         os.system(f"docker run --rm -v {delta_dir}:/data alpine chmod -R 777 /data")
+
+    def _record_source_row_counts(
+        self, exp_idx: int, inputs: ExperimentInputs,
+    ) -> None:
+        """Log and preserve the exact physical rows generated for each batch."""
+        repo = self._config.repo_dir
+        delta_dir = os.path.join(
+            repo, "mount", "raw", str(inputs.scale_factor), "delta",
+        )
+        counts = collect_source_row_counts(delta_dir)
+        counts.update({
+            "scale_factor": inputs.scale_factor,
+            "batch_2_days": inputs.batch_2_days,
+            "configured_insert_pct": {
+                "1": inputs.batch_1_pct,
+                "2": inputs.batch_2_pct,
+                "3": inputs.batch_3_pct,
+            },
+        })
+        self._current_source_row_counts = counts
+        for batch_num in (1, 2, 3):
+            batch = counts["batches"][str(batch_num)]
+            tables = ", ".join(
+                f"{table}={rows:,}" for table, rows in batch["tables"].items()
+            )
+            self.emit(
+                f"  [datagen] Batch {batch_num} physical insert rows="
+                f"{batch['total_rows']:,} (configured="
+                f"{counts['configured_insert_pct'][str(batch_num)]}%; {tables})"
+            )
+        if self._oat_run_id is not None:
+            out_dir = os.path.join(
+                repo, "mount", "oat-state", self._oat_run_id,
+                f"exp-{exp_idx:03d}",
+            )
+            os.makedirs(out_dir, exist_ok=True)
+            with open(
+                os.path.join(out_dir, "source-row-counts.json"),
+                "w", encoding="utf-8",
+            ) as out_file:
+                json.dump(counts, out_file, indent=2, sort_keys=True)
 
     def _run_duckdb_openivm_build(self) -> None:
         """Build DuckDB-OpenIVM binary (idempotent)."""
@@ -1375,6 +1418,7 @@ class Orchestrator:
         # experiment's `self._result` in place and the post-finally save
         # below would write stale data.
         self._result = BenchmarkResult(status="running")
+        self._current_source_row_counts = None
         try:
             self._apply_experiment(inputs)
             self._init_benchmark_run_record_from_config()
@@ -1394,6 +1438,7 @@ class Orchestrator:
                 self.emit("  [datagen] Skipped: compiler-bench uses its own TPC-C data")
             else:
                 self._run_datagen()
+                self._record_source_row_counts(exp_idx, inputs)
 
             # Re-check disk AFTER datagen. SF=1000 may blow the threshold
             # during datagen alone; bailing here is much cheaper than
@@ -1518,6 +1563,8 @@ class Orchestrator:
             error=error, skip_reason=None,
             repo_dir=repo, benchmark_id=self._benchmark_id,
         )
+        if self._current_source_row_counts is not None:
+            exp_dict["source_row_counts"] = self._current_source_row_counts
         self._oat_per_exp_dicts.append(exp_dict)
         try:
             oat_runner.write_per_experiment_outputs(repo, self._oat_run_id, exp_idx, exp_dict)

@@ -387,6 +387,7 @@ Per-OAT artifacts land under `mount/oat-state/<oat_run_id>/` with a
 | `results.csv`            | One row per experiment/engine/batch with raw timing and storage metrics  |
 | `benchmark-server.log`   | Copy of the orchestrator log for that run                                |
 | `exp-<NNN>/outputs.json` | One per experiment — same shape as a per-experiment entry in master      |
+| `exp-<NNN>/source-row-counts.json` | Exact generated insert rows per batch and source table       |
 | `exp-<NNN>/storage/storage-<engine>-batch<N>.json` | Immutable per-experiment storage snapshot; repeated runs are under `storage/repetition-<N>/` |
 
 To write your own sweep, copy `experiments/smoke.json` as a starting point

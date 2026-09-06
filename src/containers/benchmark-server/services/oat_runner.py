@@ -63,6 +63,7 @@ RESULTS_CSV_FIELDS = (
     "batch_2_delete_pct",
     "batch_3_update_pct",
     "batch_3_delete_pct",
+    "source_rows",
     "schedule",
     "parallel",
     "openivm_validate",
@@ -646,6 +647,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
         tunables = inputs.get("spark_tunables") or {}
         if not isinstance(tunables, dict):
             tunables = {}
+        source_row_counts = experiment.get("source_row_counts") or {}
+        if not isinstance(source_row_counts, dict):
+            source_row_counts = {}
+        source_batches = source_row_counts.get("batches") or {}
+        if not isinstance(source_batches, dict):
+            source_batches = {}
         configured_engines = inputs.get("engines") or []
         engines_data = experiment.get("engines") or {}
         if isinstance(configured_engines, str):
@@ -709,6 +716,9 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "batch_2_delete_pct": inputs.get("batch_2_delete_pct", ""),
                         "batch_3_update_pct": inputs.get("batch_3_update_pct", ""),
                         "batch_3_delete_pct": inputs.get("batch_3_delete_pct", ""),
+                        "source_rows": source_batches.get(
+                            str(batch_num), {}
+                        ).get("total_rows", ""),
                         "schedule": inputs.get("schedule", ""),
                         "parallel": inputs.get("parallel", ""),
                         "openivm_validate": flags.get("openivm_validate", ""),
