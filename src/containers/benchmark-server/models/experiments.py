@@ -213,9 +213,9 @@ class CompilerBenchOptions:
 @dataclass
 class ExperimentInputs:
     scale_factor: int = 3
-    # Zero preserves the standard TPC-DI Batch2/3 behavior. A positive value
-    # folds that many distinct DIGen daily updates into measured Batch 2; the
-    # immediately following daily update becomes measured Batch 3.
+    # Zero preserves standard TPC-DI Batch2/3. A positive value accumulates
+    # that many days from Databricks' 365-day augmented window into Batch 2;
+    # the immediately following day becomes Batch 3.
     batch_2_days: int = 0
     batch_1_pct: str = "100"
     batch_2_pct: str = "1"
@@ -236,8 +236,8 @@ class ExperimentInputs:
 
     def __post_init__(self):
         self.batch_2_days = int(self.batch_2_days)
-        if self.batch_2_days < 0:
-            raise ValueError("batch_2_days must be non-negative")
+        if self.batch_2_days < 0 or self.batch_2_days > 365:
+            raise ValueError("batch_2_days must be between 0 and 365")
 
     # ------------------------------------------------------------------
     # Serialization

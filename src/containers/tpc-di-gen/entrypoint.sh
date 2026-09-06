@@ -5,33 +5,15 @@ trap '' PIPE
 
 DIGEN_PATH="${DIGEN_PATH:-/data/digen}"
 SCALE_FACTOR="${SCALE_FACTOR:-3}"
-DIGEN_INCREMENTAL_BATCHES="${DIGEN_INCREMENTAL_BATCHES:-2}"
 DIGEN_DIR="/opt/digen"
 
-if [[ ! "$DIGEN_INCREMENTAL_BATCHES" =~ ^[0-9]+$ ]] || (( DIGEN_INCREMENTAL_BATCHES < 2 )); then
-  echo "ERROR: DIGEN_INCREMENTAL_BATCHES must be an integer >= 2"
-  exit 1
-fi
-
-COMPLETE_MARKER="$DIGEN_PATH/.complete"
-if [[ -f "$COMPLETE_MARKER" ]]; then
-  echo "=== DIGen: Skipping — completion marker $COMPLETE_MARKER already exists ==="
+SENTINEL="$DIGEN_PATH/Batch1/Date.txt"
+if [[ -f "$SENTINEL" ]]; then
+  echo "=== DIGen: Skipping — sentinel file $SENTINEL already exists ==="
   exit 0
 fi
 
-echo "=== DIGen: Generating TPC-DI data (SF=$SCALE_FACTOR, incremental batches=$DIGEN_INCREMENTAL_BATCHES) ==="
-
-# PDGF already supports a variable number of daily incremental updates; the
-# official TPC-DI configuration simply fixes it at two. Keep the upstream
-# generator untouched in the image and set the property in its runtime copy.
-SCHEMA="$DIGEN_DIR/pdgf/config/tpc-di-schema.xml"
-sed -i -E \
-  's#^([[:space:]]*<property name="\$\{NUMBER_OF_INCREMENTAL_BATCHES\}" type="double">)[0-9]+(</property>)#\1'"$DIGEN_INCREMENTAL_BATCHES"'\2#' \
-  "$SCHEMA"
-if ! grep -Fq '<property name="${NUMBER_OF_INCREMENTAL_BATCHES}" type="double">'"$DIGEN_INCREMENTAL_BATCHES"'</property>' "$SCHEMA"; then
-  echo "ERROR: failed to configure NUMBER_OF_INCREMENTAL_BATCHES=$DIGEN_INCREMENTAL_BATCHES"
-  exit 1
-fi
+echo "=== DIGen: Generating TPC-DI data (SF=$SCALE_FACTOR) ==="
 # Generate to a local temp directory first, then copy to the output path.
 LOCAL_GEN="/tmp/digen_out"
 rm -rf "$LOCAL_GEN"
@@ -52,16 +34,6 @@ setsid java \
   -o "$LOCAL_GEN" < "$FIFO" &
 DIGEN_PID=$!
 
-FINAL_BATCH=$((DIGEN_INCREMENTAL_BATCHES + 1))
-generation_complete() {
-  local root="$1"
-  local file
-  for file in BatchDate.txt Customer.txt Account.txt Prospect.csv Trade.txt \
-              CashTransaction.txt HoldingHistory.txt DailyMarket.txt WatchHistory.txt; do
-    [[ -f "$root/Batch$FINAL_BATCH/$file" ]] || return 1
-  done
-}
-
 # Open FIFO for writing (keeps it open via fd 3)
 exec 3>"$FIFO"
 echo >&3       # Press enter for initial EULA prompt
@@ -80,9 +52,8 @@ ELAPSED=0
 while kill -0 "$DIGEN_PID" 2>/dev/null; do
   sleep 5
   ELAPSED=$((ELAPSED + 5))
-  if generation_complete "$LOCAL_GEN"; then
-    # Every source in the final requested daily batch exists. Once all output
-    # files are quiet, any live process is the known PDGF shutdown deadlock.
+  if [[ -f "$LOCAL_GEN/Batch1/Date.txt" ]]; then
+    # Sentinel exists — check if files are still being written
     LATEST_MOD=$(find "$LOCAL_GEN" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1) || true
     NOW=$(date +%s)
     AGE=$((NOW - ${LATEST_MOD:-0}))
@@ -102,9 +73,9 @@ wait "$DIGEN_PID" 2>/dev/null || true
 exec 3>&-
 rm -f "$FIFO"
 
-# Verify the requested horizon, not merely the early Batch1 Date output.
-if ! generation_complete "$LOCAL_GEN"; then
-  echo "ERROR: DIGen did not produce every source in Batch$FINAL_BATCH"
+# Verify generation succeeded
+if [[ ! -f "$LOCAL_GEN/Batch1/Date.txt" ]]; then
+  echo "ERROR: DIGen completed but sentinel file was not created"
   exit 1
 fi
 
@@ -121,7 +92,6 @@ if [[ ! -f "$DIGEN_PATH/Batch1/TradeType.txt" ]]; then
     > "$DIGEN_PATH/Batch1/TradeType.txt"
 fi
 
-touch "$COMPLETE_MARKER"
 rm -rf "$LOCAL_GEN"
 
 echo "=== DIGen: Data generation complete ==="

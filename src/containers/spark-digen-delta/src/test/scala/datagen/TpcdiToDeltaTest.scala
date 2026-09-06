@@ -1,23 +1,24 @@
 package datagen
 
+import java.time.LocalDate
 import org.scalatest.funsuite.AnyFunSuite
 
 class TpcdiToDeltaTest extends AnyFunSuite {
-  test("standard mode reads the official Batch2 and Batch3") {
-    assert(TpcdiToDelta.SourceBatches(1, 0) == Seq(1))
-    assert(TpcdiToDelta.SourceBatches(2, 0) == Seq(2))
-    assert(TpcdiToDelta.SourceBatches(3, 0) == Seq(3))
+  test("augmented windows start where the Databricks workload starts") {
+    assert(TpcdiToDelta.AugmentedStart == LocalDate.parse("2016-07-06"))
   }
 
-  test("daily mode folds N days into Batch2 and reserves the next day for Batch3") {
-    assert(TpcdiToDelta.SourceBatches(1, 7) == Seq(1))
-    assert(TpcdiToDelta.SourceBatches(2, 7) == (2 to 8))
-    assert(TpcdiToDelta.SourceBatches(3, 7) == Seq(9))
+  test("Batch 2 end is exclusive and Batch 3 starts on the following day") {
+    assert(TpcdiToDelta.AugmentedEnd(37) == LocalDate.parse("2016-08-12"))
+    assert(TpcdiToDelta.AugmentedEnd(183) == LocalDate.parse("2017-01-05"))
   }
 
-  test("negative daily windows are rejected") {
+  test("daily windows outside the Databricks horizon are rejected") {
     assertThrows[IllegalArgumentException] {
-      TpcdiToDelta.SourceBatches(2, -1)
+      TpcdiToDelta.AugmentedEnd(0)
+    }
+    assertThrows[IllegalArgumentException] {
+      TpcdiToDelta.AugmentedEnd(366)
     }
   }
 }
