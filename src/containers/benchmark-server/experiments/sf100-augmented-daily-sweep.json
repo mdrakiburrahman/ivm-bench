@@ -1,0 +1,49 @@
+{
+  "_design_notes": [
+    "TPC-DI SF100 sensitivity to accumulated, distinct daily source updates.",
+    "DIGen generates one reusable horizon per SF; each measured Batch 2 folds the first N daily batches together.",
+    "Batch 3 uses the immediately following daily update so every engine still executes the standard three benchmark phases.",
+    "All changes to landing sources are INSERT operations; CDC flags remain payload data.",
+    "Set BENCHMARK_RUNS=2 to collect two independent repetitions per engine and daily window."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "databricks-enzyme",
+      "spark",
+      "spark-openivm",
+      "duckdb",
+      "duckdb-openivm",
+      "feldera",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    { "label": "sf100-1day", "batch_2_days": 1 },
+    { "label": "sf100-7days", "batch_2_days": 7 },
+    { "label": "sf100-30days", "batch_2_days": 30 },
+    { "label": "sf100-90days", "batch_2_days": 90 },
+    { "label": "sf100-180days", "batch_2_days": 180 },
+    { "label": "sf100-365days", "batch_2_days": 365 }
+  ]
+}

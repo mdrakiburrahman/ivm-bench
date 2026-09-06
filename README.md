@@ -66,6 +66,22 @@ outside the timed batch window. Environment feature flags form the baseline;
 an explicit `feature_flags` value in the experiments JSON overrides that
 baseline for the corresponding row.
 
+### Accumulated daily updates
+
+Set `batch_2_days` to a positive integer to measure one Batch 2 containing
+that many distinct consecutive TPC-DI daily updates. Batch 3 then contains the
+immediately following daily update. The default value `0` preserves the
+standard three-batch workload. During an OAT sweep, the harness generates and
+caches one sufficiently long DIGen horizon per scale factor, then folds only
+the requested source days into each experiment; it does not import the
+Databricks augmented-workload implementation.
+
+The built-in `sf100-augmented-daily-sweep.json` covers 1, 7, 30, 90, 180, and
+365 days; `smoke-augmented-daily.json` is the focused SF1 integration test.
+Set `BENCHMARK_RUNS=2` for two repetitions per point. Generation of long
+horizons uses an 80-hour timeout by default; override
+`DIGEN_AUGMENTED_TIMEOUT` when needed.
+
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden
 intermediate state required by the engine (for example Feldera DBSP storage or

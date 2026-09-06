@@ -23,6 +23,10 @@ from models.config import BenchmarkConfig, is_cloud_engine
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BatchResult, BenchmarkResult, EngineResult
 from services import oat_runner
+from services.augmented_tpcdi import (
+    STANDARD_INCREMENTAL_BATCHES,
+    digen_horizons_by_scale_factor,
+)
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner, OpenIvmValidationError
@@ -108,6 +112,7 @@ class Orchestrator:
         # _run_oat checks this after every experiment and aborts the sweep
         # immediately — a single MV-correctness diff is unrecoverable.
         self._oat_fatal_validation_error: Optional[str] = None
+        self._digen_horizons: Dict[int, int] = {}
 
     @property
     def config(self) -> BenchmarkConfig:
@@ -234,6 +239,7 @@ class Orchestrator:
             "parallel": self._config.parallel,
             "batch_1_pct": self._config.batch_1_pct,
             "batch_2_pct": self._config.batch_2_pct,
+            "batch_2_days": self._config.batch_2_days,
             "batch_3_pct": self._config.batch_3_pct,
             "batch_2_update_pct": self._config.batch_2_update_pct,
             "batch_2_delete_pct": self._config.batch_2_delete_pct,
@@ -407,6 +413,10 @@ class Orchestrator:
             f"mount/bin/duckdb-openivm",
             f"mount/bin/spark-openivm",
         ])
+        horizon = self._digen_horizons.get(
+            self._config.scale_factor, STANDARD_INCREMENTAL_BATCHES
+        )
+        dirs.append(f"mount/datagen-cache/{sf}/{horizon}/digen")
         for d in dirs:
             full = os.path.join(repo, d)
             os.makedirs(full, exist_ok=True)
@@ -482,16 +492,30 @@ class Orchestrator:
         """Run TPC-DI data generation (idempotent)."""
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
+        horizon = self._digen_horizons.get(
+            self._config.scale_factor, STANDARD_INCREMENTAL_BATCHES
+        )
+        datagen_env = self._config.base_env()
+        datagen_env["DIGEN_INCREMENTAL_BATCHES"] = str(horizon)
+        datagen_timeout = (
+            7200
+            if horizon <= STANDARD_INCREMENTAL_BATCHES
+            else int(os.environ.get("DIGEN_AUGMENTED_TIMEOUT", "288000"))
+        )
+        datagen_env["DIGEN_TIMEOUT"] = str(datagen_timeout)
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.datagen.yml"),
             project_name="datagen",
-            env=self._config.base_env(),
+            env=datagen_env,
             cwd=repo,
         )
         with self._heartbeat("datagen/build"):
             mgr.build(["tpc-di-gen", "spark-digen-delta"])
 
-        self.emit("  [datagen] Running tpc-di-gen → spark-digen-delta")
+        self.emit(
+            "  [datagen] Running tpc-di-gen → spark-digen-delta "
+            f"(incremental horizon={horizon})"
+        )
         # 2h timeout — SF=400 tpc-di-gen alone takes >660s, SF=1000 estimated
         # ~2500s for tpc-di-gen + ~600s for spark-digen-delta. DockerManager
         # default 600s + 60s buffer SIGKILLs the compose subprocess mid-run
@@ -500,7 +524,7 @@ class Orchestrator:
             mgr.up(
                 services=["spark-digen-delta"],
                 detach=False,
-                timeout=7200,
+                timeout=datagen_timeout,
                 stream_callback=lambda line: logger.debug("[datagen] %s", line),
             )
 
@@ -1269,6 +1293,10 @@ class Orchestrator:
         Builds run for the union of engines across all experiments so we
         never have to rebuild mid-sweep.
         """
+        # DIGen output is cached per SF for the sweep. Generate enough distinct
+        # daily updates for the largest accumulated Batch 2 at each SF.
+        self._digen_horizons = digen_horizons_by_scale_factor(experiments)
+
         # Compute union of engines so phase1 includes all relevant builds.
         union_engines: List[str] = []
         for inp in experiments:
@@ -1509,6 +1537,7 @@ class Orchestrator:
     def _apply_experiment(self, inputs: ExperimentInputs) -> None:
         """Mutate ``self._config`` + ``os.environ`` to match this experiment's knobs."""
         self._config.scale_factor = inputs.scale_factor
+        self._config.batch_2_days = inputs.batch_2_days
         self._config.batch_1_pct = inputs.batch_1_pct
         self._config.batch_2_pct = inputs.batch_2_pct
         self._config.batch_3_pct = inputs.batch_3_pct
@@ -1537,7 +1566,8 @@ class Orchestrator:
                 dml_extras.append(f"b{ix}u={u}/b{ix}d={d}")
         dml_str = f" dml={','.join(dml_extras)}" if dml_extras else ""
         self.emit(
-            f"  [oat-apply] SF={inputs.scale_factor} batches={inputs.batch_1_pct}/"
+            f"  [oat-apply] SF={inputs.scale_factor} b2_days={inputs.batch_2_days} "
+            f"batches={inputs.batch_1_pct}/"
             f"{inputs.batch_2_pct}/{inputs.batch_3_pct}{dml_str} "
             f"engines={','.join(inputs.engines)} parallel={inputs.parallel} "
             f"databricks_exp_id={experiment_id}"
@@ -1622,6 +1652,10 @@ class Orchestrator:
         # Chart + results.csv generation (best-effort — never fail the run).
         self._phase3_oat_chart()
         self._dump_server_log_into_oat_state()
+        try:
+            oat_runner.disk_cleanup_datagen_cache(repo, self.emit)
+        except OSError as e:
+            self.emit(f"  [oat-cleanup] WARN failed to wipe datagen cache: {e}")
 
         completed_n = sum(1 for d in self._oat_per_exp_dicts if d.get("status") == "completed")
         skipped_n = sum(1 for d in self._oat_per_exp_dicts if d.get("status") == "skipped")
@@ -1752,7 +1786,7 @@ class Orchestrator:
             logger.exception("spark-metrics oat-state copy failed for exp %d", exp_idx)
 
     def _oat_write_per_experiment_imgs(self, inputs: ExperimentInputs) -> None:
-        """Write imgs/scale-factor-<sf>-<b1>-<b2>-<b3>.png + imgs/benchmark-heuristics.png.
+        """Write a scale-factor chart and imgs/benchmark-heuristics.png.
 
         Mirrors the pre-OAT single-experiment chart generation that used to
         live in the orchestrator. Best-effort: any failure here is logged
@@ -1781,6 +1815,8 @@ class Orchestrator:
             if png:
                 os.makedirs(imgs_dir, exist_ok=True)
                 slug = f"{sf}-{b1.replace('.', '_')}-{b2.replace('.', '_')}-{b3.replace('.', '_')}"
+                if inputs.batch_2_days > 0:
+                    slug += f"-{inputs.batch_2_days}days"
                 out_path = os.path.join(imgs_dir, f"scale-factor-{slug}.png")
                 with open(out_path, "wb") as f:
                     f.write(png)

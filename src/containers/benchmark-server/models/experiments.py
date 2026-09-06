@@ -213,6 +213,10 @@ class CompilerBenchOptions:
 @dataclass
 class ExperimentInputs:
     scale_factor: int = 3
+    # Zero preserves the standard TPC-DI Batch2/3 behavior. A positive value
+    # folds that many distinct DIGen daily updates into measured Batch 2; the
+    # immediately following daily update becomes measured Batch 3.
+    batch_2_days: int = 0
     batch_1_pct: str = "100"
     batch_2_pct: str = "1"
     batch_3_pct: str = "2"
@@ -230,6 +234,11 @@ class ExperimentInputs:
     compiler_bench: CompilerBenchOptions = field(default_factory=CompilerBenchOptions)
     label: Optional[str] = None
 
+    def __post_init__(self):
+        self.batch_2_days = int(self.batch_2_days)
+        if self.batch_2_days < 0:
+            raise ValueError("batch_2_days must be non-negative")
+
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
@@ -238,6 +247,7 @@ class ExperimentInputs:
         """Project this experiment to the env-var map that compose / orchestrator consume."""
         env: Dict[str, str] = {
             "SCALE_FACTOR": str(self.scale_factor),
+            "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),
             "BATCH_1_PCT": str(self.batch_1_pct),
             "BATCH_2_PCT": str(self.batch_2_pct),
             "BATCH_3_PCT": str(self.batch_3_pct),
@@ -258,6 +268,7 @@ class ExperimentInputs:
         return {
             "label": self.label,
             "scale_factor": self.scale_factor,
+            "batch_2_days": self.batch_2_days,
             "batch_1_pct": self.batch_1_pct,
             "batch_2_pct": self.batch_2_pct,
             "batch_3_pct": self.batch_3_pct,
@@ -277,6 +288,7 @@ class ExperimentInputs:
         """Flatten to (col_key -> value) for chart rendering."""
         out: Dict[str, Any] = {
             "scale_factor": self.scale_factor,
+            "batch_2_days": self.batch_2_days,
             "batch_1_pct": self.batch_1_pct,
             "batch_2_pct": self.batch_2_pct,
             "batch_3_pct": self.batch_3_pct,
@@ -303,6 +315,7 @@ class ExperimentInputs:
         """Stable (col_key -> human header) for chart rendering."""
         headers = {
             "scale_factor": "SF",
+            "batch_2_days": "b2 days",
             "batch_1_pct": "b1%",
             "batch_2_pct": "b2%",
             "batch_3_pct": "b3%",
@@ -401,6 +414,7 @@ class ExperimentInputs:
 
         return cls(
             scale_factor=int(d.get("scale_factor", base.scale_factor)),
+            batch_2_days=int(d.get("batch_2_days", base.batch_2_days)),
             batch_1_pct=_pct("batch_1_pct", base.batch_1_pct),
             batch_2_pct=_pct("batch_2_pct", base.batch_2_pct),
             batch_3_pct=_pct("batch_3_pct", base.batch_3_pct),
