@@ -1,22 +1,19 @@
 package datagen
 
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.functions._
 import java.io.File
+import java.time.LocalDate
 
 object TpcdiToDelta {
 
-  def SourceBatches(outputBatch: Int, batch2Days: Int): Seq[Int] = {
-    require(batch2Days >= 0, "TPCDI_BATCH_2_DAYS must be non-negative")
-    require(outputBatch >= 1 && outputBatch <= 3, "output batch must be 1, 2, or 3")
-    if (outputBatch == 1 || batch2Days == 0) {
-      Seq(outputBatch)
-    } else if (outputBatch == 2) {
-      2 to (batch2Days + 1)
-    } else {
-      Seq(batch2Days + 2)
-    }
+  val AugmentedStart: LocalDate = LocalDate.parse("2016-07-06")
+
+  def AugmentedEnd(batch2Days: Int): LocalDate = {
+    require(batch2Days >= 1 && batch2Days <= 365, "TPCDI_BATCH_2_DAYS must be between 1 and 365")
+    AugmentedStart.plusDays(batch2Days.toLong)
   }
 
   private def deltaExists(path: String): Boolean =
@@ -29,28 +26,12 @@ object TpcdiToDelta {
     val digenPath = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
     val deltaPath = sys.env.getOrElse("DELTA_PATH", "/data/delta")
     val batch2Days = sys.env.getOrElse("TPCDI_BATCH_2_DAYS", "0").toInt
-    val digenIncrementalBatches = sys.env.getOrElse("DIGEN_INCREMENTAL_BATCHES", "2").toInt
-    val requiredIncrementalBatches = if (batch2Days == 0) 2 else batch2Days + 1
-    require(
-      digenIncrementalBatches >= requiredIncrementalBatches,
-      s"DIGEN_INCREMENTAL_BATCHES=$digenIncrementalBatches is too small for " +
-        s"TPCDI_BATCH_2_DAYS=$batch2Days; need at least $requiredIncrementalBatches"
-    )
-    println(
-      s"=== Source batches: B1=${SourceBatches(1, batch2Days).mkString(",")}; " +
-        s"B2=${SourceBatches(2, batch2Days).mkString(",")}; " +
-        s"B3=${SourceBatches(3, batch2Days).mkString(",")} ==="
-    )
-
-    if (batch2Days > 0) {
-      val expectedDailyBatches = 2 to (digenIncrementalBatches + 1)
-      val missingBatchDates = expectedDailyBatches.filterNot { batch =>
-        new File(s"$digenPath/Batch$batch/BatchDate.txt").isFile
-      }
-      require(
-        missingBatchDates.isEmpty,
-        s"DIGen output is incomplete; missing BatchDate.txt for source batches " +
-          missingBatchDates.mkString(",")
+    require(batch2Days >= 0 && batch2Days <= 365, "TPCDI_BATCH_2_DAYS must be between 0 and 365")
+    val augmented = batch2Days > 0
+    if (augmented) {
+      println(
+        s"=== Databricks-style augmented window: Batch 2 $AugmentedStart until " +
+          s"${AugmentedEnd(batch2Days)} (exclusive), Batch 3 ${AugmentedEnd(batch2Days)} ==="
       )
     }
 
@@ -75,6 +56,18 @@ object TpcdiToDelta {
       .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
       .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
       .getOrCreate()
+
+    def augmentedBatch(df: DataFrame, eventColumn: String, batch: Int): DataFrame = {
+      require(batch >= 1 && batch <= 3, "batch must be 1, 2, or 3")
+      val eventDate = to_date(col(eventColumn))
+      val start = lit(AugmentedStart.toString).cast(DateType)
+      val end = lit(AugmentedEnd(batch2Days).toString).cast(DateType)
+      batch match {
+        case 1 => df.filter(eventDate < start)
+        case 2 => df.filter(eventDate >= start && eventDate < end)
+        case 3 => df.filter(eventDate >= end && eventDate < date_add(end, 1))
+      }
+    }
 
     var written = 0
     var skipped = 0
@@ -105,9 +98,7 @@ object TpcdiToDelta {
     }
 
     def sourcePaths(outputBatch: Int, file: String): Seq[String] =
-      SourceBatches(outputBatch, batch2Days)
-        .map(batch => s"$digenPath/Batch$batch/$file")
-        .filter(sourceExists)
+      Seq(s"$digenPath/Batch$outputBatch/$file").filter(sourceExists)
 
     def readCsv(paths: Seq[String], schema: StructType, delimiter: String = "|"): DataFrame =
       spark.read
@@ -225,8 +216,20 @@ object TpcdiToDelta {
     val batchDateSchema = new StructType()
       .add("batchdate", DateType)
 
-    for (b <- 1 to 3)
-      writeSources(b, "BatchDate.txt", batchDateSchema, "batch_date")
+    if (augmented) {
+      val dates = Map(
+        1 -> spark.range(1).select(date_add(lit(AugmentedStart.toString), -1).alias("batchdate")),
+        2 -> spark.range(batch2Days).select(
+          date_add(lit(AugmentedStart.toString), col("id").cast(IntegerType)).alias("batchdate")
+        ),
+        3 -> spark.range(1).select(lit(AugmentedEnd(batch2Days).toString).cast(DateType).alias("batchdate")),
+      )
+      for (b <- 1 to 3)
+        writeDelta(dates(b), s"$deltaPath/batch$b/batch_date", s"batch$b/batch_date", b)
+    } else {
+      for (b <- 1 to 3)
+        writeSources(b, "BatchDate.txt", batchDateSchema, "batch_date")
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // Batch1 historical transactional tables (no CDC columns)
@@ -288,12 +291,80 @@ object TpcdiToDelta {
       ("HoldingHistory.txt",  holdingHistoricalSchema,      "holding_history"),
       ("CashTransaction.txt", cashTxnHistoricalSchema,      "cash_transaction"),
     )
-    for ((file, schema, table) <- batch1Txn) {
+    val historicalFrames = batch1Txn.flatMap { case (file, schema, table) =>
       val src = s"$digenPath/Batch1/$file"
-      if (sourceExists(src))
-        writeDelta(readCsv(Seq(src), schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
-      else
+      if (sourceExists(src)) Some(table -> readCsv(Seq(src), schema))
+      else {
         println(s"  WARN: Source not found: $src")
+        None
+      }
+    }.toMap
+
+    val eventColumns = Map(
+      "trade" -> "t_dts",
+      "trade_history" -> "th_dts",
+      "daily_market" -> "dm_date",
+      "watch_history" -> "w_dts",
+      "cash_transaction" -> "ct_dts",
+    )
+    val holdingEventDates = if (augmented) {
+      Some(
+        historicalFrames("holding_history")
+          .join(
+            historicalFrames("trade_history")
+              .groupBy("th_t_id")
+              .agg(max("th_dts").alias("event_dts")),
+            col("hh_t_id") === col("th_t_id"),
+            "inner",
+          )
+          .drop("th_t_id")
+      )
+    } else None
+
+    val tradeEvents = if (augmented) {
+      Some(
+        historicalFrames("trade_history")
+          .withColumn(
+            "cdc_flag",
+            when(
+              row_number().over(Window.partitionBy("th_t_id").orderBy("th_dts")) === 1,
+              lit("I"),
+            ).otherwise(lit("U")),
+          )
+          .join(historicalFrames("trade"), col("th_t_id") === col("t_id"), "inner")
+          .select(
+            col("cdc_flag"),
+            unix_timestamp(col("th_dts")).alias("cdc_dsn"),
+            col("t_id"),
+            col("th_dts").alias("t_dts"),
+            col("th_st_id").alias("t_st_id"),
+            col("t_tt_id"),
+            col("t_is_cash"),
+            col("t_s_symb"),
+            col("t_qty"),
+            col("t_bid_price"),
+            col("t_ca_id"),
+            col("t_exec_name"),
+            when(col("th_st_id") === "CMPT", col("t_trade_price")).alias("t_trade_price"),
+            when(col("th_st_id") === "CMPT", col("t_chrg")).alias("t_chrg"),
+            when(col("th_st_id") === "CMPT", col("t_comm")).alias("t_comm"),
+            when(col("th_st_id") === "CMPT", col("t_tax")).alias("t_tax"),
+          )
+      )
+    } else None
+
+    historicalFrames.foreach { case (table, df) =>
+      val initial = if (!augmented) df else if (table == "holding_history") {
+        augmentedBatch(holdingEventDates.get, "event_dts", 1).drop("event_dts")
+      } else if (table == "trade") {
+        augmentedBatch(tradeEvents.get, "t_dts", 1)
+          .withColumn("latest", row_number().over(Window.partitionBy("t_id").orderBy(col("t_dts").desc)))
+          .filter(col("latest") === 1)
+          .drop("latest", "cdc_flag", "cdc_dsn")
+      } else {
+        augmentedBatch(df, eventColumns(table), 1)
+      }
+      writeDelta(initial, s"$deltaPath/batch1/$table", s"batch1/$table", 1)
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -360,8 +431,34 @@ object TpcdiToDelta {
       ("HoldingHistory.txt",  holdingIncrSchema,      "holding_history"),
       ("CashTransaction.txt", cashTxnIncrSchema,      "cash_transaction"),
     )
-    for (b <- 2 to 3; (file, schema, table) <- incrTxn)
-      writeSources(b, file, schema, table)
+    if (augmented) {
+      def withInsertCdc(df: DataFrame, eventColumn: String): DataFrame =
+        df.withColumn("cdc_flag", lit("I"))
+          .withColumn("cdc_dsn", unix_timestamp(col(eventColumn)))
+          .select((Seq("cdc_flag", "cdc_dsn") ++ df.columns).map(col): _*)
+
+      val simpleEvents = Seq(
+        ("daily_market", "dm_date"),
+        ("watch_history", "w_dts"),
+        ("cash_transaction", "ct_dts"),
+      )
+      for (b <- 2 to 3) {
+        simpleEvents.foreach { case (table, eventColumn) =>
+          val rows = withInsertCdc(augmentedBatch(historicalFrames(table), eventColumn, b), eventColumn)
+          writeDelta(rows, s"$deltaPath/batch$b/$table", s"batch$b/$table", b)
+        }
+        val holdingRows = withInsertCdc(
+          augmentedBatch(holdingEventDates.get, "event_dts", b), "event_dts",
+        ).drop("event_dts")
+        writeDelta(holdingRows, s"$deltaPath/batch$b/holding_history", s"batch$b/holding_history", b)
+
+        val trades = augmentedBatch(tradeEvents.get, "t_dts", b)
+        writeDelta(trades, s"$deltaPath/batch$b/trade", s"batch$b/trade", b)
+      }
+    } else {
+      for (b <- 2 to 3; (file, schema, table) <- incrTxn)
+        writeSources(b, file, schema, table)
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // Customer.txt — all batches, CDC schema
@@ -403,8 +500,59 @@ object TpcdiToDelta {
       .add("lcl_tx_id", StringType)
       .add("nat_tx_id", StringType)
 
-    for (b <- 1 to 3)
-      writeSources(b, "Customer.txt", customerSchema, "customer")
+    lazy val customerActions = spark.read
+      .format("xml")
+      .option("rowTag", "TPCDI:Action")
+      .load(s"$digenPath/Batch1/CustomerMgmt.xml")
+      .withColumn("action_ts", to_timestamp(col("_ActionTS")))
+
+    if (augmented) {
+      val customerEvents = customerActions
+        .filter(col("_ActionType").isin("NEW", "INACT", "UPDCUST"))
+        .select(
+          when(col("_ActionType") === "NEW", lit("I")).otherwise(lit("U")).alias("cdc_flag"),
+          unix_timestamp(col("action_ts")).alias("cdc_dsn"),
+          col("Customer._C_ID").cast(LongType).alias("customerid"),
+          col("Customer._C_TAX_ID").cast(StringType).alias("taxid"),
+          when(col("_ActionType") === "INACT", lit("INAC")).otherwise(lit("ACTV")).alias("status"),
+          col("Customer.Name.C_L_NAME").cast(StringType).alias("lastname"),
+          col("Customer.Name.C_F_NAME").cast(StringType).alias("firstname"),
+          col("Customer.Name.C_M_NAME").cast(StringType).alias("middleinitial"),
+          upper(col("Customer._C_GNDR")).cast(StringType).alias("gender"),
+          col("Customer._C_TIER").cast(ByteType).alias("tier"),
+          col("Customer._C_DOB").cast(DateType).alias("dob"),
+          col("Customer.Address.C_ADLINE1").cast(StringType).alias("addressline1"),
+          col("Customer.Address.C_ADLINE2").cast(StringType).alias("addressline2"),
+          col("Customer.Address.C_ZIPCODE").cast(StringType).alias("postalcode"),
+          col("Customer.Address.C_CITY").cast(StringType).alias("city"),
+          col("Customer.Address.C_STATE_PROV").cast(StringType).alias("stateprov"),
+          col("Customer.Address.C_CTRY").cast(StringType).alias("country"),
+          col("Customer.ContactInfo.C_PHONE_1.C_CTRY_CODE").cast(StringType).alias("c_ctry_1"),
+          col("Customer.ContactInfo.C_PHONE_1.C_AREA_CODE").cast(StringType).alias("c_area_1"),
+          col("Customer.ContactInfo.C_PHONE_1.C_LOCAL").cast(StringType).alias("c_local_1"),
+          col("Customer.ContactInfo.C_PHONE_1.C_EXT").cast(StringType).alias("c_ext_1"),
+          col("Customer.ContactInfo.C_PHONE_2.C_CTRY_CODE").cast(StringType).alias("c_ctry_2"),
+          col("Customer.ContactInfo.C_PHONE_2.C_AREA_CODE").cast(StringType).alias("c_area_2"),
+          col("Customer.ContactInfo.C_PHONE_2.C_LOCAL").cast(StringType).alias("c_local_2"),
+          col("Customer.ContactInfo.C_PHONE_2.C_EXT").cast(StringType).alias("c_ext_2"),
+          col("Customer.ContactInfo.C_PHONE_3.C_CTRY_CODE").cast(StringType).alias("c_ctry_3"),
+          col("Customer.ContactInfo.C_PHONE_3.C_AREA_CODE").cast(StringType).alias("c_area_3"),
+          col("Customer.ContactInfo.C_PHONE_3.C_LOCAL").cast(StringType).alias("c_local_3"),
+          col("Customer.ContactInfo.C_PHONE_3.C_EXT").cast(StringType).alias("c_ext_3"),
+          col("Customer.ContactInfo.C_PRIM_EMAIL").cast(StringType).alias("email1"),
+          col("Customer.ContactInfo.C_ALT_EMAIL").cast(StringType).alias("email2"),
+          col("Customer.TaxInfo.C_LCL_TX_ID").cast(StringType).alias("lcl_tx_id"),
+          col("Customer.TaxInfo.C_NAT_TX_ID").cast(StringType).alias("nat_tx_id"),
+          col("action_ts"),
+        )
+      for (b <- 2 to 3) {
+        val rows = augmentedBatch(customerEvents, "action_ts", b).drop("action_ts")
+        writeDelta(rows, s"$deltaPath/batch$b/customer", s"batch$b/customer", b)
+      }
+    } else {
+      for (b <- 1 to 3)
+        writeSources(b, "Customer.txt", customerSchema, "customer")
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // Account.txt — all batches, CDC schema
@@ -421,8 +569,29 @@ object TpcdiToDelta {
       .add("taxstatus", ByteType)
       .add("ca_st_id", StringType)
 
-    for (b <- 1 to 3)
-      writeSources(b, "Account.txt", accountSchema, "account")
+    if (augmented) {
+      val accountEvents = customerActions
+        .filter(!col("_ActionType").isin("UPDCUST", "INACT"))
+        .filter(col("Customer.Account._CA_ID").isNotNull)
+        .select(
+          when(col("_ActionType").isin("NEW", "ADDACCT"), lit("I")).otherwise(lit("U")).alias("cdc_flag"),
+          unix_timestamp(col("action_ts")).alias("cdc_dsn"),
+          col("Customer.Account._CA_ID").cast(LongType).alias("accountid"),
+          col("Customer.Account.CA_B_ID").cast(LongType).alias("ca_b_id"),
+          col("Customer._C_ID").cast(LongType).alias("ca_c_id"),
+          col("Customer.Account.CA_NAME").cast(StringType).alias("accountdesc"),
+          col("Customer.Account._CA_TAX_ST").cast(ByteType).alias("taxstatus"),
+          when(col("_ActionType") === "CLOSEACCT", lit("INAC")).otherwise(lit("ACTV")).alias("ca_st_id"),
+          col("action_ts"),
+        )
+      for (b <- 2 to 3) {
+        val rows = augmentedBatch(accountEvents, "action_ts", b).drop("action_ts")
+        writeDelta(rows, s"$deltaPath/batch$b/account", s"batch$b/account", b)
+      }
+    } else {
+      for (b <- 1 to 3)
+        writeSources(b, "Account.txt", accountSchema, "account")
+    }
 
     // ════════════════════════════════════════════════════════════════════════
     // Prospect.csv — all batches, comma-delimited, no CDC
@@ -495,10 +664,8 @@ object TpcdiToDelta {
     } else {
       val xmlSrc = s"$digenPath/Batch1/CustomerMgmt.xml"
       if (sourceExists(xmlSrc)) {
-        val xmlDf = spark.read
-          .format("xml")
-          .option("rowTag", "TPCDI:Action")
-          .load(xmlSrc)
+        val xmlDf = if (augmented) augmentedBatch(customerActions, "action_ts", 1).drop("action_ts")
+          else customerActions.drop("action_ts")
         writeDelta(xmlDf, custMgmtOutPath, "batch1/customer_mgmt", 1)
       } else {
         println("  WARN: CustomerMgmt.xml not found")

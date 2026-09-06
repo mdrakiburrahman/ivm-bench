@@ -69,18 +69,16 @@ baseline for the corresponding row.
 ### Accumulated daily updates
 
 Set `batch_2_days` to a positive integer to measure one Batch 2 containing
-that many distinct consecutive TPC-DI daily updates. Batch 3 then contains the
-immediately following daily update. The default value `0` preserves the
-standard three-batch workload. During an OAT sweep, the harness generates and
-caches one sufficiently long DIGen horizon per scale factor, then folds only
-the requested source days into each experiment; it does not import the
-Databricks augmented-workload implementation.
+that many distinct consecutive days from Databricks' augmented TPC-DI window,
+which starts on 2016-07-06. Batch 3 contains the immediately following day;
+`0` preserves the standard three-batch workload. The self-contained converter
+uses the same seven daily datasets and initial-state boundary as Databricks,
+without importing its repository as a submodule.
 
-The built-in `sf100-augmented-daily-sweep.json` covers 1, 7, 30, 90, 180, and
-365 days; `smoke-augmented-daily.json` is the focused SF3 integration test.
-Set `BENCHMARK_RUNS=2` for two repetitions per point. Generation of long
-horizons uses an 80-hour timeout by default; override
-`DIGEN_AUGMENTED_TIMEOUT` when needed.
+The built-in augmented sweeps map 10, 20, 30, 40, and 50 percent of the
+365-day window to 37, 73, 110, 146, and 183 days. The
+`smoke-augmented-daily.json` file is the focused SF3 integration test. Set
+`BENCHMARK_RUNS=2` for two repetitions per point.
 
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden

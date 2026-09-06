@@ -1,7 +1,7 @@
 {
   "_design_notes": [
     "TPC-DI SF100 sensitivity to accumulated, distinct daily source updates.",
-    "DIGen generates one reusable horizon per SF; each measured Batch 2 folds the first N daily batches together.",
+    "Each measured Batch 2 accumulates N days from Databricks' 365-day augmented window.",
     "Batch 3 uses the immediately following daily update so every engine still executes the standard three benchmark phases.",
     "All changes to landing sources are INSERT operations; CDC flags remain payload data.",
     "Set BENCHMARK_RUNS=2 to collect two independent repetitions per engine and daily window."
@@ -39,11 +39,10 @@
     }
   },
   "experiments": [
-    { "label": "sf100-1day", "batch_2_days": 1 },
-    { "label": "sf100-7days", "batch_2_days": 7 },
-    { "label": "sf100-30days", "batch_2_days": 30 },
-    { "label": "sf100-90days", "batch_2_days": 90 },
-    { "label": "sf100-180days", "batch_2_days": 180 },
-    { "label": "sf100-365days", "batch_2_days": 365 }
+    { "label": "sf100-augmented-10pct-37days", "batch_2_days": 37 },
+    { "label": "sf100-augmented-20pct-73days", "batch_2_days": 73 },
+    { "label": "sf100-augmented-30pct-110days", "batch_2_days": 110 },
+    { "label": "sf100-augmented-40pct-146days", "batch_2_days": 146 },
+    { "label": "sf100-augmented-50pct-183days", "batch_2_days": 183 }
   ]
 }

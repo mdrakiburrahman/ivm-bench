@@ -179,8 +179,8 @@ class BenchmarkConfig:
     def __post_init__(self):
         self.benchmark_runs = max(1, int(self.benchmark_runs))
         self.batch_2_days = int(self.batch_2_days)
-        if self.batch_2_days < 0:
-            raise ValueError("batch_2_days must be non-negative")
+        if self.batch_2_days < 0 or self.batch_2_days > 365:
+            raise ValueError("batch_2_days must be between 0 and 365")
 
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""

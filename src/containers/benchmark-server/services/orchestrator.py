@@ -23,10 +23,6 @@ from models.config import BenchmarkConfig, is_cloud_engine
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BatchResult, BenchmarkResult, EngineResult
 from services import oat_runner
-from services.augmented_tpcdi import (
-    STANDARD_INCREMENTAL_BATCHES,
-    digen_horizons_by_scale_factor,
-)
 from services.source_row_counts import collect_source_row_counts
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
@@ -113,7 +109,6 @@ class Orchestrator:
         # _run_oat checks this after every experiment and aborts the sweep
         # immediately — a single MV-correctness diff is unrecoverable.
         self._oat_fatal_validation_error: Optional[str] = None
-        self._digen_horizons: Dict[int, int] = {}
         self._current_source_row_counts: Optional[Dict[str, Any]] = None
 
     @property
@@ -415,10 +410,7 @@ class Orchestrator:
             f"mount/bin/duckdb-openivm",
             f"mount/bin/spark-openivm",
         ])
-        horizon = self._digen_horizons.get(
-            self._config.scale_factor, STANDARD_INCREMENTAL_BATCHES
-        )
-        dirs.append(f"mount/datagen-cache/{sf}/{horizon}/digen")
+        dirs.append(f"mount/datagen-cache/{sf}/2/digen")
         for d in dirs:
             full = os.path.join(repo, d)
             os.makedirs(full, exist_ok=True)
@@ -494,17 +486,7 @@ class Orchestrator:
         """Run TPC-DI data generation (idempotent)."""
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
-        horizon = self._digen_horizons.get(
-            self._config.scale_factor, STANDARD_INCREMENTAL_BATCHES
-        )
         datagen_env = self._config.base_env()
-        datagen_env["DIGEN_INCREMENTAL_BATCHES"] = str(horizon)
-        datagen_timeout = (
-            7200
-            if horizon <= STANDARD_INCREMENTAL_BATCHES
-            else int(os.environ.get("DIGEN_AUGMENTED_TIMEOUT", "288000"))
-        )
-        datagen_env["DIGEN_TIMEOUT"] = str(datagen_timeout)
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.datagen.yml"),
             project_name="datagen",
@@ -514,10 +496,7 @@ class Orchestrator:
         with self._heartbeat("datagen/build"):
             mgr.build(["tpc-di-gen", "spark-digen-delta"])
 
-        self.emit(
-            "  [datagen] Running tpc-di-gen → spark-digen-delta "
-            f"(incremental horizon={horizon})"
-        )
+        self.emit("  [datagen] Running tpc-di-gen → spark-digen-delta")
         # 2h timeout — SF=400 tpc-di-gen alone takes >660s, SF=1000 estimated
         # ~2500s for tpc-di-gen + ~600s for spark-digen-delta. DockerManager
         # default 600s + 60s buffer SIGKILLs the compose subprocess mid-run
@@ -526,7 +505,7 @@ class Orchestrator:
             mgr.up(
                 services=["spark-digen-delta"],
                 detach=False,
-                timeout=datagen_timeout,
+                timeout=7200,
                 stream_callback=lambda line: logger.debug("[datagen] %s", line),
             )
 
@@ -1336,10 +1315,6 @@ class Orchestrator:
         Builds run for the union of engines across all experiments so we
         never have to rebuild mid-sweep.
         """
-        # DIGen output is cached per SF for the sweep. Generate enough distinct
-        # daily updates for the largest accumulated Batch 2 at each SF.
-        self._digen_horizons = digen_horizons_by_scale_factor(experiments)
-
         # Compute union of engines so phase1 includes all relevant builds.
         union_engines: List[str] = []
         for inp in experiments:
