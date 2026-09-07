@@ -23,19 +23,25 @@ def storage_snapshot_barrier(barrier: Optional[Barrier]) -> Iterator[None]:
 
     The first wait lets every engine finish its timed batch before a faster
     peer starts a disk-heavy storage walk. The second prevents any engine from
-    starting its next timed batch while a slower peer is still measuring.
+    starting its next timed batch while a slower peer is still measuring. If a
+    peer fails, surviving engines continue without cross-engine synchronization.
     """
     if barrier is None:
         yield
         return
     try:
         barrier.wait()
-    except BrokenBarrierError as exc:
-        raise RuntimeError("parallel storage barrier aborted") from exc
+    except BrokenBarrierError:
+        # A peer failed before reaching the snapshot. Keep this engine running;
+        # synchronization is no longer possible, but its metrics are still useful.
+        yield
+        return
     try:
         yield
     finally:
         try:
             barrier.wait()
-        except BrokenBarrierError as exc:
-            raise RuntimeError("parallel storage barrier aborted") from exc
+        except BrokenBarrierError:
+            # Preserve the successful engine result when a peer fails while
+            # snapshots are in progress.
+            pass
