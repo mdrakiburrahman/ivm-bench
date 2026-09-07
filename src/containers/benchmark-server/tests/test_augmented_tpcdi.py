@@ -1,13 +1,30 @@
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
 
+import duckdb
+
 
 BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
+DBT_PROJECTS = BENCHMARK_SERVER.parent / "dbt-server" / "dbt-projects"
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from models.experiments import parse_experiments_json  # noqa: E402
+
+
+def action_type_expressions(engine):
+    model = (
+        DBT_PROJECTS / engine / "models" / "bronze" / "crm"
+        / "crm_customer_mgmt.sql"
+    ).read_text(encoding="utf-8")
+    expressions = re.findall(
+        r"(case\s+(?:when .*\s+)+?end) as action_type", model,
+    )
+    return [" ".join(expression.split()) for expression in expressions]
+
+
 class AugmentedTpcdiTest(unittest.TestCase):
     def test_days_are_forwarded_to_datagen(self):
         experiments = parse_experiments_json(json.dumps({
@@ -43,6 +60,32 @@ class AugmentedTpcdiTest(unittest.TestCase):
             [(experiment.scale_factor, experiment.batch_2_days) for experiment in experiments],
             [(10, 18), (10, 183)],
         )
+
+    def test_inactive_customer_and_account_events_are_preserved(self):
+        customer, account = action_type_expressions("duckdb")
+        customer_actions = duckdb.sql(f"""
+            select {customer}
+            from (values ('I', 'ACTV'), ('U', 'ACTV'), ('U', 'INAC'))
+                 events(cdc_flag, status)
+        """).fetchall()
+        account_actions = duckdb.sql(f"""
+            select {account}
+            from (values ('I', 'ACTV'), ('U', 'ACTV'), ('U', 'INAC'))
+                 events(cdc_flag, ca_st_id)
+        """).fetchall()
+
+        self.assertEqual(customer_actions, [("NEW",), ("UPDCUST",), ("INACT",)])
+        self.assertEqual(account_actions, [("ADDACCT",), ("UPDACCT",), ("CLOSEACCT",)])
+
+    def test_all_engines_use_the_same_action_type_mapping(self):
+        expected = action_type_expressions("duckdb")
+        engines = (
+            "duckdb-openivm", "spark", "spark-openivm", "feldera",
+            "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35",
+        )
+        for engine in engines:
+            with self.subTest(engine=engine):
+                self.assertEqual(action_type_expressions(engine), expected)
 
 
 if __name__ == "__main__":
