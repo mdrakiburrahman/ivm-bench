@@ -5,8 +5,11 @@ import sys
 import unittest
 from pathlib import Path
 
+import duckdb
+
 BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 DBT_PROJECTS = BENCHMARK_SERVER.parent / "dbt-server" / "dbt-projects"
+REPO = BENCHMARK_SERVER.parents[2]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from models.experiments import parse_experiments_json  # noqa: E402
@@ -21,6 +24,28 @@ def action_type_expressions(engine):
         r"(case\s+(?:when .*\s+)+?end) as action_type", model,
     )
     return [" ".join(expression.split()) for expression in expressions]
+
+
+def render_model(engine, relative_path, batch_2_days):
+    model = (DBT_PROJECTS / engine / relative_path).read_text(encoding="utf-8")
+    conditional = re.compile(
+        r"{%\s*if\s+env_var\('TPCDI_BATCH_2_DAYS',\s*'0'\)\s*\|\s*int\s*>\s*0\s*%}"
+        r"(.*?)(?:{%\s*else\s*%}(.*?))?{%\s*endif\s*%}",
+        re.DOTALL,
+    )
+    model = conditional.sub(
+        lambda match: match.group(1) if batch_2_days > 0 else (match.group(2) or ""),
+        model,
+    )
+    model = re.sub(
+        r"{{\s*source\('tpcdi',\s*'([^']+)'\)\s*}}", r"\1", model,
+    )
+    return re.sub(r"{{\s*ref\('([^']+)'\)\s*}}", r"\1", model)
+
+
+def normalized_sql(sql):
+    without_comments = re.sub(r"--[^\n]*", "", sql)
+    return " ".join(without_comments.split())
 
 
 class AugmentedTpcdiTest(unittest.TestCase):
@@ -87,6 +112,131 @@ class AugmentedTpcdiTest(unittest.TestCase):
         for engine in engines:
             with self.subTest(engine=engine):
                 self.assertEqual(action_type_expressions(engine), expected)
+
+    def test_dbt_server_container_receives_augmented_window(self):
+        compose = (REPO / "docker" / "docker-compose.base.yml").read_text()
+        self.assertIn(
+            'TPCDI_BATCH_2_DAYS: "${TPCDI_BATCH_2_DAYS:-0}"', compose,
+        )
+
+    def test_all_engines_use_the_same_augmented_trade_adapter(self):
+        models = (
+            "models/bronze/brokerage/brokerage_trade.sql",
+            "models/bronze/brokerage/brokerage_trade_history.sql",
+        )
+        engines = (
+            "duckdb-openivm", "spark", "spark-openivm", "feldera",
+            "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35",
+        )
+        for model in models:
+            expected = normalized_sql(render_model("duckdb", model, 3))
+            for engine in engines:
+                with self.subTest(model=model, engine=engine):
+                    actual = normalized_sql(render_model(engine, model, 3))
+                    self.assertEqual(actual, expected)
+
+    def test_augmented_trade_events_reach_trade_history_without_multiplication(self):
+        connection = duckdb.connect(":memory:")
+        connection.execute("""
+            create table staging_trade(
+                cdc_flag varchar, cdc_dsn bigint, t_id bigint, t_dts timestamp,
+                t_st_id varchar, t_tt_id varchar, t_is_cash boolean,
+                t_s_symb varchar, t_qty integer, t_bid_price double,
+                t_ca_id bigint, t_exec_name varchar, t_trade_price double,
+                t_chrg double, t_comm double, t_tax double
+            )
+        """)
+        rows = (
+            (None, None, 1, "2016-07-01 09:00:00", "SBMT"),
+            ("U", 1, 1, "2016-07-07 10:05:00", "CMPT"),
+            ("I", 2, 2, "2016-07-07 10:00:00", "SBMT"),
+            ("U", 3, 2, "2016-07-07 10:05:00", "CMPT"),
+        )
+        connection.executemany("""
+            insert into staging_trade values (
+                ?, ?, ?, ?, ?, 'TMB', true, 'SYM', 10, 1.0, 100,
+                'executor', 2.0, 0.1, 0.2, 0.3
+            )
+        """, rows)
+        connection.execute("""
+            create table batch1_trade_history(
+                th_t_id bigint, th_dts timestamp, th_st_id varchar
+            )
+        """)
+        connection.execute("""
+            insert into batch1_trade_history values
+                (1, timestamp '2016-07-01 08:00:00', 'PNDG'),
+                (1, timestamp '2016-07-01 09:00:00', 'SBMT')
+        """)
+        connection.execute("""
+            create table reference_trade_type(tt_id varchar, tt_name varchar);
+            insert into reference_trade_type values ('TMB', 'Market Buy');
+            create table reference_status_type(st_id varchar, st_name varchar);
+            insert into reference_status_type values
+                ('PNDG', 'Pending'), ('SBMT', 'Submitted'), ('CMPT', 'Completed');
+        """)
+
+        trade_model = "models/bronze/brokerage/brokerage_trade.sql"
+        history_model = "models/bronze/brokerage/brokerage_trade_history.sql"
+        silver_model = "models/silver/trades_history.sql"
+        connection.execute(
+            "create table standard_brokerage_trade as "
+            + render_model("duckdb", trade_model, 0)
+        )
+        connection.execute(
+            "create table standard_brokerage_trade_history as "
+            + render_model("duckdb", history_model, 0)
+        )
+        connection.execute(
+            "create table brokerage_trade as "
+            + render_model("duckdb", trade_model, 3)
+        )
+        connection.execute(
+            "create table brokerage_trade_history as "
+            + render_model("duckdb", history_model, 3)
+        )
+        connection.execute(
+            "create table trades_history as "
+            + render_model("duckdb", silver_model, 3)
+        )
+
+        self.assertEqual(
+            connection.execute("select count(*) from standard_brokerage_trade").fetchone(),
+            (4,),
+        )
+        self.assertEqual(
+            connection.execute(
+                "select count(*) from standard_brokerage_trade_history"
+            ).fetchone(),
+            (2,),
+        )
+        self.assertEqual(
+            connection.execute(
+                "select t_id, t_st_id from brokerage_trade order by t_id"
+            ).fetchall(),
+            [(1, "CMPT"), (2, "CMPT")],
+        )
+        self.assertEqual(
+            connection.execute("""
+                select th_t_id, th_st_id
+                from brokerage_trade_history
+                order by th_t_id, th_dts
+            """).fetchall(),
+            [(1, "PNDG"), (1, "SBMT"), (1, "CMPT"), (2, "SBMT"), (2, "CMPT")],
+        )
+        self.assertEqual(
+            connection.execute(
+                "select trade_id, count(*) from trades_history group by trade_id order by trade_id"
+            ).fetchall(),
+            [(1, 3), (2, 2)],
+        )
+        self.assertEqual(
+            connection.execute(
+                "select distinct trade_status from trades_history"
+            ).fetchall(),
+            [("Completed",)],
+        )
+        connection.close()
 
 
 if __name__ == "__main__":

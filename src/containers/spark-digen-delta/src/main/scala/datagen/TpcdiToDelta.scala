@@ -16,6 +16,59 @@ object TpcdiToDelta {
     AugmentedStart.plusDays(batch2Days.toLong)
   }
 
+  private[datagen] def AddCustomerAccountUpdates(
+      directAccountEvents: DataFrame,
+      customerUpdates: DataFrame,
+  ): DataFrame = {
+    val candidates = customerUpdates.alias("c")
+      .join(
+        directAccountEvents.alias("a"),
+        col("a.ca_c_id") === col("c.customerid") &&
+          to_date(col("a.action_ts")) < to_date(col("c.action_ts")),
+        "inner",
+      )
+      .select(
+        col("c.customerid").alias("_customerid"),
+        col("c.action_ts").alias("_update_ts"),
+        col("a.accountid"),
+        col("a.ca_b_id"),
+        col("a.ca_c_id"),
+        col("a.accountdesc"),
+        col("a.taxstatus"),
+        col("a.ca_st_id"),
+        col("a.action_ts").alias("_account_ts"),
+      )
+      .withColumn(
+        "_latest",
+        row_number().over(
+          Window.partitionBy("_customerid", "_update_ts", "accountid")
+            .orderBy(col("_account_ts").desc)
+        ),
+      )
+      .filter(col("_latest") === 1)
+
+    val derived = candidates.select(
+      lit("U").alias("cdc_flag"),
+      unix_timestamp(col("_update_ts")).alias("cdc_dsn"),
+      col("accountid"),
+      col("ca_b_id"),
+      col("ca_c_id"),
+      col("accountdesc"),
+      col("taxstatus"),
+      col("ca_st_id"),
+      col("_update_ts").alias("action_ts"),
+    )
+    val derivedDates = derived
+      .select(col("accountid"), to_date(col("action_ts")).alias("_event_date"))
+      .distinct()
+    val directWithoutSameDayUpdates = directAccountEvents
+      .withColumn("_event_date", to_date(col("action_ts")))
+      .join(derivedDates, Seq("accountid", "_event_date"), "left_anti")
+      .drop("_event_date")
+
+    directWithoutSameDayUpdates.unionByName(derived)
+  }
+
   private def deltaExists(path: String): Boolean =
     new File(s"$path/_delta_log").isDirectory
 
@@ -560,7 +613,7 @@ object TpcdiToDelta {
       .add("ca_st_id", StringType)
 
     if (augmented) {
-      val accountEvents = customerActions
+      val directAccountEvents = customerActions
         .filter(!col("_ActionType").isin("UPDCUST", "INACT"))
         .filter(col("Customer.Account._CA_ID").isNotNull)
         .select(
@@ -574,6 +627,13 @@ object TpcdiToDelta {
           when(col("_ActionType") === "CLOSEACCT", lit("INAC")).otherwise(lit("ACTV")).alias("ca_st_id"),
           col("action_ts"),
         )
+      val customerUpdates = customerActions
+        .filter(col("_ActionType").isin("UPDCUST", "INACT"))
+        .select(
+          col("Customer._C_ID").cast(LongType).alias("customerid"),
+          col("action_ts"),
+        )
+      val accountEvents = AddCustomerAccountUpdates(directAccountEvents, customerUpdates)
       for (b <- 2 to 3) {
         val rows = augmentedBatch(accountEvents, "action_ts", b).drop("action_ts")
         writeDelta(rows, s"$deltaPath/batch$b/account", s"batch$b/account", b)
