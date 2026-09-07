@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from services.db import DB_LOCK, get_db
 from services.progress import cleanup_progress, init_progress, parse_log_line
+from services.source_cache import batch_cache_root
 
 PROJECTS_DIR = "/app/dbt-projects"
 
@@ -76,6 +77,9 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
     # Consumed by the fabric-* projects' load_fabric_sources on-run-start macro
     # to pick the batch-1 CREATE vs batch-2/3 staging INSERT.
     env["FABRIC_BATCH_NUM"] = str(batch_num)
+    env["FABRIC_CACHE_ROOT"] = batch_cache_root(
+        "Files/_shared_cache/tpcdi_raw_cache", scale_factor, batch_num
+    )
     _inject_fabric_resolved(env)
 
     start_ts = time.monotonic()
