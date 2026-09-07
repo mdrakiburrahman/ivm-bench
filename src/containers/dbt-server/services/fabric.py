@@ -7,9 +7,9 @@ Consolidates everything the dbt-server does *around* the dbt-fabricspark build:
   minting for the Fabric REST, OneLake storage, and Power BI (Livy) audiences;
 * Environment manager — upload the openivm JAR + push a fresh Spark-config set
   into Fabric Environment "35", then publish (openivm engine only);
-* shared cache — stage the locally-generated TPC-DI Delta dirs into the
-  lakehouse ``Files/_shared_cache/tpcdi_raw_cache/sf=<N>/batch<M>_pct=<P>/``
-  area via azcopy (mirrors the databricks-enzyme UC-Volume cache);
+* shared cache — stage the locally-generated TPC-DI Delta dirs into a
+  workload-specific path in the lakehouse ``Files/_shared_cache`` area via
+  azcopy (mirrors the databricks-enzyme UC-Volume cache);
 * blow-up — drop the lakehouse ``Tables/`` contents + the openivm state
   (``Files/_openivm``) between runs so each experiment starts clean.
 
@@ -30,7 +30,11 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
-from services.source_cache import batch_cache_root
+from services.source_cache import (
+    STAGING_TABLES,
+    batch_cache_root,
+    generated_batch_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +87,6 @@ BATCH1_TABLES: List[str] = [
     "customer_mgmt", "date", "finwire", "hr", "industry",
     "status_type", "tax_rate", "trade_history", "trade_type",
 ]
-STAGING_TABLES: List[str] = [
-    "cash_transaction", "daily_market", "holding_history", "prospect",
-    "trade", "watch_history", "account", "customer", "batch_date",
-]
-
 _HTTP_TIMEOUT = 300
 
 # Continuous token keep-warm. dbt-fabricspark's AzureCliCredential shells
@@ -739,7 +738,7 @@ def _all_init_sections() -> List[Tuple[str, str]]:
 
 def seed_cache_init(sf: int) -> dict:
     """Idempotently stage the batch-1 + initial-staging + audit Delta dirs into
-    a percentage-keyed path in the shared CACHE lakehouse. Marker-guarded."""
+    a workload-keyed path in the shared CACHE lakehouse. Marker-guarded."""
     cache_lh = resolve_cache_lakehouse()
     root = batch_cache_root(CACHE_ROOT, sf, 1)
     marker = f"{root}/_UPLOADED_INIT"
@@ -759,7 +758,7 @@ def seed_cache_init(sf: int) -> dict:
 
 def seed_cache_batch(sf: int, batch_num: int) -> dict:
     """Idempotently stage the per-batch staging Delta into the shared CACHE
-    lakehouse's percentage-keyed ``staging_batch<N>/``. Marker-guarded."""
+    lakehouse's workload-keyed ``staging_batch<N>/``. Marker-guarded."""
     if batch_num not in (2, 3):
         raise ValueError(f"seed_cache_batch supports batch 2/3, got {batch_num}")
     cache_lh = resolve_cache_lakehouse()
@@ -768,13 +767,9 @@ def seed_cache_batch(sf: int, batch_num: int) -> dict:
     if _dfs_exists(marker, lakehouse_id=cache_lh):
         return {"status": "ok", "files_uploaded": 0, "already_seeded": True}
     total = 0
-    for t in STAGING_TABLES:
-        local_batch = Path(RAW_DELTA_DIR) / f"batch{batch_num}" / t
-        local = local_batch if local_batch.is_dir() else Path(RAW_DELTA_DIR) / "staging" / t
-        if not local.is_dir():
-            continue
+    for t, local_batch in generated_batch_dirs(RAW_DELTA_DIR, batch_num):
         total += _azcopy(
-            local,
+            local_batch,
             f"{root}/staging_batch{batch_num}/{t}",
             lakehouse_id=cache_lh,
         )

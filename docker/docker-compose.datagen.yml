@@ -5,7 +5,7 @@ services:
     cpus: ${DATAGEN_CPUS:-32}
     mem_limit: ${DATAGEN_MEM:-128g}
     volumes:
-      - ../mount/datagen-cache/${SCALE_FACTOR:-3}/2/digen:/data/digen
+      - ../mount/datagen-cache/${SCALE_FACTOR:-3}/digen:/data/digen
     environment:
       DIGEN_PATH: /data/digen
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
@@ -23,7 +23,7 @@ services:
     cpus: ${DATAGEN_CPUS:-32}
     mem_limit: ${DATAGEN_MEM:-128g}
     volumes:
-      - ../mount/datagen-cache/${SCALE_FACTOR:-3}/2/digen:/data/digen:ro
+      - ../mount/datagen-cache/${SCALE_FACTOR:-3}/digen:/data/digen:ro
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
       JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"

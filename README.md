@@ -73,7 +73,9 @@ that many distinct consecutive days from Databricks' augmented TPC-DI window,
 which starts on 2016-07-06. Batch 3 contains the immediately following day;
 `0` preserves the standard three-batch workload. The self-contained converter
 uses the same seven daily datasets and initial-state boundary as Databricks,
-without importing its repository as a submodule.
+without importing its repository as a submodule. Daily mode always uses every
+row for each selected day; the per-batch row-percentage knobs apply only to the
+standard three-batch workload.
 
 The built-in augmented sweeps map 10, 20, 30, 40, and 50 percent of the
 365-day window to 37, 73, 110, 146, and 183 days. The

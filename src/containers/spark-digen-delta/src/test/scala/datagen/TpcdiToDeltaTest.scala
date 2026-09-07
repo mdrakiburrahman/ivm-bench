@@ -18,7 +18,7 @@ class TpcdiToDeltaTest extends AnyFunSuite {
       TpcdiToDelta.AugmentedEnd(0)
     }
     assertThrows[IllegalArgumentException] {
-      TpcdiToDelta.AugmentedEnd(366)
+      TpcdiToDelta.AugmentedEnd(365)
     }
   }
 }

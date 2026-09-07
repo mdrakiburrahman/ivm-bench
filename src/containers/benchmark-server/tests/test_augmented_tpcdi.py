@@ -1,11 +1,9 @@
 import json
 import re
+import sqlite3
 import sys
 import unittest
 from pathlib import Path
-
-import duckdb
-
 
 BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 DBT_PROJECTS = BENCHMARK_SERVER.parent / "dbt-server" / "dbt-projects"
@@ -34,15 +32,15 @@ class AugmentedTpcdiTest(unittest.TestCase):
         self.assertEqual(experiments[0].to_dict()["batch_2_days"], 37)
 
     def test_negative_daily_batch_count_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "between 0 and 365"):
+        with self.assertRaisesRegex(ValueError, "between 0 and 364"):
             parse_experiments_json(json.dumps({
                 "experiments": [{"batch_2_days": -1}],
             }))
 
     def test_daily_window_above_databricks_horizon_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "between 0 and 365"):
+        with self.assertRaisesRegex(ValueError, "between 0 and 364"):
             parse_experiments_json(json.dumps({
-                "experiments": [{"batch_2_days": 366}],
+                "experiments": [{"batch_2_days": 365}],
             }))
 
     def test_sf3_sweep_uses_nearest_whole_days(self):
@@ -63,16 +61,19 @@ class AugmentedTpcdiTest(unittest.TestCase):
 
     def test_inactive_customer_and_account_events_are_preserved(self):
         customer, account = action_type_expressions("duckdb")
-        customer_actions = duckdb.sql(f"""
-            select {customer}
-            from (values ('I', 'ACTV'), ('U', 'ACTV'), ('U', 'INAC'))
-                 events(cdc_flag, status)
-        """).fetchall()
-        account_actions = duckdb.sql(f"""
-            select {account}
-            from (values ('I', 'ACTV'), ('U', 'ACTV'), ('U', 'INAC'))
-                 events(cdc_flag, ca_st_id)
-        """).fetchall()
+        connection = sqlite3.connect(":memory:")
+        connection.execute("create table customer_events(cdc_flag, status)")
+        connection.execute("create table account_events(cdc_flag, ca_st_id)")
+        events = (("I", "ACTV"), ("U", "ACTV"), ("U", "INAC"))
+        connection.executemany("insert into customer_events values (?, ?)", events)
+        connection.executemany("insert into account_events values (?, ?)", events)
+        customer_actions = connection.execute(
+            f"select {customer} from customer_events"
+        ).fetchall()
+        account_actions = connection.execute(
+            f"select {account} from account_events"
+        ).fetchall()
+        connection.close()
 
         self.assertEqual(customer_actions, [("NEW",), ("UPDCUST",), ("INACT",)])
         self.assertEqual(account_actions, [("ADDACCT",), ("UPDACCT",), ("CLOSEACCT",)])

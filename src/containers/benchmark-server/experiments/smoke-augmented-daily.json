@@ -4,7 +4,7 @@
   ],
   "baseline": {
     "scale_factor": 3,
-    "batch_1_pct": "1",
+    "batch_1_pct": "100",
     "batch_2_pct": "100",
     "batch_3_pct": "100",
     "batch_2_days": 3,

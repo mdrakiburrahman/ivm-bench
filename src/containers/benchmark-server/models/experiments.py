@@ -236,8 +236,8 @@ class ExperimentInputs:
 
     def __post_init__(self):
         self.batch_2_days = int(self.batch_2_days)
-        if self.batch_2_days < 0 or self.batch_2_days > 365:
-            raise ValueError("batch_2_days must be between 0 and 365")
+        if self.batch_2_days < 0 or self.batch_2_days > 364:
+            raise ValueError("batch_2_days must be between 0 and 364")
 
     # ------------------------------------------------------------------
     # Serialization

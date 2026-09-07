@@ -12,7 +12,7 @@ object TpcdiToDelta {
   val AugmentedStart: LocalDate = LocalDate.parse("2016-07-06")
 
   def AugmentedEnd(batch2Days: Int): LocalDate = {
-    require(batch2Days >= 1 && batch2Days <= 365, "TPCDI_BATCH_2_DAYS must be between 1 and 365")
+    require(batch2Days >= 1 && batch2Days <= 364, "TPCDI_BATCH_2_DAYS must be between 1 and 364")
     AugmentedStart.plusDays(batch2Days.toLong)
   }
 
@@ -26,7 +26,7 @@ object TpcdiToDelta {
     val digenPath = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
     val deltaPath = sys.env.getOrElse("DELTA_PATH", "/data/delta")
     val batch2Days = sys.env.getOrElse("TPCDI_BATCH_2_DAYS", "0").toInt
-    require(batch2Days >= 0 && batch2Days <= 365, "TPCDI_BATCH_2_DAYS must be between 0 and 365")
+    require(batch2Days >= 0 && batch2Days <= 364, "TPCDI_BATCH_2_DAYS must be between 0 and 364")
     val augmented = batch2Days > 0
     if (augmented) {
       println(
@@ -43,12 +43,15 @@ object TpcdiToDelta {
         .getOrElse(sys.error(s"BATCH_${batch}_INSERT_PCT or BATCH_${batch}_PCT env var required"))
         .toDouble
 
-    val batchPct = Map(
+    val batchPct = if (augmented) Map(1 -> 100.0, 2 -> 100.0, 3 -> 100.0) else Map(
       1 -> insertPct(1),
       2 -> insertPct(2),
       3 -> insertPct(3),
     )
-    println(s"=== Batch limits: B1=${batchPct(1)}%, B2=${batchPct(2)}%, B3=${batchPct(3)}% ===")
+    if (augmented)
+      println("=== Row percentage limits disabled for Databricks-style daily batches ===")
+    else
+      println(s"=== Batch limits: B1=${batchPct(1)}%, B2=${batchPct(2)}%, B3=${batchPct(3)}% ===")
 
     val spark = SparkSession.builder()
       .appName("TpcdiToDelta")
@@ -97,25 +100,21 @@ object TpcdiToDelta {
       }
     }
 
-    def sourcePaths(outputBatch: Int, file: String): Seq[String] =
-      Seq(s"$digenPath/Batch$outputBatch/$file").filter(sourceExists)
-
-    def readCsv(paths: Seq[String], schema: StructType, delimiter: String = "|"): DataFrame =
+    def readCsv(path: String, schema: StructType, delimiter: String = "|"): DataFrame =
       spark.read
         .option("header", "false")
         .option("delimiter", delimiter)
         .schema(schema)
-        .csv(paths: _*)
+        .csv(path)
 
-    def writeSources(outputBatch: Int, file: String, schema: StructType, table: String,
-                     delimiter: String = "|"): Unit = {
-      val paths = sourcePaths(outputBatch, file)
-      if (paths.nonEmpty) {
+    def writeSource(outputBatch: Int, file: String, schema: StructType, table: String,
+                    delimiter: String = "|"): Unit = {
+      val path = s"$digenPath/Batch$outputBatch/$file"
+      if (sourceExists(path)) {
         val label = s"batch$outputBatch/$table"
-        println(s"  SOURCES: $label <- ${paths.mkString(", ")}")
-        writeDelta(readCsv(paths, schema, delimiter), s"$deltaPath/batch$outputBatch/$table", label, outputBatch)
+        writeDelta(readCsv(path, schema, delimiter), s"$deltaPath/batch$outputBatch/$table", label, outputBatch)
       } else {
-        println(s"  WARN: No sources found for batch$outputBatch/$table")
+        println(s"  WARN: Source not found: $path")
       }
     }
 
@@ -187,7 +186,7 @@ object TpcdiToDelta {
     for ((file, schema, table) <- refTables) {
       val src = s"$digenPath/Batch1/$file"
       if (sourceExists(src))
-        writeDelta(readCsv(Seq(src), schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
+        writeDelta(readCsv(src, schema), s"$deltaPath/batch1/$table", s"batch1/$table", 1)
       else
         println(s"  WARN: Source not found: $src")
     }
@@ -206,7 +205,7 @@ object TpcdiToDelta {
 
     val hrSrc = s"$digenPath/Batch1/HR.csv"
     if (sourceExists(hrSrc))
-      writeDelta(readCsv(Seq(hrSrc), hrSchema, ","), s"$deltaPath/batch1/hr", "batch1/hr", 1)
+      writeDelta(readCsv(hrSrc, hrSchema, ","), s"$deltaPath/batch1/hr", "batch1/hr", 1)
 
     // ════════════════════════════════════════════════════════════════════════
     // BatchDate — all batches, same schema
@@ -216,19 +215,11 @@ object TpcdiToDelta {
     val batchDateSchema = new StructType()
       .add("batchdate", DateType)
 
-    if (augmented) {
-      val dates = Map(
-        1 -> spark.range(1).select(date_add(lit(AugmentedStart.toString), -1).alias("batchdate")),
-        2 -> spark.range(batch2Days).select(
-          date_add(lit(AugmentedStart.toString), col("id").cast(IntegerType)).alias("batchdate")
-        ),
-        3 -> spark.range(1).select(lit(AugmentedEnd(batch2Days).toString).cast(DateType).alias("batchdate")),
-      )
+    if (!augmented) {
       for (b <- 1 to 3)
-        writeDelta(dates(b), s"$deltaPath/batch$b/batch_date", s"batch$b/batch_date", b)
+        writeSource(b, "BatchDate.txt", batchDateSchema, "batch_date")
     } else {
-      for (b <- 1 to 3)
-        writeSources(b, "BatchDate.txt", batchDateSchema, "batch_date")
+      println("  SKIP: BatchDate is not part of the Databricks augmented workload")
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -293,7 +284,7 @@ object TpcdiToDelta {
     )
     val historicalFrames = batch1Txn.flatMap { case (file, schema, table) =>
       val src = s"$digenPath/Batch1/$file"
-      if (sourceExists(src)) Some(table -> readCsv(Seq(src), schema))
+      if (sourceExists(src)) Some(table -> readCsv(src, schema))
       else {
         println(s"  WARN: Source not found: $src")
         None
@@ -301,7 +292,6 @@ object TpcdiToDelta {
     }.toMap
 
     val eventColumns = Map(
-      "trade" -> "t_dts",
       "trade_history" -> "th_dts",
       "daily_market" -> "dm_date",
       "watch_history" -> "w_dts",
@@ -457,7 +447,7 @@ object TpcdiToDelta {
       }
     } else {
       for (b <- 2 to 3; (file, schema, table) <- incrTxn)
-        writeSources(b, file, schema, table)
+        writeSource(b, file, schema, table)
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -518,7 +508,7 @@ object TpcdiToDelta {
           col("Customer.Name.C_L_NAME").cast(StringType).alias("lastname"),
           col("Customer.Name.C_F_NAME").cast(StringType).alias("firstname"),
           col("Customer.Name.C_M_NAME").cast(StringType).alias("middleinitial"),
-          upper(col("Customer._C_GNDR")).cast(StringType).alias("gender"),
+          col("Customer._C_GNDR").cast(StringType).alias("gender"),
           col("Customer._C_TIER").cast(ByteType).alias("tier"),
           col("Customer._C_DOB").cast(DateType).alias("dob"),
           col("Customer.Address.C_ADLINE1").cast(StringType).alias("addressline1"),
@@ -551,7 +541,7 @@ object TpcdiToDelta {
       }
     } else {
       for (b <- 1 to 3)
-        writeSources(b, "Customer.txt", customerSchema, "customer")
+        writeSource(b, "Customer.txt", customerSchema, "customer")
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -590,7 +580,7 @@ object TpcdiToDelta {
       }
     } else {
       for (b <- 1 to 3)
-        writeSources(b, "Account.txt", accountSchema, "account")
+        writeSource(b, "Account.txt", accountSchema, "account")
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -623,7 +613,7 @@ object TpcdiToDelta {
       .add("networth", IntegerType)
 
     for (b <- 1 to 3 if batch2Days == 0 || b == 1)
-      writeSources(b, "Prospect.csv", prospectSchema, "prospect", ",")
+      writeSource(b, "Prospect.csv", prospectSchema, "prospect", ",")
 
     // ════════════════════════════════════════════════════════════════════════
     // FINWIRE — Batch1 only, fixed-width text lines

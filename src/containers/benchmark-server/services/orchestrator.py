@@ -410,7 +410,7 @@ class Orchestrator:
             f"mount/bin/duckdb-openivm",
             f"mount/bin/spark-openivm",
         ])
-        dirs.append(f"mount/datagen-cache/{sf}/2/digen")
+        dirs.append(f"mount/datagen-cache/{sf}/digen")
         for d in dirs:
             full = os.path.join(repo, d)
             os.makedirs(full, exist_ok=True)
@@ -486,11 +486,10 @@ class Orchestrator:
         """Run TPC-DI data generation (idempotent)."""
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
-        datagen_env = self._config.base_env()
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.datagen.yml"),
             project_name="datagen",
-            env=datagen_env,
+            env=self._config.base_env(),
             cwd=repo,
         )
         with self._heartbeat("datagen/build"):
