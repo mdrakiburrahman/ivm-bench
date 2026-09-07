@@ -933,7 +933,9 @@ class Orchestrator:
                 self._run_engines_parallel(engine_configs)
             else:
                 self.emit(f"  Running {len(engines)} engines SERIALLY")
-                self._run_engines_serial(engine_configs)
+                failed = self._run_engines_serial(engine_configs)
+                if failed:
+                    raise RuntimeError(f"Engines failed: {', '.join(failed)}")
 
         self.emit("=== Phase 2: Complete ===")
 
@@ -954,26 +956,28 @@ class Orchestrator:
             f"cloud(parallel)=[{', '.join(cloud) or '-'}]"
         )
         orig = self._config
+        failed = []
         try:
             if host:
                 self._config = replace(orig, engines=host, parallel=False, schedule="serial")
                 host_configs = compute_engine_configs(self._config)
                 self.emit(f"  Running {len(host)} host engine(s) SERIALLY")
-                self._run_engines_serial(host_configs)
+                failed.extend(self._run_engines_serial(host_configs))
             if cloud:
                 self._config = replace(orig, engines=cloud, parallel=True, schedule="parallel")
                 cloud_configs = compute_engine_configs(self._config)
                 self._init_parallel_staging(cloud_configs)
                 self.emit(f"  Running {len(cloud)} cloud engine(s) in PARALLEL")
                 self._run_engine_wave(cloud, cloud_configs)
-                failed = [
-                    n for n in cloud
-                    if n in self._result.engines and self._result.engines[n].status == "failed"
-                ]
-                if failed:
-                    raise RuntimeError(f"Cloud engines failed: {', '.join(failed)}")
+                failed.extend(
+                    name for name in cloud
+                    if name in self._result.engines
+                    and self._result.engines[name].status == "failed"
+                )
         finally:
             self._config = orig
+        if failed:
+            raise RuntimeError(f"Engines failed: {', '.join(failed)}")
 
     def _build_engine_images(self) -> None:
         """Build Docker images for all selected engines."""
@@ -1039,8 +1043,9 @@ class Orchestrator:
 
         self.emit("  [staging] All per-engine staging dirs initialized")
 
-    def _run_engines_serial(self, engine_configs: Dict) -> None:
-        """Run engines one at a time."""
+    def _run_engines_serial(self, engine_configs: Dict) -> List[str]:
+        """Run every engine once and return the names that failed."""
+        failed = []
         for name in self._config.engines:
             ec = engine_configs[name]
             runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
@@ -1058,7 +1063,8 @@ class Orchestrator:
                 raise
             self._result.engines[name] = result
             if result.status == "failed":
-                raise RuntimeError(f"Engine {name} failed: {result.error}")
+                failed.append(name)
+        return failed
 
     def _run_engines_parallel(self, engine_configs: Dict) -> None:
         """Run all engines concurrently in a single wave."""
