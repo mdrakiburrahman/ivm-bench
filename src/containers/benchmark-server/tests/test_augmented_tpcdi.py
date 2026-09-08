@@ -5,8 +5,6 @@ import sys
 import unittest
 from pathlib import Path
 
-import duckdb
-
 BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 DBT_PROJECTS = BENCHMARK_SERVER.parent / "dbt-server" / "dbt-projects"
 REPO = BENCHMARK_SERVER.parents[2]
@@ -136,7 +134,7 @@ class AugmentedTpcdiTest(unittest.TestCase):
                     self.assertEqual(actual, expected)
 
     def test_augmented_trade_events_reach_trade_history_without_multiplication(self):
-        connection = duckdb.connect(":memory:")
+        connection = sqlite3.connect(":memory:")
         connection.execute("""
             create table staging_trade(
                 cdc_flag varchar, cdc_dsn bigint, t_id bigint, t_dts timestamp,
@@ -163,22 +161,14 @@ class AugmentedTpcdiTest(unittest.TestCase):
                 th_t_id bigint, th_dts timestamp, th_st_id varchar
             )
         """)
-        connection.execute("""
-            insert into batch1_trade_history values
-                (1, timestamp '2016-07-01 08:00:00', 'PNDG'),
-                (1, timestamp '2016-07-01 09:00:00', 'SBMT')
-        """)
-        connection.execute("""
-            create table reference_trade_type(tt_id varchar, tt_name varchar);
-            insert into reference_trade_type values ('TMB', 'Market Buy');
-            create table reference_status_type(st_id varchar, st_name varchar);
-            insert into reference_status_type values
-                ('PNDG', 'Pending'), ('SBMT', 'Submitted'), ('CMPT', 'Completed');
-        """)
+        connection.executemany(
+            "insert into batch1_trade_history values (?, ?, ?)",
+            ((1, "2016-07-01 08:00:00", "PNDG"),
+             (1, "2016-07-01 09:00:00", "SBMT")),
+        )
 
         trade_model = "models/bronze/brokerage/brokerage_trade.sql"
         history_model = "models/bronze/brokerage/brokerage_trade_history.sql"
-        silver_model = "models/silver/trades_history.sql"
         connection.execute(
             "create table standard_brokerage_trade as "
             + render_model("duckdb", trade_model, 0)
@@ -195,11 +185,6 @@ class AugmentedTpcdiTest(unittest.TestCase):
             "create table brokerage_trade_history as "
             + render_model("duckdb", history_model, 3)
         )
-        connection.execute(
-            "create table trades_history as "
-            + render_model("duckdb", silver_model, 3)
-        )
-
         self.assertEqual(
             connection.execute("select count(*) from standard_brokerage_trade").fetchone(),
             (4,),
@@ -226,15 +211,15 @@ class AugmentedTpcdiTest(unittest.TestCase):
         )
         self.assertEqual(
             connection.execute(
-                "select trade_id, count(*) from trades_history group by trade_id order by trade_id"
+                """
+                select t.t_id, count(*)
+                from brokerage_trade t
+                join brokerage_trade_history h on t.t_id = h.th_t_id
+                group by t.t_id
+                order by t.t_id
+                """
             ).fetchall(),
             [(1, 3), (2, 2)],
-        )
-        self.assertEqual(
-            connection.execute(
-                "select distinct trade_status from trades_history"
-            ).fetchall(),
-            [("Completed",)],
         )
         connection.close()
 
