@@ -133,6 +133,18 @@ class AugmentedTpcdiTest(unittest.TestCase):
                     actual = normalized_sql(render_model(engine, model, 3))
                     self.assertEqual(actual, expected)
 
+    def test_fabric_incremental_appends_match_columns_by_name(self):
+        engines = ("fabric-jvm-35", "fabric-openivm-jvm-35")
+        for engine in engines:
+            macro = (
+                DBT_PROJECTS / engine / "macros" / "load_fabric_sources.sql"
+            ).read_text(encoding="utf-8")
+            with self.subTest(engine=engine):
+                self.assertIn(
+                    "INSERT INTO {{ db }}.staging_{{ t }} BY NAME SELECT *",
+                    macro,
+                )
+
     def test_augmented_trade_events_reach_trade_history_without_multiplication(self):
         connection = sqlite3.connect(":memory:")
         connection.execute("""

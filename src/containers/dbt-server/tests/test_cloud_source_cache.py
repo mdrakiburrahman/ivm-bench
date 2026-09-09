@@ -5,13 +5,18 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 DBT_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DBT_SERVER))
 
-from services import fabric, source_cache  # noqa: E402
+from services import (  # noqa: E402
+    ducklake_sources,
+    fabric,
+    source_cache,
+    spark_openivm_sources,
+)
 from services.source_cache import (  # noqa: E402
     AUGMENTED_STAGING_TABLES,
     batch_cache_root,
@@ -160,6 +165,10 @@ class DatabricksAppendTest(unittest.TestCase):
                 result = self.sources.append_sources(2, 100)
 
         self.assertEqual(result["tables_appended"], 1)
+        self.assertIn(
+            "INSERT INTO `ivmbenchdbrx`.`exp_data`.`staging_trade` BY NAME",
+            execute.call_args.args[0],
+        )
         self.assertIn("batch2_pct=25/staging_batch2/trade", execute.call_args.args[0])
 
     def test_append_rejects_empty_generated_batch(self):
@@ -201,6 +210,44 @@ class DatabricksAppendTest(unittest.TestCase):
             call.args[1].parent.name == "batch2"
             for call in upload.call_args_list
         ))
+
+
+class NamedAppendTest(unittest.TestCase):
+    def test_ducklake_append_matches_columns_by_name(self):
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "batch2" / "account" / "part.parquet"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            execute = Mock()
+
+            ducklake_sources.append_sources(
+                Path(raw), Path(raw) / "work", 2, execute, "duckdb", (),
+            )
+
+        sql = execute.call_args.args[0]
+        self.assertIn(
+            'INSERT INTO "ducklake"."tpcdi"."staging_account" BY NAME', sql,
+        )
+
+    def test_spark_openivm_append_matches_columns_by_name(self):
+        with tempfile.TemporaryDirectory() as raw:
+            (Path(raw) / "batch2" / "account").mkdir(parents=True)
+            client = MagicMock()
+            client.__enter__.return_value = client
+            with (
+                patch.object(spark_openivm_sources, "RAW_DELTA_DIR", raw),
+                patch.object(spark_openivm_sources, "STAGING_TABLES", ["account"]),
+                patch.object(spark_openivm_sources, "LivyClient", return_value=client),
+            ):
+                spark_openivm_sources.append_sources(2)
+
+        self.assertEqual(
+            client.execute_many.call_args.args[0],
+            [
+                "INSERT INTO tpcdi.staging_account BY NAME "
+                f"SELECT * FROM delta.`{raw}/batch2/account`"
+            ],
+        )
 
 
 class FabricBatchCacheTest(unittest.TestCase):

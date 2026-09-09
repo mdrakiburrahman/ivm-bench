@@ -64,7 +64,7 @@ object TpcdiToDelta {
     val directWithoutSameDayUpdates = directAccountEvents
       .withColumn("_event_date", to_date(col("action_ts")))
       .join(derivedDates, Seq("accountid", "_event_date"), "left_anti")
-      .drop("_event_date")
+      .select(directAccountEvents.columns.map(col): _*)
 
     directWithoutSameDayUpdates.unionByName(derived)
   }

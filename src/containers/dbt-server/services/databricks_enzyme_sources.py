@@ -748,7 +748,7 @@ def append_sources(batch_num: int, sf: int) -> dict:
     Steps:
       1. Idempotently seed the per-batch staging dirs into the shared
          cache (``_UPLOADED_BATCH<N>`` marker).
-      2. ``INSERT INTO exp_<ts>_data.staging_<t> SELECT * FROM
+      2. ``INSERT INTO exp_<ts>_data.staging_<t> BY NAME SELECT * FROM
          delta.`/Volumes/_shared_cache/.../sf=<N>/staging_batch<N>/<t>```
          for each staging table — server-side, no client bytes.
 
@@ -784,7 +784,7 @@ def append_sources(batch_num: int, sf: int) -> dict:
         try:
             _execute(
                 f"INSERT INTO {fq} "
-                f"SELECT * FROM delta.`{remote}`"
+                f"BY NAME SELECT * FROM delta.`{remote}`"
             )
             tables_inserted += 1
         except Exception as exc:

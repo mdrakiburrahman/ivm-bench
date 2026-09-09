@@ -60,7 +60,7 @@
   {% else %}
     {{ log("[fabric] load_fabric_sources: INSERT staging increment (batch " ~ batch ~ ", sf=" ~ sf ~ ")", info=True) }}
     {% for t in incremental_staging_tables %}
-      {% set sql %}INSERT INTO {{ db }}.staging_{{ t }} SELECT * FROM delta.`{{ cache }}/staging_batch{{ batch }}/{{ t }}`{% endset %}
+      {% set sql %}INSERT INTO {{ db }}.staging_{{ t }} BY NAME SELECT * FROM delta.`{{ cache }}/staging_batch{{ batch }}/{{ t }}`{% endset %}
       {% do run_query(sql) %}
     {% endfor %}
   {% endif %}
