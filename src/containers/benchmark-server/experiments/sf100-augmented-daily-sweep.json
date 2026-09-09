@@ -39,10 +39,10 @@
     }
   },
   "experiments": [
-    { "label": "sf100-augmented-10pct-37days", "batch_2_days": 37 },
-    { "label": "sf100-augmented-20pct-73days", "batch_2_days": 73 },
-    { "label": "sf100-augmented-30pct-110days", "batch_2_days": 110 },
-    { "label": "sf100-augmented-40pct-146days", "batch_2_days": 146 },
-    { "label": "sf100-augmented-50pct-183days", "batch_2_days": 183 }
+    { "label": "sf100-augmented-5pct-18days", "batch_2_days": 18 },
+    { "label": "sf100-augmented-15pct-55days", "batch_2_days": 55 },
+    { "label": "sf100-augmented-25pct-91days", "batch_2_days": 91 },
+    { "label": "sf100-augmented-35pct-128days", "batch_2_days": 128 },
+    { "label": "sf100-augmented-45pct-164days", "batch_2_days": 164 }
   ]
 }

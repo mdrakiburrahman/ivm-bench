@@ -82,6 +82,19 @@ class AugmentedTpcdiTest(unittest.TestCase):
             [(10, 18), (10, 183)],
         )
 
+    def test_sf100_sweep_uses_requested_insert_windows(self):
+        config = BENCHMARK_SERVER / "experiments" / "sf100-augmented-daily-sweep.json"
+        experiments = parse_experiments_json(config.read_text())
+        self.assertEqual(
+            [(experiment.scale_factor, experiment.batch_2_days) for experiment in experiments],
+            [(100, 18), (100, 55), (100, 91), (100, 128), (100, 164)],
+        )
+        for experiment in experiments:
+            self.assertFalse(experiment.feature_flags.openivm_validate)
+            self.assertTrue(experiment.feature_flags.openivm_profile_refresh)
+            self.assertEqual(experiment.batch_2_update_pct, "0")
+            self.assertEqual(experiment.batch_2_delete_pct, "0")
+
     def test_inactive_customer_and_account_events_are_preserved(self):
         customer, account = action_type_expressions("duckdb")
         connection = sqlite3.connect(":memory:")
