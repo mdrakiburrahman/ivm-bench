@@ -63,6 +63,7 @@ RESULTS_CSV_FIELDS = (
     "batch_2_delete_pct",
     "batch_3_update_pct",
     "batch_3_delete_pct",
+    "databricks_refresh_policy",
     "source_rows",
     "schedule",
     "parallel",
@@ -716,6 +717,9 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "batch_2_delete_pct": inputs.get("batch_2_delete_pct", ""),
                         "batch_3_update_pct": inputs.get("batch_3_update_pct", ""),
                         "batch_3_delete_pct": inputs.get("batch_3_delete_pct", ""),
+                        "databricks_refresh_policy": inputs.get(
+                            "databricks_refresh_policy", ""
+                        ),
                         "source_rows": source_batches.get(
                             str(batch_num), {}
                         ).get("total_rows", ""),

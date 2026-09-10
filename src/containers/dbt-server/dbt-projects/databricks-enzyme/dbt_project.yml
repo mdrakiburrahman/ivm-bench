@@ -48,15 +48,13 @@ dispatch:
 models:
   tpcdi:
     +materialized: materialized_view
-    +refresh_policy: 'AUTO'
+    +refresh_policy: "{{ env_var('DATABRICKS_REFRESH_POLICY', 'AUTO') }}"
     bronze:
       +schema: bronze
     silver:
       +schema: silver
     gold:
       +schema: gold
-      analytics:
-        +refresh_policy: 'AUTO'
     work:
       +schema: work
       +materialized: ephemeral

@@ -224,6 +224,7 @@ class ExperimentInputs:
     batch_2_delete_pct: str = "0"
     batch_3_update_pct: str = "0"
     batch_3_delete_pct: str = "0"
+    databricks_refresh_policy: str = "AUTO"
     engines: List[str] = field(default_factory=lambda: ["spark", "spark-openivm"])
     parallel: bool = False
     # "serial" | "parallel" | "serial-host-parallel-cloud". Legacy `parallel:true`
@@ -238,6 +239,14 @@ class ExperimentInputs:
         self.batch_2_days = int(self.batch_2_days)
         if self.batch_2_days < 0 or self.batch_2_days > 364:
             raise ValueError("batch_2_days must be between 0 and 364")
+        self.databricks_refresh_policy = self.databricks_refresh_policy.strip().upper()
+        if self.databricks_refresh_policy not in {
+            "AUTO", "INCREMENTAL", "INCREMENTAL STRICT", "FULL",
+        }:
+            raise ValueError(
+                "databricks_refresh_policy must be AUTO, INCREMENTAL, "
+                "INCREMENTAL STRICT, or FULL"
+            )
 
     # ------------------------------------------------------------------
     # Serialization
@@ -255,6 +264,7 @@ class ExperimentInputs:
             "BATCH_2_DELETE_PCT": str(self.batch_2_delete_pct),
             "BATCH_3_UPDATE_PCT": str(self.batch_3_update_pct),
             "BATCH_3_DELETE_PCT": str(self.batch_3_delete_pct),
+            "DATABRICKS_REFRESH_POLICY": self.databricks_refresh_policy,
             "PARALLEL": "1" if self.schedule == "parallel" else "0",
             "SCHEDULE": self.schedule,
             "ENGINES": ",".join(self.engines),
@@ -276,6 +286,7 @@ class ExperimentInputs:
             "batch_2_delete_pct": self.batch_2_delete_pct,
             "batch_3_update_pct": self.batch_3_update_pct,
             "batch_3_delete_pct": self.batch_3_delete_pct,
+            "databricks_refresh_policy": self.databricks_refresh_policy,
             "engines": list(self.engines),
             "parallel": self.parallel,
             "schedule": self.schedule,
@@ -296,6 +307,7 @@ class ExperimentInputs:
             "batch_2_delete_pct": self.batch_2_delete_pct,
             "batch_3_update_pct": self.batch_3_update_pct,
             "batch_3_delete_pct": self.batch_3_delete_pct,
+            "databricks_refresh_policy": self.databricks_refresh_policy,
             "engines": ",".join(self.engines),
             "parallel": int(self.parallel),
             "schedule": self.schedule,
@@ -323,6 +335,7 @@ class ExperimentInputs:
             "batch_2_delete_pct": "b2d%",
             "batch_3_update_pct": "b3u%",
             "batch_3_delete_pct": "b3d%",
+            "databricks_refresh_policy": "DB policy",
             "engines": "engines",
             "parallel": "parallel",
             "schedule": "schedule",
@@ -422,6 +435,9 @@ class ExperimentInputs:
             batch_2_delete_pct=str(d.get("batch_2_delete_pct", base.batch_2_delete_pct)),
             batch_3_update_pct=str(d.get("batch_3_update_pct", base.batch_3_update_pct)),
             batch_3_delete_pct=str(d.get("batch_3_delete_pct", base.batch_3_delete_pct)),
+            databricks_refresh_policy=str(
+                d.get("databricks_refresh_policy", base.databricks_refresh_policy)
+            ),
             engines=engines,
             parallel=(schedule == "parallel"),
             schedule=schedule,

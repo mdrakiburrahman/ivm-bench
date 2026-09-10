@@ -47,6 +47,41 @@ def normalized_sql(sql):
 
 
 class AugmentedTpcdiTest(unittest.TestCase):
+    def test_databricks_refresh_policy_works_for_standard_tpcdi(self):
+        experiment = parse_experiments_json(json.dumps({
+            "experiments": [{
+                "batch_2_days": 0,
+                "databricks_refresh_policy": "full",
+            }],
+        }))[0]
+
+        self.assertEqual(experiment.databricks_refresh_policy, "FULL")
+        self.assertEqual(
+            experiment.to_compose_env()["DATABRICKS_REFRESH_POLICY"], "FULL",
+        )
+        self.assertFalse(hasattr(experiment.compiler_bench, "databricks_refresh_policy"))
+
+    def test_invalid_databricks_refresh_policy_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "databricks_refresh_policy"):
+            parse_experiments_json(json.dumps({
+                "experiments": [{"databricks_refresh_policy": "sometimes"}],
+            }))
+
+    def test_databricks_refresh_policy_reaches_dbt(self):
+        compose = (
+            REPO / "docker" / "docker-compose.benchmark.databricks-enzyme.yml"
+        ).read_text(encoding="utf-8")
+        project = (
+            DBT_PROJECTS / "databricks-enzyme" / "dbt_project.yml"
+        ).read_text(encoding="utf-8")
+        workflow = (REPO / ".github" / "workflows" / "gci.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('DATABRICKS_REFRESH_POLICY: "${DATABRICKS_REFRESH_POLICY:-AUTO}"', compose)
+        self.assertIn("env_var('DATABRICKS_REFRESH_POLICY', 'AUTO')", project)
+        self.assertIn("databricks_refresh_policy:", workflow)
+
     def test_days_are_forwarded_to_datagen(self):
         experiments = parse_experiments_json(json.dumps({
             "experiments": [{"scale_factor": 3, "batch_2_days": 37}],
