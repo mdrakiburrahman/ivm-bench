@@ -35,15 +35,15 @@ dispatch:
 # Override per-layer or per-model with `+refresh_policy:` in the matching
 # block below or via `{{ config(refresh_policy='…') }}` inside a model file.
 #
-# Pre-flight gate: the benchmark-server calls
+# Pre-flight diagnostic: the benchmark-server calls
 #   POST /validate/databricks-enzyme/explain-create-materialized-view/<sf>
 # on the dbt-server before the dbt build emits any DDL. That endpoint runs
 #   EXPLAIN CREATE MATERIALIZED VIEW <sandbox>.<model>
 #   REFRESH POLICY INCREMENTAL STRICT
 #   AS <compiled_sql>
-# for every non-ephemeral model and fails the engine fast if any model is
-# not incrementalizable — without polluting timing data with a half-failed
-# dbt run. Artifacts land under
+# for every non-ephemeral model and records which models support strict
+# incrementalization. The actual run still uses DATABRICKS_REFRESH_POLICY.
+# Artifacts land under
 #   mount/query-plan/<sf>/databricks-enzyme/explain-create-materialized-view/.
 models:
   tpcdi:
