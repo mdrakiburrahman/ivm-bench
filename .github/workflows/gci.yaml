@@ -12,10 +12,6 @@ on:
         description: "Optional comma-separated engine override for a pre-built experiments file"
         default: ""
         type: string
-      databricks_refresh_policy:
-        description: "Optional Databricks MV refresh policy override: AUTO | INCREMENTAL | INCREMENTAL STRICT | FULL"
-        default: ""
-        type: string
       scale_factor:
         description: "TPC-DI scale factor"
         default: "10"
@@ -110,7 +106,7 @@ on:
         type: string
 
 concurrency:
-  group: gci-${{ github.ref }}-${{ inputs.experiments_engines || 'default' }}-${{ inputs.databricks_refresh_policy || 'AUTO' }}
+  group: gci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
   cancel-in-progress: true
 
 permissions:
@@ -144,7 +140,6 @@ jobs:
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
       OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
       STORAGE_METRICS: ${{ inputs.storage_metrics || '1' }}
-      DATABRICKS_REFRESH_POLICY: ${{ inputs.databricks_refresh_policy || 'AUTO' }}
       OAT_MIN_FREE_PCT: ${{ inputs.oat_min_free_pct || '10' }}
 
     steps:
@@ -165,7 +160,6 @@ jobs:
         env:
           INPUT_EXPERIMENTS_FILE: ${{ inputs.experiments_file || '' }}
           INPUT_EXPERIMENTS_ENGINES: ${{ inputs.experiments_engines || '' }}
-          INPUT_DATABRICKS_REFRESH_POLICY: ${{ inputs.databricks_refresh_policy || '' }}
           SPARK_DBT_THREADS_INPUT: ${{ inputs.spark_dbt_threads || '' }}
         run: |
           set -euo pipefail
@@ -178,20 +172,13 @@ jobs:
               exit 1
             fi
             echo "Using pre-built experiments file: $EXP_FILE"
-            if [[ -n "${INPUT_EXPERIMENTS_ENGINES}" || -n "${INPUT_DATABRICKS_REFRESH_POLICY}" ]]; then
-              engines_json=null
-              if [[ -n "${INPUT_EXPERIMENTS_ENGINES}" ]]; then
-                engines_json="$(printf '%s' "$INPUT_EXPERIMENTS_ENGINES" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; ""))')"
-              fi
+            if [[ -n "${INPUT_EXPERIMENTS_ENGINES}" ]]; then
+              engines_json="$(printf '%s' "$INPUT_EXPERIMENTS_ENGINES" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; ""))')"
               RESOLVED_EXP_FILE="$REPO_ROOT/gci-experiments.json"
-              jq --argjson engines "$engines_json" \
-                --arg policy "$INPUT_DATABRICKS_REFRESH_POLICY" \
-                '(.baseline //= {}) |
-                 (if $engines != null then .baseline.engines = $engines else . end) |
-                 (if $policy != "" then .baseline.databricks_refresh_policy = $policy else . end)' \
+              jq --argjson engines "$engines_json" '.baseline.engines = $engines' \
                 "$EXP_FILE" > "$RESOLVED_EXP_FILE"
               EXP_FILE="$RESOLVED_EXP_FILE"
-              echo "Applied pre-built experiment overrides: engines=$INPUT_EXPERIMENTS_ENGINES databricks_refresh_policy=$INPUT_DATABRICKS_REFRESH_POLICY"
+              echo "Overrode pre-built experiment engines: $INPUT_EXPERIMENTS_ENGINES"
             fi
           else
             EXP_FILE="$REPO_ROOT/gci-experiments.json"
@@ -215,7 +202,6 @@ jobs:
               --arg b2d "$BATCH_2_DELETE_PCT" \
               --arg b3u "$BATCH_3_UPDATE_PCT" \
               --arg b3d "$BATCH_3_DELETE_PCT" \
-              --arg dbrp "$DATABRICKS_REFRESH_POLICY" \
               --argjson engines "$engines_json" \
               --arg sdt "$SPARK_DBT_THREADS_INPUT" \
               --argjson parallel "$parallel_b" \
@@ -231,7 +217,6 @@ jobs:
                   engines: $engines,
                   parallel: $parallel,
                   schedule: $schedule,
-                  databricks_refresh_policy: $dbrp,
                   feature_flags: {
                     preserve_raw: $preserve_raw,
                     openivm_validate: $openivm_validate,

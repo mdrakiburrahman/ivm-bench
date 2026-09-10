@@ -74,13 +74,48 @@ class AugmentedTpcdiTest(unittest.TestCase):
         project = (
             DBT_PROJECTS / "databricks-enzyme" / "dbt_project.yml"
         ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'DATABRICKS_REFRESH_POLICY: "${DATABRICKS_REFRESH_POLICY:-AUTO}"',
+            compose,
+        )
+        self.assertIn("env_var('DATABRICKS_REFRESH_POLICY', 'AUTO')", project)
+
+    def test_databricks_policy_sweeps_are_isolated_and_comparable(self):
+        experiment_dir = BENCHMARK_SERVER / "experiments"
+        policies = {}
+        for policy in ("full", "incremental"):
+            config = experiment_dir / f"sf100-augmented-databricks-{policy}.json"
+            experiments = parse_experiments_json(config.read_text(encoding="utf-8"))
+            policies[policy] = [experiment.databricks_refresh_policy for experiment in experiments]
+            self.assertEqual(
+                [(experiment.scale_factor, experiment.batch_2_days) for experiment in experiments],
+                [(100, 18), (100, 55), (100, 91), (100, 128), (100, 164)],
+            )
+            for experiment in experiments:
+                self.assertEqual(experiment.engines, ["databricks-enzyme"])
+                self.assertFalse(experiment.feature_flags.openivm_validate)
+                self.assertTrue(experiment.feature_flags.openivm_profile_refresh)
+                self.assertEqual(experiment.batch_2_update_pct, "0")
+                self.assertEqual(experiment.batch_2_delete_pct, "0")
+
+        self.assertEqual(policies["full"], ["FULL"] * 5)
+        self.assertEqual(policies["incremental"], ["INCREMENTAL"] * 5)
+
+    def test_databricks_policy_is_not_a_duplicate_workflow_input(self):
         workflow = (REPO / ".github" / "workflows" / "gci.yaml").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('DATABRICKS_REFRESH_POLICY: "${DATABRICKS_REFRESH_POLICY:-AUTO}"', compose)
-        self.assertIn("env_var('DATABRICKS_REFRESH_POLICY', 'AUTO')", project)
-        self.assertIn("databricks_refresh_policy:", workflow)
+        self.assertNotIn("inputs.databricks_refresh_policy", workflow)
+        self.assertIn("inputs.experiments_file || 'inline'", workflow)
+        dispatch_inputs = re.search(
+            r"(?ms)^  workflow_dispatch:\n    inputs:\n(.*?)(?=^\S)", workflow,
+        ).group(1)
+        self.assertLessEqual(
+            len(re.findall(r"(?m)^      [a-zA-Z0-9_]+:", dispatch_inputs)),
+            25,
+        )
 
     def test_days_are_forwarded_to_datagen(self):
         experiments = parse_experiments_json(json.dumps({
