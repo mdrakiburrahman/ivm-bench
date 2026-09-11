@@ -1,0 +1,24 @@
+{
+  "_design_notes": [
+    "Databricks FULL-refresh rerun for the SF100 augmented 25% insertion point."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "databricks_refresh_policy": "FULL",
+    "engines": ["databricks-enzyme"],
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    { "label": "sf100-databricks-full-25pct-91days", "batch_2_days": 91 }
+  ]
+}
