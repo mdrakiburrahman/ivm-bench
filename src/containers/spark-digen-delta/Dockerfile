@@ -19,7 +19,7 @@ RUN sbt -Dspark.version=$SPARK_VERSION \
         -Dscala.version=$SCALA_VERSION \
         -Ddelta.version=$DELTA_VERSION \
         -Dhadoop.version=$HADOOP_VERSION \
-        assembly
+        test assembly
 
 FROM eclipse-temurin:17-jre
 

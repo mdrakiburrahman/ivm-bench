@@ -38,7 +38,10 @@ class ComputeMetricsCsvTest(unittest.TestCase):
             "oat_run_id": "test",
             "experiments": [
                 {
-                    "inputs": {"engines": ["spark"]},
+                    "inputs": {
+                        "engines": ["spark"],
+                        "databricks_refresh_policy": "FULL",
+                    },
                     "engines": {
                         "spark": {
                             "batches": [
@@ -73,6 +76,7 @@ class ComputeMetricsCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["compute_source"], "docker_stats_api")
         self.assertEqual(rows[0]["compute_semantics"], "test semantics")
         self.assertEqual(rows[0]["compute_artifact"], "container_stats.jsonl")
+        self.assertEqual(rows[0]["databricks_refresh_policy"], "FULL")
 
     def test_cumulative_cpu_counters_are_subtracted_exactly(self):
         start = {

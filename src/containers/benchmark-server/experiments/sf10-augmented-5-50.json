@@ -1,0 +1,38 @@
+{
+  "_design_notes": [
+    "TPC-DI SF10 at 5% and 50% of the Databricks augmented 365-day window.",
+    "The points map to 18 and 183 whole days; Batch 3 contains the following day."
+  ],
+  "baseline": {
+    "scale_factor": 10,
+    "batch_1_pct": "100",
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "engines": [
+      "databricks-enzyme",
+      "spark",
+      "spark-openivm",
+      "duckdb",
+      "duckdb-openivm",
+      "feldera",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    { "label": "sf10-augmented-5pct-18days", "batch_2_days": 18 },
+    { "label": "sf10-augmented-50pct-183days", "batch_2_days": 183 }
+  ]
+}

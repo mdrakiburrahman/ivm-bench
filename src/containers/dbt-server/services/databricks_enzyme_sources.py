@@ -17,11 +17,11 @@ share the same workspace without stomping each other:
         <catalog>.exp_<ts>_gold        # dbt gold MVs
         <catalog>.exp_<ts>_work        # dbt work (ephemeral) artifacts
 
-  * Raw TPC-DI Delta files are uploaded once per SF, batch, and configured
-    batch percentage into a persistent shared **read-only** cache volume:
+  * Raw TPC-DI Delta files are uploaded once per distinct SF and generated
+    batch into a persistent shared **read-only** cache volume:
 
         /Volumes/<catalog>/_shared_cache/tpcdi_raw_cache/
-          sf=<N>/batch<M>_pct=<P>/{
+          sf=<N>/<workload-specific-batch-key>/{
             batch1/<table>/...,            (init only)
             staging_batch1/<table>/...,
             staging_batch2/<table>/...,
@@ -32,7 +32,7 @@ share the same workspace without stomping each other:
     Idempotent via per-section ``_UPLOADED`` marker files. Per-experiment
     source tables are then created server-side as **CTAS managed Delta**
     from those cache paths — no client-side re-upload past the first run
-    at a given SF, batch, and percentage.
+    at a given SF and generated batch.
 
   * The VIEW-over-delta-path strategy is no longer probed: Enzyme requires
     row-tracking on its source tables, which only managed Delta tables
@@ -72,7 +72,11 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config, oauth_service_principal
 from databricks.sdk.errors import NotFound
 
-from services.source_cache import batch_cache_root
+from services.source_cache import (
+    STAGING_TABLES,
+    batch_cache_root,
+    generated_batch_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +84,7 @@ RAW_DELTA_DIR = os.environ.get("RAW_DELTA_DIR", "/data/raw/delta")
 CATALOG = os.environ.get("DATABRICKS_CATALOG", "ivmbenchdbrx")
 
 # Shared READ-ONLY cache for raw TPC-DI Delta files. ONE schema + ONE
-# volume per workspace, idempotently populated per SF/batch/percentage, then
+# volume per workspace, idempotently populated per distinct generated batch, then
 # read by every subsequent experiment's CTAS source-table creation. Never
 # cleaned up automatically — keep your raw data around to avoid re-uploads.
 CACHE_SCHEMA = os.environ.get("DATABRICKS_CACHE_SCHEMA", "_shared_cache")
@@ -190,19 +194,6 @@ BATCH1_TABLES: List[str] = [
     "trade_history",
     "trade_type",
 ]
-
-STAGING_TABLES: List[str] = [
-    "cash_transaction",
-    "daily_market",
-    "holding_history",
-    "prospect",
-    "trade",
-    "watch_history",
-    "account",
-    "customer",
-    "batch_date",
-]
-
 
 def _all_init_tables() -> List[Tuple[str, str, str]]:
     """Yield (group, local_subdir, source_table_name) for the batch1 load.
@@ -597,7 +588,7 @@ def sweep_stale_schemas(
 
 
 # ---------------------------------------------------------------------------
-# Shared-cache seeding (idempotent per SF + batch + percentage)
+# Shared-cache seeding (idempotent per distinct generated batch)
 # ---------------------------------------------------------------------------
 
 
@@ -634,11 +625,7 @@ def _seed_cache_init(ws: WorkspaceClient, sf: int) -> Tuple[int, bool]:
 def _seed_cache_batch(
     ws: WorkspaceClient, sf: int, batch_num: int,
 ) -> Tuple[int, bool]:
-    """Idempotent: upload the per-batch staging Delta dirs (and any
-    optional ``batch<N>/<t>`` per-batch dir) into the shared cache for
-    ``sf`` under ``staging_batch<N>/``. Returns (files_uploaded,
-    already_seeded).
-    """
+    """Upload one immutable generated batch to the shared cache."""
     if batch_num not in (2, 3):
         raise ValueError(
             f"_seed_cache_batch only supports batch 2 or 3, got {batch_num}"
@@ -652,25 +639,11 @@ def _seed_cache_batch(
         batch_num, sf, _cache_batch_root(sf, batch_num),
     )
     total = 0
-    for t in STAGING_TABLES:
-        # Source for batch-2/3 increments: prefer the per-batch dir if
-        # the batch_loader populated one; else use staging/<t> (which
-        # for incremental loaders is overwritten between batches).
-        local_batch = Path(RAW_DELTA_DIR) / f"batch{batch_num}" / t
-        if local_batch.is_dir():
-            remote = _cache_section_path(
-                sf, batch_num, f"staging_batch{batch_num}/{t}"
-            )
-            n = _upload_dir(ws, local_batch, remote)
-            total += n
-            continue
-        local_staging = Path(RAW_DELTA_DIR) / "staging" / t
-        if local_staging.is_dir():
-            remote = _cache_section_path(
-                sf, batch_num, f"staging_batch{batch_num}/{t}"
-            )
-            n = _upload_dir(ws, local_staging, remote)
-            total += n
+    for t, local_batch in generated_batch_dirs(RAW_DELTA_DIR, batch_num):
+        remote = _cache_section_path(
+            sf, batch_num, f"staging_batch{batch_num}/{t}"
+        )
+        total += _upload_dir(ws, local_batch, remote)
 
     _upload_bytes(ws, marker, b"ok\n")
     return (total, False)
@@ -775,7 +748,7 @@ def append_sources(batch_num: int, sf: int) -> dict:
     Steps:
       1. Idempotently seed the per-batch staging dirs into the shared
          cache (``_UPLOADED_BATCH<N>`` marker).
-      2. ``INSERT INTO exp_<ts>_data.staging_<t> SELECT * FROM
+      2. ``INSERT INTO exp_<ts>_data.staging_<t> BY NAME SELECT * FROM
          delta.`/Volumes/_shared_cache/.../sf=<N>/staging_batch<N>/<t>```
          for each staging table — server-side, no client bytes.
 
@@ -803,14 +776,7 @@ def append_sources(batch_num: int, sf: int) -> dict:
 
     ds = data_schema()
     tables_inserted = 0
-    for t in STAGING_TABLES:
-        # Only INSERT for tables that actually have a per-batch dir in
-        # the cache — some staging tables (e.g. ``batch_date``) may not
-        # appear in every batch.
-        local_batch = Path(RAW_DELTA_DIR) / f"batch{batch_num}" / t
-        local_staging = Path(RAW_DELTA_DIR) / "staging" / t
-        if not local_batch.is_dir() and not local_staging.is_dir():
-            continue
+    for t, _local_batch in generated_batch_dirs(RAW_DELTA_DIR, batch_num):
         remote = _cache_section_path(
             sf, batch_num, f"staging_batch{batch_num}/{t}"
         )
@@ -818,7 +784,7 @@ def append_sources(batch_num: int, sf: int) -> dict:
         try:
             _execute(
                 f"INSERT INTO {fq} "
-                f"SELECT * FROM delta.`{remote}`"
+                f"BY NAME SELECT * FROM delta.`{remote}`"
             )
             tables_inserted += 1
         except Exception as exc:
@@ -827,11 +793,6 @@ def append_sources(batch_num: int, sf: int) -> dict:
                 fq, remote, exc,
             )
             raise
-
-    if tables_inserted == 0:
-        raise RuntimeError(
-            f"Databricks batch {batch_num} append found no local Delta tables"
-        )
 
     logger.info(
         "[databricks-enzyme] append batch=%d sf=%d experiment_id=%s "

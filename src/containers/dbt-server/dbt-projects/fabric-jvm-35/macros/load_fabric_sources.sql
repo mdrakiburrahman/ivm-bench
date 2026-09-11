@@ -23,6 +23,8 @@
 
   {% set batch1_tables = ['customer_mgmt','date','finwire','hr','industry','status_type','tax_rate','trade_history','trade_type'] %}
   {% set staging_tables = ['cash_transaction','daily_market','holding_history','prospect','trade','watch_history','account','customer','batch_date'] %}
+  {% set incremental_staging_tables = env_var('FABRIC_INCREMENTAL_STAGING_TABLES') | trim %}
+  {% set incremental_staging_tables = incremental_staging_tables.split(',') %}
   {% set tblprops = "TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')" %}
 
   {% if batch <= 1 %}
@@ -56,8 +58,8 @@
     {% do run_query(sql) %}
   {% else %}
     {{ log("[fabric] load_fabric_sources: INSERT staging increment (batch " ~ batch ~ ", sf=" ~ sf ~ ")", info=True) }}
-    {% for t in staging_tables %}
-      {% set sql %}INSERT INTO {{ db }}.staging_{{ t }} SELECT * FROM delta.`{{ cache }}/staging_batch{{ batch }}/{{ t }}`{% endset %}
+    {% for t in incremental_staging_tables %}
+      {% set sql %}INSERT INTO {{ db }}.staging_{{ t }} BY NAME SELECT * FROM delta.`{{ cache }}/staging_batch{{ batch }}/{{ t }}`{% endset %}
       {% do run_query(sql) %}
     {% endfor %}
   {% endif %}

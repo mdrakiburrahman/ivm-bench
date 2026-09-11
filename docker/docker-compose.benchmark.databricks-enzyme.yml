@@ -22,6 +22,7 @@ services:
       #             (the only known-good strategy for INCREMENTAL STRICT;
       #             external Delta sources lack row tracking).
       DATABRICKS_ENZYME_STRATEGY: "${DATABRICKS_ENZYME_STRATEGY:-ctas}"
+      DATABRICKS_REFRESH_POLICY: "${DATABRICKS_REFRESH_POLICY:-AUTO}"
       # Tells the dbt-server's databricks_enzyme_sources service where
       # to find the locally-generated Delta dirs to upload from.
       RAW_DELTA_DIR: /data/raw/delta

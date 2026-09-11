@@ -1,0 +1,29 @@
+{
+  "_design_notes": [
+    "Databricks INCREMENTAL-policy run for the SF100 augmented insert sweep.",
+    "INCREMENTAL STRICT is not used because the preflight identifies unsupported TPC-DI models."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "databricks_refresh_policy": "INCREMENTAL",
+    "engines": ["databricks-enzyme"],
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    { "label": "sf100-databricks-incremental-5pct-18days", "batch_2_days": 18 },
+    { "label": "sf100-databricks-incremental-15pct-55days", "batch_2_days": 55 },
+    { "label": "sf100-databricks-incremental-25pct-91days", "batch_2_days": 91 },
+    { "label": "sf100-databricks-incremental-35pct-128days", "batch_2_days": 128 },
+    { "label": "sf100-databricks-incremental-45pct-164days", "batch_2_days": 164 }
+  ]
+}

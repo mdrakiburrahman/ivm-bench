@@ -386,7 +386,7 @@ def append_sources(batch_num: int) -> dict:
             continue
         statements.append(
             f"INSERT INTO tpcdi.staging_{t} "
-            f"SELECT * FROM delta.`{src_path}`"
+            f"BY NAME SELECT * FROM delta.`{src_path}`"
         )
         tables_appended += 1
 

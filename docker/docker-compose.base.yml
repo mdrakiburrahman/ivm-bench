@@ -8,6 +8,7 @@ services:
       STATE_DIR: /tmp/dbt-state
       STATS_DIR: /data/stats
       SCALE_FACTOR: ${SCALE_FACTOR:-3}
+      TPCDI_BATCH_2_DAYS: "${TPCDI_BATCH_2_DAYS:-0}"
       BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
       BATCH_2_INSERT_PCT: "${BATCH_2_INSERT_PCT:-}"
       BATCH_3_INSERT_PCT: "${BATCH_3_INSERT_PCT:-}"

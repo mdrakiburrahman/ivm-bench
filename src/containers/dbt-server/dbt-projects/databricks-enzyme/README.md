@@ -1,9 +1,9 @@
 # databricks-enzyme dbt project
 
 Materialises the TPC-DI dbt project as **Databricks Materialized Views**
-with `REFRESH POLICY INCREMENTAL STRICT` so we can benchmark Enzyme
-(Databricks' incremental view maintenance engine) against the other
-engines in this harness.
+so we can benchmark Enzyme (Databricks' incremental view maintenance
+engine) against the other engines in this harness. The refresh policy is
+configurable per experiment and defaults to `AUTO`.
 
 ## Per-experiment isolation (shared-nothing)
 
@@ -44,7 +44,7 @@ propagated via the `DATABRICKS_EXPERIMENT_ID` env var.
       from the cache into `exp_<ts>_data.<table>` server-side.
    4. dbt build `--full-refresh` — custom MV materialization issues
       `CREATE MATERIALIZED VIEW exp_<ts>_<layer>.<model> REFRESH POLICY
-      INCREMENTAL STRICT AS …`.
+      <policy> AS …`.
 
 2. **Batches 2 / 3** — `INSERT INTO` from cached per-batch staging
    slice → dbt build (no `--full-refresh`) → `REFRESH MATERIALIZED VIEW
@@ -66,9 +66,22 @@ present fails loud and fast.
 
 ## Refresh-policy knob
 
-`dbt_project.yml`'s top-level `+refresh_policy: 'INCREMENTAL STRICT'`
-flows into the custom `materialized_view` materialization. Override
-per-layer or per-model via standard dbt config:
+Set `databricks_refresh_policy` on the experiment or its baseline. It is
+forwarded as `DATABRICKS_REFRESH_POLICY` to `dbt_project.yml` and then to
+the custom `materialized_view` materialization:
+
+```json
+{
+  "experiments": [{
+    "databricks_refresh_policy": "FULL"
+  }]
+}
+```
+
+The same setting works for standard TPC-DI (`batch_2_days: 0`) and the
+augmented daily workload. It is independent of `compiler_bench`.
+Per-layer or per-model overrides remain available through standard dbt
+config:
 
 ```yaml
 models:

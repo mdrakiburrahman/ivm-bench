@@ -1401,12 +1401,8 @@ class EngineRunner:
         model in the databricks-enzyme dbt project against the Serverless
         SQL warehouse.
 
-        **Record-only, NOT a gate.** Since the engine now runs under
-        REFRESH POLICY AUTO (databricks-enzyme/dbt_project.yml), models
-        that the STRICT planner rejects with
-        ``MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE: <reason>`` are still
-        materializable — Databricks falls back to FULL refresh. We keep
-        the STRICT sweep because it's the only way to surface the
+        **Record-only, NOT a gate.** The actual refresh policy comes from
+        ``DATABRICKS_REFRESH_POLICY``; this STRICT sweep only surfaces the
         per-model reason strings that feed the
         ``benchmark-heuristics.png`` incrementalization-coverage panel.
 
@@ -1426,10 +1422,11 @@ class EngineRunner:
         (non-200/non-422 HTTP, request timeout, malformed JSON). Does
         NOT raise on per-model EXPLAIN failures.
         """
+        refresh_policy = os.environ.get("DATABRICKS_REFRESH_POLICY", "AUTO")
         self._emit(
             f"[databricks-enzyme] Pre-flight diagnostic: EXPLAIN every model "
             f"under REFRESH POLICY INCREMENTAL STRICT (record-only, "
-            f"actual run uses AUTO) sf={sf}"
+            f"actual run uses {refresh_policy}) sf={sf}"
         )
         try:
             resp = requests.post(
@@ -1466,14 +1463,14 @@ class EngineRunner:
             extra = "" if len(failures) <= 5 else f" (+{len(failures) - 5} more)"
             self._emit(
                 f"[databricks-enzyme] Pre-flight: {failed}/{total} models "
-                f"NOT incrementalizable under STRICT (will use FULL refresh "
-                f"under AUTO): {sample}{extra}. "
+                f"NOT incrementalizable under STRICT (actual policy: "
+                f"{refresh_policy}): {sample}{extra}. "
                 f"See mount/query-plan/{sf}/databricks-enzyme/"
                 f"explain-create-materialized-view/summary.json for reasons."
             )
         self._emit(
             f"[databricks-enzyme] Pre-flight done: "
-            f"{passed}/{total} incrementalizable, {failed}/{total} fallback-to-FULL; "
+            f"{passed}/{total} incrementalizable, {failed}/{total} rejected under STRICT; "
             f"{len(data.get('skipped_ephemeral') or [])} ephemeral skipped; "
             f"elapsed_ms={data.get('elapsed_ms')}"
         )

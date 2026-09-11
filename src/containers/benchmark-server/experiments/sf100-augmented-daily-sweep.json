@@ -1,0 +1,48 @@
+{
+  "_design_notes": [
+    "TPC-DI SF100 sensitivity to accumulated, distinct daily source updates.",
+    "Each measured Batch 2 accumulates N days from Databricks' 365-day augmented window.",
+    "Batch 3 uses the immediately following daily update so every engine still executes the standard three benchmark phases.",
+    "All changes to landing sources are INSERT operations; CDC flags remain payload data.",
+    "Set BENCHMARK_RUNS=2 to collect two independent repetitions per engine and daily window."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "databricks-enzyme",
+      "spark",
+      "spark-openivm",
+      "duckdb",
+      "duckdb-openivm",
+      "feldera",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    { "label": "sf100-augmented-5pct-18days", "batch_2_days": 18 },
+    { "label": "sf100-augmented-15pct-55days", "batch_2_days": 55 },
+    { "label": "sf100-augmented-25pct-91days", "batch_2_days": 91 },
+    { "label": "sf100-augmented-35pct-128days", "batch_2_days": 128 },
+    { "label": "sf100-augmented-45pct-164days", "batch_2_days": 164 }
+  ]
+}

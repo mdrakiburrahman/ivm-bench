@@ -303,7 +303,7 @@ def append_sources(
             continue
         stmts.append(
             f"INSERT INTO {relation('ducklake', 'tpcdi', f'staging_{table}')} "
-            f"SELECT * FROM {_read_parquet_sql(path)};"
+            f"BY NAME SELECT * FROM {_read_parquet_sql(path)};"
         )
         appended.append(f"staging_{table}")
 

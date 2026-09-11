@@ -52,7 +52,11 @@ with batch1_xml as (
 staging_customers as (
     select
         to_timestamp(cdc_dsn) as action_ts,
-        case cdc_flag when 'I' then 'NEW' when 'U' then 'UPDCUST' end as action_type,
+        case
+            when cdc_flag = 'I' then 'NEW'
+            when cdc_flag = 'U' and status = 'INAC' then 'INACT'
+            when cdc_flag = 'U' then 'UPDCUST'
+        end as action_type,
         cast(customerid as bigint) as c_id,
         taxid as c_tax_id,
         gender as c_gndr,
@@ -85,7 +89,11 @@ staging_customers as (
 staging_accounts as (
     select
         to_timestamp(cdc_dsn) as action_ts,
-        case cdc_flag when 'I' then 'ADDACCT' when 'U' then 'UPDACCT' end as action_type,
+        case
+            when cdc_flag = 'I' then 'ADDACCT'
+            when cdc_flag = 'U' and ca_st_id = 'INAC' then 'CLOSEACCT'
+            when cdc_flag = 'U' then 'UPDACCT'
+        end as action_type,
         cast(ca_c_id as bigint) as c_id,
         cast(null as string) as c_tax_id,
         cast(null as string) as c_gndr,

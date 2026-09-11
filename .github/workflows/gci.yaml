@@ -106,7 +106,7 @@ on:
         type: string
 
 concurrency:
-  group: gci-${{ github.ref }}-${{ inputs.experiments_engines || 'default' }}
+  group: gci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
   cancel-in-progress: true
 
 permissions:
