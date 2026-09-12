@@ -35,9 +35,10 @@ ENGINE_COLORS = {
     "databricks-enzyme": "#c0392b",
     "fabric-jvm-35": "#8e44ad",
     "fabric-openivm-jvm-35": "#16a085",
+    "dbspnet": "#2c3e50",
 }
 
-ENGINE_ORDER = ["duckdb", "spark", "duckdb-openivm", "spark-openivm", "feldera", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35"]
+ENGINE_ORDER = ["duckdb", "spark", "duckdb-openivm", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35"]
 
 BATCH_COLORS = {1: "#3498db", 2: "#e67e22", 3: "#2ecc71"}
 
@@ -575,18 +576,18 @@ def _collect_openivm_views(
     return set(), None
 
 
-def _collect_feldera_status(state_dir: str) -> Tuple[bool, Optional[str]]:
-    """Did feldera's incremental batch (batch>=2) finish successfully?
+def _collect_feldera_status(state_dir: str, engine: str = "feldera") -> Tuple[bool, Optional[str]]:
+    """Did an incremental-DBSP engine's batch (batch>=2) finish successfully?
 
-    Feldera writes one run-feldera-batch<N>.json per batch with a
+    feldera / dbspnet each write one run-<engine>-batch<N>.json per batch with a
     per-model `nodes` list and per-node `status`. There is no top-level
     `status` field; the batch is considered successful if every node
-    finished with `status=='success'` (which is feldera's contract:
-    every dbt model maps to a dataflow operator in the running DBSP
-    circuit — if any failed the pipeline would not have advanced).
+    finished with `status=='success'` (the DBSP contract: every dbt model
+    maps to a dataflow operator in the running circuit — if any failed the
+    pipeline would not have advanced).
     """
     for batch in (2, 3):
-        fp = os.path.join(state_dir, f"run-feldera-batch{batch}.json")
+        fp = os.path.join(state_dir, f"run-{engine}-batch{batch}.json")
         if not os.path.exists(fp):
             continue
         try:
@@ -740,17 +741,17 @@ def _collect_incrementalization(
                         "ok": False, "reason": "no IVM profile available",
                     }
 
-        elif engine == "feldera":
-            ok, src_name = _collect_feldera_status(state_dir)
+        elif engine in ("feldera", "dbspnet"):
+            ok, src_name = _collect_feldera_status(state_dir, engine)
             if ok:
                 source = f"{src_name} (DBSP contract: all SQL → incremental circuit)"
                 for name in models:
                     per_model[name] = {"ok": True, "reason": ""}
             else:
-                source = "run-feldera-batch>=2 missing/non-ok"
+                source = f"run-{engine}-batch>=2 missing/non-ok"
                 for name in models:
                     per_model[name] = {
-                        "ok": False, "reason": "feldera incremental batch did not complete",
+                        "ok": False, "reason": f"{engine} incremental batch did not complete",
                     }
 
         else:
