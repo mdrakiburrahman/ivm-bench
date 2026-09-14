@@ -1,0 +1,42 @@
+{
+  "_design_notes": [
+    "Continuation of the SF100 two-run augmented sweep after 5%, 15%, and 25% completed in GCI #589.",
+    "Reruns 35% from scratch because its first repetition was interrupted, then runs 45%."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "databricks-enzyme",
+      "spark",
+      "spark-openivm",
+      "duckdb",
+      "duckdb-openivm",
+      "feldera",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    { "label": "sf100-augmented-35pct-128days", "batch_2_days": 128 },
+    { "label": "sf100-augmented-45pct-164days", "batch_2_days": 164 }
+  ]
+}
