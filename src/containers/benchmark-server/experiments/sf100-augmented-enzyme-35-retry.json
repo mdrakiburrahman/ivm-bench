@@ -1,0 +1,31 @@
+{
+  "_design_notes": [
+    "Repeat only the incomplete Enzyme 35% pair from GCI #590; all other engines and percentages are already measured.",
+    "SF100, 128 augmented days (35% of 365), insert-only, AUTO policy, profiling/storage on, validation off."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "100",
+    "batch_3_pct": "100",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "databricks_refresh_policy": "AUTO",
+    "engines": ["databricks-enzyme"],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": false,
+      "spark_metrics_capture": true
+    },
+    "spark_tunables": {"dbt_threads": 4}
+  },
+  "experiments": [
+    {"label": "sf100-augmented-35pct-128days-enzyme-retry", "batch_2_days": 128}
+  ]
+}
