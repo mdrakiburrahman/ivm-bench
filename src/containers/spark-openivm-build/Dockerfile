@@ -46,7 +46,7 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=3b3938f4f8293875b56157f563c6f8cb196a0b41
+ARG OPENIVM_COMMIT=55bedd8e75e82992daefd9137b8a8013bc758cfa
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
 ARG LPTS_COMMIT=b67f84f173bc8f500ffd8cde799146821fccdc51
