@@ -107,7 +107,7 @@ on:
 
 concurrency:
   group: gci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   pull-requests: write
@@ -143,6 +143,14 @@ jobs:
       OAT_MIN_FREE_PCT: ${{ inputs.oat_min_free_pct || '10' }}
 
     steps:
+      - name: Verify dedicated paper rerun machine
+        id: paper_runner
+        run: |
+          test "$RUNNER_NAME" = "ivm-bench-vmss-runner000000" || {
+            echo "Refusing to touch $RUNNER_NAME; these reruns require ivm-bench-vmss-runner000000"
+            exit 1
+          }
+
       - name: "🧹 Clean Docker-owned files"
         run: |
           sudo rm -rf mount/ 2>/dev/null || true
@@ -268,7 +276,7 @@ jobs:
         run: bash tools/scripts/github/post-pr-comment.sh
 
       - name: "📦 Upload artifacts"
-        if: always()
+        if: always() && steps.paper_runner.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results-sf${{ env.SCALE_FACTOR }}
@@ -295,7 +303,7 @@ jobs:
           retention-days: 30
 
       - name: "🧹 Docker cleanup"
-        if: always()
+        if: always() && steps.paper_runner.outcome == 'success'
         run: |
           docker compose -f docker/docker-compose.benchmark-server.yml down --remove-orphans 2>/dev/null || true
           docker system prune -f 2>/dev/null || true

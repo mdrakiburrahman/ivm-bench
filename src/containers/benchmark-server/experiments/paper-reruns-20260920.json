@@ -1,0 +1,75 @@
+{
+  "_design_notes": [
+    "Paper reruns on runner000000 only; dispatch with BENCHMARK_RUNS=2 and timeout_minutes=5760.",
+    "Experiments, repetitions, and engines run serially. Four concurrent dbt models within Spark match the prior SF100 protocol.",
+    "OpenIVM compiler 55bedd8e; benchmarked Spark JAR a48bc073, not the divergent current Spark main.",
+    "Figure 1 exactly uses SF100, initial 100%, standard batch 2 at 1%, and batch 3 at 0.01%.",
+    "Standard insertion percentages select official batch rows; augmented percentages select days from a 365-day window.",
+    "Figure 10: two independent repetitions per engine with 1% updates and 0.01% deletes in both refresh batches, plus standard 1%/2% inserts.",
+    "Databricks FULL is a separate mixed-workload point; AUTO is included in the all-engine point.",
+    "Profiling, SQL logs, Spark metrics, and storage are enabled; validation and compiler coverage are disabled.",
+    "Existing raw benchmark data is regenerated per experiment by the normal OAT lifecycle; build artifacts may be reused."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_days": 0,
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": ["duckdb-openivm", "spark-openivm"],
+    "parallel": false,
+    "schedule": "serial",
+    "spark_tunables": {"dbt_threads": 4},
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "spark_metrics_capture": true,
+      "preserve_raw": true,
+      "compiler_bench": false
+    }
+  },
+  "experiments": [
+    {"label": "fig1-sf100-standard-100-1-0.01"},
+    {"label": "sf10-standard-100-1-2", "scale_factor": 10, "batch_3_pct": "2"},
+    {"label": "sf100-standard-insert-5pct", "batch_2_pct": "5"},
+    {"label": "sf100-standard-insert-10pct", "batch_2_pct": "10"},
+    {"label": "sf100-standard-insert-15pct", "batch_2_pct": "15"},
+    {"label": "sf100-standard-insert-20pct", "batch_2_pct": "20"},
+    {"label": "sf100-standard-insert-25pct", "batch_2_pct": "25"},
+    {"label": "sf100-standard-insert-30pct", "batch_2_pct": "30"},
+    {"label": "sf100-standard-insert-35pct", "batch_2_pct": "35"},
+    {"label": "sf100-standard-insert-40pct", "batch_2_pct": "40"},
+    {"label": "sf100-standard-insert-45pct", "batch_2_pct": "45"},
+    {"label": "sf100-standard-insert-50pct", "batch_2_pct": "50"},
+    {"label": "sf100-augmented-5pct-18days", "batch_2_days": 18, "batch_2_pct": "100", "batch_3_pct": "100"},
+    {"label": "sf100-augmented-15pct-55days", "batch_2_days": 55, "batch_2_pct": "100", "batch_3_pct": "100"},
+    {"label": "sf100-augmented-25pct-91days", "batch_2_days": 91, "batch_2_pct": "100", "batch_3_pct": "100"},
+    {"label": "sf100-augmented-35pct-128days", "batch_2_days": 128, "batch_2_pct": "100", "batch_3_pct": "100"},
+    {"label": "sf100-augmented-45pct-164days", "batch_2_days": 164, "batch_2_pct": "100", "batch_3_pct": "100"},
+    {
+      "label": "fig10-sf100-mixed-all-engines",
+      "engines": ["spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35"],
+      "batch_3_pct": "2",
+      "batch_2_update_pct": "1",
+      "batch_2_delete_pct": "0.01",
+      "batch_3_update_pct": "1",
+      "batch_3_delete_pct": "0.01"
+    },
+    {
+      "label": "fig10-sf100-mixed-databricks-full",
+      "engines": ["databricks-enzyme"],
+      "databricks_refresh_policy": "FULL",
+      "batch_3_pct": "2",
+      "batch_2_update_pct": "1",
+      "batch_2_delete_pct": "0.01",
+      "batch_3_update_pct": "1",
+      "batch_3_delete_pct": "0.01"
+    }
+  ]
+}
