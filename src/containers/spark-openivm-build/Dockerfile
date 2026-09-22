@@ -46,10 +46,10 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=55bedd8e75e82992daefd9137b8a8013bc758cfa
+ARG OPENIVM_COMMIT=44c23866bd0b16eec71e81d0aab295e7359788ea
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
-ARG LPTS_COMMIT=b67f84f173bc8f500ffd8cde799146821fccdc51
+ARG LPTS_COMMIT=29c606ee18ad8e4d04cab940f361cbf6fbe5b881
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -86,7 +86,7 @@ RUN git init -q && \
     git config -f .gitmodules submodule.third_party/lpts.url "${LPTS_REPO}" && \
     git submodule sync --recursive && \
     git submodule update --init --recursive --depth 1 duckdb extension-ci-tools && \
-    (cd duckdb && git fetch --depth 1 origin 08e34c447bae34eaee3723cac61f2878b6bdf787 && git checkout FETCH_HEAD) && \
+    (cd duckdb && git fetch --depth 1 origin tag v1.5.2 && git checkout 8a5851971fae891f292c2714d86046ee018e9737) && \
     (cd extension-ci-tools && git fetch --depth 1 origin 72e76e99cd7fee45a99739cd118ec2db64e034ec && git checkout FETCH_HEAD) && \
     (cd third_party/lpts && \
         git init -q && \
@@ -113,7 +113,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=main
-ARG OPENIVM_SPARK_COMMIT=a48bc073c11597b95467c45d67f7a21ad72eab26
+ARG OPENIVM_SPARK_COMMIT=a204b669cd25426b7d6edadf34c83eaa5452d412
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -162,7 +162,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=a48bc073c11597b95467c45d67f7a21ad72eab26
+ARG OPENIVM_SPARK_COMMIT=a204b669cd25426b7d6edadf34c83eaa5452d412
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
