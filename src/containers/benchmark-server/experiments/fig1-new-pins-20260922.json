@@ -2,7 +2,8 @@
   "_design_notes": [
     "Figure 1 regression comparison against GCI #595, experiment fig1-sf100-standard-100-1-0.01.",
     "Same benchmark code and baseline as #595; engine/dependency pins match PR #69 at 1ed5da965f92871a6e8d1dfcee4df16e57a122b5.",
-    "Runner000000 only; two repetitions, serial engines, four dbt threads within Spark; no SF10 experiments.",
+    "Runner000001 only, as requested; previous GCI #595 used runner000000, so check hardware equivalence before attributing differences to pins.",
+    "Two repetitions, serial engines, four dbt threads within Spark; no SF10 experiments.",
     "Separate engine points enable validation only for spark-openivm; duckdb-openivm remains unvalidated.",
     "Dispatch with scale_factor=100, benchmark_runs=2, timeout_minutes=5760."
   ],

@@ -146,8 +146,8 @@ jobs:
       - name: Verify dedicated paper rerun machine
         id: paper_runner
         run: |
-          test "$RUNNER_NAME" = "ivm-bench-vmss-runner000000" || {
-            echo "Refusing to touch $RUNNER_NAME; these reruns require ivm-bench-vmss-runner000000"
+          test "$RUNNER_NAME" = "ivm-bench-vmss-runner000001" || {
+            echo "Refusing to touch $RUNNER_NAME; these reruns require ivm-bench-vmss-runner000001"
             exit 1
           }
 
