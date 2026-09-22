@@ -3,6 +3,7 @@
     "Figure 1 regression comparison against GCI #595, experiment fig1-sf100-standard-100-1-0.01.",
     "Same benchmark code and baseline as #595; engine/dependency pins match PR #69 at 1ed5da965f92871a6e8d1dfcee4df16e57a122b5.",
     "Runner000000 only; two repetitions, serial engines, four dbt threads within Spark; no SF10 experiments.",
+    "Separate engine points enable validation only for spark-openivm; duckdb-openivm remains unvalidated.",
     "Dispatch with scale_factor=100, benchmark_runs=2, timeout_minutes=5760."
   ],
   "baseline": {
@@ -30,6 +31,14 @@
     }
   },
   "experiments": [
-    {"label": "fig1-sf100-standard-100-1-0.01-new-pins"}
+    {
+      "label": "fig1-sf100-standard-100-1-0.01-duckdb-new-pins",
+      "engines": ["duckdb-openivm"]
+    },
+    {
+      "label": "fig1-sf100-standard-100-1-0.01-spark-new-pins",
+      "engines": ["spark-openivm"],
+      "feature_flags": {"openivm_validate": true}
+    }
   ]
 }
