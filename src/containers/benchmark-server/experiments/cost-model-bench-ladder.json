@@ -22,9 +22,8 @@
     "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/cost-model-bench.json \\",
     "    bash src/.scripts/benchmark.sh",
     "",
-    "This file runs the smoke experiment only. The full ladder lives in",
-    "cost-model-bench-ladder.json, because GCI has no way to select one experiment from a",
-    "file and the ladder is hours of runner time."
+    "The full ladder: every query at scale factors 1 through 100. Hours of runner time.",
+    "cost-model-bench.json holds the smoke experiment for checking the plumbing first."
   ],
   "baseline": {
     "engines": [
@@ -50,16 +49,20 @@
   },
   "experiments": [
     {
-      "label": "cost-model-smoke",
+      "label": "cost-model-ladder",
       "scale_factor": 1,
       "batch_1_pct": "100",
       "batch_2_pct": "1",
       "batch_3_pct": "1",
       "cost_model_bench": {
         "scale_factors": [
-          1
+          1,
+          10,
+          25,
+          50,
+          100
         ],
-        "args": "--delta-pcts 5 --reps 1 --configs all_on --batch validated"
+        "args": "--delta-pcts 1,2,5 --reps 3 --configs all_on --batch all"
       }
     }
   ]
