@@ -1,10 +1,16 @@
-# Runs OpenIVM's cost_model_benchmark on the ivm-bench self-hosted runners.
+# Runs OpenIVM's cost_model_benchmark on the ivm-bench runners, one job per TPC-C scale factor.
 #
-# Independent of GCI: it shares only the runner label and the pinned build toolchain in
-# src/containers/duckdb-openivm, and touches none of GCI's inputs, secrets or containers.
+# Deliberately thin. GitHub only registers a workflow_dispatch workflow once its file is on the
+# default branch, so every edit to this file costs a merge here. Everything that is likely to change
+# therefore lives in openivm instead:
 #
-# workflow_dispatch only fires for workflows present on the default branch, so this has to be merged
-# before it can be dispatched against any ref.
+#   * what to run      -> `benchmark_args`, passed through verbatim to the benchmark
+#   * how it behaves   -> the benchmark binary, built from `openivm_ref`
+#   * which shards     -> `scale_factors`, a JSON array
+#
+# Changing delta sizes, repetitions, the query set, flag configurations or the benchmark's own code
+# needs no change here at all: commit to openivm and dispatch again with a different ref or args.
+# Only altering the input names below requires another merge into this repo.
 
 name: OpenIVM cost model sweep
 
@@ -12,28 +18,16 @@ on:
   workflow_dispatch:
     inputs:
       openivm_ref:
-        description: "openivm branch, tag or commit to build"
+        description: "openivm branch, tag or commit to build and run"
         default: "ila/cost-model-sweep-build"
         type: string
       scale_factors:
-        description: "JSON array of TPC-C scale factors; each becomes its own shard"
+        description: 'JSON array of TPC-C scale factors; each becomes its own shard, e.g. ["1","10","25"]'
         default: '["1","10","25","50","100"]'
         type: string
-      delta_pcts:
-        description: "Delta sizes as a percentage of the base table"
-        default: "1,2,5"
-        type: string
-      reps:
-        description: "Repetitions per cell"
-        default: "3"
-        type: string
-      batch:
-        description: "Query set: all | validated | todo"
-        default: "all"
-        type: string
-      configs:
-        description: "Flag configurations to sweep"
-        default: "all_on"
+      benchmark_args:
+        description: "Arguments passed verbatim to cost_model_benchmark, minus --scale and --out"
+        default: "--delta-pcts 1,2,5 --reps 3 --configs all_on --batch all"
         type: string
       timeout_minutes:
         description: "Per-shard timeout"
@@ -74,7 +68,7 @@ jobs:
           set -euo pipefail
           # Reuse the pinned toolchain from the duckdb-openivm image: Ubuntu 22.04 for GLIBC 2.35 and
           # GCC 13, which lpts needs. Stopping at the builder stage keeps the whole build tree,
-          # including the benchmark binaries that the published runtime image does not carry.
+          # including the benchmark binaries the published runtime image does not carry.
           docker build \
             --target builder \
             --build-arg OPENIVM_REPO=https://github.com/ila/openivm.git \
@@ -83,6 +77,8 @@ jobs:
             src/containers/duckdb-openivm
 
       - name: "📊 Sweep at scale factor ${{ matrix.scale }}"
+        env:
+          BENCHMARK_ARGS: ${{ inputs.benchmark_args }}
         run: |
           set -euo pipefail
           mkdir -p out
@@ -91,21 +87,18 @@ jobs:
           docker run --rm \
             -v "$PWD/out:/out" \
             "openivm-costmodel:${{ github.run_id }}" \
-            /src/build/release/extension/openivm/cost_model_benchmark \
-              --scale "${{ matrix.scale }}" \
-              --delta-pcts "${{ inputs.delta_pcts }}" \
-              --reps "${{ inputs.reps }}" \
-              --batch "${{ inputs.batch }}" \
-              --configs "${{ inputs.configs }}" \
-              --out "/out/cost_model_sf${{ matrix.scale }}.csv" \
+            sh -c "/src/build/release/extension/openivm/cost_model_benchmark \
+              --scale ${{ matrix.scale }} \
+              --out /out/cost_model_sf${{ matrix.scale }}.csv \
+              $BENCHMARK_ARGS" \
             2>&1 | tee "out/cost_model_sf${{ matrix.scale }}.log"
 
       - name: "📈 Summarise"
         if: always()
         run: |
-          python3 - <<'PY'
-          import csv, collections, os, statistics
-          path = "out/cost_model_sf${{ matrix.scale }}.csv"
+          python3 - "out/cost_model_sf${{ matrix.scale }}.csv" <<'PY'
+          import csv, collections, os, statistics, sys
+          path = sys.argv[1]
           if not os.path.exists(path):
               print("no results file"); raise SystemExit(0)
           rows = list(csv.DictReader(open(path)))
