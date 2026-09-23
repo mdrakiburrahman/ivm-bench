@@ -8,6 +8,7 @@ import os
 import queue
 import re
 import shutil
+import shlex
 import statistics
 import subprocess
 import threading
@@ -468,7 +469,8 @@ class Orchestrator:
             compiler_bench = self._compiler_bench_enabled()
         # compiler-bench needs the duckdb-openivm image whatever the engine list:
         # it ships the query corpus, and its CLI drives corpus translation.
-        if "duckdb-openivm" in self._config.engines or compiler_bench:
+        if ("duckdb-openivm" in self._config.engines or compiler_bench
+                or self._cost_model_bench_enabled()):
             callables.append(self._run_duckdb_openivm_build)
         if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
             callables.append(self._run_spark_openivm_build)
@@ -620,6 +622,47 @@ class Orchestrator:
         return os.environ.get("COMPILER_BENCH", "0").strip().lower() in (
             "1", "true", "yes", "on",
         )
+
+    def _cost_model_bench_enabled(self) -> bool:
+        return os.environ.get("COST_MODEL_BENCH", "0").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    def _run_cost_model_bench(self, inputs: "ExperimentInputs") -> None:
+        """Run OpenIVM's cost model sweep, one pass per scale factor.
+
+        Internal. Deliberately a thin wrapper around the binary the
+        duckdb-openivm image already exports: the sweep is single-engine and
+        single-binary, so it needs none of the per-engine adapter machinery the
+        compiler-bench survey carries.
+
+        Each pass writes a CSV row per completed case and flushes it, so a pass
+        cut short by a timeout still leaves every finished case on disk.
+        """
+        options = inputs.cost_model_bench
+        repo = self._config.repo_dir
+        binary = os.path.join(repo, "mount/bin/duckdb-openivm/cost_model_benchmark")
+        if not os.path.exists(binary):
+            raise RuntimeError(
+                "cost_model_benchmark not found at mount/bin/duckdb-openivm/ — the "
+                "duckdb-openivm image predates its export, so rebuild it"
+            )
+        out_dir = os.path.join(repo, "mount/cost-model-bench")
+        os.makedirs(out_dir, exist_ok=True)
+
+        for scale in options.scale_factors:
+            csv_path = os.path.join(out_dir, f"cost_model_sf{scale}.csv")
+            cmd = [binary, "--scale", str(scale), "--out", csv_path] + shlex.split(options.args)
+            self.emit(f"  [cost-model-bench] SF{scale}: {' '.join(cmd)}")
+            with self._heartbeat(f"cost-model-bench/sf{scale}"):
+                proc = subprocess.run(cmd, cwd=repo, timeout=options.timeout_s)
+            # A non-zero exit means some case errored or failed its correctness
+            # cross-check. That is a result worth keeping rather than a reason to
+            # abandon the remaining scale factors, so it is reported, not raised.
+            if proc.returncode != 0:
+                self.emit(f"  [cost-model-bench] SF{scale} exited {proc.returncode} — see {csv_path}")
+            else:
+                self.emit(f"  [cost-model-bench] SF{scale} complete → {csv_path}")
 
     def _run_lpts_build(self) -> None:
         """Build the standalone LPTS extension used for corpus translation."""
@@ -1414,7 +1457,9 @@ class Orchestrator:
             # empty because the previous experiment cleanup wiped it.
             # compiler-bench runs on its own generated TPC-C data and never reads
             # the TPC-DI Delta sources, so generating them would be pure cost.
-            if self._compiler_bench_enabled():
+            if self._cost_model_bench_enabled():
+                self.emit("  [datagen] Skipped: cost-model-bench uses its own TPC-C data")
+            elif self._compiler_bench_enabled():
                 self.emit("  [datagen] Skipped: compiler-bench uses its own TPC-C data")
             else:
                 self._run_datagen()
@@ -1438,7 +1483,10 @@ class Orchestrator:
             # Repeat the full engine benchmark BENCHMARK_RUNS times and average
             # the per-engine/per-batch timings. With BENCHMARK_RUNS=1 this is a
             # single _phase2_benchmark() call — identical to the original path.
-            self._run_benchmark_repetitions()
+            if self._cost_model_bench_enabled():
+                self._run_cost_model_bench(inputs)
+            else:
+                self._run_benchmark_repetitions()
 
         except OpenIvmValidationError as e:
             # FAIL-FAST: a correctness diff means the MV definition or refresh

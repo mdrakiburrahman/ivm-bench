@@ -1,0 +1,79 @@
+{
+  "_comment": [
+    "cost-model-bench: OpenIVM's incremental-vs-recompute cost model sweep. Internal.",
+    "",
+    "With feature_flags.cost_model_bench on, an experiment runs the sweep INSTEAD of the",
+    "timed 3-batch benchmark, for the same reason compiler-bench does: it creates and",
+    "refreshes thousands of views and reads none of the TPC-DI sources, so datagen is",
+    "skipped and the timings would not be comparable anyway.",
+    "",
+    "Per case it times the adaptive refresh decision against forced incremental and forced",
+    "full, and cross-checks the refreshed view against the base query with EXCEPT ALL in",
+    "both directions. Results land in mount/cost-model-bench/cost_model_sf<N>.csv.",
+    "",
+    "cost_model_bench.scale_factors is separate from the experiment's own: the subject is",
+    "how the decision moves with data volume, so one run covers several TPC-C scale factors.",
+    "batch_*_pct are required by the schema but unused.",
+    "",
+    "cost_model_bench.args reaches the binary verbatim, so delta sizes, repetitions, the",
+    "query set and flag configurations change here rather than in a workflow file.",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/cost-model-bench.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": [
+      "duckdb-openivm"
+    ],
+    "parallel": false,
+    "feature_flags": {
+      "cost_model_bench": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": false,
+      "openivm_query_log": false,
+      "storage_metrics": false,
+      "spark_metrics_capture": false
+    },
+    "cost_model_bench": {
+      "scale_factors": [
+        1,
+        10,
+        25
+      ],
+      "args": "--delta-pcts 1,2,5 --reps 3 --configs all_on --batch all"
+    }
+  },
+  "experiments": [
+    {
+      "label": "cost-model-smoke",
+      "scale_factor": 1,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "cost_model_bench": {
+        "scale_factors": [
+          1
+        ],
+        "args": "--delta-pcts 5 --reps 1 --configs all_on --batch validated"
+      }
+    },
+    {
+      "label": "cost-model-ladder",
+      "scale_factor": 1,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1",
+      "cost_model_bench": {
+        "scale_factors": [
+          1,
+          10,
+          25,
+          50,
+          100
+        ],
+        "args": "--delta-pcts 1,2,5 --reps 3 --configs all_on --batch all"
+      }
+    }
+  ]
+}
