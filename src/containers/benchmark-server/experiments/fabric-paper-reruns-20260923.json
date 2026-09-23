@@ -2,7 +2,7 @@
   "_design_notes": [
     "Fabric OpenIVM only: all SF100 paper workload configurations, two repetitions, serial scheduling, no coverage or SF10 runs.",
     "Uses the same spark-openivm-build JAR pins as successful Figure 1 run 35741408572: adapter a204b669, compiler 44c23866, LPTS 29c606ee.",
-    "Dispatch benchmark_runs=2, scale_factor=100, timeout_minutes=5760. Workflow refuses any runner except runner000001 before cleanup.",
+    "Dispatch benchmark_runs=2, scale_factor=100, timeout_minutes=5760. User approved either runner000000 or runner000001; workflow refuses other machines before cleanup.",
     "Profiling, query logs, Spark metrics, and available storage accounting enabled; validation off. Local telemetry does not measure Fabric cloud data-plane I/O.",
     "Figure 1 uses standard 100/1/0.01; the separate 100/1/2 point matches historical storage/I/O batch inputs.",
     "Standard insertion percentages select official batch rows, not initial database rows; augmented percentages select 18/55/91/128/164 days from a 365-day window.",

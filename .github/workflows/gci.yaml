@@ -146,10 +146,10 @@ jobs:
       - name: Verify dedicated paper rerun machine
         id: paper_runner
         run: |
-          test "$RUNNER_NAME" = "ivm-bench-vmss-runner000001" || {
-            echo "Refusing to touch $RUNNER_NAME; these reruns require ivm-bench-vmss-runner000001"
-            exit 1
-          }
+          case "$RUNNER_NAME" in
+            ivm-bench-vmss-runner000000|ivm-bench-vmss-runner000001) ;;
+            *) echo "Refusing unexpected runner $RUNNER_NAME"; exit 1 ;;
+          esac
 
       - name: "🧹 Clean Docker-owned files"
         run: |
