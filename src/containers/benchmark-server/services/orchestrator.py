@@ -445,7 +445,10 @@ class Orchestrator:
                 os.remove(path)
 
     def _phase1_prep(
-        self, include_datagen: bool = True, compiler_bench: Optional[bool] = None
+        self,
+        include_datagen: bool = True,
+        compiler_bench: Optional[bool] = None,
+        cost_model_bench: Optional[bool] = None,
     ) -> None:
         """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
 
@@ -467,10 +470,15 @@ class Orchestrator:
         # passes the decision in from the experiments list; None means "read env".
         if compiler_bench is None:
             compiler_bench = self._compiler_bench_enabled()
+        if cost_model_bench is None:
+            cost_model_bench = self._cost_model_bench_enabled()
         # compiler-bench needs the duckdb-openivm image whatever the engine list:
         # it ships the query corpus, and its CLI drives corpus translation.
-        if ("duckdb-openivm" in self._config.engines or compiler_bench
-                or self._cost_model_bench_enabled()):
+        # cost-model-bench runs the benchmark binary that image exports, whatever the engine list.
+        # Read from the passed-in decision rather than the environment: at phase 0 the per-experiment
+        # flags have not been applied yet, so an experiment enabling the sweep without also listing
+        # duckdb-openivm would skip the build it depends on.
+        if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench:
             callables.append(self._run_duckdb_openivm_build)
         if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
             callables.append(self._run_spark_openivm_build)
@@ -628,7 +636,7 @@ class Orchestrator:
             "1", "true", "yes", "on",
         )
 
-    def _run_cost_model_bench(self, inputs: "ExperimentInputs") -> None:
+    def _run_cost_model_bench(self, exp_idx: int, inputs: "ExperimentInputs") -> None:
         """Run OpenIVM's cost model sweep, one pass per scale factor.
 
         Internal. Deliberately a thin wrapper around the binary the
@@ -647,22 +655,33 @@ class Orchestrator:
                 "cost_model_benchmark not found at mount/bin/duckdb-openivm/ — the "
                 "duckdb-openivm image predates its export, so rebuild it"
             )
-        out_dir = os.path.join(repo, "mount/cost-model-bench")
+        # Scoped by run and experiment. Naming by scale factor alone let two experiments that share
+        # a scale factor overwrite each other, leaving only whichever ran last.
+        label = re.sub(r"[^A-Za-z0-9._-]+", "-", inputs.label or f"exp-{exp_idx}").strip("-")
+        out_dir = os.path.join(
+            repo, "mount/cost-model-bench", self._oat_run_id or "no-run-id", f"{exp_idx:02d}-{label}"
+        )
         os.makedirs(out_dir, exist_ok=True)
 
+        failures = []
         for scale in options.scale_factors:
             csv_path = os.path.join(out_dir, f"cost_model_sf{scale}.csv")
             cmd = [binary, "--scale", str(scale), "--out", csv_path] + shlex.split(options.args)
             self.emit(f"  [cost-model-bench] SF{scale}: {' '.join(cmd)}")
             with self._heartbeat(f"cost-model-bench/sf{scale}"):
                 proc = subprocess.run(cmd, cwd=repo, timeout=options.timeout_s)
-            # A non-zero exit means some case errored or failed its correctness
-            # cross-check. That is a result worth keeping rather than a reason to
-            # abandon the remaining scale factors, so it is reported, not raised.
             if proc.returncode != 0:
                 self.emit(f"  [cost-model-bench] SF{scale} exited {proc.returncode} — see {csv_path}")
+                failures.append(f"SF{scale} exit {proc.returncode}")
             else:
                 self.emit(f"  [cost-model-bench] SF{scale} complete → {csv_path}")
+
+        # Remaining scale factors still run, since a failure at one says nothing about the others and
+        # their results are worth having. The experiment must not then report success: a non-zero exit
+        # means a case errored or failed its EXCEPT ALL correctness cross-check, which is exactly what
+        # a sweep exists to surface.
+        if failures:
+            raise RuntimeError("cost-model-bench failed: " + "; ".join(failures))
 
     def _run_lpts_build(self) -> None:
         """Build the standalone LPTS extension used for corpus translation."""
@@ -1393,6 +1412,9 @@ class Orchestrator:
                 compiler_bench=any(
                     inp.feature_flags.compiler_bench for inp in experiments
                 ),
+                cost_model_bench=any(
+                    inp.feature_flags.cost_model_bench for inp in experiments
+                ),
             )
         finally:
             self._config.engines = original_engines
@@ -1484,7 +1506,7 @@ class Orchestrator:
             # the per-engine/per-batch timings. With BENCHMARK_RUNS=1 this is a
             # single _phase2_benchmark() call — identical to the original path.
             if self._cost_model_bench_enabled():
-                self._run_cost_model_bench(inputs)
+                self._run_cost_model_bench(exp_idx, inputs)
             else:
                 self._run_benchmark_repetitions()
 
