@@ -164,6 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           REPO_ROOT="$(pwd)"
+          INPUT_EXPERIMENTS_FILE="$(bash tools/scripts/github/select-experiments-file.sh)"
           if [[ -n "${INPUT_EXPERIMENTS_FILE}" ]]; then
             EXP_FILE="${INPUT_EXPERIMENTS_FILE}"
             [[ "$EXP_FILE" = /* ]] || EXP_FILE="$REPO_ROOT/$EXP_FILE"
