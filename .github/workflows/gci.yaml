@@ -290,6 +290,10 @@ jobs:
             mount/compiler-bench/corpus/*/translation.csv
             mount/compiler-bench/corpus/*/meta.json
             mount/compiler-bench/corpus/meta.json
+            # cost-model-bench: the per-case CSVs are the entire output of a sweep, and the
+            # benchmark flushes a row per completed case, so a shard cut short still has
+            # everything it finished.
+            mount/cost-model-bench/
             gci-experiments.json
           if-no-files-found: warn
           retention-days: 30
