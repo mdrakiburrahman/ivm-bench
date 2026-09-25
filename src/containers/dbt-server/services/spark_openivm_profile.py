@@ -50,6 +50,14 @@ def _extract_rows(output: Dict[str, Any], label: str) -> List[List[Any]]:
     payload = data.get("application/json")
     if isinstance(payload, dict):
         rows = payload.get("data") or []
+        # An old/reused session may still have Livy's default cap. Neither
+        # limit is a complete export when reached; require a larger fresh
+        # session instead of silently presenting a partial profile as valid.
+        if len(rows) == 1000 or len(rows) >= 100000:
+            raise RuntimeError(
+                f"{label}: response reached a Livy row limit ({len(rows)} rows); "
+                "increase livy.rsc.sql.num-rows and start a fresh session"
+            )
         return [list(row) for row in rows]
     # Fall back to text/plain — only happens if the cluster mis-routes a sql
     # statement to spark-shell kind; treat as empty result with a warning.
@@ -186,7 +194,7 @@ def _fetch_profile_rows(livy: LivyClient) -> List[Dict[str, Any]]:
     return rows
 
 
-def export_profile(run_id: str, batch_num: int) -> dict:
+def export_profile(run_id: str, batch_num: int, *, client=None) -> dict:
     """Export spark-openivm refresh-profile rows + summaries as CSV strings.
 
     Cumulative: the catalog accumulates rows across the entire benchmark run.
@@ -194,7 +202,7 @@ def export_profile(run_id: str, batch_num: int) -> dict:
     `exported_after_run_id` so a post-mortem reader can attribute every entry
     to the batch that exported it without dropping any history.
     """
-    with LivyClient() as livy:
+    with (client if client is not None else LivyClient()) as livy:
         rows = _fetch_profile_rows(livy)
 
     # ---------------- Main profile CSV ----------------
