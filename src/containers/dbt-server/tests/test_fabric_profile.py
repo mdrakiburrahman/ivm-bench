@@ -1,5 +1,7 @@
 import csv
 import io
+import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -106,6 +108,26 @@ class FabricProfileTest(unittest.TestCase):
         self.output([], [])
         with self.assertRaisesRegex(RuntimeError, "no tabular schema"):
             spark_openivm_profile.export_profile("run", 2, client=fabric.ProfileClient())
+
+
+class FabricProfileConfigTest(unittest.TestCase):
+    def test_compose_forwards_recording_flags_to_environment_publisher(self):
+        root = Path(__file__).resolve().parents[4]
+        compose = (root / "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml").read_text()
+        # Exercise the actual flag bindings, including their disabled defaults.
+        bindings = dict(re.findall(r'^      (OPENIVM_\w+): "\$\{(OPENIVM_\w+):-0\}"$',
+                                   compose, re.MULTILINE))
+        flags = {"OPENIVM_PROFILE_REFRESH": "spark.openivm.profile.refresh",
+                 "OPENIVM_QUERY_LOG": "spark.openivm.queryLog.enabled"}
+        for enabled in (None, *flags, "both"):
+            host = {key: "1" for key in flags if enabled in (key, "both")}
+            container = {key: host.get(source, "0") for key, source in bindings.items()}
+            with self.subTest(enabled=enabled), patch.dict(os.environ, container, clear=True), \
+                    patch("services.fabric.onelake_abfss", return_value="abfss://test"):
+                properties = fabric.default_openivm_spark_properties()
+                for env_key, spark_key in flags.items():
+                    self.assertEqual(properties[spark_key],
+                                     "true" if env_key in host else "false")
 
 
 class ProfileRowLimitTest(unittest.TestCase):

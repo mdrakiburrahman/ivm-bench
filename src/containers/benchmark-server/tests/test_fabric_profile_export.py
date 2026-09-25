@@ -76,6 +76,20 @@ class FabricProfileExportTest(unittest.TestCase):
         self.assertEqual(runner._result.batches[1].status, "completed")
 
     @patch("services.engine_runner.requests.post")
+    def test_empty_exports_are_not_saved_as_success(self, post):
+        for engine in ("fabric-openivm-jvm-35", "spark-openivm"):
+            for kind in ("profile", "query_log"):
+                with self.subTest(engine=engine, kind=kind), tempfile.TemporaryDirectory() as root:
+                    runner = self.runner(root, engine)
+                    post.return_value = Mock(status_code=200)
+                    post.return_value.json.return_value = {
+                        "status": "ok", "row_count": 0, "rows": [], "csv": {}
+                    }
+                    with self.assertRaisesRegex(RuntimeError, "export is empty"):
+                        getattr(runner, f"_export_spark_openivm_{kind}")("run", 1)
+                    self.assertFalse((Path(root) / "mount").exists())
+
+    @patch("services.engine_runner.requests.post")
     def test_failed_export_is_not_saved_as_success(self, post):
         with tempfile.TemporaryDirectory() as root:
             runner = self.runner(root)

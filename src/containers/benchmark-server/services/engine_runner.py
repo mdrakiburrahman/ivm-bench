@@ -1977,6 +1977,13 @@ class EngineRunner:
                 f"{data.get('error', 'unknown error')}"
             )
 
+        # TPC-DI has already created MVs; a cumulative export cannot be empty.
+        if not data.get("row_count"):
+            raise RuntimeError(
+                f"{engine} profile export is empty after batch {batch_num}; "
+                "verify spark.openivm.profile.refresh=true in the benchmark session"
+            )
+
         results_dir = os.path.join(
             self._config.repo_dir,
             "mount", "results", str(self._config.scale_factor), "dbt-server",
@@ -2037,6 +2044,13 @@ class EngineRunner:
             raise RuntimeError(
                 f"{engine} query-log export failed for batch {batch_num}: "
                 f"{data.get('error', 'unknown error')}"
+            )
+
+        # TPC-DI has already created MVs; a cumulative export cannot be empty.
+        if not data.get("rows"):
+            raise RuntimeError(
+                f"{engine} query-log export is empty after batch {batch_num}; "
+                "verify spark.openivm.queryLog.enabled=true in the benchmark session"
             )
 
         # OAT cleanup removes the engine's result tree. Keep the raw export
