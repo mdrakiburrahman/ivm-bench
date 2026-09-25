@@ -3,7 +3,7 @@ import io
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -109,6 +109,35 @@ class FabricProfileTest(unittest.TestCase):
 
 
 class ProfileRowLimitTest(unittest.TestCase):
+    def test_batch_one_metadata_contains_effective_settings(self):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.execute.side_effect = [
+            {"output": {"data": {"application/json": {"data": []}}}},
+            {"output": {"data": {"application/json": {"data": [
+                ["spark.sql.autoBroadcastJoinThreshold", "10485760"]
+            ]}}}},
+        ]
+        result = spark_openivm_profile.export_profile("run", 1, client=client)
+        self.assertEqual(result["runtime_sql_settings"], {
+            "spark.sql.autoBroadcastJoinThreshold": "10485760"
+        })
+        self.assertEqual([call.args[0] for call in client.execute.call_args_list],
+                         ["SHOW OPENIVM REFRESH PROFILE", "SET -v"])
+
+    def test_configuration_snapshot_excludes_unrelated_and_sensitive_settings(self):
+        client = Mock()
+        client.execute.return_value = {"output": {"data": {"application/json": {"data": [
+            ["spark.sql.shuffle.partitions", "200", "description"],
+            ["spark.databricks.delta.merge.materializeSource", "auto", "description"],
+            ["spark.hadoop.fs.azure.account.key", "secret", "description"],
+        ]}}}}
+        self.assertEqual(spark_openivm_profile._runtime_sql_settings(client), {
+            "spark.sql.shuffle.partitions": "200",
+            "spark.databricks.delta.merge.materializeSource": "auto",
+        })
+        client.execute.assert_called_once_with("SET -v")
+
     def test_row_caps_are_not_reported_as_complete_exports(self):
         for count in (1000, 100000):
             with self.subTest(count=count):

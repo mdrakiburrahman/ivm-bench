@@ -434,3 +434,9 @@ these checks are conservative and do not prove completeness for arbitrary
 server-side limits. Use fresh sessions with the checked-in configuration.
 The Fabric adapter contract tests in `test_fabric_profile.py` require the
 dbt-server requirements; they are skipped on hosts without the adapter.
+
+Batch-1 profile metadata also records a small allowlist of effective SQL
+execution settings from `SET -v` (broadcast, shuffle, AQE and Delta MERGE
+source materialization). Missing keys mean the runtime did not report them;
+they must not be interpreted as default values. Arbitrary session properties
+and credentials are not saved.
