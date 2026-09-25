@@ -419,7 +419,8 @@ be compared without overwriting each other's results:
 
 - `mount/results/<sf>/dbt-server/<engine>-profile-batch<N>.csv`
 - `mount/results/<sf>/dbt-server/<engine>-profile-by-step-batch<N>.csv`
-- `mount/results/<sf>/<engine>/query-log/<view>/<refresh>/`
+- `mount/results/<sf>/dbt-server/<engine>-query-log-batch<N>.json`
+- `mount/results/<sf>/<engine>/query-log/<view>/<refresh>/` (formatted working copy; OAT cleanup removes it)
 
 Fabric attaches to the existing dbt Livy session in the resolved compute
 lakehouse. If that session has expired, export fails instead of starting a
