@@ -26,3 +26,6 @@ tpcdi:
       retry_all: false
       spark_config:
         name: dbt-tpcdi-spark-openivm
+        conf:
+          # Cumulative OpenIVM profiles exceed Livy's default 1,000-row cap.
+          livy.rsc.sql.num-rows: "100000"

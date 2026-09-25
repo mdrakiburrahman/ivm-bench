@@ -1015,3 +1015,49 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
         "spark_properties": len(props),
         "publish_state": state,
     }
+
+
+class ProfileClient:
+    """Read telemetry from the dbt-owned Fabric session without creating one."""
+
+    def __enter__(self):
+        from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
+        from dbt.adapters.fabricspark.livysession import LivyCursor, LivySession
+
+        session_file = Path("/tmp/fabric-openivm-jvm-35-livy.session-id")
+        session_id = session_file.read_text().strip()
+        if not session_id:
+            raise RuntimeError("Fabric dbt session ID is empty; cannot export telemetry")
+        credentials = FabricSparkCredentials(
+            endpoint=f"{FABRIC_API_BASE}/v1",
+            workspaceid=WORKSPACE_ID,
+            lakehouseid=_compute_lakehouse_id(),
+            lakehouse=str(_load_resolved()["lakehouse_name"]),
+            authentication="CLI",
+            livy_mode="fabric",
+            statement_timeout=1800,
+            spark_config={"name": "dbt-tpcdi-fabric-openivm-jvm-35"},
+        )
+        self.session = LivySession(credentials)
+        if not self.session.try_reuse_session(session_id):
+            raise RuntimeError("Fabric dbt session is unavailable; cannot export telemetry")
+        self.cursor = LivyCursor(credentials, self.session)
+        return self
+
+    def execute(self, sql: str) -> dict:
+        # The adapter's session manager can create a replacement driver. A new
+        # driver would not contain the catalog whose timings we are collecting.
+        if self.session.is_new_session_required:
+            raise RuntimeError("Fabric dbt session was lost during telemetry export")
+        self.cursor.execute(sql)
+        columns = self.cursor.description
+        if not columns:
+            raise RuntimeError("Fabric telemetry response has no tabular schema")
+        return {"output": {"data": {"application/json": {
+            "schema": {"fields": [{"name": column[0]} for column in columns]},
+            "data": self.cursor.fetchall(),
+        }}}}
+
+    def __exit__(self, *_args):
+        # Closing the cursor only clears its result rows; keep the dbt session.
+        self.cursor.close()
