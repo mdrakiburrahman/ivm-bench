@@ -14,6 +14,7 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from services.spark_openivm_sources import LivyClient
+from services.spark_openivm_profile import _column_names, _extract_rows
 
 logger = logging.getLogger(__name__)
 
@@ -31,38 +32,6 @@ _QUERY_LOG_COLS: Tuple[str, ...] = (
     "duration_ms",
     "sql_text",
 )
-
-
-def _extract_rows(output: Dict[str, Any], label: str) -> List[List[Any]]:
-    """Pull the `application/json` table payload out of a Livy SQL output.
-
-    Spark's `kind: sql` session returns
-        {"schema": {"fields": [{"name": ..., "type": ...}, ...]},
-         "data":   [[c1, c2, ...], ...]}
-    """
-    data = (output or {}).get("data") or {}
-    payload = data.get("application/json")
-    if isinstance(payload, dict):
-        rows = payload.get("data") or []
-        return [list(row) for row in rows]
-    text = data.get("text/plain") or ""
-    if text:
-        logger.warning(
-            "[spark-openivm] %s: Livy returned text/plain instead of "
-            "application/json — refusing to parse: %s",
-            label,
-            text[:400],
-        )
-    return []
-
-
-def _column_names(output: Dict[str, Any]) -> List[str]:
-    data = (output or {}).get("data") or {}
-    payload = data.get("application/json")
-    if isinstance(payload, dict):
-        schema = payload.get("schema") or {}
-        return [str(f.get("name")) for f in (schema.get("fields") or [])]
-    return []
 
 
 def _sort_key(row: Dict[str, Any]) -> Tuple[str, str, int, int]:
@@ -103,7 +72,7 @@ def _fetch_query_log_rows(livy: LivyClient) -> List[Dict[str, Any]]:
     return rows
 
 
-def export_query_log(run_id: str, batch_num: int) -> dict:
+def export_query_log(run_id: str, batch_num: int, *, client=None) -> dict:
     """Export spark-openivm refresh SQL log rows as structured JSON.
 
     Returns:
@@ -131,7 +100,7 @@ def export_query_log(run_id: str, batch_num: int) -> dict:
           ]
         }
     """
-    with LivyClient() as livy:
+    with (client if client is not None else LivyClient()) as livy:
         rows = _fetch_query_log_rows(livy)
 
     view_count = len({str(r.get("view_name")) for r in rows if r.get("view_name")})
