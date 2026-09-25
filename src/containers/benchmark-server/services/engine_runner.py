@@ -2039,6 +2039,19 @@ class EngineRunner:
                 f"{data.get('error', 'unknown error')}"
             )
 
+        # OAT cleanup removes the engine's result tree. Keep the raw export
+        # with the profile CSVs, which also get archived per repetition.
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        with open(
+            os.path.join(results_dir, f"{engine}-query-log-batch{batch_num}.json"),
+            "w", encoding="utf-8",
+        ) as f:
+            json.dump(data, f)
+
         rows = data.get("rows") or []
         base_dir = os.path.join(
             self._config.repo_dir,

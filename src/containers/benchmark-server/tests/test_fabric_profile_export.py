@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from models.result import EngineResult
 from services.engine_runner import EngineRunner
+from services.oat_runner import disk_cleanup_after_experiment
 
 
 class FabricProfileExportTest(unittest.TestCase):
@@ -43,6 +45,11 @@ class FabricProfileExportTest(unittest.TestCase):
                 sql = list((base / engine / "query-log").rglob("*.sql"))
                 self.assertEqual(len(sql), 1)
                 self.assertIn("SELECT", sql[0].read_text())
+                disk_cleanup_after_experiment(root, 100, [engine], emit=lambda _: None)
+                self.assertFalse(sql[0].exists())
+                raw = json.loads((base / f"dbt-server/{engine}-query-log-batch2.json").read_text())
+                self.assertEqual(raw["rows"][0]["sql_text"], "SELECT 1")
+                self.assertTrue((base / f"dbt-server/{engine}-profile-batch2.csv").exists())
 
     @patch.dict(os.environ, {"OPENIVM_PROFILE_REFRESH": "1", "OPENIVM_QUERY_LOG": "1"})
     def test_fabric_exports_are_after_batch_timer(self):
