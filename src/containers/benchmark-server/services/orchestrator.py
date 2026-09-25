@@ -668,8 +668,12 @@ class Orchestrator:
             csv_path = os.path.join(out_dir, f"cost_model_sf{scale}.csv")
             cmd = [binary, "--scale", str(scale), "--out", csv_path] + shlex.split(options.args)
             self.emit(f"  [cost-model-bench] SF{scale}: {' '.join(cmd)}")
-            with self._heartbeat(f"cost-model-bench/sf{scale}"):
-                proc = subprocess.run(cmd, cwd=repo, timeout=options.timeout_s)
+            log_path = os.path.join(out_dir, f"cost_model_sf{scale}.log")
+            self.emit(f"  [cost-model-bench] SF{scale} diagnostics → {log_path}")
+            with open(log_path, "w") as log, self._heartbeat(f"cost-model-bench/sf{scale}"):
+                proc = subprocess.run(
+                    cmd, cwd=repo, timeout=options.timeout_s, stdout=log, stderr=subprocess.STDOUT
+                )
             if proc.returncode != 0:
                 self.emit(f"  [cost-model-bench] SF{scale} exited {proc.returncode} — see {csv_path}")
                 failures.append(f"SF{scale} exit {proc.returncode}")
