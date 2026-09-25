@@ -164,6 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           REPO_ROOT="$(pwd)"
+          INPUT_EXPERIMENTS_FILE="$(bash tools/scripts/github/select-experiments-file.sh)"
           if [[ -n "${INPUT_EXPERIMENTS_FILE}" ]]; then
             EXP_FILE="${INPUT_EXPERIMENTS_FILE}"
             [[ "$EXP_FILE" = /* ]] || EXP_FILE="$REPO_ROOT/$EXP_FILE"
@@ -290,6 +291,10 @@ jobs:
             mount/compiler-bench/corpus/*/translation.csv
             mount/compiler-bench/corpus/*/meta.json
             mount/compiler-bench/corpus/meta.json
+            # cost-model-bench: the per-case CSVs are the entire output of a sweep, and the
+            # benchmark flushes a row per completed case, so a shard cut short still has
+            # everything it finished.
+            mount/cost-model-bench/**
             gci-experiments.json
           if-no-files-found: warn
           retention-days: 30
