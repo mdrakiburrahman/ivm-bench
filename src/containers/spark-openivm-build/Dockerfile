@@ -102,6 +102,8 @@ RUN GEN=ninja make -j"$(nproc)"
 RUN mkdir -p /artifacts && \
     cp build/release/extension/openivm/openivm.duckdb_extension /artifacts/ && \
     cp build/release/duckdb /artifacts/duckdb && \
+    cp -L "$(g++ -print-file-name=libstdc++.so.6)" /artifacts/libstdc++.so.6 && \
+    cp -L "$(gcc -print-file-name=libgcc_s.so.1)" /artifacts/libgcc_s.so.1 && \
     chmod +x /artifacts/duckdb && \
     sha256sum /artifacts/openivm.duckdb_extension /artifacts/duckdb > /artifacts/SHA256SUMS
 
@@ -112,8 +114,8 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=main
-ARG OPENIVM_SPARK_COMMIT=a204b669cd25426b7d6edadf34c83eaa5452d412
+ARG OPENIVM_SPARK_BRANCH=fix/fabric-native-compiler-runtime
+ARG OPENIVM_SPARK_COMMIT=9fb6fbd67d7f3c2563e19e7e803835383eeae970
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -145,6 +147,8 @@ ENV SBT_OPTS="-Xmx4g -XX:+UseG1GC"
 
 COPY --from=openivm-builder /artifacts/duckdb                 /native/duckdb
 COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.duckdb_extension
+COPY --from=openivm-builder /artifacts/libstdc++.so.6 /native/libstdc++.so.6
+COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /native/libgcc_s.so.1
 ENV OPENIVM_NATIVE_DIR=/native
 
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
@@ -162,7 +166,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=a204b669cd25426b7d6edadf34c83eaa5452d412
+ARG OPENIVM_SPARK_COMMIT=9fb6fbd67d7f3c2563e19e7e803835383eeae970
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
