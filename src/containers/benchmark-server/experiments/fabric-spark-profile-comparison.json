@@ -1,0 +1,45 @@
+{
+  "_design_notes": [
+    "Matched SF100 standard workload for plain Spark/Fabric and their OpenIVM variants.",
+    "Serial engines, four dbt threads, same input and dependency pins; report B1, B2, B3 and total.",
+    "Dispatch with benchmark_runs=2, scale_factor=100 and timeout_minutes=500 after the SF1 export smoke test passes.",
+    "Separate hardware/runtime deployments: compare each OpenIVM engine to its own platform baseline before interpreting absolute cross-platform times.",
+    "Profiles and SQL exports run outside timed batches; profile collection remains enabled during execution."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_days": 0,
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35",
+      "spark",
+      "spark-openivm"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "spark_tunables": {
+      "dbt_threads": 4
+    },
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "spark_metrics_capture": true,
+      "preserve_raw": true,
+      "compiler_bench": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "sf100-fabric-spark-profile-comparison"
+    }
+  ]
+}
