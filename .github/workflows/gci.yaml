@@ -89,7 +89,7 @@ on:
         default: "1"
         type: string
       openivm_query_log:
-        description: "Export per-MV per-refresh SQL trace (spark-openivm only; 0 or 1)"
+        description: "Export per-MV refresh SQL trace (Spark and Fabric OpenIVM; 0 or 1)"
         default: "1"
         type: string
       storage_metrics:
