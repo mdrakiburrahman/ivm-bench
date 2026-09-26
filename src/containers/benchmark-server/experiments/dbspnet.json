@@ -1,0 +1,29 @@
+{
+  "_comment": [
+    "Run the DbspNet engine (a .NET DBSP implementation) head-to-head with Feldera,",
+    "the closest engine class (streaming IVM / DBSP). SF=3 smoke shape.",
+    "",
+    "No prerequisite beyond Docker: the dbspnet-server image is built from source, cloning",
+    "clast-project/dbsp-net at a pinned commit (override the DBSPNET_COMMIT build arg to bump).",
+    "",
+    "Usage (host):",
+    "  BENCHMARK_EXPERIMENTS_FILE=src/containers/benchmark-server/experiments/dbspnet.json \\",
+    "    bash src/.scripts/benchmark.sh"
+  ],
+  "baseline": {
+    "engines": ["feldera", "dbspnet"],
+    "parallel": false,
+    "feature_flags": {
+      "preserve_raw": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "dbspnet-vs-feldera",
+      "scale_factor": 3,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "1"
+    }
+  ]
+}

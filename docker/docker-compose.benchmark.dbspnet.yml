@@ -1,0 +1,53 @@
+# DbspNet engine (a .NET DBSP implementation) — the DbspNet control service is the
+# pipeline-manager analogue. Unlike Feldera's prebuilt image, DbspNet is built from source;
+# like the other built engines (duckdb-openivm, spark-openivm) the build container clones
+# the engine repo at a pinned commit itself — no sibling checkout needed. Override
+# DBSPNET_COMMIT to bump the engine, or DBSPNET_REPO for a fork.
+#
+# Deliberately NO DBSPNET_SNAPSHOT_DIR: leaving it unset keeps DbspNet's per-batch
+# checkpoint OFF, which is what makes this comparison apples-to-apples. Feldera writes
+# no checkpoint during an ivm-bench run — no `fault_tolerance` model is configured
+# anywhere in this repo, so `checkpoint_interval()` is None, a checkpoint cannot start
+# while a transaction is open, and every spilled file is a temporary with no recovery
+# value. Feldera's batch-window I/O is spill I/O; a DbspNet snapshot buys a recovery
+# point the other side never pays for. Turning ours on "for honesty" previously charged
+# us ~18.7 s/batch against an engine paying nothing for it — it makes the comparison
+# less fair, not more. Set it only for a deliberate persistence experiment, and do not
+# quote those batch timings against Feldera.
+services:
+  dbspnet-server:
+    build:
+      context: ../src/containers/dbspnet
+      args:
+        DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/clast-project/dbsp-net.git}"
+        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-0ee4b67}"
+    cpus: ${DBSPNET_CPUS:-32}
+    mem_limit: ${DBSPNET_MEM:-120g}
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
+      - ../mount/results/${SCALE_FACTOR:-3}/dbspnet:/data/processed/dbspnet
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --request GET --url http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    depends_on:
+      dbspnet-server:
+        condition: service_healthy
+    cpus: ${DBT_SERVER_CPUS:-4}
+    mem_limit: ${DBT_SERVER_MEM:-8g}
+    environment:
+      DBSPNET_URL: "http://dbspnet-server:8080"
+      DBSPNET_PROJECT_DIR: "/app/dbt-projects/dbspnet"
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
+      - ../mount/results/${SCALE_FACTOR:-3}/dbspnet:/data/processed/dbspnet
+      - ../mount/stats/${SCALE_FACTOR:-3}/dbspnet:/data/stats
