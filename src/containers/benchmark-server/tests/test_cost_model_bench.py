@@ -1,6 +1,7 @@
 """Cost model sweep runner: failure propagation and per-experiment output scoping."""
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -69,6 +70,39 @@ class CostModelBenchTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     orch._run_cost_model_bench(0, self._inputs("ladder", [1, 10, 25]))
                 self.assertEqual(run.call_count, 3)
+
+    def test_timeout_preserves_results_and_continues_remaining_scales(self):
+        for timeout_scale in [1, 10, 25]:
+            with self.subTest(timeout_scale=timeout_scale), tempfile.TemporaryDirectory() as repo:
+                orch = self._orchestrator(repo)
+                messages = []
+                orch.emit = messages.append
+                inputs = self._inputs("ladder", [1, 10, 25])
+                inputs.cost_model_bench.timeout_s = 17
+                outputs = []
+
+                def run_scale(cmd, **kwargs):
+                    scale = int(cmd[cmd.index("--scale") + 1])
+                    output = Path(cmd[cmd.index("--out") + 1])
+                    output.write_text(f"completed rows for SF{scale}\n")
+                    kwargs["stdout"].write(f"progress for SF{scale}\n")
+                    outputs.append(output)
+                    if scale == timeout_scale:
+                        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+                    return SimpleNamespace(returncode=0)
+
+                with patch("services.orchestrator.subprocess.run", side_effect=run_scale) as run:
+                    with self.assertRaisesRegex(RuntimeError, f"SF{timeout_scale} timed out after 17s"):
+                        orch._run_cost_model_bench(0, inputs)
+
+                self.assertEqual(
+                    [call.args[0][call.args[0].index("--scale") + 1] for call in run.call_args_list],
+                    ["1", "10", "25"],
+                )
+                for scale, output in zip([1, 10, 25], outputs):
+                    self.assertEqual(output.read_text(), f"completed rows for SF{scale}\n")
+                    self.assertEqual(output.with_suffix(".log").read_text(), f"progress for SF{scale}\n")
+                self.assertTrue(any(f"SF{timeout_scale} timed out after 17s" in msg for msg in messages))
 
     def test_experiments_sharing_a_scale_do_not_overwrite(self):
         """Naming by scale factor alone let the second experiment erase the first."""

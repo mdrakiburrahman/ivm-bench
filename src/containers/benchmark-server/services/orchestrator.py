@@ -671,9 +671,15 @@ class Orchestrator:
             log_path = os.path.join(out_dir, f"cost_model_sf{scale}.log")
             self.emit(f"  [cost-model-bench] SF{scale} diagnostics → {log_path}")
             with open(log_path, "w") as log, self._heartbeat(f"cost-model-bench/sf{scale}"):
-                proc = subprocess.run(
-                    cmd, cwd=repo, timeout=options.timeout_s, stdout=log, stderr=subprocess.STDOUT
-                )
+                try:
+                    proc = subprocess.run(
+                        cmd, cwd=repo, timeout=options.timeout_s, stdout=log, stderr=subprocess.STDOUT
+                    )
+                except subprocess.TimeoutExpired:
+                    failure = f"SF{scale} timed out after {options.timeout_s:g}s"
+                    self.emit(f"  [cost-model-bench] {failure} — partial results: {csv_path}; diagnostics: {log_path}")
+                    failures.append(failure)
+                    continue
             if proc.returncode != 0:
                 self.emit(f"  [cost-model-bench] SF{scale} exited {proc.returncode} — see {csv_path}")
                 failures.append(f"SF{scale} exit {proc.returncode}")
