@@ -1,6 +1,6 @@
 {
   "_design_notes": [
-    "Native OpenIVM window changes at 38929faa; one repetition per scale via GCI benchmark_runs=1.",
+    "Native OpenIVM pin from the Dockerfile; one repetition per scale via GCI benchmark_runs=1.",
     "Standard Figure 1 batches. Validate SF10; time SF100 without validation."
   ],
   "baseline": {
