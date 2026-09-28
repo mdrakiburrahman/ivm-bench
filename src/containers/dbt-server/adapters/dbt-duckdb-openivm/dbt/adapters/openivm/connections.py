@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import time
+import uuid
 from contextlib import contextmanager
 from typing import Optional, Tuple
 
@@ -36,7 +37,7 @@ RETRY_BACKOFF = float(os.environ.get("OPENIVM_RETRY_BACKOFF", "3.0"))
 
 
 def _run_cli(sql: str, expect_output: bool = False) -> str:
-    """Execute SQL via the OpenIVM DuckDB CLI binary, with retry on lock errors."""
+    """Retry setup locks only: SQL may commit writes before returning an error."""
     db_file = os.path.join(WORK_DIR, "openivm.duckdb")
     meta_path = os.path.join(WORK_DIR, "openivm.ducklake")
     data_path = os.path.join(WORK_DIR, "data")
@@ -64,33 +65,47 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     ])
     preamble = "\n".join(preamble_lines) + "\n"
 
-    last_error = None
+    # CLI dot commands run outside the SQL statement. With .bail enabled,
+    # these delimit setup, SQL execution, and teardown without parsing SQL or
+    # assuming a failed multi-statement/native operation rolled back its writes.
+    token = uuid.uuid4().hex
+    started_marker = f"OPENIVM_SQL_STARTED_{token}"
+    finished_marker = f"OPENIVM_SQL_FINISHED_{token}"
+    program = f"{preamble}.print {started_marker}\n{sql}\n;\n.print {finished_marker}\n"
     for attempt in range(MAX_RETRIES + 1):
         proc = subprocess.run(
             [OPENIVM_BIN, db_file],
-            input=preamble + sql + "\n",
+            input=program,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=3600,
         )
-        if proc.returncode == 0:
-            return proc.stdout
+        lines = (proc.stdout or "").splitlines(keepends=True)
+        sql_started = any(line.strip() == started_marker for line in lines)
+        sql_finished = any(line.strip() == finished_marker for line in lines)
+        output = "".join(line for line in lines if line.strip() not in (started_marker, finished_marker))
+        if proc.returncode == 0 and sql_started and sql_finished:
+            return output
 
-        output = proc.stdout or ""
-        if "database is locked" in output and attempt < MAX_RETRIES:
+        if proc.returncode > 0 and "database is locked" in output and not sql_started and attempt < MAX_RETRIES:
             wait = RETRY_BACKOFF * (2 ** attempt)
             logger.warning(
-                "OpenIVM CLI hit 'database is locked' (attempt %d/%d), retrying in %.1fs",
-                attempt + 1, MAX_RETRIES + 1, wait,
+                "OpenIVM CLI setup locked (attempt %d/%d), retrying in %.1fs: %s",
+                attempt + 1, MAX_RETRIES + 1, wait, output[-2000:],
             )
             time.sleep(wait)
-            last_error = output
             continue
 
-        raise DbtDatabaseError(f"OpenIVM CLI failed (rc={proc.returncode}):\n{output[-2000:]}")
-
-    raise DbtDatabaseError(f"OpenIVM CLI failed after {MAX_RETRIES + 1} attempts (database locked):\n{last_error[-2000:]}")
+        phase = "after SQL completion" if sql_finished else "during SQL execution" if sql_started else "during setup"
+        retry_detail = (
+            " SQL execution started; not replaying because writes may already have committed."
+            if sql_started else ""
+        )
+        raise DbtDatabaseError(
+            f"OpenIVM CLI failed {phase} (rc={proc.returncode}, attempt {attempt + 1}/{MAX_RETRIES + 1})."
+            f"{retry_detail}\n{output[-2000:]}"
+        )
 
 
 class OpenIVMConnectionManager(SQLConnectionManager):
