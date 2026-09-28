@@ -57,6 +57,7 @@ Configuration:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -637,7 +638,7 @@ def _validate_one(
     return entry
 
 
-def validate_run(run_id: str) -> dict:
+def validate_run(run_id: str, *, engine: str = "spark-openivm") -> dict:
     """Validate successful model nodes from a spark-openivm dbt run.
 
     Returns a dict shaped exactly like
@@ -658,11 +659,14 @@ def validate_run(run_id: str) -> dict:
     if not run:
         conn.close()
         raise ValueError(f"run_id not found: {run_id}")
-    if run["engine"] != "spark-openivm":
+    if engine not in {"spark-openivm", "fabric-openivm-jvm-35"} or run["engine"] != engine:
         conn.close()
         raise ValueError(
-            f"validation only supports spark-openivm, got {run['engine']}"
+            f"validation engine mismatch: requested {engine}, got {run['engine']}"
         )
+    if engine == "fabric-openivm-jvm-35" and run["status"] != "completed":
+        conn.close()
+        raise ValueError("Fabric validation requires a completed dbt run")
 
     nodes = conn.execute(
         """
@@ -680,20 +684,37 @@ def validate_run(run_id: str) -> dict:
     # duckdb-openivm-only `dbt_compiler` dependency optional.
     from services.dbt_compiler import get_compiled_models
 
-    compiled_models = get_compiled_models("spark-openivm")
+    client = LivyClient
+    if engine == "fabric-openivm-jvm-35":
+        from services.fabric_validation import FabricValidationClient
+        from services.dbt_compiler import PROJECTS_DIR
+        client = FabricValidationClient
+        # Per-run Fabric lakehouse names change; never reuse compiler cache or
+        # launch an on-demand compile with missing dynamic resource variables.
+        with open(os.path.join(PROJECTS_DIR, engine, "target", "manifest.json")) as source:
+            compiled_models = json.load(source)["nodes"]
+    else:
+        compiled_models = get_compiled_models(engine)
 
     # Pre-filter to the validatable model set so the thread pool only sees
     # eligible nodes; preserves input rowid order via the input list.
     work: list[dict[str, Any]] = []
     for node in nodes:
+        if (engine == "fabric-openivm-jvm-35" and node["resource_type"] == "model"
+                and node["status"] not in ("success", "pass")):
+            raise ValueError(f"Fabric model was not successful: {node['unique_id']}")
         if node["resource_type"] != "model" or node["status"] not in (
             "success", "pass",
         ):
             continue
         compiled_sql = (node["compiled_sql"] or "").strip().rstrip(";")
         if not compiled_sql:
+            if engine == "fabric-openivm-jvm-35":
+                raise ValueError(f"Fabric model lacks compiled SQL: {node['unique_id']}")
             continue
         meta = compiled_models.get(node["unique_id"], {})
+        if engine == "fabric-openivm-jvm-35" and not meta.get("schema"):
+            raise ValueError(f"Fabric model lacks manifest schema: {node['unique_id']}")
         work.append({
             "unique_id": node["unique_id"],
             "name": node["name"],
@@ -703,15 +724,21 @@ def validate_run(run_id: str) -> dict:
 
     started = time.monotonic()
 
-    with LivyClient() as livy:
+    if engine == "fabric-openivm-jvm-35" and not work:
+        raise ValueError("Fabric validation has no successful models to check")
+
+    with client() as livy:
         # Set the lakehouse as the default catalog/database so the
         # `<schema>.<name>` references in compiled SQL resolve identically
         # to how dbt wrote them. Runs ONCE on the shared session before
         # the worker pool fans out so every concurrent statement inherits
         # the same default database.
         try:
-            livy.execute(f"USE {LAKEHOUSE}")
+            lakehouse = livy.lakehouse if engine == "fabric-openivm-jvm-35" else LAKEHOUSE
+            livy.execute(f"USE {_quote_ident(lakehouse)}")
         except RuntimeError as e:
+            if engine == "fabric-openivm-jvm-35":
+                raise
             # Some Spark setups expose lakehouse via the default catalog
             # without an explicit USE; surface the error but keep going so
             # the per-model EXCEPT ALL can still trigger.

@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("fabric", __name__)
 
 
+@bp.route("/validate/fabric-openivm-jvm-35/<run_id>", methods=["POST"])
+def validate(run_id):
+    """Use the Spark comparison in the existing Fabric dbt Livy session."""
+    from services.spark_openivm_validation import validate_run
+    try:
+        result = validate_run(run_id, engine="fabric-openivm-jvm-35")
+        return jsonify(result), 200 if result["status"] == "passed" else 500
+    except Exception as exc:
+        logger.exception("[fabric-openivm-jvm-35] Validation failed")
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
 @bp.route("/environment/fabric/provision", methods=["POST"])
 def provision():
     """Batch-1: sweep orphaned resources, resolve the shared cache lakehouse,
