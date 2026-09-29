@@ -1,13 +1,17 @@
 """Connection manager — ALL SQL executes via the OpenIVM CLI binary."""
 
 import csv
+import json
 import logging
-import re
 import os
+import re
+import signal
 import subprocess
+import threading
 import time
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional, Tuple
 
 import agate
@@ -32,6 +36,72 @@ TEMP_DIR = os.environ.get(
 )
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 PROFILE_REFRESH = os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
+
+
+TRACE_WAITS = os.environ.get("OPENIVM_TRACE_WAITS", "0") == "1"
+
+
+def _run_cli_wait_trace(command, program, trace_path, sql, attempt):
+    """Opt-in Linux diagnostics; each invocation owns its files and process group."""
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    stop = threading.Event()
+
+    def optional_proc_file(path):
+        try:
+            return Path(path).read_text()
+        except OSError as error:
+            return f"unavailable: {error}"
+
+    def host_sample():
+        # These are host-wide signals, not per-engine counters.
+        memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+        return {"timestamp_s": time.time(),
+                "dirty_kb": int(memory["Dirty"].split()[0]),
+                "writeback_kb": int(memory["Writeback"].split()[0]),
+                "io_pressure": Path("/proc/pressure/io").read_text(),
+                "cgroup_memory_stat": optional_proc_file("/sys/fs/cgroup/memory.stat"),
+                "cgroup_io_stat": optional_proc_file("/sys/fs/cgroup/io.stat")}
+
+    with trace_path.with_suffix(".host.jsonl").open("x") as samples:
+        samples.write(json.dumps({
+            "sql": sql[:200], "attempt": attempt, **host_sample(),
+            "cpu_max": optional_proc_file("/sys/fs/cgroup/cpu.max"),
+            "cpuset_cpus_effective": optional_proc_file("/sys/fs/cgroup/cpuset.cpus.effective"),
+            "mountinfo": optional_proc_file("/proc/self/mountinfo"),
+        }) + "\n")
+        samples.flush()
+
+        def sample_loop():
+            while not stop.wait(1):
+                try:
+                    samples.write(json.dumps(host_sample()) + "\n")
+                    samples.flush()
+                except OSError as error:
+                    logger.warning("OpenIVM host sampling failed: %s", error)
+                    return
+
+        # seccomp-bpf avoids trapping unrelated syscalls. No SQL or file payloads
+        # are traced; descriptor paths identify the file behind each sync/lock.
+        traced = ["strace", "-f", "--seccomp-bpf", "-ttt", "-T", "-yy",
+                  "-e", "trace=fsync,fdatasync,fcntl,flock,nanosleep,clock_nanosleep",
+                  "-o", str(trace_path.with_suffix(".strace")), "--", *command]
+        with subprocess.Popen(traced, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, start_new_session=True) as proc:
+            sampler = threading.Thread(target=sample_loop, daemon=True)
+            sampler.start()
+            try:
+                output, _ = proc.communicate(program, timeout=3600)
+                return subprocess.CompletedProcess(command, proc.returncode, output)
+            finally:
+                # Killing only strace on timeout could leave a mutating CLI alive.
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # The traced process exited between poll and kill.
+                    proc.communicate()
+                stop.set()
+                sampler.join()
 
 
 MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
@@ -76,14 +146,21 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     program = f"{preamble}.print {started_marker}\n{sql}\n;\n.print {finished_marker}\n"
     for attempt in range(MAX_RETRIES + 1):
         cli_started = time.monotonic()
-        proc = subprocess.run(
-            [OPENIVM_BIN, db_file],
-            input=program,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=3600,
-        )
+        if TRACE_WAITS:
+            proc = _run_cli_wait_trace(
+                [OPENIVM_BIN, db_file], program,
+                Path("/data/logs/duckdb-openivm/wait-traces") / f"{token}-{attempt}",
+                sql, attempt,
+            )
+        else:
+            proc = subprocess.run(
+                [OPENIVM_BIN, db_file],
+                input=program,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=3600,
+            )
         cli_wall = time.monotonic() - cli_started
         lines = (proc.stdout or "").splitlines(keepends=True)
         if PROFILE_REFRESH:

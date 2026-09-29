@@ -24,6 +24,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN apt-get update && apt-get install -y --no-install-recommends strace && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install the custom dbt-duckdb-openivm adapter
 COPY adapters/dbt-duckdb-openivm /tmp/dbt-duckdb-openivm
 RUN pip install --no-cache-dir /tmp/dbt-duckdb-openivm && rm -rf /tmp/dbt-duckdb-openivm

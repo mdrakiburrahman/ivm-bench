@@ -1,11 +1,12 @@
 """A failed CLI command is not proof that its writes rolled back."""
 import csv
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 MODULE_PATH = (Path(__file__).resolve().parents[1] / 'adapters/dbt-duckdb-openivm/'
                'dbt/adapters/openivm/connections.py')
@@ -27,6 +28,7 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         self.enterContext(patch.object(connections, 'TEMP_DIR', directory))
         self.enterContext(patch.object(connections, 'MAX_RETRIES', 2))
         self.enterContext(patch.object(connections, 'PROFILE_REFRESH', False))
+        self.enterContext(patch.object(connections, 'TRACE_WAITS', False))
         self.sleep = self.enterContext(patch.object(connections.time, 'sleep'))
 
     @staticmethod
@@ -36,6 +38,42 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         text = (markers[0] + '\n' if started else '') + body
         text += markers[1] + '\n' if finished else ''
         return subprocess.CompletedProcess([], returncode, text)
+
+    def test_wait_trace_preserves_output_and_captures_host_context(self):
+        proc = MagicMock()
+        proc.communicate.return_value = ('query output\n', None)
+        proc.returncode = 0
+        proc.poll.return_value = 0
+        prefix = Path(connections.TEMP_DIR) / 'trace'
+        with patch.object(connections.subprocess, 'Popen') as popen, \
+                patch.object(Path, 'read_text', side_effect=[
+                    'Dirty: 123 kB\nWriteback: 45 kB\n', 'some avg10=1.0 total=99\n', 'file_dirty 126000\n', '8:0 wbytes=20\n', '3200000 100000', '0-31', 'mountinfo']):
+            popen.return_value.__enter__.return_value = proc
+            result = connections._run_cli_wait_trace(['duckdb', 'db'], 'SELECT 1;', prefix, 'SELECT 1', 0)
+        self.assertEqual(result.stdout, 'query output\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(popen.call_args.kwargs['start_new_session'])
+        self.assertEqual(popen.call_args.args[0][-3:], ['--', 'duckdb', 'db'])
+        sample = json.loads(prefix.with_suffix('.host.jsonl').read_text())
+        self.assertEqual((sample['dirty_kb'], sample['writeback_kb']), (123, 45))
+        proc.communicate.assert_called_once_with('SELECT 1;', timeout=3600)
+
+    def test_wait_trace_timeout_kills_cli_group_without_replaying(self):
+        proc = MagicMock()
+        proc.pid = 12345
+        proc.poll.return_value = None
+        proc.communicate.side_effect = [subprocess.TimeoutExpired('strace', 3600), ('', None)]
+        prefix = Path(connections.TEMP_DIR) / 'timeout'
+        with patch.object(connections.subprocess, 'Popen') as popen, \
+                patch.object(Path, 'read_text', side_effect=[
+                    'Dirty: 0 kB\nWriteback: 0 kB\n', 'some avg10=0 total=0\n', 'file_dirty 0\n', '8:0 wbytes=0\n', '3200000 100000', '0-31', 'mountinfo']), \
+                patch.object(connections.os, 'killpg') as kill:
+            popen.return_value.__enter__.return_value = proc
+            with self.assertRaises(subprocess.TimeoutExpired):
+                connections._run_cli_wait_trace(['duckdb', 'db'], 'INSERT;', prefix, 'INSERT', 0)
+        kill.assert_called_once_with(12345, connections.signal.SIGKILL)
+        popen.assert_called_once()
+        self.assertEqual(proc.communicate.call_count, 2)
 
     def test_setup_lock_retries_before_sql_and_preserves_output(self):
         def execute(*args, **kwargs):
