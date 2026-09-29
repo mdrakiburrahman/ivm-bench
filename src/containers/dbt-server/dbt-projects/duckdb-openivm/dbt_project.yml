@@ -22,9 +22,6 @@ dispatch:
 on-run-start:
   - "{{ openivm_setup() }}"
 
-on-run-end:
-  - "CHECKPOINT"
-
 models:
   tpcdi:
     bronze:

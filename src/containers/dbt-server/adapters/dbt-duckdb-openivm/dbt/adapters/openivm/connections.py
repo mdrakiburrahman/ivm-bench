@@ -48,9 +48,6 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     preamble_lines = [
         ".bail on",
         ".timer on" if PROFILE_REFRESH else ".timer off",
-        # Keep committed metadata in the durable WAL between CLI calls. The dbt
-        # on-run-end hook checkpoints once, within the measured batch.
-        "PRAGMA disable_checkpoint_on_shutdown;",
         f"SET memory_limit='{MEM_LIMIT}';",
         f"SET temp_directory='{TEMP_DIR}';",
     ]
