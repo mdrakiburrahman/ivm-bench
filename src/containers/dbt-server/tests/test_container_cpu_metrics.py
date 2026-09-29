@@ -1,4 +1,6 @@
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -7,7 +9,7 @@ from unittest.mock import patch
 DBT_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DBT_SERVER))
 
-from services.container_stats import _get_container_stats_snapshot  # noqa: E402
+from services.container_stats import ContainerStatsCollector, _get_container_stats_snapshot  # noqa: E402
 
 
 class ContainerCpuMetricsTest(unittest.TestCase):
@@ -48,6 +50,31 @@ class ContainerCpuMetricsTest(unittest.TestCase):
         result = _get_container_stats_snapshot("container-id")
         for key in ("cpu_throttled_time_ns", "cpu_throttled_periods", "io_read_bytes", "io_write_bytes"):
             self.assertIsNone(result[key])
+
+    def test_polling_preserves_wait_counters_in_jsonl(self):
+        collector = ContainerStatsCollector()
+        counters = {
+            "cpu_usage_ns": 7_500_000_000,
+            "cpu_throttled_time_ns": 500_000,
+            "cpu_throttled_periods": 3,
+            "io_read_bytes": 500,
+            "io_write_bytes": None,
+        }
+        with patch.object(collector, "_detect_compose_project", return_value="test"), \
+             patch("services.container_stats._discover_containers", return_value=[
+                 {"id": "container-id", "service": "dbt-server"}
+             ]), \
+             patch("services.container_stats._get_container_stats_snapshot", return_value=counters), \
+             patch.object(collector._stop_event, "wait", side_effect=lambda **_: collector._stop_event.set()):
+            collector._poll_loop()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("services.container_stats.STATS_OUTPUT_DIR", directory):
+            collector._write_jsonl(collector._samples)
+            rows = [json.loads(line) for line in (Path(directory) / "container_stats.jsonl").read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["container"], "dbt-server")
+        for key, value in counters.items():
+            self.assertEqual(rows[0][key], value)
 
 
 if __name__ == "__main__":

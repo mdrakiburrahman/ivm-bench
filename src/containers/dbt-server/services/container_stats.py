@@ -223,11 +223,7 @@ class ContainerStatsCollector:
                 sample = {
                     "timestamp_s": round(time.time(), 3),
                     "container": container["service"],
-                    "cpu_pct": stats["cpu_pct"],
-                    "cpu_usage_ns": stats["cpu_usage_ns"],
-                    "mem_mb": stats["mem_mb"],
-                    "net_in_mb": stats["net_in_mb"],
-                    "net_out_mb": stats["net_out_mb"],
+                    **stats,
                 }
                 with self._lock:
                     self._samples.append(sample)
