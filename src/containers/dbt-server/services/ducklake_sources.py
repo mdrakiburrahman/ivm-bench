@@ -231,8 +231,7 @@ def init_sources(
     """
     _reset_work_dir(work_dir)
 
-    # Apply the same lossless storage codec to full-refresh and OpenIVM engines.
-    stmts = ["CALL ducklake.set_option('parquet_compression', 'zstd');"]
+    stmts = []
     for schema in ("tpcdi", "bronze", "silver", "gold"):
         stmts.append(f"CREATE SCHEMA IF NOT EXISTS ducklake.{schema};")
 
