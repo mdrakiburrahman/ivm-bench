@@ -1,6 +1,8 @@
 """Connection manager — ALL SQL executes via the OpenIVM CLI binary."""
 
+import csv
 import logging
+import re
 import os
 import subprocess
 import time
@@ -45,7 +47,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
 
     preamble_lines = [
         ".bail on",
-        ".timer off",
+        ".timer on" if PROFILE_REFRESH else ".timer off",
         f"SET memory_limit='{MEM_LIMIT}';",
         f"SET temp_directory='{TEMP_DIR}';",
     ]
@@ -73,6 +75,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     finished_marker = f"OPENIVM_SQL_FINISHED_{token}"
     program = f"{preamble}.print {started_marker}\n{sql}\n;\n.print {finished_marker}\n"
     for attempt in range(MAX_RETRIES + 1):
+        cli_started = time.monotonic()
         proc = subprocess.run(
             [OPENIVM_BIN, db_file],
             input=program,
@@ -81,7 +84,33 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
             stderr=subprocess.STDOUT,
             timeout=3600,
         )
+        cli_wall = time.monotonic() - cli_started
         lines = (proc.stdout or "").splitlines(keepends=True)
+        if PROFILE_REFRESH:
+            setup_seconds = sql_seconds = 0.0
+            in_sql = False
+            clean_lines = []
+            for line in lines:
+                if line.strip() == started_marker:
+                    in_sql = True
+                timing = re.fullmatch(r"Run Time \(s\): real ([0-9.]+) user [0-9.]+ sys [0-9.]+\s*", line)
+                if timing:
+                    if in_sql:
+                        sql_seconds += float(timing[1])
+                    else:
+                        setup_seconds += float(timing[1])
+                else:
+                    clean_lines.append(line)
+            lines = clean_lines
+            # Export alongside native profiles; no extra database writes or commits.
+            try:
+                with open(os.path.join(TEMP_DIR, "cli-timings.csv"), "a", newline="") as trace:
+                    csv.writer(trace).writerow([
+                        time.time(), sql[:200], attempt, proc.returncode, cli_wall,
+                        setup_seconds, sql_seconds, cli_wall - setup_seconds - sql_seconds,
+                    ])
+            except OSError as error:
+                logger.warning("Could not record OpenIVM CLI timings: %s", error)
         sql_started = any(line.strip() == started_marker for line in lines)
         sql_finished = any(line.strip() == finished_marker for line in lines)
         output = "".join(line for line in lines if line.strip() not in (started_marker, finished_marker))

@@ -1,4 +1,5 @@
 """A failed CLI command is not proof that its writes rolled back."""
+import csv
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -25,6 +26,7 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(patch.object(connections, 'TEMP_DIR', directory))
         self.enterContext(patch.object(connections, 'MAX_RETRIES', 2))
+        self.enterContext(patch.object(connections, 'PROFILE_REFRESH', False))
         self.sleep = self.enterContext(patch.object(connections.time, 'sleep'))
 
     @staticmethod
@@ -44,6 +46,34 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
             self.assertEqual(connections._run_cli('SELECT 1, 2'), 'a,b\n1,2\n')
         self.assertEqual(run.call_count, 2)
         self.sleep.assert_called_once()
+
+    def test_profile_separates_setup_sql_and_process_overhead_without_changing_results(self):
+        def execute(*args, **kwargs):
+            result = self.output(kwargs['input'],
+                                 'a,b\n1,2\nRun Time (s): real 1.000 user 0.5 sys 0.1\n'
+                                 'Run Time (s): real 0.500 user 0.2 sys 0.1\n')
+            result.stdout = 'Run Time (s): real 0.250 user 0.1 sys 0.0\n' + result.stdout
+            return result
+        sql = 'SELECT "a,b", 2'
+        with patch.object(connections, 'PROFILE_REFRESH', True), \
+                patch.object(connections.time, 'monotonic', side_effect=[10.0, 13.0]), \
+                patch.object(connections.subprocess, 'run', side_effect=execute):
+            self.assertEqual(connections._run_cli(sql), 'a,b\n1,2\n')
+        with open(Path(connections.TEMP_DIR) / 'cli-timings.csv', newline='') as trace:
+            rows = list(csv.reader(trace))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], sql)
+        self.assertEqual([float(v) for v in rows[0][4:]], [3.0, 0.25, 1.5, 1.25])
+
+    def test_profile_write_failure_does_not_fail_or_replay_completed_sql(self):
+        def execute(*args, **kwargs):
+            return self.output(kwargs['input'], '42\nRun Time (s): real 0.001 user 0 sys 0\n')
+        with patch.object(connections, 'PROFILE_REFRESH', True), \
+                patch('builtins.open', side_effect=OSError('trace unavailable')), \
+                patch.object(connections.subprocess, 'run', side_effect=execute) as run, \
+                self.assertLogs(connections.logger, level='WARNING'):
+            self.assertEqual(connections._run_cli('SELECT 42'), '42\n')
+        self.assertEqual(run.call_count, 1)
 
     def test_execution_lock_is_not_replayed_and_original_error_survives(self):
         def execute(*args, **kwargs):
