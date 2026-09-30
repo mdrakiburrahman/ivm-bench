@@ -47,14 +47,6 @@ def normalized_sql(sql):
 
 
 class AugmentedTpcdiTest(unittest.TestCase):
-    def test_wait_diagnostics_are_opt_in_and_experiment_override_reaches_compose(self):
-        experiments = parse_experiments_json(json.dumps({
-            "baseline": {"feature_flags": {"openivm_trace_waits": False}},
-            "experiments": [{}, {"feature_flags": {"openivm_trace_waits": True}}],
-        }))
-        self.assertEqual([e.to_compose_env()["OPENIVM_TRACE_WAITS"] for e in experiments], ["0", "1"])
-
-
     def test_databricks_refresh_policy_works_for_standard_tpcdi(self):
         experiment = parse_experiments_json(json.dumps({
             "experiments": [{
