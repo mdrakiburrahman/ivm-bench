@@ -39,60 +39,6 @@ PROFILE_REFRESH = os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
 
 
 TRACE_WAITS = os.environ.get("OPENIVM_TRACE_WAITS", "0") == "1"
-# OAT cleanup wipes /data/logs before artifacts are uploaded; per-engine stats survive.
-WAIT_TRACE_DIR = Path(os.environ.get("OPENIVM_WAIT_TRACE_DIR", "/data/stats/wait-traces"))
-WAIT_SAMPLE_INTERVAL_S = 0.5
-CGROUP_MEMORY_KEYS = ("anon", "file", "file_dirty", "file_writeback", "pgscan", "pgsteal",
-                      "workingset_refault_file")
-
-
-def _optional_proc_file(path):
-    try:
-        return Path(path).read_text()
-    except OSError as error:
-        return f"unavailable: {error}"
-
-
-def _process_group_threads(pgid, proc_root=Path("/proc")):
-    """Count threads of one process group by kernel state and wait channel."""
-    counts = {}
-    for stat_path in proc_root.glob("[0-9]*/task/[0-9]*/stat"):
-        try:
-            fields = stat_path.read_text().rsplit(")", 1)[1].split()
-            if int(fields[2]) != pgid:
-                continue
-            wchan = (stat_path.parent / "wchan").read_text().strip() or "0"
-        except (OSError, IndexError, ValueError):
-            continue  # Threads exit between listing and reading.
-        key = f"{fields[0]}:{wchan}"
-        counts[key] = counts.get(key, 0) + 1
-    return counts
-
-
-def _host_sample(pgid=None):
-    # Memory, PSI and disk counters are host-wide; cgroup files are per container.
-    memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
-    cgroup_memory = {}
-    for line in _optional_proc_file("/sys/fs/cgroup/memory.stat").splitlines():
-        key, _, value = line.partition(" ")
-        if key in CGROUP_MEMORY_KEYS:
-            cgroup_memory[key] = int(value)
-    disks = {}
-    for line in _optional_proc_file("/proc/diskstats").splitlines():
-        fields = line.split()
-        if len(fields) >= 14 and fields[7] != "0":
-            # writes completed, sectors written, write ms, in flight, io ticks ms, weighted ms
-            disks[fields[2]] = [int(fields[i]) for i in (7, 9, 10, 11, 12, 13)]
-    sample = {"timestamp_s": time.time(),
-              "dirty_kb": int(memory["Dirty"].split()[0]),
-              "writeback_kb": int(memory["Writeback"].split()[0]),
-              "io_pressure": _optional_proc_file("/proc/pressure/io"),
-              "cgroup_memory": cgroup_memory,
-              "cgroup_io_stat": _optional_proc_file("/sys/fs/cgroup/io.stat"),
-              "diskstats": disks}
-    if pgid is not None:
-        sample["threads"] = _process_group_threads(pgid)
-    return sample
 
 
 def _run_cli_wait_trace(command, program, trace_path, sql, attempt):
@@ -100,38 +46,48 @@ def _run_cli_wait_trace(command, program, trace_path, sql, attempt):
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     stop = threading.Event()
 
+    def optional_proc_file(path):
+        try:
+            return Path(path).read_text()
+        except OSError as error:
+            return f"unavailable: {error}"
+
+    def host_sample():
+        # These are host-wide signals, not per-engine counters.
+        memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+        return {"timestamp_s": time.time(),
+                "dirty_kb": int(memory["Dirty"].split()[0]),
+                "writeback_kb": int(memory["Writeback"].split()[0]),
+                "io_pressure": Path("/proc/pressure/io").read_text(),
+                "cgroup_memory_stat": optional_proc_file("/sys/fs/cgroup/memory.stat"),
+                "cgroup_io_stat": optional_proc_file("/sys/fs/cgroup/io.stat")}
+
     with trace_path.with_suffix(".host.jsonl").open("x") as samples:
-        vm = {name: _optional_proc_file(f"/proc/sys/vm/{name}").strip() for name in (
-            "dirty_background_bytes", "dirty_background_ratio", "dirty_bytes", "dirty_ratio",
-            "dirty_expire_centisecs", "dirty_writeback_centisecs")}
         samples.write(json.dumps({
-            "sql": sql[:200], "attempt": attempt, **_host_sample(), "vm": vm,
-            "memory_max": _optional_proc_file("/sys/fs/cgroup/memory.max").strip(),
-            "cpu_max": _optional_proc_file("/sys/fs/cgroup/cpu.max"),
-            "cpuset_cpus_effective": _optional_proc_file("/sys/fs/cgroup/cpuset.cpus.effective"),
-            "mountinfo": _optional_proc_file("/proc/self/mountinfo"),
+            "sql": sql[:200], "attempt": attempt, **host_sample(),
+            "cpu_max": optional_proc_file("/sys/fs/cgroup/cpu.max"),
+            "cpuset_cpus_effective": optional_proc_file("/sys/fs/cgroup/cpuset.cpus.effective"),
+            "mountinfo": optional_proc_file("/proc/self/mountinfo"),
         }) + "\n")
         samples.flush()
 
-        def sample_loop(pgid):
-            while not stop.wait(WAIT_SAMPLE_INTERVAL_S):
+        def sample_loop():
+            while not stop.wait(1):
                 try:
-                    samples.write(json.dumps(_host_sample(pgid)) + "\n")
+                    samples.write(json.dumps(host_sample()) + "\n")
                     samples.flush()
                 except OSError as error:
                     logger.warning("OpenIVM host sampling failed: %s", error)
                     return
 
-        # seccomp-bpf avoids trapping unrelated syscalls. Only durability barriers
-        # and whole-file locks are traced: high-frequency fcntl/sleep tracing added
-        # large overhead. Lock and throttling waits appear in the thread samples.
-        traced = ["strace", "-f", "--seccomp-bpf", "-ttt", "-T", "-y",
-                  "-e", "trace=fsync,fdatasync,sync_file_range,syncfs,msync,flock",
+        # seccomp-bpf avoids trapping unrelated syscalls. No SQL or file payloads
+        # are traced; descriptor paths identify the file behind each sync/lock.
+        traced = ["strace", "-f", "--seccomp-bpf", "-ttt", "-T", "-yy",
+                  "-e", "trace=fsync,fdatasync,fcntl,flock,nanosleep,clock_nanosleep",
                   "-o", str(trace_path.with_suffix(".strace")), "--", *command]
         with subprocess.Popen(traced, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, start_new_session=True) as proc:
-            # start_new_session makes strace the group leader for itself and the CLI.
-            sampler = threading.Thread(target=sample_loop, args=(proc.pid,), daemon=True)
+            sampler = threading.Thread(target=sample_loop, daemon=True)
             sampler.start()
             try:
                 output, _ = proc.communicate(program, timeout=3600)
@@ -193,7 +149,7 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         if TRACE_WAITS:
             proc = _run_cli_wait_trace(
                 [OPENIVM_BIN, db_file], program,
-                WAIT_TRACE_DIR / f"{token}-{attempt}",
+                Path("/data/logs/duckdb-openivm/wait-traces") / f"{token}-{attempt}",
                 sql, attempt,
             )
         else:
