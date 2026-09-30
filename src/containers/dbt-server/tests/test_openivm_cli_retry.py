@@ -39,24 +39,74 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         text += markers[1] + '\n' if finished else ''
         return subprocess.CompletedProcess([], returncode, text)
 
+    PROC_FILES = {
+        '/proc/meminfo': 'Dirty: 123 kB\nWriteback: 45 kB\n',
+        '/proc/pressure/io': 'some avg10=1.0 total=99\n',
+        '/sys/fs/cgroup/memory.stat': 'anon 7\nfile_dirty 126000\nfile_writeback 9\nunrelated 1\n',
+        '/sys/fs/cgroup/io.stat': '8:0 wbytes=20\n',
+        '/proc/diskstats': ('   8       0 sda 1 0 8 1 10 2 800 30 3 40 50 0 0 0 0\n'
+                            '   7       0 loop0 1 0 8 1 0 0 0 0 0 0 0 0 0 0 0\n'),
+        '/proc/sys/vm/dirty_background_ratio': '10\n',
+        '/proc/sys/vm/dirty_expire_centisecs': '3000\n',
+        '/sys/fs/cgroup/memory.max': 'max\n',
+    }
+
+    def fake_proc(self):
+        real_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if str(path).startswith(('/proc', '/sys')):
+                if str(path) not in self.PROC_FILES:
+                    raise OSError('absent in fixture')
+                return self.PROC_FILES[str(path)]
+            return real_read_text(path, *args, **kwargs)
+        return patch.object(Path, 'read_text', autospec=True, side_effect=read_text)
+
     def test_wait_trace_preserves_output_and_captures_host_context(self):
         proc = MagicMock()
         proc.communicate.return_value = ('query output\n', None)
         proc.returncode = 0
         proc.poll.return_value = 0
         prefix = Path(connections.TEMP_DIR) / 'trace'
-        with patch.object(connections.subprocess, 'Popen') as popen, \
-                patch.object(Path, 'read_text', side_effect=[
-                    'Dirty: 123 kB\nWriteback: 45 kB\n', 'some avg10=1.0 total=99\n', 'file_dirty 126000\n', '8:0 wbytes=20\n', '3200000 100000', '0-31', 'mountinfo']):
+        with patch.object(connections.subprocess, 'Popen') as popen, self.fake_proc():
             popen.return_value.__enter__.return_value = proc
             result = connections._run_cli_wait_trace(['duckdb', 'db'], 'SELECT 1;', prefix, 'SELECT 1', 0)
         self.assertEqual(result.stdout, 'query output\n')
         self.assertEqual(result.returncode, 0)
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
-        self.assertEqual(popen.call_args.args[0][-3:], ['--', 'duckdb', 'db'])
-        sample = json.loads(prefix.with_suffix('.host.jsonl').read_text())
+        command = popen.call_args.args[0]
+        self.assertEqual(command[-3:], ['--', 'duckdb', 'db'])
+        traced = command[command.index('-e') + 1]
+        self.assertIn('fdatasync', traced)
+        self.assertNotIn('fcntl', traced)  # hot SQLite locking path; sampled instead
+        self.assertNotIn('nanosleep', traced)
+        sample = json.loads(prefix.with_suffix('.host.jsonl').read_text().splitlines()[0])
         self.assertEqual((sample['dirty_kb'], sample['writeback_kb']), (123, 45))
+        self.assertEqual(sample['cgroup_memory'], {'anon': 7, 'file_dirty': 126000, 'file_writeback': 9})
+        self.assertEqual(sample['diskstats'], {'sda': [10, 800, 30, 3, 40, 50]})
+        self.assertEqual(sample['vm']['dirty_expire_centisecs'], '3000')
+        self.assertTrue(sample['vm']['dirty_bytes'].startswith('unavailable'))
+        self.assertEqual(sample['memory_max'], 'max')
         proc.communicate.assert_called_once_with('SELECT 1;', timeout=3600)
+
+    def test_default_wait_traces_survive_oat_log_cleanup(self):
+        # OAT cleanup removes mount/logs/<sf>/<engine>; mount/stats is kept and uploaded.
+        self.assertEqual(connections.WAIT_TRACE_DIR, Path('/data/stats/wait-traces'))
+
+    def test_thread_sampling_counts_only_the_cli_process_group(self):
+        with tempfile.TemporaryDirectory() as root:
+            def thread(pid, tid, comm, state, pgid, wchan):
+                task = Path(root, str(pid), 'task', str(tid))
+                task.mkdir(parents=True)
+                (task / 'stat').write_text(f'{tid} ({comm}) {state} 1 {pgid} {pgid} 0 -1\n')
+                (task / 'wchan').write_text(wchan)
+            thread(10, 10, 'strace', 'S', 10, 'do_wait')
+            thread(11, 11, 'duck db) x', 'D', 10, 'jbd2_log_wait_commit')
+            thread(11, 12, 'duck db) x', 'D', 10, 'jbd2_log_wait_commit')
+            thread(11, 13, 'duck db) x', 'R', 10, '')
+            thread(20, 20, 'python', 'D', 20, 'balance_dirty_pages')
+            counts = connections._process_group_threads(10, Path(root))
+        self.assertEqual(counts, {'S:do_wait': 1, 'D:jbd2_log_wait_commit': 2, 'R:0': 1})
 
     def test_wait_trace_timeout_kills_cli_group_without_replaying(self):
         proc = MagicMock()
@@ -64,9 +114,7 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         proc.poll.return_value = None
         proc.communicate.side_effect = [subprocess.TimeoutExpired('strace', 3600), ('', None)]
         prefix = Path(connections.TEMP_DIR) / 'timeout'
-        with patch.object(connections.subprocess, 'Popen') as popen, \
-                patch.object(Path, 'read_text', side_effect=[
-                    'Dirty: 0 kB\nWriteback: 0 kB\n', 'some avg10=0 total=0\n', 'file_dirty 0\n', '8:0 wbytes=0\n', '3200000 100000', '0-31', 'mountinfo']), \
+        with patch.object(connections.subprocess, 'Popen') as popen, self.fake_proc(), \
                 patch.object(connections.os, 'killpg') as kill:
             popen.return_value.__enter__.return_value = proc
             with self.assertRaises(subprocess.TimeoutExpired):
