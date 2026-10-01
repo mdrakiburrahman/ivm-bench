@@ -37,6 +37,16 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         text += markers[1] + '\n' if finished else ''
         return subprocess.CompletedProcess([], returncode, text)
 
+    def test_snapshot_publication_setting_is_opt_in(self):
+        def execute(*args, **kwargs):
+            return self.output(kwargs['input'])
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), \
+                    patch.object(connections, 'SNAPSHOT_PUBLICATION', enabled), \
+                    patch.object(connections.subprocess, 'run', side_effect=execute) as run:
+                connections._run_cli('SELECT 1')
+                self.assertEqual('SET openivm_snapshot_publication=true;' in run.call_args.kwargs['input'], enabled)
+
     def test_setup_lock_retries_before_sql_and_preserves_output(self):
         def execute(*args, **kwargs):
             if run.call_count == 1:

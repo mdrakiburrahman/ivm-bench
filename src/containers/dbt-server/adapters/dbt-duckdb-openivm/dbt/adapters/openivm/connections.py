@@ -32,6 +32,7 @@ TEMP_DIR = os.environ.get(
 )
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 PROFILE_REFRESH = os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
+SNAPSHOT_PUBLICATION = os.environ.get("OPENIVM_SNAPSHOT_PUBLICATION", "0") == "1"
 
 
 MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
@@ -56,6 +57,8 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     preamble_lines.extend([
         "LOAD openivm;",
     ])
+    if SNAPSHOT_PUBLICATION:
+        preamble_lines.append("SET openivm_snapshot_publication=true;")
     if PROFILE_REFRESH:
         preamble_lines.append("SET openivm_profile_refresh=true;")
     preamble_lines.extend([
