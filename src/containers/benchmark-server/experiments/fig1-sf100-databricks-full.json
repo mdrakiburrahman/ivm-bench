@@ -1,0 +1,30 @@
+{
+  "_design_notes": [
+    "Figure 1 FULL-refresh baseline: standard TPC-DI, not the augmented day-window workload.",
+    "Dispatch with benchmark_runs=2 for two sequential repetitions."
+  ],
+  "baseline": {
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "databricks_refresh_policy": "FULL",
+    "engines": ["databricks-enzyme"],
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    { "label": "fig1-sf100-databricks-full-100-1-0.01" }
+  ]
+}
