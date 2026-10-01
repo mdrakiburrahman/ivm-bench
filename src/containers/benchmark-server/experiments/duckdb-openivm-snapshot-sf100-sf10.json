@@ -1,6 +1,6 @@
 {
   "_design_notes": [
-    "Snapshot publication ON in the dbt-server image; native pin 2a9b5a90.",
+    "Snapshot publication ON in the dbt-server image; native pin 29ba6255 (direct delta column lookup).",
     "One repetition, profiling ON, inserts 100/1/0.01%. SF100 first without validation, then SF10 with exact validation."
   ],
   "baseline": {
