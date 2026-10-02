@@ -1,0 +1,33 @@
+{
+  "_design_notes": [
+    "Matched against baseline run 37004300544: bench harness unchanged, only OpenIVM Spark pin changes from 8527c405 to fbfd206d (reuse CREATE analyzed source schemas).",
+    "One SF100 repetition, inserts 100/1/0.01%, serial, four dbt threads. Both OpenIVM engines; validation, profiling, query logs, storage and raw preservation ON.",
+    "Report dbt and full batch wall separately. Compare previous commit and cached Fabric/Spark non-IVM counterparts from 37004300544. Native compiler and LPTS pins unchanged."
+  ],
+  "baseline": {
+    "engines": [
+      "fabric-openivm-jvm-35",
+      "spark-openivm"
+    ],
+    "schedule": "serial",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    {
+      "label": "create-schema-reuse-sf100",
+      "scale_factor": 100
+    }
+  ]
+}
