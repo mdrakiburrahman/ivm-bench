@@ -99,6 +99,21 @@ class FabricProfileExportTest(unittest.TestCase):
                 runner._export_spark_openivm_profile("run", 2)
             self.assertFalse((Path(root) / "mount").exists())
 
+    @patch("services.engine_runner.requests.post")
+    def test_fabric_validation_is_required_and_saves_its_own_artifact(self, post):
+        from services.engine_runner import OpenIvmValidationError
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            post.return_value = Mock(status_code=200)
+            post.return_value.json.return_value = {"status": "passed", "models_checked": 49}
+            runner._validate_spark_openivm("run", 1)
+            self.assertEqual(post.call_args.args[0], "http://dbt/validate/fabric-openivm-jvm-35/run")
+            report = Path(root) / "mount/results/100/dbt-server/validation-fabric-openivm-jvm-35-batch1.json"
+            self.assertEqual(json.loads(report.read_text())["models_checked"], 49)
+            post.return_value.json.return_value = {"status": "failed", "failures": [{"schema": "db", "name": "mv", "diff_count": 1}]}
+            with self.assertRaises(OpenIvmValidationError):
+                runner._validate_spark_openivm("run", 1)
+
 
 if __name__ == "__main__":
     unittest.main()

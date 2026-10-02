@@ -877,7 +877,7 @@ class EngineRunner:
                 self._validate_duckdb_openivm(run_id, batch_num)
 
             if (
-                name == "spark-openivm"
+                name in ("spark-openivm", "fabric-openivm-jvm-35")
                 and run_id
                 and batch.status != "failed"
                 and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
@@ -1877,10 +1877,11 @@ class EngineRunner:
         materialized views over Livy. Mirrors `_validate_duckdb_openivm`
         — keeps the per-batch hook + result-JSON shape engine-agnostic so
         the existing chart/aggregate pipeline can consume both."""
-        self._emit(f"[spark-openivm] Validating batch {batch_num} with EXCEPT ALL")
+        name = self._engine.name
+        self._emit(f"[{name}] Validating batch {batch_num} with row-count/hash comparison")
         try:
             resp = requests.post(
-                f"{self._dbt_url}/validate/spark-openivm/{run_id}",
+                f"{self._dbt_url}/validate/{name}/{run_id}",
                 timeout=604800,
             )
             data = resp.json()
@@ -1895,7 +1896,7 @@ class EngineRunner:
         )
         os.makedirs(results_dir, exist_ok=True)
         with open(
-            os.path.join(results_dir, f"validation-spark-openivm-batch{batch_num}.json"),
+            os.path.join(results_dir, f"validation-{name}-batch{batch_num}.json"),
             "w",
         ) as f:
             json.dump(data, f, indent=2)
@@ -1911,7 +1912,7 @@ class EngineRunner:
                 + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
             )
         self._emit(
-            f"[spark-openivm] Validation passed for batch {batch_num}: "
+            f"[{name}] Validation passed for batch {batch_num}: "
             f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
         )
 

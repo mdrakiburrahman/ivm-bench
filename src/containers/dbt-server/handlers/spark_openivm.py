@@ -51,15 +51,17 @@ def spark_openivm_sources_append(batch_num):
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
-@bp.route("/validate/spark-openivm/<run_id>", methods=["POST"])
-def spark_openivm_validate_run(run_id):
+@bp.route("/validate/spark-openivm/<run_id>", methods=["POST"], defaults={"engine": "spark-openivm"})
+@bp.route("/validate/fabric-openivm-jvm-35/<run_id>", methods=["POST"], defaults={"engine": "fabric-openivm-jvm-35"})
+def spark_openivm_validate_run(run_id, engine):
     """Validate OpenIVM materialized views against compiled dbt SQL.
 
     Mirrors /validate/duckdb-openivm/<run_id>. EXCEPT-ALL comparison runs
     through a Livy SQL session against the spark-openivm Spark cluster.
     """
     try:
-        result = spark_openivm_validation.validate_run(run_id)
+        client = fabric.ProfileClient(allow_ddl=True) if engine == "fabric-openivm-jvm-35" else None
+        result = spark_openivm_validation.validate_run(run_id, client=client)
         status_code = 200 if result["status"] == "passed" else 500
         return jsonify(result), status_code
     except Exception as e:
