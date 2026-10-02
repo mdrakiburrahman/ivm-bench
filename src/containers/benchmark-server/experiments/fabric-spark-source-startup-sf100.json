@@ -1,0 +1,36 @@
+{
+  "_design_notes": [
+    "One SF100 repetition, inserts 100/1/0.01%, serial, four dbt threads. Compare both Fabric and both Spark engines with matching source-loading optimizations.",
+    "Both Fabric engines shallow-clone the retained immutable source cache and overlap dbt-owned session warmup with cache preparation. Warmup remains inside total batch time; dbt build time excludes it, so report both.",
+    "OpenIVM Spark shallow-clones the initial raw inputs; plain Spark already registers those files by LOCATION without copying. Later INSERT/CDF behavior is unchanged.",
+    "Validation ON uses the existing Spark row-count/xxhash64 comparison for both OpenIVM engines. Profiling, query logs, storage, and raw preservation ON. Livy polling and OpenIVM pins unchanged."
+  ],
+  "baseline": {
+    "engines": [
+      "fabric-openivm-jvm-35",
+      "fabric-jvm-35",
+      "spark-openivm",
+      "spark"
+    ],
+    "schedule": "serial",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    {
+      "label": "fabric-spark-source-startup-sf100",
+      "scale_factor": 100
+    }
+  ]
+}

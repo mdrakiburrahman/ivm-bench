@@ -27,7 +27,7 @@ import logging
 from flask import Blueprint, Flask, jsonify, request
 
 from handlers.base import BaseHandler
-from services import fabric
+from services import dbt_runner, fabric
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,16 @@ def provision():
         return jsonify(fabric.provision_run(openivm)), 200
     except Exception as e:
         logger.exception("[fabric] provision failed")
+        return jsonify({"status": "error", "error": str(e)}), 500
+
+
+@bp.route("/environment/fabric/warm-session", methods=["POST"])
+def warm_session():
+    try:
+        body = request.get_json(silent=True) or {}
+        return jsonify(dbt_runner.warm_fabric_session(body.get("engine", ""))), 200
+    except Exception as e:
+        logger.exception("[fabric] session warmup failed")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 

@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
 from typing import Any, Callable, Dict, List, Optional
 
@@ -698,11 +699,22 @@ class EngineRunner:
                     self._emit(f"[{name}] cleanup-cache/{last_sf} WARN: {e}")
 
             self._emit(f"[{name}] Staging sources into OneLake cache (sf={sf})")
-            resp = _post_fabric_cache_with_retry(
-                f"{self._dbt_url}/sources/fabric/init/{sf}",
-                self._emit,
-                f"{name} Fabric cache init",
-            )
+            # Both preparations are inside the batch timer. The source hook
+            # runs only after cache staging AND session startup succeed.
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                warmup = executor.submit(
+                    requests.post,
+                    f"{self._dbt_url}/environment/fabric/warm-session",
+                    json={"engine": name}, timeout=1300,
+                )
+                resp = _post_fabric_cache_with_retry(
+                    f"{self._dbt_url}/sources/fabric/init/{sf}",
+                    self._emit, f"{name} Fabric cache init",
+                )
+                ready = warmup.result()
+                ready.raise_for_status()
+                self._emit(f"[{name}] Session warmup: {ready.json().get('duration_s')}s "
+                           "(overlapped with cache staging; included in batch time)")
             data = resp.json()
             self._emit(
                 f"[{name}] Cache init: files_uploaded={data.get('files_uploaded')} "

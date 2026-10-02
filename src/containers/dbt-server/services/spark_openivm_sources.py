@@ -329,12 +329,11 @@ class LivyClient:
 
 
 def init_sources() -> dict:
-    """Create database + tracked Delta tables and load batch1 data via DML.
+    """Clone the immutable initial Delta inputs into independently tracked tables.
 
-    Idempotent at the database+table level. Re-running after a partial failure
-    will skip CREATE IF NOT EXISTS but will append duplicate rows to the
-    INSERT statements — caller (benchmark orchestrator) is expected to clean
-    the work dir before re-running.
+    Initial data files are shared with the retained raw inputs. Later staging
+    INSERTs write only to SOURCES_DIR. Plain Spark already registers those raw
+    inputs by LOCATION and does not make an initial data copy either.
     """
     statements: List[str] = ["CREATE DATABASE IF NOT EXISTS tpcdi"]
 
@@ -344,9 +343,9 @@ def init_sources() -> dict:
         dst_path = os.path.join(SOURCES_DIR, tname)
         statements.append(
             f"CREATE TABLE IF NOT EXISTS tpcdi.{tname} "
-            f"USING DELTA LOCATION '{dst_path}' "
-            f"TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true') AS "
-            f"SELECT * FROM delta.`{src_path}`"
+            f"SHALLOW CLONE delta.`{src_path}` "
+            f"TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true') "
+            f"LOCATION '{dst_path}'"
         )
         tables_created += 1
 

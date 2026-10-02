@@ -2,11 +2,11 @@
      the OneLake Files cache that fabric.py (azcopy) has already populated.
 
      Runs INSIDE the dbt Livy session so the openivm extension sees the source
-     CREATE/INSERT (CDF-tracked) exactly as the local spark-openivm flow does.
+     CLONE/INSERT (CDF-tracked) exactly as the local spark-openivm flow does.
 
      FABRIC_BATCH_NUM selects the phase:
        1        -> CREATE the batch1 reference + initial staging + audit tables
-                   (managed Delta, CDF enabled) from sf=<N>/{batch1,staging,audit}
+                   (shallow clones, CDF enabled) from sf=<N>/{batch1,staging,audit}
        2 | 3    -> INSERT the per-batch staging increment from
                    sf=<N>/staging_batch<N>/<t> into the growing staging_<t> tables
 --#}
@@ -28,11 +28,14 @@
   {% set tblprops = "TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')" %}
 
   {% if batch <= 1 %}
+    {# The workload-keyed source cache is immutable and retained through the run.
+       Each clone owns its Delta log; later INSERTs do not modify the cache. #}
     {#-- Deleting OneLake files (fabric.py cleanup) does NOT unregister the
-         Fabric metastore entry, so a prior engine's same-named relation leaks
-         in. DROP in-session to clear the catalog before recreating. Guarded on
+         Fabric metastore entry, so a prior engine's same-named relation (e.g.
+         the baseline's non-CDF plain tables) leaks in. DROP in-session to
+         clear the catalog before recreating everything CDF-enabled. Guarded on
          `execute` so the result-returning run_query is skipped at parse time. --#}
-    {% if execute %}
+    {% if execute and env_var('FABRIC_FRESH_BUILD', '0') != '1' %}
       {% set existing = run_query('SHOW TABLES IN ' ~ db) %}
       {% set dropped = namespace(n=0) %}
       {% if existing is not none %}
@@ -47,14 +50,14 @@
     {% endif %}
     {{ log("[fabric] load_fabric_sources: CREATE sources (batch 1, sf=" ~ sf ~ ")", info=True) }}
     {% for t in batch1_tables %}
-      {% set sql %}CREATE OR REPLACE TABLE {{ db }}.batch1_{{ t }} USING DELTA {{ tblprops }} AS SELECT * FROM delta.`{{ cache }}/batch1/{{ t }}`{% endset %}
+      {% set sql %}CREATE OR REPLACE TABLE {{ db }}.batch1_{{ t }} SHALLOW CLONE delta.`{{ cache }}/batch1/{{ t }}` {{ tblprops }}{% endset %}
       {% do run_query(sql) %}
     {% endfor %}
     {% for t in staging_tables %}
-      {% set sql %}CREATE OR REPLACE TABLE {{ db }}.staging_{{ t }} USING DELTA {{ tblprops }} AS SELECT * FROM delta.`{{ cache }}/staging/{{ t }}`{% endset %}
+      {% set sql %}CREATE OR REPLACE TABLE {{ db }}.staging_{{ t }} SHALLOW CLONE delta.`{{ cache }}/staging/{{ t }}` {{ tblprops }}{% endset %}
       {% do run_query(sql) %}
     {% endfor %}
-    {% set sql %}CREATE OR REPLACE TABLE {{ db }}.audit USING DELTA {{ tblprops }} AS SELECT * FROM delta.`{{ cache }}/audit`{% endset %}
+    {% set sql %}CREATE OR REPLACE TABLE {{ db }}.audit SHALLOW CLONE delta.`{{ cache }}/audit` {{ tblprops }}{% endset %}
     {% do run_query(sql) %}
   {% else %}
     {{ log("[fabric] load_fabric_sources: INSERT staging increment (batch " ~ batch ~ ", sf=" ~ sf ~ ")", info=True) }}
