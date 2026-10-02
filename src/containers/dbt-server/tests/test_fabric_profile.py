@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import csv
 import io
 import os
@@ -157,6 +158,78 @@ class FabricProfileTest(unittest.TestCase):
         self.output([], [])
         with self.assertRaisesRegex(RuntimeError, "no tabular schema"):
             spark_openivm_profile.export_profile("run", 2, client=fabric.ProfileClient())
+
+    def test_validation_can_execute_ddl_without_a_tabular_result(self):
+        self.output([], [])
+        with fabric.ProfileClient(allow_ddl=True) as client:
+            result = client.execute("CREATE TEMPORARY VIEW expected AS SELECT 1")
+        self.assertEqual(result["output"]["data"]["application/json"]["data"], [])
+        self.connect.assert_not_called()
+        self.delete.assert_not_called()
+
+    def test_validation_preserves_each_concurrent_statement_result(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        barrier = Barrier(2)
+        class Cursor:
+            description = [("count",)]
+            def __init__(self, *args):
+                self.rows = []
+            def execute(self, sql):
+                self.rows = [[int(sql)]]
+                barrier.wait(timeout=5)
+            def fetchall(self):
+                return self.rows
+            def close(self):
+                self.rows = []
+        client = fabric.ProfileClient(allow_ddl=True)
+        client.credentials = object()
+        client.session = SimpleNamespace(is_new_session_required=False)
+        with patch("dbt.adapters.fabricspark.livysession.LivyCursor", Cursor), ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(client.execute, str(n)) for n in (1, 2)]
+            rows = [f.result()["output"]["data"]["application/json"]["data"] for f in futures]
+        self.assertEqual(rows, [[[1]], [[2]]])
+
+
+class FabricValidationTest(unittest.TestCase):
+    def test_fabric_validation_uses_current_manifest_and_existing_session(self):
+        from services import spark_openivm_validation as validation
+        from unittest.mock import MagicMock
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35", "status": "completed"}
+        conn.execute.return_value.fetchall.return_value = [
+            {"unique_id": "model.tpcdi.mv", "name": "mv", "resource_type": "model", "status": "success", "compiled_sql": "SELECT 1"},
+        ]
+        client = MagicMock()
+        client.__enter__.return_value = client
+        with patch.object(validation, "get_db", return_value=conn), \
+             patch("services.dbt_compiler.invalidate_cache") as invalidate, \
+             patch("services.dbt_compiler.get_compiled_models", return_value={"model.tpcdi.mv": {"schema": "fresh_lakehouse"}}) as models, \
+             patch.object(validation, "LivyClient") as local, \
+             patch.object(validation, "_validate_one", return_value={"status": "pass", "diff_count": 0}) as check:
+            result = validation.validate_run("run", client=client)
+        self.assertEqual(result["models_checked"], 1)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(check.call_args.kwargs["schema"], "fresh_lakehouse")
+        models.assert_called_once_with("fabric-openivm-jvm-35")
+        invalidate.assert_called_once_with("fabric-openivm-jvm-35")
+        local.assert_not_called()
+        client.execute.assert_not_called()  # never USE the local Spark lakehouse
+
+    def test_fabric_validation_cannot_create_a_replacement_or_pass_empty_work(self):
+        from services import spark_openivm_validation as validation
+        from unittest.mock import MagicMock
+        for with_client in (False, True):
+            conn = MagicMock()
+            conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35"}
+            conn.execute.return_value.fetchall.return_value = []
+            with patch.object(validation, "get_db", return_value=conn), \
+                 patch("services.dbt_compiler.invalidate_cache"), \
+                 patch("services.dbt_compiler.get_compiled_models", return_value={}), \
+                 patch.object(validation, "LivyClient") as local:
+                with self.assertRaises(ValueError):
+                    validation.validate_run("run", client=MagicMock() if with_client else None)
+                local.assert_not_called()
 
 
 class FabricProfileConfigTest(unittest.TestCase):

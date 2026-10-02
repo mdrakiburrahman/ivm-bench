@@ -637,7 +637,7 @@ def _validate_one(
     return entry
 
 
-def validate_run(run_id: str) -> dict:
+def validate_run(run_id: str, *, client=None) -> dict:
     """Validate successful model nodes from a spark-openivm dbt run.
 
     Returns a dict shaped exactly like
@@ -658,11 +658,16 @@ def validate_run(run_id: str) -> dict:
     if not run:
         conn.close()
         raise ValueError(f"run_id not found: {run_id}")
-    if run["engine"] != "spark-openivm":
+    engine = run["engine"]
+    if engine not in ("spark-openivm", "fabric-openivm-jvm-35"):
         conn.close()
         raise ValueError(
-            f"validation only supports spark-openivm, got {run['engine']}"
+            f"validation does not support {engine}"
         )
+
+    if engine == "fabric-openivm-jvm-35" and client is None:
+        conn.close()
+        raise ValueError("Fabric validation requires the existing dbt session")
 
     nodes = conn.execute(
         """
@@ -678,9 +683,13 @@ def validate_run(run_id: str) -> dict:
     # Load the compiled manifest for schema metadata (the dbt-server caches
     # this so repeated lookups are cheap). Imported here to keep the
     # duckdb-openivm-only `dbt_compiler` dependency optional.
-    from services.dbt_compiler import get_compiled_models
+    from services.dbt_compiler import get_compiled_models, invalidate_cache
 
-    compiled_models = get_compiled_models("spark-openivm")
+    if engine == "fabric-openivm-jvm-35":
+        # Each provisioned run has a new lakehouse namespace. Read the build's
+        # manifest, rather than cached metadata from a prior Fabric run.
+        invalidate_cache(engine)
+    compiled_models = get_compiled_models(engine)
 
     # Pre-filter to the validatable model set so the thread pool only sees
     # eligible nodes; preserves input rowid order via the input list.
@@ -701,16 +710,20 @@ def validate_run(run_id: str) -> dict:
             "compiled_sql": compiled_sql,
         })
 
+    if engine == "fabric-openivm-jvm-35" and not work:
+        raise ValueError("Fabric validation found no successful compiled models")
+
     started = time.monotonic()
 
-    with LivyClient() as livy:
+    with (client if client is not None else LivyClient()) as livy:
         # Set the lakehouse as the default catalog/database so the
         # `<schema>.<name>` references in compiled SQL resolve identically
         # to how dbt wrote them. Runs ONCE on the shared session before
         # the worker pool fans out so every concurrent statement inherits
         # the same default database.
         try:
-            livy.execute(f"USE {LAKEHOUSE}")
+            if engine == "spark-openivm":
+                livy.execute(f"USE {LAKEHOUSE}")
         except RuntimeError as e:
             # Some Spark setups expose lakehouse via the default catalog
             # without an explicit USE; surface the error but keep going so
