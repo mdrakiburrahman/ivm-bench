@@ -46,10 +46,10 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=3b3938f4f8293875b56157f563c6f8cb196a0b41
+ARG OPENIVM_COMMIT=44c23866bd0b16eec71e81d0aab295e7359788ea
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
-ARG LPTS_COMMIT=b67f84f173bc8f500ffd8cde799146821fccdc51
+ARG LPTS_COMMIT=29c606ee18ad8e4d04cab940f361cbf6fbe5b881
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -86,7 +86,7 @@ RUN git init -q && \
     git config -f .gitmodules submodule.third_party/lpts.url "${LPTS_REPO}" && \
     git submodule sync --recursive && \
     git submodule update --init --recursive --depth 1 duckdb extension-ci-tools && \
-    (cd duckdb && git fetch --depth 1 origin 08e34c447bae34eaee3723cac61f2878b6bdf787 && git checkout FETCH_HEAD) && \
+    (cd duckdb && git fetch --depth 1 origin tag v1.5.2 && git checkout 8a5851971fae891f292c2714d86046ee018e9737) && \
     (cd extension-ci-tools && git fetch --depth 1 origin 72e76e99cd7fee45a99739cd118ec2db64e034ec && git checkout FETCH_HEAD) && \
     (cd third_party/lpts && \
         git init -q && \
@@ -102,6 +102,8 @@ RUN GEN=ninja make -j"$(nproc)"
 RUN mkdir -p /artifacts && \
     cp build/release/extension/openivm/openivm.duckdb_extension /artifacts/ && \
     cp build/release/duckdb /artifacts/duckdb && \
+    cp -L "$(g++ -print-file-name=libstdc++.so.6)" /artifacts/libstdc++.so.6 && \
+    cp -L "$(gcc -print-file-name=libgcc_s.so.1)" /artifacts/libgcc_s.so.1 && \
     chmod +x /artifacts/duckdb && \
     sha256sum /artifacts/openivm.duckdb_extension /artifacts/duckdb > /artifacts/SHA256SUMS
 
@@ -112,8 +114,8 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=main
-ARG OPENIVM_SPARK_COMMIT=a48bc073c11597b95467c45d67f7a21ad72eab26
+ARG OPENIVM_SPARK_BRANCH=perf/cdf-global-window-single-write
+ARG OPENIVM_SPARK_COMMIT=8527c40595590d015398a4fb38992d184bd5af50
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -145,6 +147,8 @@ ENV SBT_OPTS="-Xmx4g -XX:+UseG1GC"
 
 COPY --from=openivm-builder /artifacts/duckdb                 /native/duckdb
 COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.duckdb_extension
+COPY --from=openivm-builder /artifacts/libstdc++.so.6 /native/libstdc++.so.6
+COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /native/libgcc_s.so.1
 ENV OPENIVM_NATIVE_DIR=/native
 
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
@@ -162,7 +166,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=a48bc073c11597b95467c45d67f7a21ad72eab26
+ARG OPENIVM_SPARK_COMMIT=8527c40595590d015398a4fb38992d184bd5af50
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this

@@ -23,6 +23,8 @@ tpcdi:
       spark_config:
         name: dbt-tpcdi-fabric-openivm-jvm-35
         conf:
+          # Cumulative OpenIVM profiles exceed Livy's default 1,000-row cap.
+          livy.rsc.sql.num-rows: "100000"
           # Attach this run's freshly-provisioned openivm Fabric Environment
           # (spark.openivm.* config + spark.sql.extensions). Fabric's Livy API
           # uses `spark.fabric.environmentDetails`, NOT the

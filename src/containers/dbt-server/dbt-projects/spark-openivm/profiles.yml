@@ -26,3 +26,5 @@ tpcdi:
       retry_all: false
       spark_config:
         name: dbt-tpcdi-spark-openivm
+        # Local mode drops conf; the SQL row limit is set in the server
+        # template: spark-openivm/config/livy.conf.tmpl.
