@@ -75,6 +75,32 @@ class FabricFreshBuildTest(unittest.TestCase):
 
 
 class FabricClientTimingTest(unittest.TestCase):
+    def test_spark_error_frames_are_preserved_without_query_or_message(self):
+        class Cursor:
+            def _getLivyResult(self):
+                return {"output": {"status": "error", "evalue": "secret query", "traceback": [
+                    "secret query\n at org.apache.spark.sql.SparkSession.active(SparkSession.scala:123)"
+                ]}}
+
+        rows = []
+        instrument(Cursor, "_getLivyResult", rows.append)
+        self.assertEqual(Cursor()._getLivyResult()["output"]["status"], "error")
+        self.assertEqual(rows[0]["outcome"], "sql_error")
+        self.assertEqual(rows[0]["spark_stack"], ["org.apache.spark.sql.SparkSession.active(SparkSession.scala:123)"])
+        self.assertNotIn("secret", json.dumps(rows))
+
+    def test_version_probe_records_actual_version_without_changing_rows(self):
+        class Cursor:
+            def execute(self, sql):
+                self._rows = [["3.5.5"]]
+
+        rows = []
+        instrument(Cursor, "execute", rows.append, sql_argument=True)
+        cursor = Cursor()
+        cursor.execute("SELECT split(version(), ' ')[0] as version")
+        self.assertEqual(cursor._rows, [["3.5.5"]])
+        self.assertEqual(rows[0]["spark_version"], "3.5.5")
+
     def test_nested_timings_preserve_return_and_exclude_sql(self):
         class Cursor:
             def submit(self):

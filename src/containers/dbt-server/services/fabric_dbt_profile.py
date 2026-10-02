@@ -17,6 +17,7 @@ def instrument(owner, name, emit, *, sql_argument=False):
         started = time.time_ns()
         tick = time.monotonic_ns()
         outcome = "error"
+        result = None
         try:
             result = original(*args, **kwargs)
             outcome = "ok"
@@ -32,6 +33,15 @@ def instrument(owner, name, emit, *, sql_argument=False):
                 "thread": threading.get_ident(),
                 "outcome": outcome,
             }
+            if name == "_getLivyResult" and isinstance(result, dict):
+                response = result.get("output", {})
+                if response.get("status") == "error":
+                    row["outcome"] = "sql_error"
+                    # Keep only Java frame signatures; never copy arbitrary error/SQL text.
+                    trace = "\n".join(response.get("traceback") or [])
+                    row["spark_stack"] = re.findall(
+                        r"\bat ([\w.$]+\((?:[\w.$]+\.(?:java|scala):\d+|Unknown Source|Native Method)\))", trace
+                    )
             if sql_argument:
                 # Emit only the verb, never SQL text, paths, tokens or headers.
                 sql = args[1] if len(args) > 1 else kwargs.get("sql", "")
@@ -44,6 +54,12 @@ def instrument(owner, name, emit, *, sql_argument=False):
                         "SHOW DATABASES", "DESCRIBE", "INSERT", "SELECT", "SET",
                     ) if sql.startswith(kind)), "OTHER"
                 )
+                if sql.startswith("SELECT SPLIT(VERSION()") and outcome == "ok":
+                    rows = getattr(args[0], "_rows", None)
+                    if rows and rows[0]:
+                        version = re.match(r"\d+\.\d+\.\d+", str(rows[0][0]))
+                        if version:
+                            row["spark_version"] = version.group()
             try:
                 emit(row)
             except OSError:
