@@ -20,7 +20,6 @@ def _inject_fabric_resolved(env: dict, *, claim_fresh: bool = False) -> None:
     ``env_var()`` lookups + the ``load_fabric_sources`` macro target the dynamic
     resources. No-op for non-fabric engines (resolved file absent)."""
     env.pop("FABRIC_OPENIVM_FRESH_BUILD", None)
-    env.pop("FABRIC_FRESH_BUILD", None)
     path = os.environ.get("FABRIC_RESOLVED_PATH", "/tmp/fabric-resolved.json")
     try:
         with open(path) as f:
@@ -39,51 +38,14 @@ def _inject_fabric_resolved(env: dict, *, claim_fresh: bool = False) -> None:
             env[env_key] = str(val)
 
     # Claim before starting dbt: a failed/partial build must retain DROP on retry.
-    if claim_fresh and r.get("fresh_compute") and r.get("lakehouse_id"):
+    if claim_fresh and r.get("fresh_compute") and r.get("openivm") and r.get("lakehouse_id"):
         marker = path + "." + r["lakehouse_id"] + ".build-started"
         try:
             fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             return
         os.close(fd)
-        env["FABRIC_FRESH_BUILD"] = "1"
-        if r.get("openivm"):
-            env["FABRIC_OPENIVM_FRESH_BUILD"] = "1"
-
-
-def warm_fabric_session(engine: str) -> dict:
-    """Start the normal OpenIVM dbt session while the cache is being staged.
-
-    Startup stays inside benchmark-server's batch timer, but is reported
-    separately from dbt build time. Do not consume the fresh-build claim.
-    """
-    if engine not in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
-        raise ValueError("Unsupported Fabric warmup engine")
-    project_dir = os.path.join(PROJECTS_DIR, engine)
-    env = os.environ.copy()
-    _inject_fabric_resolved(env)
-    # dbt parses the source hook even though run-operation does not execute it.
-    env["FABRIC_BATCH_NUM"] = "1"
-    env["FABRIC_CACHE_ROOT"] = batch_cache_root(
-        "Files/_shared_cache/tpcdi_raw_cache", int(env.get("SCALE_FACTOR", "3")), 1
-    )
-    env["FABRIC_INCREMENTAL_STAGING_TABLES"] = ",".join(incremental_staging_tables())
-    cmd = ["dbt", "run-operation", "warm_fabric_session",
-           "--profiles-dir", project_dir, "--project-dir", project_dir,
-           "--target", engine]
-    if env.get("OPENIVM_PROFILE_REFRESH") == "1":
-        stats_path = env.get("STATS_DIR", "/data/stats")
-        os.makedirs(stats_path, exist_ok=True)
-        env["FABRIC_DBT_TIMINGS_PATH"] = f"{stats_path}/fabric-timings-warmup-{env['FABRIC_LAKEHOUSE_ID']}.jsonl"
-        cmd = ["python", "-m", "services.fabric_dbt_profile", *cmd[1:]]
-    started = time.monotonic()
-    result = subprocess.run(
-        cmd, env=env, capture_output=True, text=True, timeout=1200,
-    )
-    if result.returncode != 0:
-        # Do not expose adapter credential diagnostics in the HTTP response.
-        raise RuntimeError(f"Fabric session warmup failed (dbt exit {result.returncode})")
-    return {"status": "ok", "duration_s": round(time.monotonic() - started, 3)}
+        env["FABRIC_OPENIVM_FRESH_BUILD"] = "1"
 
 
 def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, batch_num: int = 1):
@@ -117,10 +79,6 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
         "--log-level", "info",
         "--log-path", log_path,
     ]
-    if engine == "fabric-openivm-jvm-35":
-        # The OpenIVM materialization emits explicit DDL and never uses dbt's
-        # relation cache. Keep discovery enabled for the other engines.
-        cmd.append("--no-populate-cache")
     if full_refresh:
         cmd.append("--full-refresh")
 
@@ -137,7 +95,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
         incremental_staging_tables()
     )
     _inject_fabric_resolved(
-        env, claim_fresh=(engine in ("fabric-openivm-jvm-35", "fabric-jvm-35") and full_refresh and batch_num == 1)
+        env, claim_fresh=(engine == "fabric-openivm-jvm-35" and full_refresh and batch_num == 1)
     )
     if engine.startswith("fabric-") and env.get("OPENIVM_PROFILE_REFRESH") == "1":
         cmd = ["python", "-m", "services.fabric_dbt_profile", *cmd[1:]]
