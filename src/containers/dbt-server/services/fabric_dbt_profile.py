@@ -9,6 +9,42 @@ import threading
 import time
 
 
+def instrument_session_polls(requests, emit):
+    """Observe existing startup requests without logging the response payload."""
+    original = requests.get
+
+    @functools.wraps(original)
+    def observed(url, *args, **kwargs):
+        response = original(url, *args, **kwargs)
+        if re.search(r"/livyapi/versions/[^/]+/sessions/[^/?]+$", str(url)):
+            try:
+                body = response.json()
+                tags = body.get("tags") or {}
+                info = body.get("livyInfo") or {}
+                conf = (info.get("jobCreationRequest") or {}).get("conf") or {}
+                # Messages can contain user configuration: retain setting names only.
+                row = {
+                    "operation": "session_poll",
+                    "epoch_ns": time.time_ns(),
+                    "fallback_info_present": "FallbackReasons" in tags or "FallbackMessages" in tags,
+                    "fallback_reasons": re.findall(
+                        r"[A-Za-z][A-Za-z0-9]+", str(tags.get("FallbackReasons", ""))
+                    ),
+                    "fallback_spark_settings": sorted(set(re.findall(
+                        r"\bspark\.[A-Za-z0-9_.]+", str(tags.get("FallbackMessages", ""))
+                    ))),
+                    "idle_timeout_present": "spark.livy.session.idle.timeout" in conf if conf else None,
+                    "state": body.get("state"),
+                    "livy_state": info.get("currentState"),
+                }
+                emit(row)
+            except (ValueError, TypeError, AttributeError, OSError):
+                print("Fabric session diagnostic record could not be written", file=sys.stderr)
+        return response
+
+    requests.get = observed
+
+
 def instrument(owner, name, emit, *, sql_argument=False):
     original = getattr(owner, name)
 
@@ -79,6 +115,7 @@ def main():
             with lock:
                 output.write(json.dumps(row) + "\n")
 
+        instrument_session_polls(livysession.requests, emit)
         for owner, names in (
             (livysession.LivySession, ("create_session", "wait_for_session_start")),
             (livysession.LivyCursor, ("_submitLivyCode", "_getLivyResult")),

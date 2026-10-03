@@ -1,6 +1,6 @@
 {
   "_design_notes": [
-    "One Fabric SF100 repetition, inserts 100/1/0.01%; exact validation and client/engine profiling ON. Native/Spark pins unchanged. Skip redundant DROP only for first build of newly provisioned lakehouse; Livy polling unchanged."
+    "Fabric OpenIVM only: SF100, one repetition, inserts 100/1/0.01%, four dbt threads. Count/hash validation and profiling ON. Rolled-back performance baseline; observe existing session startup responses for fallback reasons without extra requests. Native/Spark pins and Livy polling unchanged."
   ],
   "baseline": {
     "engines": [

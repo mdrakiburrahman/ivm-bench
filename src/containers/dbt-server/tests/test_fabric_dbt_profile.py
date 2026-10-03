@@ -2,14 +2,54 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services.fabric_dbt_profile import instrument
+from services.fabric_dbt_profile import instrument, instrument_session_polls
 
 
 class FabricClientTimingTest(unittest.TestCase):
+    def test_session_poll_preserves_response_and_records_only_diagnostics(self):
+        response = Mock()
+        response.json.return_value = {
+            "state": "idle", "livyInfo": {"currentState": "idle", "jobCreationRequest": {
+                "conf": {"spark.livy.session.idle.timeout": "30m", "secret": "secret-value"}
+            }},
+            "tags": {"FallbackReasons": "UserSparkConfigMismatch", "FallbackMessages":
+                "secret-value incompatible: spark.livy.session.idle.timeout,"},
+            "token": "secret-value",
+        }
+        get = Mock(return_value=response)
+        requests = SimpleNamespace(get=get)
+        rows = []
+        instrument_session_polls(requests, rows.append)
+        url = "https://example.invalid/livyapi/versions/2023-12-01/sessions/session-secret"
+        self.assertIs(requests.get(url, headers={"Authorization": "secret-value"}), response)
+        get.assert_called_once_with(url, headers={"Authorization": "secret-value"})
+        self.assertEqual(rows[0]["fallback_reasons"], ["UserSparkConfigMismatch"])
+        self.assertEqual(rows[0]["fallback_spark_settings"], ["spark.livy.session.idle.timeout"])
+        self.assertTrue(rows[0]["idle_timeout_present"])
+        self.assertNotIn("secret", json.dumps(rows))
+
+    def test_non_session_requests_are_not_inspected(self):
+        response = Mock()
+        requests = SimpleNamespace(get=Mock(return_value=response))
+        rows = []
+        instrument_session_polls(requests, rows.append)
+        requests.get("https://example.invalid/livyapi/versions/v1/sessions/id/statements/0")
+        response.json.assert_not_called()
+        self.assertEqual(rows, [])
+
+    def test_bad_diagnostic_response_does_not_fail_session_poll(self):
+        response = Mock()
+        response.json.side_effect = ValueError("not json")
+        requests = SimpleNamespace(get=Mock(return_value=response))
+        instrument_session_polls(requests, Mock())
+        with patch("sys.stderr"):
+            self.assertIs(requests.get("https://example.invalid/livyapi/versions/v1/sessions/id"), response)
+
     def test_spark_error_frames_are_preserved_without_query_or_message(self):
         class Cursor:
             def _getLivyResult(self):
