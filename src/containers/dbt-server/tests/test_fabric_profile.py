@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 import csv
 import io
+import json
 import os
 import re
 import sys
@@ -185,10 +186,48 @@ class FabricProfileTest(unittest.TestCase):
         client = fabric.ProfileClient(allow_ddl=True)
         client.credentials = object()
         client.session = SimpleNamespace(is_new_session_required=False)
+        client.cursor_type = Cursor
         with patch("dbt.adapters.fabricspark.livysession.LivyCursor", Cursor), ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(client.execute, str(n)) for n in (1, 2)]
             rows = [f.result()["output"]["data"]["application/json"]["data"] for f in futures]
         self.assertEqual(rows, [[[1]], [[2]]])
+
+    def test_hc_export_reattaches_to_dbt_repl_without_acquiring_or_deleting(self):
+        self.file.return_value = json.dumps({"hc_id": "hc-owned", "session_id": "shared", "repl_id": "repl-owned"})
+        self.output(["duration_ms"], [[42]])
+        ready = Mock(status_code=200)
+        ready.json.return_value = {"state": "Idle", "sessionId": "shared", "replId": "repl-owned"}
+        result = Mock(status_code=200)
+        result.json.return_value = {"state": "available", "output": {"status": "ok", "data": {
+            "application/json": {"schema": {"fields": [{"name": "duration_ms", "type": "long", "nullable": False}]}, "data": [[42]]}
+        }}}
+        self.get.side_effect = [ready, result]
+        with fabric.ProfileClient() as client:
+            self.assertEqual(client.execute("SHOW OPENIVM PROFILE")["output"]["data"]["application/json"]["data"], [[42]])
+        self.assertIn("/highConcurrencySessions/shared/repls/repl-owned/statements", self.post.call_args.args[0])
+        self.assertEqual(self.post.call_count, 1)
+        self.delete.assert_not_called()
+        self.connect.assert_not_called()
+
+    def test_hc_export_rejects_rebound_repl_without_submitting(self):
+        self.file.return_value = json.dumps({"hc_id": "hc-owned", "session_id": "shared", "repl_id": "repl-owned"})
+        self.get.return_value = Mock(status_code=200)
+        self.get.return_value.json.return_value = {"state": "Idle", "sessionId": "replacement", "replId": "repl-owned"}
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            with fabric.ProfileClient():
+                self.fail("rebound session was accepted")
+        self.post.assert_not_called()
+        self.delete.assert_not_called()
+
+    def test_dead_hc_repl_is_never_reacquired_by_reader(self):
+        from dbt.adapters.fabricspark.concurrent_livy import HighConcurrencyCursor
+        client = fabric.ProfileClient()
+        client.session = SimpleNamespace(is_dead=True, is_new_session_required=False)
+        client.cursor_type = HighConcurrencyCursor
+        with self.assertRaisesRegex(RuntimeError, "lost"):
+            client.execute("SHOW OPENIVM PROFILE")
+        self.post.assert_not_called()
+        self.delete.assert_not_called()
 
 
 class FabricValidationTest(unittest.TestCase):

@@ -2,7 +2,7 @@ flask>=3.0
 gunicorn>=22.0
 matplotlib>=3.8
 dbt-core~=1.11
-https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
+dbt-fabricspark @ git+https://github.com/microsoft/dbt-fabricspark.git@5323ae26d2a92285b0620b3baff1753142e1df41
 dbt-duckdb>=1.9
 dbt-databricks~=1.11
 databricks-sql-connector>=4.0

@@ -11,7 +11,10 @@ tpcdi:
       lakehouse: "{{ env_var('FABRIC_LAKEHOUSE_NAME', '') }}"
       schema: "{{ env_var('FABRIC_LAKEHOUSE_NAME', '') }}"
       authentication: CLI
-      high_concurrency: false
+      high_concurrency: true
+      auto_optimize: false
+      azure_cli_process_timeout: 60
+      session_idle_timeout: "30m"
       reuse_session: true
       session_id_file: /tmp/fabric-jvm-35-livy.session-id
       connect_retries: 25

@@ -30,16 +30,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY adapters/dbt-duckdb-openivm /tmp/dbt-duckdb-openivm
 RUN pip install --no-cache-dir /tmp/dbt-duckdb-openivm && rm -rf /tmp/dbt-duckdb-openivm
 
-# dbt-fabricspark's CLI auth constructs AzureCliCredential() with the default
-# 10s subprocess timeout. Under a 30-thread build the token-refresh storm in the
-# token's last 5 min spawns many concurrent `az` calls; occasional host CPU
-# contention or relay latency pushes one past 10s → "Failed to invoke the Azure
-# CLI" fails a node. Bump it to 60s. The grep guards against a silent
-# no-op if a future dbt-fabricspark version changes the call site.
-RUN LIVY=$(python -c "import dbt.adapters.fabricspark as m,os;print(os.path.join(os.path.dirname(m.__file__),'livysession.py'))") && \
-    sed -i 's/AzureCliCredential()\.get_token/AzureCliCredential(process_timeout=60).get_token/g' "$LIVY" && \
-    grep -q "process_timeout=60" "$LIVY"
-
 COPY dbt-projects/ /app/dbt-projects/
 COPY handlers/ /app/handlers/
 COPY services/ /app/services/

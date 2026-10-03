@@ -1045,11 +1045,11 @@ class ProfileClient:
 
     def __enter__(self):
         from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
-        from dbt.adapters.fabricspark.livysession import LivySession
+        from dbt.adapters.fabricspark.livysession import LivyCursor, LivySession, get_headers
 
         session_file = Path("/tmp/fabric-openivm-jvm-35-livy.session-id")
-        session_id = session_file.read_text().strip()
-        if not session_id:
+        address = session_file.read_text().strip()
+        if not address:
             raise RuntimeError("Fabric dbt session ID is empty; cannot export telemetry")
         credentials = FabricSparkCredentials(
             endpoint=f"{FABRIC_API_BASE}/v1",
@@ -1058,26 +1058,45 @@ class ProfileClient:
             lakehouse=str(_load_resolved()["lakehouse_name"]),
             authentication="CLI",
             livy_mode="fabric",
+            azure_cli_process_timeout=60,
             statement_timeout=1800,
             spark_config={"name": "dbt-tpcdi-fabric-openivm-jvm-35"},
         )
-        self.session = LivySession(credentials)
-        if not self.session.try_reuse_session(session_id):
-            raise RuntimeError("Fabric dbt session is unavailable; cannot export telemetry")
+        if address.startswith("{"):
+            from dbt.adapters.fabricspark.concurrent_livy import HighConcurrencyCursor, HighConcurrencySession
+            route = json.loads(address)
+            self.session = HighConcurrencySession(credentials, {})
+            self.session.hc_id = route["hc_id"]
+            self.session.session_id = route["session_id"]
+            self.session.repl_id = route["repl_id"]
+            response = requests.get(
+                credentials.lakehouse_endpoint + "/highConcurrencySessions/" + self.session.hc_id,
+                headers=get_headers(credentials, False), timeout=credentials.http_timeout,
+            )
+            response.raise_for_status()
+            state = response.json()
+            if (state.get("state") != "Idle" or state.get("sessionId") != self.session.session_id
+                    or state.get("replId") != self.session.repl_id):
+                raise RuntimeError("Fabric dbt REPL is unavailable; cannot export telemetry")
+            self.session.is_new_session_required = False
+            self.cursor_type = HighConcurrencyCursor
+        else:
+            self.session = LivySession(credentials)
+            if not self.session.try_reuse_session(address):
+                raise RuntimeError("Fabric dbt session is unavailable; cannot export telemetry")
+            self.cursor_type = LivyCursor
         self.credentials = credentials
-        self.session_id = session_id
+        self.session_id = self.session.session_id
         return self
 
     def execute(self, sql: str) -> dict:
         # The adapter's session manager can create a replacement driver. A new
         # driver would not contain the catalog whose timings we are collecting.
-        if self.session.is_new_session_required:
+        if self.session.is_new_session_required or getattr(self.session, "is_dead", False):
             raise RuntimeError("Fabric dbt session was lost during telemetry export")
-        from dbt.adapters.fabricspark.livysession import LivyCursor
-
         # Validation submits concurrent statements. Result buffers belong to
         # each call, never to the shared session/client.
-        cursor = LivyCursor(self.credentials, self.session)
+        cursor = self.cursor_type(self.credentials, self.session)
         try:
             cursor.execute(sql)
             columns = cursor.description

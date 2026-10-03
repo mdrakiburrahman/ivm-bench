@@ -1,13 +1,53 @@
 import json
 import sys
 import unittest
+import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from services.fabric_dbt_profile import instrument, instrument_session_polls
+from services.fabric_dbt_profile import instrument, instrument_session_polls, persist_hc_sessions
+
+
+class FabricHcAddressTest(unittest.TestCase):
+    def test_persists_owned_repl_address_and_rejects_multiple_applications(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session-id"
+            def session(app, repl):
+                return SimpleNamespace(credential=SimpleNamespace(session_id_file=str(path)),
+                    is_dead=False, is_new_session_required=False,
+                    session_id=app, repl_id=repl, hc_id="hc-" + repl)
+            backend = SimpleNamespace(_active_sessions_lock=threading.Lock(),
+                _active_sessions=[session("shared", "b"), session("shared", "a")])
+            persist_hc_sessions(backend)
+            route = json.loads(path.read_text())
+            self.assertEqual(route, {"session_id": "shared", "hc_id": "hc-a", "repl_id": "a", "repl_count": 2})
+            backend._active_sessions.append(session("another-app", "c"))
+            with self.assertRaisesRegex(RuntimeError, "multiple Spark applications"):
+                persist_hc_sessions(backend)
+            self.assertEqual(json.loads(path.read_text()), route)
+
+    def test_retired_session_is_not_persisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session-id"
+            backend = SimpleNamespace(_active_sessions_lock=threading.Lock(), _active_sessions=[
+                SimpleNamespace(credential=SimpleNamespace(session_id_file=str(path)),
+                    is_dead=True, is_new_session_required=False)])
+            persist_hc_sessions(backend)
+            self.assertFalse(path.exists())
+
+    def test_addresses_are_persisted_with_profiling_disabled(self):
+        from services import fabric_dbt_profile
+        result = SimpleNamespace(exception=None, success=True)
+        with patch.dict("os.environ", {"FABRIC_DBT_TIMINGS_PATH": ""}), \
+             patch("dbt.cli.main.dbtRunner") as runner, \
+             patch.object(fabric_dbt_profile, "persist_hc_sessions") as persist:
+            runner.return_value.invoke.return_value = result
+            self.assertEqual(fabric_dbt_profile.main(), 0)
+            persist.assert_called_once()
 
 
 class FabricClientTimingTest(unittest.TestCase):

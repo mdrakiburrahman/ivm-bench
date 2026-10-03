@@ -1,6 +1,6 @@
 {
   "_design_notes": [
-    "OpenIVM Fabric only. High-concurrency adapter v1.13.3; four dbt threads and a single shared Spark application required. Automatic OPTIMIZE disabled; session timeout30m and compiler pins preserved. SF100 inserts100/1/0.01%, count/hash validation and profiling ON. Compare immediate diagnostic baseline37124257356; upgrade also changes adapter internals, so attribution is to the integration as a whole."
+    "SF3 correctness gate for the same OpenIVM Fabric high-concurrency integration before SF100; all49models, all3batches, inserts100/1/0.01%, count/hash validation and profiling ON. No matching SF3 performance baseline."
   ],
   "baseline": {
     "engines": [
@@ -23,8 +23,8 @@
   },
   "experiments": [
     {
-      "label": "fabric-openivm-startup-sf100",
-      "scale_factor": 100
+      "label": "fabric-openivm-hc-sf3-correctness",
+      "scale_factor": 3
     }
   ]
 }

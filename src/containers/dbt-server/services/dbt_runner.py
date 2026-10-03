@@ -85,11 +85,12 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
         incremental_staging_tables()
     )
     _inject_fabric_resolved(env)
-    if engine.startswith("fabric-") and env.get("OPENIVM_PROFILE_REFRESH") == "1":
+    if engine.startswith("fabric-"):
         cmd = ["python", "-m", "services.fabric_dbt_profile", *cmd[1:]]
-        stats_path = env.get("STATS_DIR", "/data/stats")
-        os.makedirs(stats_path, exist_ok=True)
-        env["FABRIC_DBT_TIMINGS_PATH"] = f"{stats_path}/fabric-timings-batch{batch_num}-{run_id}.jsonl"
+        if env.get("OPENIVM_PROFILE_REFRESH") == "1":
+            stats_path = env.get("STATS_DIR", "/data/stats")
+            os.makedirs(stats_path, exist_ok=True)
+            env["FABRIC_DBT_TIMINGS_PATH"] = f"{stats_path}/fabric-timings-batch{batch_num}-{run_id}.jsonl"
 
     start_ts = time.monotonic()
     stderr_buf = []
