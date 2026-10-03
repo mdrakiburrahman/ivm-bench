@@ -4,7 +4,7 @@
   Routes the model through the openivm-spark DDL extension:
 
   - full_refresh (batch 1):
-      DROP MATERIALIZED VIEW IF EXISTS <target>; (unless first build in fresh lakehouse)
+      DROP MATERIALIZED VIEW IF EXISTS <target> CASCADE;
       CREATE MATERIALIZED VIEW <target> AS (<model_sql>);
 
   - incremental (batch 2/3):
@@ -23,13 +23,11 @@
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
 
   {% if flags.FULL_REFRESH %}
-    {# CREATE OR REPLACE is unsupported. Only the first invocation against a
-       freshly provisioned lakehouse skips DROP; retries retain cleanup. #}
-    {% if env_var('FABRIC_OPENIVM_FRESH_BUILD', '0') != '1' %}
+    {# Drop first — openivm-spark's grammar does not support CREATE OR
+       REPLACE MATERIALIZED VIEW. Then create from the compiled model SQL. #}
     {% call statement('drop') %}
       DROP MATERIALIZED VIEW IF EXISTS {{ target_relation }}
     {% endcall %}
-    {% endif %}
 
     {% call statement('main') %}
       CREATE MATERIALIZED VIEW {{ target_relation }} AS (

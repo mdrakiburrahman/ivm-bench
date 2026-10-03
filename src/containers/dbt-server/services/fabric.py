@@ -487,7 +487,6 @@ def provision_run(openivm: bool) -> dict:
         "environment_id": environment_id,
         "environment_name": name,
         "openivm": bool(openivm),
-        "fresh_compute": True,
     }
     _save_resolved(resolved)
     logger.info(
