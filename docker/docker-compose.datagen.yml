@@ -9,6 +9,7 @@ services:
     environment:
       DIGEN_PATH: /data/digen
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
+      DIGEN_INCREMENTAL_BATCHES: "${DIGEN_INCREMENTAL_BATCHES:-2}"
       DIGEN_TIMEOUT: "${DIGEN_TIMEOUT:-7200}"
 
   spark-digen-delta:
@@ -30,6 +31,11 @@ services:
       DIGEN_PATH: /data/digen
       DELTA_PATH: /data/delta
       TPCDI_BATCH_2_DAYS: "${TPCDI_BATCH_2_DAYS:-0}"
+      REPEATED_REFRESH: "${REPEATED_REFRESH:-0}"
+      TPCDI_WORKLOAD: "${TPCDI_WORKLOAD:-standard}"
+      REFRESH_COUNT: "${REFRESH_COUNT:-20}"
+      REFRESH_PCT: "${REFRESH_PCT:-1}"
+      DIGEN_INCREMENTAL_BATCHES: "${DIGEN_INCREMENTAL_BATCHES:-2}"
       BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
       BATCH_2_INSERT_PCT: "${BATCH_2_INSERT_PCT:-}"
       BATCH_3_INSERT_PCT: "${BATCH_3_INSERT_PCT:-}"

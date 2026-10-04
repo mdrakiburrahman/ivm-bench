@@ -6,6 +6,14 @@ trap '' PIPE
 DIGEN_PATH="${DIGEN_PATH:-/data/digen}"
 SCALE_FACTOR="${SCALE_FACTOR:-3}"
 DIGEN_DIR="/opt/digen"
+# Increase the native event horizon, not SF: Batch1 keeps its requested size.
+HORIZON="${DIGEN_INCREMENTAL_BATCHES:-2}"
+if [[ "${REPEATED_REFRESH:-0}" == "1" ]]; then
+  [[ "$HORIZON" =~ ^[0-9]+$ ]] && [[ "$HORIZON" -ge 2 && "$HORIZON" -le 1200 ]] || {
+    echo "ERROR: DIGEN_INCREMENTAL_BATCHES must be between 2 and 1200"; exit 1;
+  }
+  DIGEN_PATH="$DIGEN_PATH/horizon-$HORIZON"
+fi
 
 SENTINEL="$DIGEN_PATH/Batch1/Date.txt"
 if [[ -f "$SENTINEL" ]]; then
@@ -27,11 +35,20 @@ FIFO="/tmp/digen_input"
 rm -f "$FIFO"
 mkfifo "$FIFO"
 
-setsid java \
-  -cp "$DIGEN_DIR/DIGen.jar:$DIGEN_DIR/commons-cli-1.2.jar" \
-  org.tpc.di.digen.DIGen \
-  -sf "$SCALE_FACTOR" \
-  -o "$LOCAL_GEN" < "$FIFO" &
+if [[ "${REPEATED_REFRESH:-0}" == "1" ]]; then
+  # PDGF loads an embedded byte configuration; editing the distributed XML
+  # does not change it. Override the property before initialization instead.
+  cd "$DIGEN_DIR/pdgf"
+  setsid java -Xmx1g -jar "$DIGEN_DIR/pdgf/pdgf.jar" \
+    -sp NUMBER_OF_INCREMENTAL_BATCHES "$HORIZON" \
+    -sf "$((SCALE_FACTOR * 1000))" -o "'$LOCAL_GEN/'" \
+    -closeWhenDone -start < "$FIFO" &
+else
+  setsid java \
+    -cp "$DIGEN_DIR/DIGen.jar:$DIGEN_DIR/commons-cli-1.2.jar" \
+    org.tpc.di.digen.DIGen \
+    -sf "$SCALE_FACTOR" -o "$LOCAL_GEN" < "$FIFO" &
+fi
 DIGEN_PID=$!
 
 # Open FIFO for writing (keeps it open via fd 3)

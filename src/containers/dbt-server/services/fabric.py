@@ -759,8 +759,8 @@ def seed_cache_init(sf: int) -> dict:
 def seed_cache_batch(sf: int, batch_num: int) -> dict:
     """Idempotently stage the per-batch staging Delta into the shared CACHE
     lakehouse's workload-keyed ``staging_batch<N>/``. Marker-guarded."""
-    if batch_num not in (2, 3):
-        raise ValueError(f"seed_cache_batch supports batch 2/3, got {batch_num}")
+    if batch_num < 2:
+        raise ValueError(f"seed_cache_batch requires batch >= 2, got {batch_num}")
     cache_lh = resolve_cache_lakehouse()
     root = batch_cache_root(CACHE_ROOT, sf, batch_num)
     marker = f"{root}/_UPLOADED_BATCH{batch_num}"

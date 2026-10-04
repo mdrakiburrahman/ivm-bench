@@ -366,8 +366,8 @@ def append_sources(batch_num: int) -> dict:
     REFRESH consumes those CDF records to incrementalize the MVs — no DML
     interception in this mode.
     """
-    if batch_num not in (2, 3):
-        raise ValueError(f"append_sources only supports batch 2 or 3, got {batch_num}")
+    if batch_num < 2:
+        raise ValueError(f"append_sources requires batch >= 2, got {batch_num}")
 
     statements: List[str] = []
 
