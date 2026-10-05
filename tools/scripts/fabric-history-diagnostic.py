@@ -1,5 +1,6 @@
 """Read existing benchmark sessions only; never save credentials or raw logs."""
 import base64
+import datetime
 import importlib.util
 import json
 import os
@@ -96,13 +97,43 @@ def run():
     control_since = os.environ.get("CONTROL_SINCE", "")
     targets = dict(TARGETS)
     controls = []
+    listing_path = f"/v1/workspaces/{workspace}/spark/livySessions"
+    control_item = None
+    control_discovery = {}
+    if control_since:
+        since_epoch = datetime.datetime.fromisoformat(control_since.replace("Z", "+00:00")).timestamp()
+        continuation = None
+        candidates = []
+        for page in range(20):
+            items = get(f"/v1/workspaces/{workspace}/lakehouses", {"continuationToken": continuation} if continuation else None)
+            if "unavailable" in items:
+                control_discovery = {"unavailable": items["unavailable"]}
+                break
+            for item in items.get("value", []):
+                match = re.fullmatch(r"openivm_jvm_35_([0-9]+)_[a-z0-9]+", item.get("displayName", ""))
+                if match and int(match[1]) / 1_000_000 >= since_epoch:
+                    if re.fullmatch(r"[0-9a-fA-F-]{36}", item.get("id", "")):
+                        candidates.append(item)
+            continuation = items.get("continuationToken")
+            if not continuation:
+                control_discovery = {"matching_lakehouses": len(candidates)}
+                break
+        else:
+            control_discovery = {"unavailable": "page-limit"}
+        if len(candidates) > 1:
+            return {"unavailable": "ambiguous-control-items"}
+        if candidates:
+            control_item = candidates[0]
+            listing_path = f"/v1/workspaces/{workspace}/lakehouses/{control_item['id']}/livySessions"
     continuation = None
     for page in range(20):
-        listing = get(f"/v1/workspaces/{workspace}/spark/livySessions", {"continuationToken": continuation} if continuation else None)
+        listing = get(listing_path, {"continuationToken": continuation} if continuation else None)
         if "unavailable" in listing:
             report["listing"] = listing
             break
         for session in listing.get("value", []):
+            if control_item:
+                session = dict(session, item={"itemId": control_item["id"]}, itemName=control_item["displayName"], itemType="Lakehouse")
             item = session.get("item", {}).get("itemId")
             if not isinstance(item, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", item):
                 continue
@@ -150,7 +181,7 @@ def run():
     else:
         report["listing"] = {"unavailable": "page-limit"}
     if control_since:
-        report = {"control-37382082873": report.get("control-37382082873", {"availability": "not-found"}), "listing": report.get("listing", {})}
+        report = {"control-37382082873": report.get("control-37382082873", {"availability": "not-found"}), "listing": report.get("listing", {}), "discovery": control_discovery}
         if len(set(controls)) > 1:
             report = {"unavailable": "ambiguous-control-items"}
     return report
