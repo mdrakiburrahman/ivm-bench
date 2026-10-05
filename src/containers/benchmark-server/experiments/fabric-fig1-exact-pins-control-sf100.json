@@ -1,0 +1,36 @@
+{
+  "_design_notes": [
+    "Control replay: exact Figure 1 Spark 8527c405/native 44c23866/LPTS 29c606ee, current harness including explicit verified Fabric runtime 1.3. Preserved branch only locates immutable Spark commit; no engine code modifications.",
+    "One SF100 repetition, inserts 100/1/0.01, updates/deletes 0, validation OFF, profiling/query log/storage ON, serial, four dbt threads. ONLY Fabric OpenIVM. Compare against Figure 1 36248895920 and latest incremental 37306619326."
+  ],
+  "baseline": {
+    "engines": [
+      "fabric-openivm-jvm-35"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "fabric-fig1-exact-pins-control-sf100",
+      "scale_factor": 100,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "0.01",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0",
+      "spark_tunables": {
+        "dbt_threads": 4
+      }
+    }
+  ]
+}

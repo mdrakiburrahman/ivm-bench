@@ -46,7 +46,7 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=8c5940a952b19ab13f2d235df9d9e5463576f8be
+ARG OPENIVM_COMMIT=44c23866bd0b16eec71e81d0aab295e7359788ea
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
 ARG LPTS_COMMIT=29c606ee18ad8e4d04cab940f361cbf6fbe5b881
@@ -114,8 +114,8 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=perf/fig1-backup-regression
-ARG OPENIVM_SPARK_COMMIT=686846b4278673011e8007fb8bc8ccadfe1ee707
+ARG OPENIVM_SPARK_BRANCH=fix/fabric-native-compiler-runtime
+ARG OPENIVM_SPARK_COMMIT=8527c40595590d015398a4fb38992d184bd5af50
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -167,7 +167,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=686846b4278673011e8007fb8bc8ccadfe1ee707
+ARG OPENIVM_SPARK_COMMIT=8527c40595590d015398a4fb38992d184bd5af50
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
