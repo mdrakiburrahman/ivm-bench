@@ -20,6 +20,28 @@ from services.orchestrator import Orchestrator
 
 
 class RepeatedRefreshTest(unittest.TestCase):
+    def test_datagen_failure_keeps_generator_logs_and_stops_containers(self):
+        from contextlib import nullcontext
+        with tempfile.TemporaryDirectory() as root:
+            orchestrator = Orchestrator.__new__(Orchestrator)
+            orchestrator._config = BenchmarkConfig(repo_dir=root, repeated_refresh=True)
+            orchestrator.emit = Mock()
+            orchestrator._heartbeat = Mock(side_effect=lambda _: nullcontext())
+            manager = Mock()
+            manager.logs.return_value = "generator thread failed writing HoldingHistory"
+            def fail(**kwargs):
+                self.assertEqual(kwargs["services"], ["tpc-di-gen", "spark-digen-delta"])
+                kwargs["stream_callback"]("generator started")
+                raise RuntimeError("compose timed out")
+            manager.up.side_effect = fail
+            with patch("services.orchestrator.DockerManager", return_value=manager):
+                with self.assertRaisesRegex(RuntimeError, "generator thread failed"):
+                    orchestrator._run_datagen()
+            manager.down.assert_called_once()
+            log = Path(root, "mount/logs/3/datagen/horizon-2.log").read_text()
+            self.assertIn("generator started", log)
+            self.assertIn("HoldingHistory", log)
+
     def test_legacy_defaults_and_both_repeated_workloads(self):
         self.assertEqual(BenchmarkConfig().batch_count, 3)
         self.assertFalse(ExperimentInputs().repeated_refresh)

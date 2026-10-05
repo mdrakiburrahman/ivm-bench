@@ -514,19 +514,34 @@ class Orchestrator:
         while True:
             mgr.update_env({"DIGEN_INCREMENTAL_BATCHES": str(horizon)})
             self.emit(f"  [datagen] Running tpc-di-gen → spark-digen-delta (horizon={horizon})")
-            with self._heartbeat("datagen/run"):
-                mgr.up(
-                    services=["spark-digen-delta"], detach=False, timeout=7200,
-                    stream_callback=lambda line: logger.debug("[datagen] %s", line),
-                )
-            digen_exit = mgr.get_exit_code("tpc-di-gen")
-            delta_exit = mgr.get_exit_code("spark-digen-delta")
-            logs = mgr.logs() if digen_exit != "0" or delta_exit != "0" else ""
-            mgr.down()
-            if digen_exit != "0" or delta_exit != "0":
-                raise RuntimeError(
-                    f"Datagen failed (tpc-di-gen={digen_exit}, spark-digen-delta={delta_exit})\n{logs[:2000]}"
-                )
+            log_dir = os.path.join(repo, "mount/logs", str(self._config.scale_factor), "datagen")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, f"horizon-{horizon}.log"), "w", encoding="utf-8") as log_file:
+                def capture(line):
+                    log_file.write(line + "\n")
+                    log_file.flush()
+                    logger.info("[datagen] %s", line)
+
+                try:
+                    with self._heartbeat("datagen/run"):
+                        # Explicitly attach both services: dependency output is
+                        # otherwise hidden while Compose waits for the generator.
+                        mgr.up(
+                            services=["tpc-di-gen", "spark-digen-delta"], detach=False, timeout=7200,
+                            stream_callback=capture,
+                        )
+                    digen_exit = mgr.get_exit_code("tpc-di-gen")
+                    delta_exit = mgr.get_exit_code("spark-digen-delta")
+                    if digen_exit != "0" or delta_exit != "0":
+                        raise RuntimeError(
+                            f"Datagen failed (tpc-di-gen={digen_exit}, spark-digen-delta={delta_exit})"
+                        )
+                except Exception as exc:
+                    logs = mgr.logs()
+                    capture(logs)
+                    raise RuntimeError(f"{exc}\nDatagen container logs:\n{logs[-6000:]}") from exc
+                finally:
+                    mgr.down()
             if not self._config.repeated_refresh:
                 break
             plan_path = os.path.join(repo, "mount", "raw", str(self._config.scale_factor),
