@@ -6,6 +6,10 @@ on:
         description: "Observe the unique OpenIVM Fabric control submitted after this UTC timestamp; empty reads historical sessions once"
         type: string
         default: ""
+      once:
+        description: "Read one current snapshot and upload it immediately"
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -22,6 +26,7 @@ jobs:
           BASE64_ENV: ${{ secrets.BASE64_ENV }}
           CONTROL_SINCE: ${{ inputs.control_since }}
           GH_TOKEN: ${{ github.token }}
+          OBSERVE_ONCE: ${{ inputs.once }}
         working-directory: fabric-history-readonly
         run: python3 tools/scripts/fabric-history-diagnostic.py
       - uses: actions/upload-artifact@v4

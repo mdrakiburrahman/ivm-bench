@@ -173,6 +173,6 @@ if __name__ == "__main__":
         Path("fabric-history-diagnostic.json").write_text(json.dumps(last_available or output, indent=2))
         terminal = control_finished() if control else True
         print(json.dumps({"observed": result.get("availability"), "terminal": terminal, "metrics_retained": last_available is not None}), flush=True)
-        if not control or terminal or time.monotonic() >= deadline or output.get("unavailable") == "ambiguous-control-items":
+        if os.environ.get("OBSERVE_ONCE") == "true" or not control or terminal or time.monotonic() >= deadline or output.get("unavailable") == "ambiguous-control-items":
             break
         time.sleep(60)
