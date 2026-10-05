@@ -27,6 +27,15 @@ def pick(record, fields):
     return {key: record[key] for key in fields if key in record}
 
 
+def sql_summary(record, model_names):
+    result = pick(record, "id status submissionTime duration runningJobIds successJobIds failedJobIds".split())
+    text = str(record.get("description", "")) + "\n" + str(record.get("planDescription", ""))
+    result["models_mentioned"] = sorted(name for name in model_names if re.search(r"\b" + re.escape(name) + r"\b", text))
+    operators = ("AdaptiveSparkPlan", "WriteFiles", "SortMergeJoin", "BroadcastHashJoin", "ShuffledHashJoin", "HashAggregate", "Exchange", "Window", "InMemoryTableScan", "ColumnarToRow", "RowToColumnar")
+    result["operator_counts"] = {name: count for name in operators if (count := len(re.findall(r"\b" + name + r"\b", text)))}
+    return result
+
+
 def control_session(session, since):
     return (
         session.get("itemType") == "Lakehouse"
@@ -156,6 +165,14 @@ def run():
             for endpoint in ("executors", "stages"):
                 metrics = get(app_root + "/" + endpoint)
                 result[endpoint] = [pick(row, FIELDS[endpoint]) for row in metrics] if isinstance(metrics, list) else {"unavailable": metrics.get("unavailable", "unexpected-shape")}
+            if os.environ.get("OBSERVE_ONCE") == "true":
+                # One-off snapshots only: do not add query-list traffic to the
+                # continuous monitor. Persist no raw SQL, plans or job names.
+                names = {path.stem for path in Path("src/containers/dbt-server/dbt-projects/spark-openivm/models").rglob("*.sql")}
+                queries = get(app_root + "/sql", {"offset": 0, "length": 1000, "details": "false", "planDescription": "true"})
+                result["sql"] = [sql_summary(row, names) for row in queries] if isinstance(queries, list) else {"unavailable": queries.get("unavailable", "unexpected-shape")}
+                jobs = get(app_root + "/jobs", {"offset": 0, "length": 1000})
+                result["jobs"] = [pick(row, "jobId status submissionTime completionTime stageIds numTasks numFailedTasks".split()) for row in jobs] if isinstance(jobs, list) else {"unavailable": jobs.get("unavailable", "unexpected-shape")}
             environment = get(app_root + "/environment")
             config_keys = {"spark.executor.cores", "spark.executor.memory", "spark.executor.instances", "spark.dynamicAllocation.enabled", "spark.dynamicAllocation.minExecutors", "spark.dynamicAllocation.maxExecutors", "spark.sql.shuffle.partitions", "spark.sql.adaptive.enabled", "spark.sql.autoBroadcastJoinThreshold"}
             result["sparkProperties"] = {key: value for key, value in environment.get("sparkProperties", []) if key in config_keys}
