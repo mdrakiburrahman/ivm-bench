@@ -8,6 +8,7 @@ on:
         default: ""
 permissions:
   contents: read
+  actions: read
 jobs:
   fabric-history:
     runs-on: ubuntu-latest
@@ -20,6 +21,7 @@ jobs:
         env:
           BASE64_ENV: ${{ secrets.BASE64_ENV }}
           CONTROL_SINCE: ${{ inputs.control_since }}
+          GH_TOKEN: ${{ github.token }}
         working-directory: fabric-history-readonly
         run: python3 tools/scripts/fabric-history-diagnostic.py
       - uses: actions/upload-artifact@v4

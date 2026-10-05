@@ -39,6 +39,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def control_finished():
+    # Warm-up sessions can finish before dbt starts; the GCI run, rather than
+    # any individual Spark session, is the authoritative stopping condition.
+    request = urllib.request.Request(
+        "https://api.github.com/repos/mdrakiburrahman/ivm-bench/actions/runs/37382082873",
+        headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request, timeout=15) as response:
+            return json.load(response).get("status") == "completed"
+    except (OSError, ValueError):
+        return False
+
+
 def run():
     allowed = {"IMDS_RELAY_URL", "IMDS_RELAY_SENDER_KEY", "IMDS_RELAY_KEY_NAME", "UAMI_CLIENT_ID", "FABRIC_API_BASE", "FABRIC_WORKSPACE_ID"}
     for line in base64.b64decode(os.environ["BASE64_ENV"]).decode().splitlines():
@@ -154,10 +168,10 @@ if __name__ == "__main__":
             output = {"unavailable": type(exc).__name__}
         result = output.get("control-37382082873", {})
         sessions = result.get("sessions", [])
-        if any(isinstance(row.get("executors"), list) for row in sessions):
+        if any(isinstance(row.get("executors"), list) and row["executors"] for row in sessions):
             last_available = output
         Path("fabric-history-diagnostic.json").write_text(json.dumps(last_available or output, indent=2))
-        terminal = any(row.get("session", {}).get("state") in ("Succeeded", "Failed", "Cancelled") for row in sessions)
+        terminal = control_finished() if control else True
         print(json.dumps({"observed": result.get("availability"), "terminal": terminal, "metrics_retained": last_available is not None}), flush=True)
         if not control or terminal or time.monotonic() >= deadline or output.get("unavailable") == "ambiguous-control-items":
             break
