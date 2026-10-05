@@ -1,12 +1,17 @@
 name: GCI
 on:
   workflow_dispatch:
+    inputs:
+      control_since:
+        description: "Observe the unique OpenIVM Fabric control submitted after this UTC timestamp; empty reads historical sessions once"
+        type: string
+        default: ""
 permissions:
   contents: read
 jobs:
   fabric-history:
-    runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
         with:
@@ -14,6 +19,7 @@ jobs:
       - name: Read existing Fabric sessions (no benchmark)
         env:
           BASE64_ENV: ${{ secrets.BASE64_ENV }}
+          CONTROL_SINCE: ${{ inputs.control_since }}
         working-directory: fabric-history-readonly
         run: python3 tools/scripts/fabric-history-diagnostic.py
       - uses: actions/upload-artifact@v4
