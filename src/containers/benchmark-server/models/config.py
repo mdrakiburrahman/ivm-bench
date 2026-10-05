@@ -30,7 +30,6 @@ class EngineConfig:
     staging_dir: str = ""
 
     def __post_init__(self):
-        validate_refresh(self)
         if not self.project_name:
             self.project_name = f"bench-{self.name}"
 
@@ -184,6 +183,7 @@ class BenchmarkConfig:
     repo_dir: str = "/repo"
 
     def __post_init__(self):
+        validate_refresh(self)
         self.benchmark_runs = max(1, int(self.benchmark_runs))
         self.batch_2_days = int(self.batch_2_days)
         if self.batch_2_days < 0 or self.batch_2_days > 364:

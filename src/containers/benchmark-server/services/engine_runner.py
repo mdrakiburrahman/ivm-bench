@@ -18,7 +18,7 @@ from models.config import (
     EngineConfig,
     is_cloud_engine,
 )
-from models.result import EngineResult
+from models.result import BatchResult, EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager, compute_cpu_usage_delta
 from services.storage_sync import (

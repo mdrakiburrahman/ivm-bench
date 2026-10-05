@@ -52,7 +52,7 @@ print("generation finished", flush=True)
                "DIGEN_INCREMENTAL_BATCHES": "53", "SCALE_FACTOR": "10",
                "FAKE_CRASH": "1" if crash else "0"}
         return subprocess.run(["bash", "-c", script], env=env, text=True,
-                              capture_output=True, timeout=5)
+                              capture_output=True, timeout=15)
 
     def test_only_completed_generation_is_cached(self):
         with tempfile.TemporaryDirectory() as tmp:

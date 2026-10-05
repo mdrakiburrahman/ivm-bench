@@ -17,9 +17,27 @@ from services.engine_runner import EngineRunner
 from services.oat_runner import generate_results_csv
 from services.source_row_counts import collect_source_row_counts
 from services.orchestrator import Orchestrator
+from services.resource_calc import compute_engine_configs
 
 
 class RepeatedRefreshTest(unittest.TestCase):
+    def test_real_engine_configuration_and_runner_initialization(self):
+        for repeated, workload, count in (
+            (False, "standard", 3), (True, "standard", 21),
+            (True, "databricks", 21),
+        ):
+            with self.subTest(repeated=repeated, workload=workload):
+                config = BenchmarkConfig(
+                    repeated_refresh=repeated, workload=workload,
+                    engines=["duckdb-openivm"], host_cores=8, host_memory_gb=32,
+                )
+                engine = compute_engine_configs(config)["duckdb-openivm"]
+                runner = EngineRunner(config, engine, Mock())
+                self.assertEqual(len(runner.result.batches), count)
+                self.assertEqual(config.batch_2_days, 1 if workload == "databricks" else 0)
+        with self.assertRaises(ValueError):
+            BenchmarkConfig(repeated_refresh=True, refresh_pct="NaN")
+
     def test_datagen_failure_keeps_generator_logs_and_stops_containers(self):
         from contextlib import nullcontext
         with tempfile.TemporaryDirectory() as root:
