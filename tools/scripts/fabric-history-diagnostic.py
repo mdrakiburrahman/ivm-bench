@@ -27,6 +27,38 @@ def pick(record, fields):
     return {key: record[key] for key in fields if key in record}
 
 
+def workspace_compute_summary(settings, pools):
+    """Persist compute limits only; omit arbitrary workspace and pool names."""
+    if "unavailable" in settings:
+        return {"settings": settings}
+    pool = settings.get("pool", {})
+    default = pool.get("defaultPool", {})
+    summary = {
+        "settings": {
+            "pool": {
+                "customizeComputeEnabled": pool.get("customizeComputeEnabled"),
+                "defaultPoolType": default.get("type"),
+                "isStarterPool": default.get("name") == "Starter Pool",
+                "starterPool": pick(pool.get("starterPool", {}), ["maxNodeCount", "maxExecutors"]),
+            },
+            "environment": pick(settings.get("environment", {}), ["runtimeVersion"]),
+            "job": pick(settings.get("job", {}), ["conservativeJobAdmissionEnabled", "sessionTimeoutInMinutes"]),
+        },
+    }
+    if "unavailable" in pools:
+        summary["pools"] = pools
+    else:
+        summary["pools"] = [{
+            **pick(row, ["type", "nodeFamily", "nodeSize"]),
+            "isDefault": row.get("id") == default.get("id"),
+            "isStarterPool": row.get("name") == "Starter Pool",
+            "autoScale": pick(row.get("autoScale", {}), ["enabled", "minNodeCount", "maxNodeCount"]),
+            "dynamicExecutorAllocation": pick(row.get("dynamicExecutorAllocation", {}), ["enabled", "minExecutors", "maxExecutors"]),
+        } for row in pools.get("value", [])]
+        summary["pools_truncated"] = bool(pools.get("continuationToken"))
+    return summary
+
+
 def sql_summary(record, model_names):
     result = pick(record, "id status submissionTime duration runningJobIds successJobIds failedJobIds".split())
     text = str(record.get("description", "")) + "\n" + str(record.get("planDescription", ""))
@@ -101,6 +133,12 @@ def run():
             return {"unavailable": "http-" + str(exc.code)}
         except (OSError, ValueError):
             return {"unavailable": "request-or-decode-error"}
+
+    if os.environ.get("SETTINGS_ONLY") == "true":
+        return workspace_compute_summary(
+            get(f"/v1/workspaces/{workspace}/spark/settings"),
+            get(f"/v1/workspaces/{workspace}/spark/pools"),
+        )
 
     report = {label: {"availability": "not-found"} for label in TARGETS.values()}
     control_since = os.environ.get("CONTROL_SINCE", "")

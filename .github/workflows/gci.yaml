@@ -10,6 +10,10 @@ on:
         description: "Read one current snapshot and upload it immediately"
         type: boolean
         default: false
+      settings_only:
+        description: "Read workspace Spark compute settings only; no sessions or benchmark"
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -27,6 +31,7 @@ jobs:
           CONTROL_SINCE: ${{ inputs.control_since }}
           GH_TOKEN: ${{ github.token }}
           OBSERVE_ONCE: ${{ inputs.once }}
+          SETTINGS_ONLY: ${{ inputs.settings_only }}
         working-directory: fabric-history-readonly
         run: python3 tools/scripts/fabric-history-diagnostic.py
       - uses: actions/upload-artifact@v4
