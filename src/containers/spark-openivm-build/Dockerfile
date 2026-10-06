@@ -114,7 +114,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=perf/cdf-global-window-single-write
+ARG OPENIVM_SPARK_BRANCH=fix/fabric-native-compiler-runtime
 ARG OPENIVM_SPARK_COMMIT=8527c40595590d015398a4fb38992d184bd5af50
 ARG SBT_VERSION=1.9.7
 
@@ -150,6 +150,7 @@ COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.
 COPY --from=openivm-builder /artifacts/libstdc++.so.6 /native/libstdc++.so.6
 COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /native/libgcc_s.so.1
 ENV OPENIVM_NATIVE_DIR=/native
+ENV OPENIVM_SPARK_TARGET=spark-3.5
 
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
 # orchestrator's plain `docker compose build` invocation, so we accept a

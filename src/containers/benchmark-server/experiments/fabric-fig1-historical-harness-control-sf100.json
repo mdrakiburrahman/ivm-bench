@@ -1,0 +1,38 @@
+{
+  "_design_notes": [
+    "Historical harness control: bench base25428eade, exact Spark8527c405/native44c23866/LPTS29c606ee. Only benchmark configuration, branch locator and unused-at8527 OPENIVM_SPARK_TARGET build environment variable changed; no engine/model/materialization/Fabric setup changes. Builder recipe byte-identical to completed control37382082873 to reuse its cache.",
+    "Discriminates current harness76506ec/b0994fb from execution-environment drift. Same SF100100/1/0.01, zero updates/deletes, four dbt threads, serial, one repetition, validation OFF, profiling/query-log/storage ON, only Fabric OpenIVM.",
+    "Compare control37382082873 (same old engine, current harness), historical Figure1Fabric36248895920 and cached non-IVM31005703451. Historical cloud settings and transitive dependencies are not frozen by a source checkout.",
+    "Diagnostic-only artifact retention: archive successful container logs after all timed batches, before cleanup. This affects whole-workflow/experiment wall time, not batch/dbt timings. No production change or PR."
+  ],
+  "baseline": {
+    "engines": [
+      "fabric-openivm-jvm-35"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "fabric-fig1-historical-harness-control-sf100",
+      "scale_factor": 100,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "0.01",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0",
+      "spark_tunables": {
+        "dbt_threads": 4
+      }
+    }
+  ]
+}
