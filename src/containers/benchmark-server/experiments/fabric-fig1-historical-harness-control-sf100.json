@@ -3,7 +3,8 @@
     "Historical harness control: bench base25428eade, exact Spark8527c405/native44c23866/LPTS29c606ee. Only benchmark configuration, branch locator and unused-at8527 OPENIVM_SPARK_TARGET build environment variable changed; no engine/model/materialization/Fabric setup changes. Builder recipe byte-identical to completed control37382082873 to reuse its cache.",
     "Discriminates current harness76506ec/b0994fb from execution-environment drift. Same SF100100/1/0.01, zero updates/deletes, four dbt threads, serial, one repetition, validation OFF, profiling/query-log/storage ON, only Fabric OpenIVM.",
     "Compare control37382082873 (same old engine, current harness), historical Figure1Fabric36248895920 and cached non-IVM31005703451. Historical cloud settings and transitive dependencies are not frozen by a source checkout.",
-    "Diagnostic-only artifact retention: archive successful container logs after all timed batches, before cleanup. This affects whole-workflow/experiment wall time, not batch/dbt timings. No production change or PR."
+    "Diagnostic-only artifact retention: archive successful container logs after all timed batches, before cleanup. This affects whole-workflow/experiment wall time, not batch/dbt timings. No production change or PR.",
+    "Compatibility correction after failed control37469470326: reuse only b0994fb Fabric runtime1.3 stable staging/verification and its tests. API confirms unpinned failed control received runtime2.0; historicalFigure1 received1.3. Client profiling and DROP-skip76506ec remain absent. Runtime staging occurs before timed dbt batches."
   ],
   "baseline": {
     "engines": [
