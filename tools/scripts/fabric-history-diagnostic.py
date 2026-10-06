@@ -11,6 +11,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+CONTROL_RUN_ID = os.environ.get("CONTROL_RUN_ID", "37382082873")
+if not re.fullmatch(r"[1-9][0-9]*", CONTROL_RUN_ID):
+    raise ValueError("Invalid control run ID")
+CONTROL_LABEL = "control-" + CONTROL_RUN_ID
+
 TARGETS = {
     "a660da51-24b8-4c94-aae2-c534af5e9b9c": "figure1-36248895920",
     "108f657d-2da7-45c7-a220-4d8de50cc513": "faulty-37236087660",
@@ -18,7 +23,7 @@ TARGETS = {
 }
 FIELDS = {
     "session": "state runtimeVersion submittedDateTime startDateTime endDateTime driverMemory driverCores executorMemory executorCores numExecutors isDynamicAllocationEnabled attemptNumber".split(),
-    "executors": "id isActive totalCores maxMemory totalTasks totalDuration totalGCTime totalInputBytes totalShuffleRead totalShuffleWrite failedTasks completedTasks".split(),
+    "executors": "id isActive addTime removeTime totalCores maxMemory totalTasks totalDuration totalGCTime totalInputBytes totalShuffleRead totalShuffleWrite failedTasks completedTasks".split(),
     "stages": "stageId attemptId status submissionTime completionTime numTasks numFailedTasks executorRunTime executorCpuTime jvmGcTime inputBytes outputBytes shuffleReadBytes shuffleWriteBytes memoryBytesSpilled diskBytesSpilled".split(),
 }
 
@@ -85,7 +90,7 @@ def control_finished():
     # Warm-up sessions can finish before dbt starts; the GCI run, rather than
     # any individual Spark session, is the authoritative stopping condition.
     request = urllib.request.Request(
-        "https://api.github.com/repos/mdrakiburrahman/ivm-bench/actions/runs/37382082873",
+        "https://api.github.com/repos/mdrakiburrahman/ivm-bench/actions/runs/" + CONTROL_RUN_ID,
         headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"},
     )
     try:
@@ -188,7 +193,7 @@ def run():
                 if not control_session(session, control_since):
                     continue
                 controls.append(item)
-                targets[item] = "control-37382082873"
+                targets[item] = CONTROL_LABEL
                 report.setdefault(targets[item], {"availability": "not-found"})
             if item not in targets or (control_since and item not in controls):
                 continue
@@ -196,13 +201,17 @@ def run():
             if not re.fullmatch(r"[0-9a-fA-F-]{36}", livy) or not re.fullmatch(r"application_[0-9_]+", app):
                 continue
             root = f"/v1/workspaces/{workspace}/lakehouses/{item}/livySessions/{livy}"
-            result = {"session": pick(session, FIELDS["session"])}
+            result = {"session": pick(session, FIELDS["session"]), "applicationId": app}
             details = get(root)
             result["details"] = {"unavailable": details["unavailable"]} if "unavailable" in details else pick(details, FIELDS["session"])
             app_root = root + "/applications/" + app
             for endpoint in ("executors", "stages"):
                 metrics = get(app_root + "/" + endpoint)
                 result[endpoint] = [pick(row, FIELDS[endpoint]) for row in metrics] if isinstance(metrics, list) else {"unavailable": metrics.get("unavailable", "unexpected-shape")}
+            # /executors lists active executors; retain removed ones as well
+            # to distinguish an allocation limit from later scale-down.
+            metrics = get(app_root + "/allexecutors")
+            result["allExecutors"] = [pick(row, FIELDS["executors"]) for row in metrics] if isinstance(metrics, list) else {"unavailable": metrics.get("unavailable", "unexpected-shape")}
             if os.environ.get("OBSERVE_ONCE") == "true":
                 # One-off snapshots only: do not add query-list traffic to the
                 # continuous monitor. Persist no raw SQL, plans or job names.
@@ -213,6 +222,13 @@ def run():
                 result["jobs"] = [pick(row, "jobId status submissionTime completionTime stageIds numTasks numFailedTasks".split()) for row in jobs] if isinstance(jobs, list) else {"unavailable": jobs.get("unavailable", "unexpected-shape")}
             environment = get(app_root + "/environment")
             config_keys = {"spark.executor.cores", "spark.executor.memory", "spark.executor.instances", "spark.dynamicAllocation.enabled", "spark.dynamicAllocation.minExecutors", "spark.dynamicAllocation.maxExecutors", "spark.sql.shuffle.partitions", "spark.sql.adaptive.enabled", "spark.sql.autoBroadcastJoinThreshold"}
+            config_keys.update({
+                "spark.dynamicAllocation.executorAllocationRatio", "spark.dynamicAllocation.executorIdleTimeout", "spark.dynamicAllocation.schedulerBacklogTimeout",
+                "spark.sql.adaptive.advisoryPartitionSizeInBytes", "spark.sql.adaptive.coalescePartitions.enabled", "spark.sql.files.maxPartitionBytes",
+                "spark.sql.parquet.compression.codec", "spark.sql.parquet.vorder.default", "spark.fabric.resourceProfile",
+                "spark.databricks.delta.optimizeWrite.enabled", "spark.databricks.delta.autoCompact.enabled", "spark.databricks.delta.autoCompact.minNumFiles",
+                "spark.openivm.delta.optimizeWrite", "spark.openivm.delta.autoCompact",
+            })
             result["sparkProperties"] = {key: value for key, value in environment.get("sparkProperties", []) if key in config_keys}
             # A live observer samples metrics only. Avoid rereading driver logs
             # every minute; retrieve signatures after the session completes.
@@ -236,7 +252,7 @@ def run():
     else:
         report["listing"] = {"unavailable": "page-limit"}
     if control_since:
-        report = {"control-37382082873": report.get("control-37382082873", {"availability": "not-found"}), "listing": report.get("listing", {}), "discovery": control_discovery}
+        report = {CONTROL_LABEL: report.get(CONTROL_LABEL, {"availability": "not-found"}), "listing": report.get("listing", {}), "discovery": control_discovery}
         if len(set(controls)) > 1:
             report = {"unavailable": "ambiguous-control-items"}
     return report
@@ -252,11 +268,15 @@ if __name__ == "__main__":
         except Exception as exc:
             # Messages may contain relay URLs or tokens. Persist only exception type.
             output = {"unavailable": type(exc).__name__}
-        result = output.get("control-37382082873", {})
+        result = output.get(CONTROL_LABEL, {})
         sessions = result.get("sessions", [])
         if any(isinstance(row.get("executors"), list) and row["executors"] for row in sessions):
             last_available = output
         Path("fabric-history-diagnostic.json").write_text(json.dumps(last_available or output, indent=2))
+        # Keep every redacted snapshot: Spark evicts completed stages, so the
+        # last snapshot alone cannot explain earlier expensive writes.
+        with Path("fabric-history-diagnostic-snapshots.jsonl").open("a") as snapshots:
+            snapshots.write(json.dumps({"observed_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "report": output}) + "\n")
         terminal = control_finished() if control else True
         print(json.dumps({"observed": result.get("availability"), "terminal": terminal, "metrics_retained": last_available is not None}), flush=True)
         if os.environ.get("OBSERVE_ONCE") == "true" or not control or terminal or time.monotonic() >= deadline or output.get("unavailable") == "ambiguous-control-items":

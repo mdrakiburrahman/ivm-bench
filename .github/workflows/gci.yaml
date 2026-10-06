@@ -14,6 +14,10 @@ on:
         description: "Read workspace Spark compute settings only; no sessions or benchmark"
         type: boolean
         default: false
+      control_run_id:
+        description: "Existing benchmark run ID to observe; never starts a benchmark"
+        type: string
+        default: "37382082873"
 permissions:
   contents: read
   actions: read
@@ -32,11 +36,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OBSERVE_ONCE: ${{ inputs.once }}
           SETTINGS_ONLY: ${{ inputs.settings_only }}
+          CONTROL_RUN_ID: ${{ inputs.control_run_id }}
         working-directory: fabric-history-readonly
         run: python3 tools/scripts/fabric-history-diagnostic.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: fabric-history-diagnostic
-          path: fabric-history-readonly/fabric-history-diagnostic.json
+          path: |
+            fabric-history-readonly/fabric-history-diagnostic.json
+            fabric-history-readonly/fabric-history-diagnostic-snapshots.jsonl
           retention-days: 30
