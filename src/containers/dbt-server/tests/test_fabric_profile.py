@@ -21,7 +21,7 @@ class FabricRuntimePinTest(unittest.TestCase):
         self.initial = Mock(status_code=200)
         self.initial.json.return_value = {"runtimeVersion": "2.0"}
         self.updated = Mock(status_code=200)
-        self.updated.json.return_value = {"runtimeVersion": "1.3", "sparkProperties": [
+        self.updated.json.return_value = {"runtimeVersion": "1.3", "dynamicExecutorAllocation": {"enabled": True, "minExecutors": 4, "maxExecutors": 9}, "sparkProperties": [
             {"key": "spark.openivm.enabled", "value": "true"}
         ]}
         self.request.side_effect = [self.initial, Mock(status_code=200), self.updated]
@@ -31,10 +31,25 @@ class FabricRuntimePinTest(unittest.TestCase):
         args, kwargs = self.request.call_args_list[1]
         self.assertEqual(args[0], "PATCH")
         self.assertEqual(kwargs["params"], {"beta": "false"})
-        self.assertEqual(kwargs["json"], {"runtimeVersion": "1.3", "sparkProperties": [
+        self.assertEqual(kwargs["json"], {"runtimeVersion": "1.3", "dynamicExecutorAllocation": {"enabled": True, "minExecutors": 4, "maxExecutors": 9}, "sparkProperties": [
             {"key": "spark.openivm.enabled", "value": "true"}
         ]})
         self.assertEqual(self.request.call_count, 3)
+
+    def test_unapplied_executor_minimum_is_rejected(self):
+        self.updated.json.return_value["dynamicExecutorAllocation"]["minExecutors"] = 1
+        with self.assertRaisesRegex(RuntimeError, "executor allocation pin not applied"):
+            fabric._stage_spark_compute(self.properties)
+
+    def test_disabled_dynamic_allocation_is_rejected(self):
+        self.updated.json.return_value["dynamicExecutorAllocation"]["enabled"] = False
+        with self.assertRaisesRegex(RuntimeError, "executor allocation pin not applied"):
+            fabric._stage_spark_compute(self.properties)
+
+    def test_changed_executor_cap_is_rejected(self):
+        self.updated.json.return_value["dynamicExecutorAllocation"]["maxExecutors"] = 4
+        with self.assertRaisesRegex(RuntimeError, "executor allocation pin not applied"):
+            fabric._stage_spark_compute(self.properties)
 
     def test_runtime_drift_is_rejected(self):
         self.updated.json.return_value["runtimeVersion"] = "2.0"

@@ -888,6 +888,8 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     url = f"{_env_base()}/staging/sparkcompute"
     hdr = {**_fabric_headers(), "Content-Type": "application/json"}
     params = {"beta": "false"}
+    # Diagnostic branch only: test late worker allocation without changing the cap.
+    allocation = {"enabled": True, "minExecutors": 4, "maxExecutors": 9}
     before = _fabric_req("GET", url, headers=hdr, params=params)
     if before.status_code != 200:
         raise RuntimeError(f"sparkcompute GET failed: HTTP {before.status_code}")
@@ -895,6 +897,7 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     patch = _fabric_req(
         "PATCH", url, headers=hdr, params=params,
         json={"runtimeVersion": RUNTIME_VERSION,
+              "dynamicExecutorAllocation": allocation,
               "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()]},
     )
     if patch.status_code not in (200, 202):
@@ -907,6 +910,9 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     compute = actual.json()
     if compute.get("runtimeVersion") != RUNTIME_VERSION:
         raise RuntimeError(f"Fabric runtime pin not applied: expected {RUNTIME_VERSION}, got {compute.get('runtimeVersion')}")
+    actual_allocation = compute.get("dynamicExecutorAllocation", {})
+    if any(actual_allocation.get(key) != value for key, value in allocation.items()):
+        raise RuntimeError("Fabric executor allocation pin not applied")
     staged = {item["key"]: item["value"] for item in compute.get("sparkProperties", [])}
     mismatches = [key for key, value in properties.items() if staged.get(key) != value]
     if mismatches:
