@@ -1,7 +1,7 @@
 flask>=3.0
 gunicorn>=22.0
 matplotlib>=3.8
-dbt-core~=1.11
+dbt-core==1.12.0
 https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
 dbt-duckdb>=1.9
 dbt-databricks~=1.11

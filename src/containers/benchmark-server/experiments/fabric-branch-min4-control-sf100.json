@@ -1,0 +1,39 @@
+{
+  "_design_notes": [
+    "Owner-requested Fabric OpenIVM SF100 comparison: same min4/max9 workers and harness as completed fast Figure1 control37484587704 at bench6730976; only engine pair updated to Spark686846b4278673011e8007fb8bc8ccadfe1ee707 and matching native8c5940a952b19ab13f2d235df9d9e5463576f8be from Spark pins.env. LPTS29c606ee and DuckDB1.5.2 unchanged.",
+    "Spark branch is main8be39cad plus restored native-runtime packaging/CDF fixes, experimental async-backup rollback and cached-window snapshot fix. This is not unmodified main; historical async backup durability semantics must not be presented as a new durable production fix.",
+    "Freeze dbt-core1.12.0 to match observed completed fast control. Other floating transitive dependencies/base images still possible confounds; archive logs and verify actual versions. No shared pool changes.",
+    "One repetition, only Fabric OpenIVM, SF100 inserts100/1/0.01, updates/deletes0, dbtthreads4, serial, exactvalidationOFF, profile/querylog/storageON. Same resource configuration as fast control; cached nonIVM31005703451 is historical/unpaired.",
+    "Review before dispatch. Compare timed batch/dbt spans to fastcontrol37484587704, previous branch run37306619326 and Figure1Fabric36248895920. Profile/query exports/storage/forensic preservation outside batch timers; setup/session startup inside B1. Report unavailable comparisons explicitly."
+  ],
+  "baseline": {
+    "engines": [
+      "fabric-openivm-jvm-35"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "fabric-branch-min4-control-sf100",
+      "scale_factor": 100,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "0.01",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0",
+      "spark_tunables": {
+        "dbt_threads": 4
+      }
+    }
+  ]
+}
