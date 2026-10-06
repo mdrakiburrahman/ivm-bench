@@ -73,6 +73,22 @@ def sql_summary(record, model_names):
     return result
 
 
+def task_summary(record):
+    if "unavailable" in record:
+        return {"unavailable": record["unavailable"]}
+    fields = "quantiles duration executorDeserializeTime executorDeserializeCpuTime executorRunTime executorCpuTime resultSize jvmGcTime resultSerializationTime gettingResultTime schedulerDelay peakExecutionMemory memoryBytesSpilled diskBytesSpilled".split()
+    result = pick(record, fields)
+    for name, fields in {
+        "inputMetrics": "bytesRead recordsRead",
+        "outputMetrics": "bytesWritten recordsWritten",
+        "shuffleReadMetrics": "readBytes readRecords remoteBytesRead remoteBytesReadToDisk fetchWaitTime",
+        "shuffleWriteMetrics": "writeBytes writeRecords writeTime",
+    }.items():
+        if isinstance(record.get(name), dict):
+            result[name] = pick(record[name], fields.split())
+    return result
+
+
 def control_session(session, since):
     return (
         session.get("itemType") == "Lakehouse"
@@ -220,6 +236,17 @@ def run():
                 result["sql"] = [sql_summary(row, names) for row in queries] if isinstance(queries, list) else {"unavailable": queries.get("unavailable", "unexpected-shape")}
                 jobs = get(app_root + "/jobs", {"offset": 0, "length": 1000})
                 result["jobs"] = [pick(row, "jobId status submissionTime completionTime stageIds numTasks numFailedTasks".split()) for row in jobs] if isinstance(jobs, list) else {"unavailable": jobs.get("unavailable", "unexpected-shape")}
+                # At most three small GETs in one-off snapshots only. Task
+                # quantiles separate skew from slow worker allocation.
+                stages = result["stages"]
+                heavy = sorted((row for row in stages if row.get("status") == "COMPLETE" and row.get("executorCpuTime", 0) >= 30_000_000_000), key=lambda row: row["executorCpuTime"], reverse=True)[:3] if isinstance(stages, list) else []
+                result["taskSummaries"] = []
+                for stage in heavy:
+                    sid, attempt = stage.get("stageId"), stage.get("attemptId")
+                    if not isinstance(sid, int) or not isinstance(attempt, int) or sid < 0 or attempt < 0:
+                        continue
+                    summary = get(app_root + f"/stages/{sid}/{attempt}/taskSummary", {"quantiles": "0.0,0.5,0.95,1.0"})
+                    result["taskSummaries"].append({"stageId": sid, "attemptId": attempt, "metrics": task_summary(summary)})
             environment = get(app_root + "/environment")
             config_keys = {"spark.executor.cores", "spark.executor.memory", "spark.executor.instances", "spark.dynamicAllocation.enabled", "spark.dynamicAllocation.minExecutors", "spark.dynamicAllocation.maxExecutors", "spark.sql.shuffle.partitions", "spark.sql.adaptive.enabled", "spark.sql.autoBroadcastJoinThreshold"}
             config_keys.update({
