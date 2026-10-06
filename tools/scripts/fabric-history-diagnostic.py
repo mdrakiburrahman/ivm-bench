@@ -17,6 +17,7 @@ if not re.fullmatch(r"[1-9][0-9]*", CONTROL_RUN_ID):
 CONTROL_LABEL = "control-" + CONTROL_RUN_ID
 
 TARGETS = {
+    "f300414e-ae9e-409f-93fe-b880f53cbdec": "historical-harness-37469470326",
     "a660da51-24b8-4c94-aae2-c534af5e9b9c": "figure1-36248895920",
     "108f657d-2da7-45c7-a220-4d8de50cc513": "faulty-37236087660",
     "2b016093-f793-4e61-b65f-368f62f5ffd1": "latest-37306619326",
@@ -214,12 +215,19 @@ def run():
             if item not in targets or (control_since and item not in controls):
                 continue
             livy, app = session.get("livyId", ""), session.get("sparkApplicationId", "")
-            if not re.fullmatch(r"[0-9a-fA-F-]{36}", livy) or not re.fullmatch(r"application_[0-9_]+", app):
+            result = {"session": pick(session, FIELDS["session"])}
+            report[targets[item]].setdefault("sessions", []).append(result)
+            report[targets[item]]["availability"] = "listed"
+            if not isinstance(livy, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", livy):
+                result["details"] = {"unavailable": "no-valid-livy-id"}
                 continue
             root = f"/v1/workspaces/{workspace}/lakehouses/{item}/livySessions/{livy}"
-            result = {"session": pick(session, FIELDS["session"]), "applicationId": app}
             details = get(root)
             result["details"] = {"unavailable": details["unavailable"]} if "unavailable" in details else pick(details, FIELDS["session"])
+            if not isinstance(app, str) or not re.fullmatch(r"application_[0-9_]+", app):
+                result["applicationMetrics"] = {"unavailable": "no-valid-application-id"}
+                continue
+            result["applicationId"] = app
             app_root = root + "/applications/" + app
             for endpoint in ("executors", "stages"):
                 metrics = get(app_root + "/" + endpoint)
@@ -271,8 +279,6 @@ def run():
             else:
                 result["stderr_signatures"] = {"unavailable": logs.get("unavailable", "unexpected-shape")}
             result["itemId"] = item
-            report[targets[item]].setdefault("sessions", []).append(result)
-            report[targets[item]]["availability"] = "listed"
         continuation = listing.get("continuationToken")
         if not continuation:
             break
