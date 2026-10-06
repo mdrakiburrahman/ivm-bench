@@ -299,8 +299,10 @@ if __name__ == "__main__":
         try:
             output = run()
         except Exception as exc:
-            # Messages may contain relay URLs or tokens. Persist only exception type.
+            # Messages may contain relay URLs or tokens. Keep only type and HTTP status.
             output = {"unavailable": type(exc).__name__}
+            if isinstance(exc, urllib.error.HTTPError):
+                output["http_status"] = exc.code
         result = output.get(CONTROL_LABEL, {})
         sessions = result.get("sessions", [])
         if any(isinstance(row.get("executors"), list) and row["executors"] for row in sessions):
