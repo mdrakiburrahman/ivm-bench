@@ -23,7 +23,7 @@ TARGETS = {
     "2b016093-f793-4e61-b65f-368f62f5ffd1": "latest-37306619326",
 }
 FIELDS = {
-    "session": "state runtimeVersion submittedDateTime startDateTime endDateTime driverMemory driverCores executorMemory executorCores numExecutors isDynamicAllocationEnabled attemptNumber".split(),
+    "session": "state runtimeVersion submittedDateTime startDateTime endDateTime driverMemory driverCores executorMemory executorCores numExecutors dynamicAllocationMaxExecutors isDynamicAllocationEnabled isHighConcurrency attemptNumber".split(),
     "executors": "id isActive addTime removeTime totalCores maxMemory totalTasks totalDuration totalGCTime totalInputBytes totalShuffleRead totalShuffleWrite failedTasks completedTasks".split(),
     "stages": "stageId attemptId status submissionTime completionTime numTasks numFailedTasks executorRunTime executorCpuTime jvmGcTime inputBytes outputBytes shuffleReadBytes shuffleWriteBytes memoryBytesSpilled diskBytesSpilled".split(),
 }
