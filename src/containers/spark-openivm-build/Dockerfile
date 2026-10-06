@@ -46,7 +46,9 @@ FROM ubuntu:22.04 AS openivm-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=8c5940a952b19ab13f2d235df9d9e5463576f8be
+# Owner-requested diagnostic override of Spark's native pin: compare native main
+# with Spark source fixed at 686846b4. DuckDB ABI and LPTS remain unchanged.
+ARG OPENIVM_COMMIT=9f657576d1e47440d7e62de1befd47bf76b4a83e
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
 ARG LPTS_COMMIT=29c606ee18ad8e4d04cab940f361cbf6fbe5b881

@@ -1,0 +1,39 @@
+{
+  "_design_notes": [
+    "Owner-authorized follow-up AFTER SF100 run37521924970: change only native OpenIVM8c5940a952b19ab13f2d235df9d9e5463576f8be to main snapshot9f657576d1e47440d7e62de1befd47bf76b4a83e. Spark sources remain686846b4278673011e8007fb8bc8ccadfe1ee707 on perf/fig1-backup-regression, not unmodified Spark main. Diagnostic builder explicitly overrides that branch native pin; same LPTS29c606ee and deployed DuckDB1.5.2 ABI. Both native source commits reference identical DuckDB/LPTS submodules.",
+    "Hold runtime1.3, min4/max9 workers, dbt-core1.12.0, dbtthreads4, historical harness/service/model code and source data fixed. Review before benchmark; verify actual installed versions and worker settings from artifacts. Floating transitive dependencies/base images remain possible confounds.",
+    "Fabric OpenIVM only, SF100 inserts100/1/0.01, zero updates/deletes, one repetition, serial, validationOFF, profiling/querylog/storageON. Do not overlap Fabric control37521924970 or dispatch duplicate runs.",
+    "Compare directly to preceding branch control37521924970, fast oldpin min4 control37484587704, Figure1Fabric36248895920 and cached nonIVM31005703451 (unpaired). Missing/failed comparisons unavailable. All49incremental/dbtnode success required for valid performance comparison; validationOFF means exactcorrectnessunverified.",
+    "Spark branch retains owner-authorized experimental async-backup rollback. Native update does not remove durability checks or change parallelism. No merges or production default changes."
+  ],
+  "baseline": {
+    "engines": [
+      "fabric-openivm-jvm-35"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "fabric-native-main-min4-sf100",
+      "scale_factor": 100,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "0.01",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0",
+      "spark_tunables": {
+        "dbt_threads": 4
+      }
+    }
+  ]
+}
