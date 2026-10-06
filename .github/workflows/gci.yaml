@@ -106,8 +106,10 @@ on:
         type: string
 
 concurrency:
-  group: gci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
-  cancel-in-progress: true
+  # Diagnostic branch only: queue after control37521924970, without cancelling it.
+  # This exactly matches that run's resolved group (file input, no engine override).
+  group: gci-refs/heads/diag/fabric-branch-min4-control-20261006-src/containers/benchmark-server/experiments/fabric-branch-min4-control-sf100.json-default
+  cancel-in-progress: false
 
 permissions:
   pull-requests: write
