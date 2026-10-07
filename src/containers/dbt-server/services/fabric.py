@@ -1046,6 +1046,9 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
 class ProfileClient:
     """Read telemetry from the dbt-owned Fabric session without creating one."""
 
+    def __init__(self, *, require_tabular=True):
+        self.require_tabular = require_tabular
+
     def __enter__(self):
         from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
         from dbt.adapters.fabricspark.livysession import LivyCursor, LivySession
@@ -1077,11 +1080,12 @@ class ProfileClient:
             raise RuntimeError("Fabric dbt session was lost during telemetry export")
         self.cursor.execute(sql)
         columns = self.cursor.description
-        if not columns:
+        if not columns and self.require_tabular:
             raise RuntimeError("Fabric telemetry response has no tabular schema")
+        columns = columns or []
         return {"output": {"data": {"application/json": {
             "schema": {"fields": [{"name": column[0]} for column in columns]},
-            "data": self.cursor.fetchall(),
+            "data": self.cursor.fetchall() if columns else [],
         }}}}
 
     def __exit__(self, *_args):

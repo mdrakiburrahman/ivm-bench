@@ -45,6 +45,9 @@ This intentionally runs OUTSIDE the benchmark timer (post-batch hook in
 benchmark-server). On the first failure the post-batch hook turns the
 batch result red, which is the entire point of OPENIVM_VALIDATE=1.
 
+Exact SF10 validation uses bidirectional EXCEPT ALL on unrounded user columns.
+The default digest mode remains available for larger datasets.
+
 Configuration:
 
   - SPARK_OPENIVM_LIVY_URL: Livy URL for spark-openivm container
@@ -62,6 +65,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from typing import Any
 
 from services.db import get_db
@@ -381,8 +385,9 @@ def _validate_one(
     name: str,
     schema: str,
     compiled_sql: str,
+    exact: bool = False,
 ) -> dict[str, Any]:
-    """Validate a single model against the Spark MV via EXCEPT-ALL.
+    """Validate a model with an exact bag comparison or rounded digest.
 
     Designed for concurrent invocation against a single open `LivyClient`:
     no shared mutable state is touched, all SQL bookkeeping uses a
@@ -468,85 +473,46 @@ def _validate_one(
                 f"expected. Missing on MV: {missing_from_mv}; "
                 f"missing on expected: {missing_from_expected}"
             )
-        # Type-aware projection: canonicalize numeric type drift between
-        # the MV's stored schema (which openivm-spark may have widened to
-        # DOUBLE during initial CTAS) and the user query's recomputed
-        # schema (which Spark may analyze as DECIMAL(p,s)). Spark's
-        # xxhash64 includes type-metadata in its hash, so a DOUBLE NULL
-        # and a DECIMAL(29,4) NULL would hash differently for the same
-        # behavioral value — causing a false-positive diff on a MV that
-        # is correct on every observable axis. Casting both sides' numeric
-        # columns to DOUBLE neutralizes this without weakening real
-        # value-level checking: ULP-level float drift, STDDEV/AVG shuffle
-        # nondeterminism, and row-count mismatches all still surface.
-        #
-        # The inner projection carries `CAST(... AS DOUBLE) AS <col>` so
-        # the subquery yields columns of canonical type and original
-        # name. The outer xxhash64 takes bare column names — `AS alias`
-        # is not legal inside function arguments. Keep these two SQL
-        # fragments separate.
-        inner_proj, hash_args = _build_canonical_projection(
-            user_cols, mv_types, expected_types
-        )
-        hash_arg_sql = ", ".join(hash_args)
-        mv_subquery = f"SELECT {inner_proj} FROM {relation}"
-        expected_subquery = f"SELECT {inner_proj} FROM {expected_name}"
-
-        # Schema drift (declared-type mismatches) is recorded separately
-        # so a digest-pass MV still surfaces declared-type drift in the
-        # forensics JSON. Downstream consumers that care about types
-        # (dbt strict typing, ORM reflection) can fail on this report
-        # even when the value digest passes.
-        schema_drift = _detect_schema_drift(
-            user_cols, mv_types, expected_types
-        )
-
-        # The raw column projection (no canonical casts) is used for the
-        # sample-rows output on a failure so JSON forensics show the
-        # actual stored types and values, not the canonical-cast view.
+        schema_drift = _detect_schema_drift(user_cols, mv_types, expected_types)
         raw_proj = ", ".join(_quote_ident(c) for c in user_cols)
         mv_raw_subquery = f"SELECT {raw_proj} FROM {relation}"
         expected_raw_subquery = f"SELECT {raw_proj} FROM {expected_name}"
-
-        # Order-independent multiset equality via (COUNT(*), SUM(xxhash64(*)))
-        # digest. Replaces the previous bag-EXCEPT-ALL approach, which OOMs
-        # the 12g Spark driver at SF>=175 (both sides of EXCEPT ALL must hash
-        # the full bag, and the SELECT COUNT(*) wrapper still materializes
-        # the anti-join). The single-pass aggregation is O(scan) on each
-        # side with constant memory, and xxhash64 fingerprints any ULP-level
-        # column difference (so STDDEV/AVG float drift surfaces as a hash
-        # mismatch just like EXCEPT ALL would have flagged).
-        #
-        # `xxhash64` arguments must be bare column references — `AS alias`
-        # is not legal inside a function-call argument list. The inner
-        # subquery does the canonicalising CASTs (with aliases that
-        # preserve the original column names), and the outer aggregate
-        # hashes by name.
-        digest_select = (
-            f"SELECT COUNT(*) AS __ivm_cnt, "
-            f"COALESCE(SUM(xxhash64({hash_arg_sql})), 0L) AS __ivm_hash"
-        )
-        mv_digest_sql = f"{digest_select} FROM ({mv_subquery}) AS __ivm_mv"
-        expected_digest_sql = (
-            f"{digest_select} FROM ({expected_subquery}) AS __ivm_exp"
-        )
-        mv_out = livy.execute(mv_digest_sql)
-        mv_cnt, mv_hash = _extract_two_longs(
-            mv_out.get("output") or {}, label + " mv_digest"
-        )
-        exp_out = livy.execute(expected_digest_sql)
-        exp_cnt, exp_hash = _extract_two_longs(
-            exp_out.get("output") or {}, label + " expected_digest"
-        )
-        if mv_cnt == exp_cnt and mv_hash == exp_hash:
-            diff_count = 0
+        comparison = {}
+        if exact:
+            # Preserve duplicates and nulls in both directions. Do not round
+            # values or hash rows: SF10 is the exact correctness gate.
+            diff_sql = (
+                "SELECT COUNT(*) FROM ("
+                f"({mv_raw_subquery} EXCEPT ALL {expected_raw_subquery}) "
+                "UNION ALL "
+                f"({expected_raw_subquery} EXCEPT ALL {mv_raw_subquery})"
+                ") AS __ivm_diff"
+            )
+            output = livy.execute(diff_sql)
+            diff_count = _extract_diff_count(output.get("output") or {}, label)
         else:
-            # Surface a non-zero "diff_count" without doing an EXCEPT ALL
-            # (which would OOM at this scale). When counts differ, the
-            # cardinality delta is a strict lower bound on the symmetric
-            # difference; when only the hash differs, report 1 row as a
-            # symbolic "at least one row differs".
-            diff_count = max(abs(mv_cnt - exp_cnt), 1)
+            inner_proj, hash_args = _build_canonical_projection(
+                user_cols, mv_types, expected_types
+            )
+            digest_select = (
+                "SELECT COUNT(*) AS __ivm_cnt, "
+                f"COALESCE(SUM(xxhash64({', '.join(hash_args)})), 0L) AS __ivm_hash"
+            )
+            mv_out = livy.execute(
+                f"{digest_select} FROM (SELECT {inner_proj} FROM {relation}) AS __ivm_mv"
+            )
+            mv_cnt, mv_hash = _extract_two_longs(mv_out.get("output") or {}, label)
+            exp_out = livy.execute(
+                f"{digest_select} FROM (SELECT {inner_proj} FROM {expected_name}) AS __ivm_exp"
+            )
+            exp_cnt, exp_hash = _extract_two_longs(exp_out.get("output") or {}, label)
+            diff_count = (0 if (mv_cnt, mv_hash) == (exp_cnt, exp_hash)
+                          else max(abs(mv_cnt - exp_cnt), 1))
+            comparison = {
+                "mv_count": mv_cnt, "expected_count": exp_cnt,
+                "mv_hash": mv_hash, "expected_hash": exp_hash,
+                "diff_kind": "cardinality" if mv_cnt != exp_cnt else "values_only",
+            }
         # On mismatch, capture up to 5 sample rows from each side so the
         # JSON report is useful for root-cause work (no live cluster
         # needed). Use plain LIMIT-5 SELECTs — bounded memory, no
@@ -579,13 +545,7 @@ def _validate_one(
                     "expected_cols": expected_cols,
                     "expected_types": expected_types,
                     "schema_drift": schema_drift,
-                    "mv_count": mv_cnt,
-                    "expected_count": exp_cnt,
-                    "mv_hash": mv_hash,
-                    "expected_hash": exp_hash,
-                    "diff_kind": (
-                        "cardinality" if mv_cnt != exp_cnt else "values_only"
-                    ),
+                    **comparison,
                 }
             except Exception as sample_exc:
                 sample_payload = {"sample_error": str(sample_exc)}
@@ -613,6 +573,7 @@ def _validate_one(
         "schema": schema,
         "status": status,
         "diff_count": diff_count,
+        "validation_method": "except_all" if exact else "count_hash_rounded",
         "validation_time_s": elapsed,
     }
     if error_msg is not None:
@@ -637,7 +598,7 @@ def _validate_one(
     return entry
 
 
-def validate_run(run_id: str) -> dict:
+def validate_run(run_id: str, *, exact: bool = False, client_factory=None) -> dict:
     """Validate successful model nodes from a spark-openivm dbt run.
 
     Returns a dict shaped exactly like
@@ -658,7 +619,7 @@ def validate_run(run_id: str) -> dict:
     if not run:
         conn.close()
         raise ValueError(f"run_id not found: {run_id}")
-    if run["engine"] != "spark-openivm":
+    if run["engine"] not in ("spark-openivm", "fabric-openivm-jvm-35"):
         conn.close()
         raise ValueError(
             f"validation only supports spark-openivm, got {run['engine']}"
@@ -680,7 +641,7 @@ def validate_run(run_id: str) -> dict:
     # duckdb-openivm-only `dbt_compiler` dependency optional.
     from services.dbt_compiler import get_compiled_models
 
-    compiled_models = get_compiled_models("spark-openivm")
+    compiled_models = get_compiled_models(run["engine"])
 
     # Pre-filter to the validatable model set so the thread pool only sees
     # eligible nodes; preserves input rowid order via the input list.
@@ -703,20 +664,25 @@ def validate_run(run_id: str) -> dict:
 
     started = time.monotonic()
 
-    with LivyClient() as livy:
+    with (nullcontext() if client_factory else LivyClient()) as livy:
         # Set the lakehouse as the default catalog/database so the
         # `<schema>.<name>` references in compiled SQL resolve identically
         # to how dbt wrote them. Runs ONCE on the shared session before
         # the worker pool fans out so every concurrent statement inherits
         # the same default database.
-        try:
-            livy.execute(f"USE {LAKEHOUSE}")
-        except RuntimeError as e:
-            # Some Spark setups expose lakehouse via the default catalog
-            # without an explicit USE; surface the error but keep going so
-            # the per-model EXCEPT ALL can still trigger.
-            logger.warning("[spark-openivm] USE %s failed (continuing): %s",
-                           LAKEHOUSE, e)
+        if livy is not None:
+            try:
+                livy.execute(f"USE {LAKEHOUSE}")
+            except RuntimeError as e:
+                logger.warning("[spark-openivm] USE %s failed: %s", LAKEHOUSE, e)
+
+        def validate(item):
+            if client_factory:
+                # Each worker owns its cursor, but attaches to the same dbt
+                # driver. Fabric's cursor stores mutable statement results.
+                with client_factory() as client:
+                    return _validate_one(client, **item, exact=exact)
+            return _validate_one(livy, **item, exact=exact)
 
         # Empty work list short-circuits cleanly.
         if not work:
@@ -730,7 +696,7 @@ def validate_run(run_id: str) -> dict:
             logger.info(
                 "[spark-openivm] validating %d models with %d worker(s) "
                 "against Livy session %s",
-                len(work), max_workers, livy.session_id,
+                len(work), max_workers, getattr(livy, "session_id", "dbt-owned Fabric"),
             )
             with ThreadPoolExecutor(
                 max_workers=max_workers,
@@ -739,14 +705,7 @@ def validate_run(run_id: str) -> dict:
                 # Submit by input index, then collect in input order
                 # (so `results` stays deterministic).
                 futures = [
-                    executor.submit(
-                        _validate_one,
-                        livy,
-                        unique_id=item["unique_id"],
-                        name=item["name"],
-                        schema=item["schema"],
-                        compiled_sql=item["compiled_sql"],
-                    )
+                    executor.submit(validate, item)
                     for item in work
                 ]
                 results = []
@@ -775,8 +734,9 @@ def validate_run(run_id: str) -> dict:
     failures = [r for r in results if r["status"] != "pass"]
     return {
         "run_id": run_id,
-        "status": "failed" if failures else "passed",
+        "status": "failed" if failures or not results else "passed",
         "models_checked": len(results),
+        "validation_method": "except_all" if exact else "count_hash_rounded",
         "failures": failures,
         "duration_s": round(time.monotonic() - started, 3),
         "results": results,

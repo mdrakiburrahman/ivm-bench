@@ -92,5 +92,37 @@ class EngineFailureIsolationTest(unittest.TestCase):
         orchestrator._run_engine_wave.assert_called_once()
 
 
+class OpenIvmValidationHookTest(unittest.TestCase):
+    def runner(self, repo_dir, scale_factor):
+        from services.engine_runner import EngineRunner
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._engine = SimpleNamespace(name="fabric-openivm-jvm-35")
+        runner._config = SimpleNamespace(repo_dir=repo_dir, scale_factor=scale_factor)
+        runner._dbt_url = "http://dbt.invalid"
+        runner._emit = Mock()
+        return runner
+
+    def test_fabric_sf10_requests_exact_validation(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as repo, patch("services.engine_runner.requests.post") as post:
+            post.return_value = Mock(status_code=200)
+            post.return_value.json.return_value = {
+                "status": "passed", "models_checked": 49, "validation_method": "except_all"
+            }
+            self.runner(repo, 10)._validate_spark_openivm("run", 2)
+            self.assertEqual(post.call_args.args[0],
+                             "http://dbt.invalid/validate/fabric-openivm-jvm-35/run")
+            self.assertEqual(post.call_args.kwargs["json"], {"exact": True})
+
+    def test_sf10_cannot_accept_digest_pass_as_exact_validation(self):
+        from tempfile import TemporaryDirectory
+        from services.engine_runner import OpenIvmValidationError
+        with TemporaryDirectory() as repo, patch("services.engine_runner.requests.post") as post:
+            post.return_value = Mock(status_code=200)
+            post.return_value.json.return_value = {"status": "passed", "validation_method": "count_hash_rounded"}
+            with self.assertRaisesRegex(OpenIvmValidationError, "not performed"):
+                self.runner(repo, 10)._validate_spark_openivm("run", 2)
+
+
 if __name__ == "__main__":
     unittest.main()
