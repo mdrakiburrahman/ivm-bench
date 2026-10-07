@@ -1,10 +1,10 @@
 {
   "_design_notes": [
-    "Compiler-compatibility follow-up to invalid run37533900243: update only Spark686846b4278673011e8007fb8bc8ccadfe1ee707 to5ed588f7292138b8d5f949b688c29e87f2feba8a. Native remains9f657576d1e47440d7e62de1befd47bf76b4a83e, LPTS29c606ee and deployed DuckDB1.5.2 ABI. Spark3.5/4.1 full CI37551435975 passed at this Spark pin against e773415d; e773..9f changes only unknown-refresh-type validation, not known refresh programs.",
-    "Hold runtime1.3, min4/max9 workers, dbt-core1.12.0, dbtthreads4, historical harness/service/model code and source data fixed. Review before benchmark; verify actual installed versions and worker settings from artifacts. Floating transitive dependencies/base images remain possible confounds.",
-    "Fabric OpenIVM only, SF100 inserts100/1/0.01, zero updates/deletes, one repetition, serial, validationOFF, profiling/querylog/storageON. Do not overlap Fabric control37521924970 or dispatch duplicate runs.",
-    "Compare timings to previous Spark commit/native9f run37533900243, explicitly INVALID as incremental because it used full-refresh fallback; also show valid control37521924970 (older native8c), Figure1Fabric36248895920, and cached nonIVM31005703451 (unpaired). Require all49 expected incremental classifications, successful dbt nodes and no full_refresh_stmt in executed SQL. Native global-window replacement is not the accidental full-refresh fallback. SF100 validationOFF means exact correctness is unverified at SF100; SF10 exact validation must pass first.",
-    "Spark branch retains owner-authorized experimental async-backup rollback. Native update does not remove durability checks or change parallelism. No merges or production default changes."
+    "One-change causal follow-up to run37625184492: Spark5ed588f7 -> 8d5620e7 restores old-state snapshot folding for normalized internal delta names. Native remains9f657576d1e47440d7e62de1befd47bf76b4a83e, LPTS29c606ee, DuckDB1.5.2 ABI. No compiler correctness changes removed.",
+    "Runtime1.3, min4/max9 workers, dbtthreads4, historical harness and data settings remain fixed. Only Fabric OpenIVM, SF100 inserts100/1/0.01, zero updates/deletes, serial, one repetition, validationOFF, profiling/querylog/storageON. Owner prioritizes SF100; exact SF10 remains pending.",
+    "Reviewed change: only canonical current(+1) minus matching single-source delta may use a saved snapshot. Local117 rewriter tests, all49-model three-batch TPC-DI parity, full-outer-join transitions and multi-source SCD2 parity passed. Dual Spark-version CI is run separately.",
+    "Compare directly to predecessor37625184492; also valid incremental execution control37521924970 (older native8c, validationOFF), Fig1 36248895920 and historical unpaired nonIVM31005703451. Require49 incremental classifications,147 successful dbt model executions and no full_refresh_stmt. SF100 exact correctness remains unverified.",
+    "Experimental branch retains previously owner-authorized async-backup rollback. No merges. GET-only external observer collects actual executor/stage metrics without changing benchmark settings."
   ],
   "baseline": {
     "engines": [
