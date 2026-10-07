@@ -47,7 +47,7 @@ ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
 ARG OPENIVM_BRANCH=main
 # Owner-requested diagnostic override of Spark's native pin: compare native main
-# with Spark source fixed at 686846b4. DuckDB ABI and LPTS remain unchanged.
+# with the compiler-compatibility fixes at 5ed588f7. DuckDB ABI and LPTS remain unchanged.
 ARG OPENIVM_COMMIT=9f657576d1e47440d7e62de1befd47bf76b4a83e
 ARG LPTS_REPO=https://github.com/cwida/lpts.git
 ARG LPTS_BRANCH=main
@@ -117,7 +117,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
 ARG OPENIVM_SPARK_BRANCH=perf/fig1-backup-regression
-ARG OPENIVM_SPARK_COMMIT=686846b4278673011e8007fb8bc8ccadfe1ee707
+ARG OPENIVM_SPARK_COMMIT=5ed588f7292138b8d5f949b688c29e87f2feba8a
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -169,7 +169,7 @@ RUN test -s /tmp/openivm-extension.jar
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=686846b4278673011e8007fb8bc8ccadfe1ee707
+ARG OPENIVM_SPARK_COMMIT=5ed588f7292138b8d5f949b688c29e87f2feba8a
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
