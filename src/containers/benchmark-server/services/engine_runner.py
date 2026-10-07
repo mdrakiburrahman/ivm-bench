@@ -877,7 +877,7 @@ class EngineRunner:
                 self._validate_duckdb_openivm(run_id, batch_num)
 
             if (
-                name == "spark-openivm"
+                name in ("spark-openivm", "fabric-openivm-jvm-35")
                 and run_id
                 and batch.status != "failed"
                 and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
@@ -1877,10 +1877,14 @@ class EngineRunner:
         materialized views over Livy. Mirrors `_validate_duckdb_openivm`
         — keeps the per-batch hook + result-JSON shape engine-agnostic so
         the existing chart/aggregate pipeline can consume both."""
-        self._emit(f"[spark-openivm] Validating batch {batch_num} with EXCEPT ALL")
+        name = self._engine.name
+        exact = self._config.scale_factor == 10
+        method = "except_all" if exact else "count_hash_rounded"
+        self._emit(f"[{name}] Validating batch {batch_num} with {method}")
         try:
             resp = requests.post(
-                f"{self._dbt_url}/validate/spark-openivm/{run_id}",
+                f"{self._dbt_url}/validate/{name}/{run_id}",
+                json={"exact": exact},
                 timeout=604800,
             )
             data = resp.json()
@@ -1900,6 +1904,8 @@ class EngineRunner:
         ) as f:
             json.dump(data, f, indent=2)
 
+        if exact and data.get("validation_method") != method:
+            raise OpenIvmValidationError("Exact validation was requested but not performed")
         if resp.status_code != 200 or data.get("status") != "passed":
             failures = data.get("failures") or []
             detail = ", ".join(
