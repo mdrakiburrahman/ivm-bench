@@ -51,7 +51,7 @@ class FabricProfileExportTest(unittest.TestCase):
                 self.assertEqual(raw["rows"][0]["sql_text"], "SELECT 1")
                 self.assertTrue((base / f"dbt-server/{engine}-profile-batch2.csv").exists())
 
-    @patch.dict(os.environ, {"OPENIVM_PROFILE_REFRESH": "1", "OPENIVM_QUERY_LOG": "1"})
+    @patch.dict(os.environ, {"OPENIVM_VALIDATE": "1", "OPENIVM_PROFILE_REFRESH": "1", "OPENIVM_QUERY_LOG": "1"})
     def test_fabric_exports_are_after_batch_timer(self):
         runner = self.runner("unused")
         for method in ("_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
@@ -66,10 +66,12 @@ class FabricProfileExportTest(unittest.TestCase):
             self.assertEqual(runner._result.batches[1].duration_s, 10.0)
             now[0] += 50.0
         runner._run_fabric = Mock(side_effect=run_batch)
+        runner._validate_spark_openivm = Mock(side_effect=export)
         runner._export_spark_openivm_profile = Mock(side_effect=export)
         runner._export_spark_openivm_query_log = Mock(side_effect=export)
         with patch("services.engine_runner.time.time", side_effect=lambda: now[0]):
             runner._run_batch(2)
+        runner._validate_spark_openivm.assert_called_once_with("run", 2)
         runner._export_spark_openivm_profile.assert_called_once_with("run", 2)
         runner._export_spark_openivm_query_log.assert_called_once_with("run", 2)
         self.assertEqual(runner._result.batches[1].duration_s, 10.0)
