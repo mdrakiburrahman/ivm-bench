@@ -158,6 +158,24 @@ class FabricProfileTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no tabular schema"):
             spark_openivm_profile.export_profile("run", 2, client=fabric.ProfileClient())
 
+    def test_validation_ddl_accepts_empty_result_and_keeps_session(self):
+        self.output([], [])
+        with fabric.ProfileClient(require_tabular=False) as client:
+            result = client.execute("CREATE OR REPLACE TEMP VIEW expected AS SELECT 1")
+        self.assertEqual(result["output"]["data"]["application/json"]["data"], [])
+        self.connect.assert_not_called()
+        self.delete.assert_not_called()
+
+    def test_validation_cannot_replace_lost_driver(self):
+        self.output([], [])
+        with fabric.ProfileClient(require_tabular=False) as client:
+            client.session.is_new_session_required = True
+            with self.assertRaisesRegex(RuntimeError, "session was lost"):
+                client.execute("SELECT COUNT(*) FROM expected")
+        self.post.assert_not_called()
+        self.connect.assert_not_called()
+        self.delete.assert_not_called()
+
 
 class FabricProfileConfigTest(unittest.TestCase):
     def test_compose_forwards_recording_flags_to_environment_publisher(self):
