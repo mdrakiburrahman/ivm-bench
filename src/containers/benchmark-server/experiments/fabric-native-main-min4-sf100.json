@@ -1,10 +1,11 @@
 {
   "_design_notes": [
-    "One-change causal follow-up to run37671039628: Spark8d5620e7 -> b5777c55 reuses already-analyzed source schemas during CREATE workload-fact discovery. Native remains9f657576d1e47440d7e62de1befd47bf76b4a83e, LPTS29c606ee, DuckDB1.5.2 ABI. No compiler correctness or snapshot-fold fixes removed.",
+    "One-change follow-up to run37774952643: Sparkb5777c55 -> 54591084 prunes unrelated managed-MV backing-log reads during CREATE dependency discovery. Native stays9f657576d1e47440d7e62de1befd47bf76b4a83e, LPTS29c606ee, DuckDB1.5.2 ABI; prior schema reuse and correctness fixes retained.",
     "Runtime1.3, min4/max9 workers, dbtthreads4 and data settings remain fixed. Only Fabric OpenIVM, SF100 inserts100/1/0.01, zero updates/deletes, serial, one repetition, validationOFF, profiling/querylog/storageON. SF10 exact validation remains pending.",
-    "Reviewed scope: operation-local Spark public schemas; pinned sources and callers without schemas retain prior schema lookup; catalog and Delta properties remain fresh. Real Hive audit confirms four -> two get_table and two -> one get_database calls per source, with identical discovered facts. Full dual-version CI and local TPC-DI/pin lifecycle checks are tracked separately.",
-    "Compare directly to predecessor37671039628 (B1/B2/B3 1830.485920/791.467508/631.676458s); also prior37625184492, older-native incremental execution control37521924970, Fig1 36248895920 and historical unpaired nonIVM31005703451. Require49 incremental classifications,147 successful dbt model executions and no full_refresh_stmt. SF100 exact correctness remains unverified.",
-    "Experimental branch retains previously owner-authorized async-backup rollback. No merges. No new worker, Livy, publication, checkpoint or durability settings."
+    "Reviewed scope: analyzed physical paths are pruning hints only. Fresh path plus Delta metadata-ID checks remain authoritative; failed location qualification keeps candidate; changed or unrecognized source paths fall back to full candidate scan and fresh source reread. No identity cache, refresh-path change, publication change or reduction in parallelism.",
+    "Local real Delta tests cover fewer backing-log reads, encoded aliases, public views and subqueries, stale alias hints, unknown plan shapes, relative locations, ambiguous physical identities and concurrent CDF visibility barriers. Full dual-version CI and exact three-batch mini-fixture parity tracked separately.",
+    "Compare directly to predecessor37774952643 (B1/B2/B3 1574.622511/741.475710/597.375206s total2913.473427); also validolder37521924970, Fig1 36248895920 and historical UNPAIRED nonIVM31005703451. Require49 incremental classifications,147 successful dbt model executions and no full_refresh_stmt. SF100 exact correctness remains unverified.",
+    "Experimental branch retains previously owner-authorized async-backup rollback. No merges. No new worker, Livy, checkpoint, durability or derivative-pruning changes."
   ],
   "baseline": {
     "engines": [
