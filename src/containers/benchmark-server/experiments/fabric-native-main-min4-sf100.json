@@ -1,10 +1,10 @@
 {
   "_design_notes": [
-    "One-change causal follow-up to run37625184492: Spark5ed588f7 -> 8d5620e7 restores old-state snapshot folding for normalized internal delta names. Native remains9f657576d1e47440d7e62de1befd47bf76b4a83e, LPTS29c606ee, DuckDB1.5.2 ABI. No compiler correctness changes removed.",
-    "Runtime1.3, min4/max9 workers, dbtthreads4, historical harness and data settings remain fixed. Only Fabric OpenIVM, SF100 inserts100/1/0.01, zero updates/deletes, serial, one repetition, validationOFF, profiling/querylog/storageON. Owner prioritizes SF100; exact SF10 remains pending.",
-    "Reviewed change: only canonical current(+1) minus matching single-source delta may use a saved snapshot. Local117 rewriter tests, all49-model three-batch TPC-DI parity, full-outer-join transitions and multi-source SCD2 parity passed. Dual Spark-version CI is run separately.",
-    "Compare directly to predecessor37625184492; also valid incremental execution control37521924970 (older native8c, validationOFF), Fig1 36248895920 and historical unpaired nonIVM31005703451. Require49 incremental classifications,147 successful dbt model executions and no full_refresh_stmt. SF100 exact correctness remains unverified.",
-    "Experimental branch retains previously owner-authorized async-backup rollback. No merges. GET-only external observer collects actual executor/stage metrics without changing benchmark settings."
+    "One-change causal follow-up to run37671039628: Spark8d5620e7 -> b5777c55 reuses already-analyzed source schemas during CREATE workload-fact discovery. Native remains9f657576d1e47440d7e62de1befd47bf76b4a83e, LPTS29c606ee, DuckDB1.5.2 ABI. No compiler correctness or snapshot-fold fixes removed.",
+    "Runtime1.3, min4/max9 workers, dbtthreads4 and data settings remain fixed. Only Fabric OpenIVM, SF100 inserts100/1/0.01, zero updates/deletes, serial, one repetition, validationOFF, profiling/querylog/storageON. SF10 exact validation remains pending.",
+    "Reviewed scope: operation-local Spark public schemas; pinned sources and callers without schemas retain prior schema lookup; catalog and Delta properties remain fresh. Real Hive audit confirms four -> two get_table and two -> one get_database calls per source, with identical discovered facts. Full dual-version CI and local TPC-DI/pin lifecycle checks are tracked separately.",
+    "Compare directly to predecessor37671039628 (B1/B2/B3 1830.485920/791.467508/631.676458s); also prior37625184492, older-native incremental execution control37521924970, Fig1 36248895920 and historical unpaired nonIVM31005703451. Require49 incremental classifications,147 successful dbt model executions and no full_refresh_stmt. SF100 exact correctness remains unverified.",
+    "Experimental branch retains previously owner-authorized async-backup rollback. No merges. No new worker, Livy, publication, checkpoint or durability settings."
   ],
   "baseline": {
     "engines": [
