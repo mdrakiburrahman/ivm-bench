@@ -116,7 +116,6 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_BRANCH=perf/fig1-backup-regression
 ARG OPENIVM_SPARK_COMMIT=6498e89d6a20ee72f10e371dc2fc0ad3520a355c
 ARG SBT_VERSION=1.9.7
 
@@ -140,8 +139,10 @@ RUN mkdir -p /opt/sbt && \
 
 WORKDIR /src
 
-RUN git clone --branch "${OPENIVM_SPARK_BRANCH}" "${OPENIVM_SPARK_REPO}" . && \
-    git checkout "${OPENIVM_SPARK_COMMIT}"
+RUN git init . && \
+    git remote add origin "${OPENIVM_SPARK_REPO}" && \
+    git fetch --depth 1 origin "${OPENIVM_SPARK_COMMIT}" && \
+    git checkout -q FETCH_HEAD
 
 WORKDIR /src/spark-ext
 

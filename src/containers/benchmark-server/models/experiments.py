@@ -37,6 +37,8 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
+from models.refresh import validate_refresh
+
 
 # ---------------------------------------------------------------------------
 # Feature flags (boolean-ish env vars on benchmark.sh today)
@@ -247,9 +249,11 @@ class CompilerBenchOptions:
 @dataclass
 class ExperimentInputs:
     scale_factor: int = 3
-    # Zero preserves standard TPC-DI Batch2/3. A positive value accumulates
-    # that many days from Databricks' 365-day augmented window into Batch 2;
-    # the immediately following day becomes Batch 3.
+    repeated_refresh: bool = False
+    workload: str = "standard"
+    refresh_count: int = 20
+    refresh_pct: str = "1"
+    # Legacy three-batch mode: positive values accumulate extended daily data.
     batch_2_days: int = 0
     batch_1_pct: str = "100"
     batch_2_pct: str = "1"
@@ -271,6 +275,7 @@ class ExperimentInputs:
     label: Optional[str] = None
 
     def __post_init__(self):
+        validate_refresh(self)
         self.batch_2_days = int(self.batch_2_days)
         if self.batch_2_days < 0 or self.batch_2_days > 364:
             raise ValueError("batch_2_days must be between 0 and 364")
@@ -290,6 +295,10 @@ class ExperimentInputs:
     def to_compose_env(self) -> Dict[str, str]:
         """Project this experiment to the env-var map that compose / orchestrator consume."""
         env: Dict[str, str] = {
+            "REPEATED_REFRESH": "1" if self.repeated_refresh else "0",
+            "TPCDI_WORKLOAD": self.workload,
+            "REFRESH_COUNT": str(self.refresh_count),
+            "REFRESH_PCT": str(self.refresh_pct),
             "SCALE_FACTOR": str(self.scale_factor),
             "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),
             "BATCH_1_PCT": str(self.batch_1_pct),
@@ -313,6 +322,10 @@ class ExperimentInputs:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "label": self.label,
+            "repeated_refresh": self.repeated_refresh,
+            "workload": self.workload,
+            "refresh_count": self.refresh_count,
+            "refresh_pct": self.refresh_pct,
             "scale_factor": self.scale_factor,
             "batch_2_days": self.batch_2_days,
             "batch_1_pct": self.batch_1_pct,
@@ -334,6 +347,10 @@ class ExperimentInputs:
     def flat_values(self) -> Dict[str, Any]:
         """Flatten to (col_key -> value) for chart rendering."""
         out: Dict[str, Any] = {
+            "repeated_refresh": self.repeated_refresh,
+            "workload": self.workload,
+            "refresh_count": self.refresh_count,
+            "refresh_pct": self.refresh_pct,
             "scale_factor": self.scale_factor,
             "batch_2_days": self.batch_2_days,
             "batch_1_pct": self.batch_1_pct,
@@ -362,6 +379,10 @@ class ExperimentInputs:
     def column_headers(cls) -> Dict[str, str]:
         """Stable (col_key -> human header) for chart rendering."""
         headers = {
+            "repeated_refresh": "repeated refresh",
+            "workload": "workload",
+            "refresh_count": "refreshes",
+            "refresh_pct": "refresh%",
             "scale_factor": "SF",
             "batch_2_days": "b2 days",
             "batch_1_pct": "b1%",
@@ -473,6 +494,10 @@ class ExperimentInputs:
             schedule = base.schedule
 
         return cls(
+            repeated_refresh=_flag(d.get("repeated_refresh"), base.repeated_refresh),
+            workload=str(d.get("workload", base.workload)),
+            refresh_count=d.get("refresh_count", base.refresh_count),
+            refresh_pct=str(d.get("refresh_pct", base.refresh_pct)),
             scale_factor=int(d.get("scale_factor", base.scale_factor)),
             batch_2_days=int(d.get("batch_2_days", base.batch_2_days)),
             batch_1_pct=_pct("batch_1_pct", base.batch_1_pct),
