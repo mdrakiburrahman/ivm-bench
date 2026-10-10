@@ -68,7 +68,8 @@ scored AS (
             uc.total_portfolio_value * 100.0 / NULLIF(gc.market_total, 0),
             4
         ) AS pct_of_market,
-        DENSE_RANK() OVER (ORDER BY uc.total_portfolio_value DESC) AS rank_by_portfolio,
+        -- Use displayed precision for ties, not sub-precision floating-point differences.
+        DENSE_RANK() OVER (ORDER BY ROUND(uc.total_portfolio_value, 6) DESC) AS rank_by_portfolio,
         DENSE_RANK() OVER (ORDER BY uc.num_securities DESC) AS rank_by_diversity
     FROM unwatched_customers uc
     CROSS JOIN global_customer gc

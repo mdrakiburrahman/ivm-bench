@@ -66,6 +66,36 @@ outside the timed batch window. Environment feature flags form the baseline;
 an explicit `feature_flags` value in the experiments JSON overrides that
 baseline for the corresponding row.
 
+### Choose the benchmark for a PR
+
+GCI runs when you open or update a PR. Set `experiments_file` in
+[`.github/gci.json`](.github/gci.json) to select a checked-in experiment file:
+
+```json
+{
+  "experiments_file": "src/containers/benchmark-server/experiments/cost-model-bench.json"
+}
+```
+
+Use `cost-model-bench-ladder.json` for the full cost-model sweep, or another
+experiments JSON for a TPC-DI workload. The default empty string keeps the
+existing PR-triggered TPC-DI configuration. Manual GCI dispatches use their
+`experiments_file` input or per-knob inputs and do not inherit the PR selector.
+
+To compare OpenIVM revisions, change both `ARG OPENIVM_COMMIT` defaults in
+[`src/containers/duckdb-openivm/Dockerfile`](src/containers/duckdb-openivm/Dockerfile)
+to the same commit SHA, select the experiment, and open a PR. Changing the pin
+invalidates the cached builder image. Each run uses one OpenIVM revision;
+use separate PRs or pushes to compare revisions. The revision must provide
+`cost_model_benchmark` and support the selected arguments; DuckDB and the build
+tooling remain separately pinned in that Dockerfile.
+
+Cost-model CSVs are uploaded with the GCI artifacts under
+`mount/cost-model-bench/<run-id>/<experiment-index>-<label>/`. Scale factors
+run sequentially, and the existing GCI job timeout and cancellation rules apply.
+A newer push to the same PR cancels its previous run, so wait for a run to finish
+before pushing the next revision if you need complete comparison results.
+
 ### Accumulated daily updates
 
 Set `batch_2_days` to a positive integer to measure one Batch 2 containing

@@ -54,6 +54,10 @@ class FeatureFlags:
     # incrementalizability survey INSTEAD of the timed batches — thousands of
     # views would otherwise pollute the timings it shares an engine with.
     compiler_bench: bool = False
+    # cost-model-bench: internal. When on, the experiment runs OpenIVM's cost model
+    # sweep INSTEAD of the timed batches, for the same reason compiler_bench does:
+    # it creates and refreshes thousands of views and shares no data with TPC-DI.
+    cost_model_bench: bool = False
 
     @classmethod
     def from_env(cls) -> "FeatureFlags":
@@ -78,6 +82,7 @@ class FeatureFlags:
                 "SPARK_METRICS_CAPTURE", defaults.spark_metrics_capture
             ),
             compiler_bench=flag("COMPILER_BENCH", defaults.compiler_bench),
+            cost_model_bench=flag("COST_MODEL_BENCH", defaults.cost_model_bench),
         )
 
     def to_compose_env(self) -> Dict[str, str]:
@@ -89,6 +94,7 @@ class FeatureFlags:
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
             "SPARK_METRICS_CAPTURE": "1" if self.spark_metrics_capture else "0",
             "COMPILER_BENCH": "1" if self.compiler_bench else "0",
+            "COST_MODEL_BENCH": "1" if self.cost_model_bench else "0",
         }
 
 
@@ -133,6 +139,34 @@ class SparkTunables:
         if self.dbt_threads is not None:
             env["SPARK_DBT_THREADS"] = str(self.dbt_threads)
         return env
+
+
+# ---------------------------------------------------------------------------
+# cost-model-bench options (only consulted when feature_flags.cost_model_bench is on)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CostModelBenchOptions:
+    """Knobs for OpenIVM's cost model sweep. Internal; not part of the published
+    benchmark surface.
+
+    ``scale_factors`` is a list because the sweep's subject is how the
+    incremental-versus-recompute decision moves with data volume, so one run
+    covers several. It is separate from the experiment's own scale factor, which
+    sizes TPC-DI data the sweep never reads.
+
+    ``args`` is passed through verbatim so delta sizes, repetitions, the query set
+    and flag configurations can change without touching this repository.
+    """
+    scale_factors: List[int] = field(default_factory=lambda: [1, 10, 25])
+    args: str = "--delta-pcts 1,2,5 --reps 3 --configs all_on --batch all"
+    timeout_s: float = 43200.0
+
+    def to_compose_env(self) -> Dict[str, str]:
+        return {
+            "COST_MODEL_BENCH_SCALES": ",".join(str(s) for s in self.scale_factors),
+            "COST_MODEL_BENCH_ARGS": self.args,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +267,7 @@ class ExperimentInputs:
     feature_flags: FeatureFlags = field(default_factory=FeatureFlags)
     spark_tunables: SparkTunables = field(default_factory=SparkTunables)
     compiler_bench: CompilerBenchOptions = field(default_factory=CompilerBenchOptions)
+    cost_model_bench: CostModelBenchOptions = field(default_factory=CostModelBenchOptions)
     label: Optional[str] = None
 
     def __post_init__(self):
@@ -272,6 +307,7 @@ class ExperimentInputs:
         env.update(self.feature_flags.to_compose_env())
         env.update(self.spark_tunables.to_compose_env())
         env.update(self.compiler_bench.to_compose_env())
+        env.update(self.cost_model_bench.to_compose_env())
         return env
 
     def to_dict(self) -> Dict[str, Any]:
@@ -386,6 +422,9 @@ class ExperimentInputs:
                 ff_d.get("spark_metrics_capture"), base.feature_flags.spark_metrics_capture
             ),
             compiler_bench=_flag(ff_d.get("compiler_bench"), base.feature_flags.compiler_bench),
+            cost_model_bench=_flag(
+                ff_d.get("cost_model_bench"), base.feature_flags.cost_model_bench
+            ),
         )
 
         cb_d = d.get("compiler_bench") or {}
@@ -400,6 +439,14 @@ class ExperimentInputs:
             ),
             delta_batch_size=int(cb_d.get("delta_batch_size", cb_base.delta_batch_size)),
             ducklake=_flag(cb_d.get("ducklake"), cb_base.ducklake),
+        )
+
+        cmb_d = d.get("cost_model_bench") or {}
+        cmb_base = base.cost_model_bench
+        cmb = CostModelBenchOptions(
+            scale_factors=[int(x) for x in cmb_d.get("scale_factors", cmb_base.scale_factors)],
+            args=str(cmb_d.get("args", cmb_base.args)),
+            timeout_s=float(cmb_d.get("timeout_s", cmb_base.timeout_s)),
         )
 
         st_d = d.get("spark_tunables") or {}
@@ -444,6 +491,7 @@ class ExperimentInputs:
             feature_flags=ff,
             spark_tunables=st,
             compiler_bench=rb,
+            cost_model_bench=cmb,
             label=d.get("label"),
         )
 
