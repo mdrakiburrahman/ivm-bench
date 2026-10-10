@@ -42,8 +42,8 @@
 #                    wipes mount/raw/ in Phase 0 regardless (stale per-SF
 #                    Delta tables would silently feed wrong batch percentages
 #                    into the first experiment).
-#   OPENIVM_VALIDATE — 1 = validate OpenIVM views with EXCEPT ALL after each
-#                    timed batch (default), 0 = skip post-timer validation
+#   OPENIVM_VALIDATE — 1 = opt in to validation after each timed batch
+#                    (DuckDB exact; Spark/Fabric digest), 0 = skip (default)
 #   OPENIVM_PROFILE_REFRESH — 1 = export OpenIVM profiling CSVs into
 #                    mount/results/<sf>/dbt-server/ after each timed batch
 #   OPENIVM_QUERY_LOG — 1 = export the full SQL trace OpenIVM ran for every
@@ -120,7 +120,7 @@ export ENGINES="${ENGINES:-spark,spark-openivm,duckdb,duckdb-openivm,feldera}"
 export HOST_CORES="${HOST_CORES:-}"
 export HOST_MEMORY="${HOST_MEMORY:-}"
 export PRESERVE_RAW="${PRESERVE_RAW:-0}"
-export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-1}"
+export OPENIVM_VALIDATE="${OPENIVM_VALIDATE:-0}"
 export OPENIVM_PROFILE_REFRESH="${OPENIVM_PROFILE_REFRESH:-0}"
 export OPENIVM_QUERY_LOG="${OPENIVM_QUERY_LOG:-1}"
 export STORAGE_METRICS="${STORAGE_METRICS:-1}"

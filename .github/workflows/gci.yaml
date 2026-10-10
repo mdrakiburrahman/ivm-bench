@@ -2,8 +2,19 @@ name: GCI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, closed]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
   workflow_dispatch:
     inputs:
+      reviewed_pr:
+        description: "PR number containing the reviewed benchmark/pin commit"
+        required: true
+        type: string
+      reviewed_sha:
+        description: "Exact approved PR head SHA; dispatch ref must resolve to this SHA"
+        required: true
+        type: string
       experiments_file:
         description: "Path under repo root of a pre-built OAT experiments JSON (overrides the per-knob inputs below if set; e.g. src/containers/benchmark-server/experiments/sf-sweep.json)"
         default: ""
@@ -20,29 +31,17 @@ on:
         description: "Repeat the full benchmark N times and average timings"
         default: "1"
         type: string
-      batch_1_pct:
-        description: "% of batch 1 data"
+      batch_1_insert_pct:
+        description: "% of batch 1 inserts"
         default: "100"
         type: string
-      batch_1_insert_pct:
-        description: "% of batch 1 inserts (overrides batch_1_pct)"
-        default: ""
-        type: string
-      batch_2_pct:
-        description: "% of batch 2 data"
+      batch_2_insert_pct:
+        description: "% of batch 2 inserts"
         default: "1"
         type: string
-      batch_2_insert_pct:
-        description: "% of batch 2 inserts (overrides batch_2_pct)"
-        default: ""
-        type: string
-      batch_3_pct:
-        description: "% of batch 3 data"
-        default: "2"
-        type: string
       batch_3_insert_pct:
-        description: "% of batch 3 inserts (overrides batch_3_pct)"
-        default: ""
+        description: "% of batch 3 inserts"
+        default: "2"
         type: string
       batch_2_update_pct:
         description: "% of existing staging rows to update before batch 2 insert"
@@ -81,8 +80,8 @@ on:
         default: "1"
         type: string
       openivm_validate:
-        description: "Validate OpenIVM views with EXCEPT ALL after each timed batch (0 or 1)"
-        default: "1"
+        description: "Opt in to post-batch OpenIVM validation (DuckDB exact; Spark/Fabric digest; 0 or 1)"
+        default: "0"
         type: string
       openivm_profile_refresh:
         description: "Export OpenIVM refresh profiling CSVs after each batch (0 or 1)"
@@ -106,28 +105,72 @@ on:
         type: string
 
 concurrency:
-  group: gci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
+  group: gci-${{ github.event.pull_request.number || inputs.reviewed_pr || github.ref }}
   cancel-in-progress: true
 
 permissions:
-  pull-requests: write
+  pull-requests: read
   actions: read
   contents: read
 
 jobs:
+  review-gate:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      allowed: ${{ steps.review.outputs.allowed }}
+      sha: ${{ steps.review.outputs.sha }}
+      policy_sha: ${{ steps.policy.outputs.sha }}
+    steps:
+      - name: Resolve trusted review policy
+        uses: actions/github-script@v7
+        id: policy
+        with:
+          script: |
+            let sha = context.payload.pull_request?.base.sha;
+            if (context.eventName === 'workflow_dispatch') {
+              const {data: repo} = await github.rest.repos.get(context.repo);
+              const {data: branch} = await github.rest.repos.getBranch({...context.repo, branch: repo.default_branch});
+              sha = branch.commit.sha;
+            }
+            if (!/^[0-9a-f]{40}$/.test(sha || '')) throw new Error('Trusted policy SHA unavailable');
+            core.setOutput('sha', sha);
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.policy.outputs.sha }}
+          path: .gci-trusted
+          persist-credentials: false
+      - name: Test review admission policy
+        run: node --test .gci-trusted/.github/scripts/gci-review-gate.test.cjs
+      - uses: actions/github-script@v7
+        id: review
+        with:
+          script: |
+            const gate = require('./.gci-trusted/.github/scripts/gci-review-gate.cjs');
+            const result = await gate.check({github, context});
+            core.setOutput('allowed', String(result.allowed));
+            core.setOutput('sha', result.sha || '');
+            core.notice(result.reason);
+
   benchmark:
+    needs: review-gate
+    if: needs.review-gate.outputs.allowed == 'true' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
+    permissions:
+      pull-requests: write
+      actions: read
+      contents: read
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
     env:
       SCALE_FACTOR: ${{ inputs.scale_factor || '10' }}
       BENCHMARK_RUNS: ${{ inputs.benchmark_runs || '1' }}
-      BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
-      BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
-      BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}
-      BATCH_1_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
-      BATCH_2_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
-      BATCH_3_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}
+      BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || '100' }}
+      BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || '1' }}
+      BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || '2' }}
+      BATCH_1_PCT: ${{ inputs.batch_1_insert_pct || '100' }}
+      BATCH_2_PCT: ${{ inputs.batch_2_insert_pct || '1' }}
+      BATCH_3_PCT: ${{ inputs.batch_3_insert_pct || '2' }}
       BATCH_2_UPDATE_PCT: ${{ inputs.batch_2_update_pct || '0' }}
       BATCH_2_DELETE_PCT: ${{ inputs.batch_2_delete_pct || '0' }}
       BATCH_3_UPDATE_PCT: ${{ inputs.batch_3_update_pct || '0' }}
@@ -136,13 +179,30 @@ jobs:
       SCHEDULE: ${{ inputs.schedule || 'serial-host-parallel-cloud' }}
       ENGINES: ${{ inputs.engines || 'databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
-      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
+      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '0' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
       OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
       STORAGE_METRICS: ${{ inputs.storage_metrics || '1' }}
       OAT_MIN_FREE_PCT: ${{ inputs.oat_min_free_pct || '10' }}
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          ref: ${{ needs.review-gate.outputs.policy_sha }}
+          path: .gci-trusted
+          persist-credentials: false
+
+      - name: "Recheck exact review before benchmark work"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const gate = require('./.gci-trusted/.github/scripts/gci-review-gate.cjs');
+            const result = await gate.check({github, context});
+            if (!result.allowed || result.sha !== '${{ needs.review-gate.outputs.sha }}') {
+              throw new Error('Review or PR head changed while waiting for the runner');
+            }
+
       - name: "🧹 Clean Docker-owned files"
         run: |
           sudo rm -rf mount/ 2>/dev/null || true
@@ -150,6 +210,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           clean: true
+          ref: ${{ needs.review-gate.outputs.sha }}
+          persist-credentials: false
 
       - name: "🧪 Run storage collector unit tests"
         run: |
@@ -262,7 +324,7 @@ jobs:
         run: bash src/.scripts/benchmark.sh
 
       - name: "💬 Post PR comment"
-        if: github.event_name == 'pull_request' && !cancelled()
+        if: github.event.pull_request.number && !cancelled()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

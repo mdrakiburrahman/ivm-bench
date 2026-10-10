@@ -9,11 +9,18 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from models.result import EngineResult
+from models.experiments import FeatureFlags
 from services.engine_runner import EngineRunner
 from services.oat_runner import disk_cleanup_after_experiment
 
 
 class FabricProfileExportTest(unittest.TestCase):
+    def test_experiment_validation_default_and_explicit_opt_in(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(FeatureFlags.from_env().openivm_validate)
+        with patch.dict(os.environ, {"OPENIVM_VALIDATE": "1"}, clear=True):
+            self.assertTrue(FeatureFlags.from_env().openivm_validate)
+
     def runner(self, root, engine="fabric-openivm-jvm-35"):
         runner = EngineRunner.__new__(EngineRunner)
         runner._engine = SimpleNamespace(name=engine)
