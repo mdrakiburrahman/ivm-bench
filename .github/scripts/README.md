@@ -18,7 +18,7 @@ Dockerfile pins to the reviewed commit rather than accepting an unreviewed ref.
 
 Dispatch uses `batch_1_insert_pct`, `batch_2_insert_pct` and
 `batch_3_insert_pct`. The three duplicate `batch_N_pct` dispatch aliases were
-removed to fit GitHub's 25-input limit with the two review inputs. Legacy batch
+removed to fit [GitHub's 25-input limit](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs) with the two review inputs. Legacy batch
 environment variables and experiment JSON aliases remain supported. Validation
 defaults to disabled; set `openivm_validate=1` or explicitly enable it in the
 selected experiment's feature flags.

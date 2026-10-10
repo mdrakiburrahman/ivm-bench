@@ -25,9 +25,11 @@ class GciExperimentSelectionTest(unittest.TestCase):
             )
 
     def test_pr_selects_cost_model_experiment(self):
-        result = self.select("pull_request", {"experiments_file": COST_MODEL})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), COST_MODEL)
+        for event in ("pull_request", "pull_request_review"):
+            with self.subTest(event=event):
+                result = self.select(event, {"experiments_file": COST_MODEL})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), COST_MODEL)
 
     def test_empty_or_absent_selector_keeps_tpcdi_defaults(self):
         for config in (None, {"experiments_file": ""}):

@@ -108,7 +108,8 @@ class AugmentedTpcdiTest(unittest.TestCase):
         )
 
         self.assertNotIn("inputs.databricks_refresh_policy", workflow)
-        self.assertIn("inputs.experiments_file || 'inline'", workflow)
+        # Review and manual-dispatch events must cancel stale work for the same PR.
+        self.assertIn("github.event.pull_request.number || inputs.reviewed_pr || github.ref", workflow)
         dispatch_inputs = re.search(
             r"(?ms)^  workflow_dispatch:\n    inputs:\n(.*?)(?=^\S)", workflow,
         ).group(1)
