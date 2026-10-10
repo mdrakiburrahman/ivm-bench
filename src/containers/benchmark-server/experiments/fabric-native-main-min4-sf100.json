@@ -1,15 +1,16 @@
 {
   "_design_notes": [
-    "Metadata-only follow-up to run37848115237: Spark30472e5c ->5f2b4a22. Replace CDF source-validation SHOW TBLPROPERTIES with fresh Delta snapshot properties and reuse eligible operation-local REFRESH schemas in constraint discovery. Keep prior CREATE schema reuse, dependency-log pruning and restored unchanged-source join pruning.",
-    "Native9f657576d1e47440d7e62de1befd47bf76b4a83e, LPTS29c606ee and DuckDB1.5.2 ABI unchanged. Runtime1.3, min4/max9 workers, 8cores/56GB and dbtthreads4 unchanged. Fabric OpenIVM only; SF100 inserts100/1/0.01, zero updates/deletes, serial, one repetition, validationOFF, profiling/querylog/storageON.",
-    "Review: fresh Delta configuration read on every CDF validation. Reject ordinary views and non-Delta sources; preserve supported row-local public MV projections and analyzer aliases. Current constraint properties still discovered freshly. Exclude explicit pins and prepared source-advance historical schemas from reuse. CREATE watermark race and compiler-cache compatibility issues unchanged.",
-    "60 targeted tests passed: 16 common metadata, 8 CDF barriers, 36 pinned-source/TPCDI tests. Exact49-model mini-fixture bag parity all3batches and structural incremental checks passed. Full Spark3.5/4.1 CI37856549371 pending. Mini-fixture checks do not claim SF10/SF100 exact validation.",
-    "Direct predecessor37848115237 B1/B2/B3 1400.733003/765.525491/575.308575s total2741.567068. Compare also37809784778, Fig1 36248895920, cached UNPAIRED nonIVM31005703451; paired current nonIVM unavailable. Require49 incremental classifications,147 successful model executions and no full_refresh_stmt. CDF validation and refresh compile metadata should reduce; initial SQL/derivatives must preserve behavior.",
-    "No worker, Livy, scheduler, publication, durability, checkpoint or CREATE-watermark semantic changes. No merges."
+    "Spark6498e89 rebases all21 unchanged performance/compatibility patches from5f2b4a22 onto current main a3398d098a8f98672bc55e1e7c0b5031da58e0e7. No merge. Preserve remote archive/fig1-backup-regression-before-main-20261010.",
+    "Benchmark native9f657576d1e47440d7e62de1befd47bf76b4a83e and LPTS29c606ee remain unchanged. Spark development/CI native pin remains e773415d and its matching immutable CI image; benchmark intentionally overrides it with current native main.",
+    "Fabric OpenIVM and Spark OpenIVM only, serial; SF100 inserts100/1/0.01, zero updates/deletes, one repetition, dbtthreads4, exactvalidationOFF, profile/querylog/storageON. Preserve same runtime1.3 and min4/max9 Fabric worker settings.",
+    "Run-test shell checks and git diff--check passed. All21 git range-diff pairs are identical. Full rebased Spark3.5/4.1 CI dispatched separately; do not claim passed until completion.",
+    "Fabric direct pre-rebase run37958739373 B1426.058251619339/693.4789848327637/535.3692333698273 total2654.90646982193; cached nonIVM31005703451 UNPAIRED. Matching previous Spark result must be verified before comparison; report unavailable if absent.",
+    "Branch retains the previously owner-authorized experimental asynchronous state backup; remote mirror completion is not guaranteed at command return. No new change to backup, cost model, durability, scheduling or publication in this rebase."
   ],
   "baseline": {
     "engines": [
-      "fabric-openivm-jvm-35"
+      "fabric-openivm-jvm-35",
+      "spark-openivm"
     ],
     "parallel": false,
     "schedule": "serial",
