@@ -77,6 +77,27 @@ class FabricProfileExportTest(unittest.TestCase):
         self.assertEqual(runner._result.batches[1].duration_s, 10.0)
         self.assertEqual(runner._result.batches[1].status, "completed")
 
+    def test_validation_is_opt_in_at_every_scale(self):
+        for engine in ("fabric-openivm-jvm-35", "spark-openivm"):
+            for sf in (10, 100):
+                for enabled in (None, "0", "1"):
+                    with self.subTest(engine=engine, sf=sf, enabled=enabled), \
+                            patch.dict(os.environ, {"OPENIVM_PROFILE_REFRESH": "0", "OPENIVM_QUERY_LOG": "0"}):
+                        os.environ.pop("OPENIVM_VALIDATE", None)
+                        if enabled is not None:
+                            os.environ["OPENIVM_VALIDATE"] = enabled
+                        runner = self.runner("unused", engine)
+                        runner._config.scale_factor = sf
+                        for method in ("_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
+                                       "_save_openivm_ops_chart", "_capture_storage_metrics",
+                                       "_ensure_cpu_measurement_status", "_start_cpu_measurement", "_finish_cpu_measurement"):
+                            setattr(runner, method, Mock())
+                        runner._run_fabric = Mock(return_value="run")
+                        runner._run_spark_openivm = Mock(return_value="run")
+                        runner._validate_spark_openivm = Mock()
+                        runner._run_batch(2)
+                        self.assertEqual(runner._validate_spark_openivm.call_count, int(enabled == "1"))
+
     @patch("services.engine_runner.requests.post")
     def test_empty_exports_are_not_saved_as_success(self, post):
         for engine in ("fabric-openivm-jvm-35", "spark-openivm"):

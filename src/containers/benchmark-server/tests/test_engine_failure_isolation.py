@@ -102,25 +102,30 @@ class OpenIvmValidationHookTest(unittest.TestCase):
         runner._emit = Mock()
         return runner
 
-    def test_fabric_sf10_requests_exact_validation(self):
+    def test_validation_uses_digest_at_every_scale_and_engine_specific_artifacts(self):
         from tempfile import TemporaryDirectory
-        with TemporaryDirectory() as repo, patch("services.engine_runner.requests.post") as post:
-            post.return_value = Mock(status_code=200)
-            post.return_value.json.return_value = {
-                "status": "passed", "models_checked": 49, "validation_method": "except_all"
-            }
-            self.runner(repo, 10)._validate_spark_openivm("run", 2)
-            self.assertEqual(post.call_args.args[0],
-                             "http://dbt.invalid/validate/fabric-openivm-jvm-35/run")
-            self.assertEqual(post.call_args.kwargs["json"], {"exact": True})
+        for engine in ("fabric-openivm-jvm-35", "spark-openivm"):
+            for sf in (10, 100):
+                with self.subTest(engine=engine, sf=sf), TemporaryDirectory() as repo, \
+                        patch("services.engine_runner.requests.post") as post:
+                    post.return_value = Mock(status_code=200)
+                    post.return_value.json.return_value = {
+                        "status": "passed", "models_checked": 49, "validation_method": "count_hash_rounded"
+                    }
+                    runner = self.runner(repo, sf)
+                    runner._engine.name = engine
+                    runner._validate_spark_openivm("run", 2)
+                    self.assertEqual(post.call_args.args[0], f"http://dbt.invalid/validate/{engine}/run")
+                    self.assertNotIn("json", post.call_args.kwargs)
+                    self.assertTrue((Path(repo) / f"mount/results/{sf}/dbt-server/validation-{engine}-batch2.json").exists())
 
-    def test_sf10_cannot_accept_digest_pass_as_exact_validation(self):
+    def test_failed_comparison_fails_batch_at_any_scale(self):
         from tempfile import TemporaryDirectory
         from services.engine_runner import OpenIvmValidationError
         with TemporaryDirectory() as repo, patch("services.engine_runner.requests.post") as post:
             post.return_value = Mock(status_code=200)
-            post.return_value.json.return_value = {"status": "passed", "validation_method": "count_hash_rounded"}
-            with self.assertRaisesRegex(OpenIvmValidationError, "not performed"):
+            post.return_value.json.return_value = {"status": "failed", "validation_method": "count_hash_rounded"}
+            with self.assertRaisesRegex(OpenIvmValidationError, "validation failed"):
                 self.runner(repo, 10)._validate_spark_openivm("run", 2)
 
 

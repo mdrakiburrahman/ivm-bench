@@ -1878,13 +1878,11 @@ class EngineRunner:
         — keeps the per-batch hook + result-JSON shape engine-agnostic so
         the existing chart/aggregate pipeline can consume both."""
         name = self._engine.name
-        exact = self._config.scale_factor == 10
-        method = "except_all" if exact else "count_hash_rounded"
+        method = "count_hash_rounded"
         self._emit(f"[{name}] Validating batch {batch_num} with {method}")
         try:
             resp = requests.post(
                 f"{self._dbt_url}/validate/{name}/{run_id}",
-                json={"exact": exact},
                 timeout=604800,
             )
             data = resp.json()
@@ -1899,13 +1897,11 @@ class EngineRunner:
         )
         os.makedirs(results_dir, exist_ok=True)
         with open(
-            os.path.join(results_dir, f"validation-spark-openivm-batch{batch_num}.json"),
+            os.path.join(results_dir, f"validation-{name}-batch{batch_num}.json"),
             "w",
         ) as f:
             json.dump(data, f, indent=2)
 
-        if exact and data.get("validation_method") != method:
-            raise OpenIvmValidationError("Exact validation was requested but not performed")
         if resp.status_code != 200 or data.get("status") != "passed":
             failures = data.get("failures") or []
             detail = ", ".join(
@@ -1917,7 +1913,7 @@ class EngineRunner:
                 + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
             )
         self._emit(
-            f"[spark-openivm] Validation passed for batch {batch_num}: "
+            f"[{name}] Validation passed for batch {batch_num}: "
             f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
         )
 

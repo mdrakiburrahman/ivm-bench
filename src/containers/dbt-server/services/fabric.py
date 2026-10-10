@@ -1046,7 +1046,7 @@ class ProfileClient:
 
     def __enter__(self):
         from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
-        from dbt.adapters.fabricspark.livysession import LivyCursor, LivySession
+        from dbt.adapters.fabricspark.livysession import LivySession
 
         session_file = Path("/tmp/fabric-openivm-jvm-35-livy.session-id")
         session_id = session_file.read_text().strip()
@@ -1065,7 +1065,7 @@ class ProfileClient:
         self.session = LivySession(credentials)
         if not self.session.try_reuse_session(session_id):
             raise RuntimeError("Fabric dbt session is unavailable; cannot export telemetry")
-        self.cursor = LivyCursor(credentials, self.session)
+        self.credentials = credentials
         return self
 
     def execute(self, sql: str) -> dict:
@@ -1073,16 +1073,23 @@ class ProfileClient:
         # driver would not contain the catalog whose timings we are collecting.
         if self.session.is_new_session_required:
             raise RuntimeError("Fabric dbt session was lost during telemetry export")
-        self.cursor.execute(sql)
-        columns = self.cursor.description
-        if not columns and self.require_tabular:
-            raise RuntimeError("Fabric telemetry response has no tabular schema")
-        columns = columns or []
-        return {"output": {"data": {"application/json": {
-            "schema": {"fields": [{"name": column[0]} for column in columns]},
-            "data": self.cursor.fetchall() if columns else [],
-        }}}}
+        from dbt.adapters.fabricspark.livysession import LivyCursor
+
+        # A statement owns its result buffer even when validation runs concurrently.
+        cursor = LivyCursor(self.credentials, self.session)
+        try:
+            cursor.execute(sql)
+            columns = cursor.description
+            if not columns and self.require_tabular:
+                raise RuntimeError("Fabric telemetry response has no tabular schema")
+            columns = columns or []
+            return {"output": {"data": {"application/json": {
+                "schema": {"fields": [{"name": column[0]} for column in columns]},
+                "data": cursor.fetchall() if columns else [],
+            }}}}
+        finally:
+            cursor.close()
 
     def __exit__(self, *_args):
-        # Closing the cursor only clears its result rows; keep the dbt session.
-        self.cursor.close()
+        # The dbt-owned session survives profile export and validation.
+        pass

@@ -1,7 +1,8 @@
+import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, mock_open, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services import spark_openivm_validation as validation
@@ -112,7 +113,7 @@ class FabricValidationSessionTest(unittest.TestCase):
     def test_fabric_run_uses_its_manifest_and_worker_owned_cursors(self):
         from contextlib import contextmanager
         conn = Mock()
-        conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35", "status": "success"}
+        conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35", "status": "completed"}
         conn.execute.return_value.fetchall.return_value = [
             {"unique_id": f"model.test.v{i}", "name": f"v{i}", "resource_type": "model", "status": "success", "compiled_sql": "SELECT 1"}
             for i in range(2)
@@ -128,11 +129,12 @@ class FabricValidationSessionTest(unittest.TestCase):
             self.assertEqual(kwargs["schema"], "silver")
             return {"status": "pass", "diff_count": 0, "validation_method": "except_all"}
         with patch.object(validation, "get_db", return_value=conn), \
-             patch("services.dbt_compiler.get_compiled_models", return_value={f"model.test.v{i}": {"schema": "silver"} for i in range(2)}) as manifest, \
+             patch("services.dbt_compiler.get_compiled_models") as manifest, \
+             patch("builtins.open", mock_open(read_data=json.dumps({"nodes": {f"model.test.v{i}": {"schema": "silver"} for i in range(2)}}))), \
              patch.object(validation, "_validate_one", side_effect=validate), \
              patch.object(validation, "LivyClient") as local:
             result = validation.validate_run("run", exact=True, client_factory=factory)
-        manifest.assert_called_once_with("fabric-openivm-jvm-35")
+        manifest.assert_not_called()
         local.assert_not_called()
         self.assertEqual(len(clients), 2)
         self.assertIsNot(clients[0], clients[1])
@@ -142,13 +144,43 @@ class FabricValidationSessionTest(unittest.TestCase):
     def test_empty_model_set_cannot_pass_validation(self):
         from contextlib import nullcontext
         conn = Mock()
-        conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35", "status": "success"}
+        conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35", "status": "completed"}
         conn.execute.return_value.fetchall.return_value = []
         with patch.object(validation, "get_db", return_value=conn), \
-             patch("services.dbt_compiler.get_compiled_models", return_value={}):
-            result = validation.validate_run("run", exact=True, client_factory=lambda: nullcontext())
-        self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["models_checked"], 0)
+             patch("builtins.open", mock_open(read_data='{"nodes":{}}')):
+            with self.assertRaisesRegex(ValueError, "no successful models"):
+                validation.validate_run("run", client_factory=lambda: nullcontext())
+
+    def test_incomplete_fabric_models_cannot_pass(self):
+        from contextlib import nullcontext
+        for update, schema, message in (({"status": "error"}, "silver", "not successful"),
+                                         ({"compiled_sql": ""}, "silver", "lacks compiled SQL"),
+                                         ({}, None, "lacks manifest schema")):
+            with self.subTest(update=update, schema=schema):
+                node = {"unique_id": "model.test.v", "name": "v", "resource_type": "model",
+                        "status": "success", "compiled_sql": "SELECT 1"}
+                node.update(update)
+                conn = Mock()
+                conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35", "status": "completed"}
+                conn.execute.return_value.fetchall.return_value = [node]
+                with patch.object(validation, "get_db", return_value=conn), \
+                     patch("builtins.open", mock_open(read_data=json.dumps({"nodes": {"model.test.v": {"schema": schema}}}))), \
+                     patch.object(validation, "_validate_one") as compare:
+                    with self.assertRaisesRegex(ValueError, message):
+                        validation.validate_run("run", client_factory=lambda: nullcontext())
+                    compare.assert_not_called()
+
+    def test_wrong_route_and_failed_run_are_rejected_before_queries(self):
+        for run, message in (({"engine": "spark-openivm", "status": "completed"}, "does not match"),
+                             ({"engine": "fabric-openivm-jvm-35", "status": "failed"}, "requires a completed run")):
+            conn = Mock()
+            conn.execute.return_value.fetchone.return_value = run
+            with self.subTest(run=run), patch.object(validation, "get_db", return_value=conn), \
+                    patch.object(validation, "_validate_one") as compare:
+                with self.assertRaisesRegex(ValueError, message):
+                    validation.validate_run("run", engine="fabric-openivm-jvm-35", client_factory=Mock())
+                conn.close.assert_called_once()
+                compare.assert_not_called()
 
 
 if __name__ == "__main__":

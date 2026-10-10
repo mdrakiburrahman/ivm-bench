@@ -3,6 +3,7 @@ import io
 import os
 import re
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -59,6 +60,57 @@ class FabricRuntimePinTest(unittest.TestCase):
         self.request.side_effect = [self.initial, Mock(status_code=202, headers={"Location": "https://example.invalid/operation"}), self.updated]
         fabric._stage_spark_compute(self.properties)
         poll.assert_called_once_with("https://example.invalid/operation")
+
+
+class FabricCursorOwnershipTest(unittest.TestCase):
+    def setUp(self):
+        self.session = MagicMock(is_new_session_required=False)
+        self.session.try_reuse_session.return_value = True
+        self.cursors = [MagicMock(description=[("value",)]), MagicMock(description=[("value",)])]
+        self.cursors[0].fetchall.return_value = [[1]]
+        self.cursors[1].fetchall.return_value = [[2]]
+        self.cursor_factory = Mock(side_effect=self.cursors)
+        modules = {
+            "dbt.adapters.fabricspark.credentials": types.SimpleNamespace(FabricSparkCredentials=Mock()),
+            "dbt.adapters.fabricspark.livysession": types.SimpleNamespace(
+                LivySession=Mock(return_value=self.session), LivyCursor=self.cursor_factory),
+        }
+        self.enterContext(patch.dict(sys.modules, modules))
+        self.enterContext(patch("services.fabric.Path.read_text", return_value="saved"))
+        self.enterContext(patch("services.fabric._load_resolved", return_value={"lakehouse_name": "compute", "lakehouse_id": "lake"}))
+        self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="lake"))
+
+    def test_statements_have_separate_cursors_and_keep_session_alive(self):
+        with fabric.ProfileClient() as client:
+            results = [client.execute("SELECT 1"), client.execute("SELECT 2")]
+        self.assertEqual([r["output"]["data"]["application/json"]["data"] for r in results], [[[1]], [[2]]])
+        self.session.try_reuse_session.assert_called_once_with("saved")
+        for cursor, sql in zip(self.cursors, ("SELECT 1", "SELECT 2")):
+            cursor.execute.assert_called_once_with(sql)
+            cursor.close.assert_called_once()
+        self.session.close.assert_not_called()
+
+    def test_query_failure_closes_cursor_without_deleting_session(self):
+        self.cursors[0].execute.side_effect = RuntimeError("query failed")
+        with fabric.ProfileClient() as client:
+            with self.assertRaisesRegex(RuntimeError, "query failed"):
+                client.execute("SELECT 1")
+        self.cursors[0].close.assert_called_once()
+        self.session.close.assert_not_called()
+
+    def test_dead_or_lost_session_never_creates_replacement(self):
+        self.session.try_reuse_session.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            with fabric.ProfileClient():
+                self.fail("attached to dead session")
+        self.cursor_factory.assert_not_called()
+        self.session.try_reuse_session.return_value = True
+        with fabric.ProfileClient() as client:
+            self.session.is_new_session_required = True
+            with self.assertRaisesRegex(RuntimeError, "session was lost"):
+                client.execute("SELECT 1")
+        self.cursor_factory.assert_not_called()
+        self.session.close.assert_not_called()
 
 
 try:

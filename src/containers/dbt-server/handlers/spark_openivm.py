@@ -58,8 +58,7 @@ def spark_openivm_sources_append(batch_num):
 def spark_openivm_validate_run(run_id, engine):
     """Validate OpenIVM materialized views against compiled dbt SQL.
 
-    Mirrors /validate/duckdb-openivm/<run_id>. EXCEPT-ALL comparison runs
-    through a Livy SQL session against the spark-openivm Spark cluster.
+    Digest comparison is the default; exact bag comparison is opt-in.
     """
     try:
         body = request.get_json(silent=True) or {}
@@ -69,7 +68,7 @@ def spark_openivm_validate_run(run_id, engine):
         client_factory = (lambda: fabric.ProfileClient(require_tabular=False)
                           ) if engine == "fabric-openivm-jvm-35" else None
         result = spark_openivm_validation.validate_run(
-            run_id, exact=exact, client_factory=client_factory
+            run_id, exact=exact, client_factory=client_factory, engine=engine
         )
         status_code = 200 if result["status"] == "passed" else 500
         return jsonify(result), status_code

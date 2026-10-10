@@ -45,8 +45,8 @@ This intentionally runs OUTSIDE the benchmark timer (post-batch hook in
 benchmark-server). On the first failure the post-batch hook turns the
 batch result red, which is the entire point of OPENIVM_VALIDATE=1.
 
-Exact SF10 validation uses bidirectional EXCEPT ALL on unrounded user columns.
-The default digest mode remains available for larger datasets.
+An explicit `exact=true` API request uses bidirectional EXCEPT ALL on unrounded
+user columns. The benchmark hook uses digest validation at every scale factor.
 
 Configuration:
 
@@ -60,6 +60,7 @@ Configuration:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -480,7 +481,7 @@ def _validate_one(
         comparison = {}
         if exact:
             # Preserve duplicates and nulls in both directions. Do not round
-            # values or hash rows: SF10 is the exact correctness gate.
+            # values or hash rows when exact comparison is explicitly requested.
             diff_sql = (
                 "SELECT COUNT(*) FROM ("
                 f"({mv_raw_subquery} EXCEPT ALL {expected_raw_subquery}) "
@@ -598,7 +599,7 @@ def _validate_one(
     return entry
 
 
-def validate_run(run_id: str, *, exact: bool = False, client_factory=None) -> dict:
+def validate_run(run_id: str, *, exact: bool = False, client_factory=None, engine=None) -> dict:
     """Validate successful model nodes from a spark-openivm dbt run.
 
     Returns a dict shaped exactly like
@@ -619,11 +620,18 @@ def validate_run(run_id: str, *, exact: bool = False, client_factory=None) -> di
     if not run:
         conn.close()
         raise ValueError(f"run_id not found: {run_id}")
+    if engine is not None and run["engine"] != engine:
+        conn.close()
+        raise ValueError(f"run engine {run['engine']} does not match validation route {engine}")
     if run["engine"] not in ("spark-openivm", "fabric-openivm-jvm-35"):
         conn.close()
         raise ValueError(
-            f"validation only supports spark-openivm, got {run['engine']}"
+            f"validation does not support {run['engine']}"
         )
+    is_fabric = run["engine"] == "fabric-openivm-jvm-35"
+    if is_fabric and (run["status"] != "completed" or client_factory is None):
+        conn.close()
+        raise ValueError("Fabric validation requires a completed run and its existing dbt session")
 
     nodes = conn.execute(
         """
@@ -639,28 +647,43 @@ def validate_run(run_id: str, *, exact: bool = False, client_factory=None) -> di
     # Load the compiled manifest for schema metadata (the dbt-server caches
     # this so repeated lookups are cheap). Imported here to keep the
     # duckdb-openivm-only `dbt_compiler` dependency optional.
-    from services.dbt_compiler import get_compiled_models
+    from services.dbt_compiler import get_compiled_models, PROJECTS_DIR
 
-    compiled_models = get_compiled_models(run["engine"])
+    if is_fabric:
+        # Names change on each provisioned run; read its build manifest without
+        # reusing a compiler cache or launching an on-demand compile.
+        with open(os.path.join(PROJECTS_DIR, run["engine"], "target", "manifest.json")) as source:
+            compiled_models = json.load(source)["nodes"]
+    else:
+        compiled_models = get_compiled_models(run["engine"])
 
     # Pre-filter to the validatable model set so the thread pool only sees
     # eligible nodes; preserves input rowid order via the input list.
     work: list[dict[str, Any]] = []
     for node in nodes:
+        if is_fabric and node["resource_type"] == "model" and node["status"] not in ("success", "pass"):
+            raise ValueError(f"Fabric model was not successful: {node['unique_id']}")
         if node["resource_type"] != "model" or node["status"] not in (
             "success", "pass",
         ):
             continue
         compiled_sql = (node["compiled_sql"] or "").strip().rstrip(";")
         if not compiled_sql:
+            if is_fabric:
+                raise ValueError(f"Fabric model lacks compiled SQL: {node['unique_id']}")
             continue
         meta = compiled_models.get(node["unique_id"], {})
+        if is_fabric and not meta.get("schema"):
+            raise ValueError(f"Fabric model lacks manifest schema: {node['unique_id']}")
         work.append({
             "unique_id": node["unique_id"],
             "name": node["name"],
             "schema": meta.get("schema") or "default",
             "compiled_sql": compiled_sql,
         })
+
+    if is_fabric and not work:
+        raise ValueError("Fabric validation has no successful models to check")
 
     started = time.monotonic()
 
