@@ -28,10 +28,10 @@ def _active_table_rows(table_dir: str) -> int:
     return sum(active_files.values())
 
 
-def collect_source_row_counts(delta_dir: str) -> Dict[str, Any]:
+def collect_source_row_counts(delta_dir: str, batch_count: int = 3) -> Dict[str, Any]:
     """Return total and per-table rows for each generated benchmark batch."""
     batches: Dict[str, Any] = {}
-    for batch_num in (1, 2, 3):
+    for batch_num in range(1, batch_count + 1):
         batch_dir = os.path.join(delta_dir, f"batch{batch_num}")
         tables: Dict[str, int] = {}
         if os.path.isdir(batch_dir):

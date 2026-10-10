@@ -112,6 +112,57 @@ The built-in augmented sweeps map 10, 20, 30, 40, and 50 percent of the
 `smoke-augmented-daily.json` file is the focused SF3 integration test. Set
 `BENCHMARK_RUNS=2` for two repetitions per point.
 
+### Repeated percentage refreshes
+
+Set `repeated_refresh: true` in an experiment to initialize once at the
+requested `scale_factor`, then retain source and engine state across refreshes.
+`workload` selects `standard` or `databricks` (the extended TPC-DI workload).
+`refresh_count` defaults to **20**, and `refresh_pct` defaults to **1**:
+
+```json
+{"experiments": [{
+  "scale_factor": 3,
+  "repeated_refresh": true,
+  "workload": "standard",
+  "refresh_count": 20,
+  "refresh_pct": "1",
+  "engines": ["duckdb"]
+}]}
+```
+
+Each refresh inserts `ceil(current_source_rows * refresh_pct / 100)` rows.
+The denominator counts the source tables actually loaded by the engines,
+including static references; empty initial staging tables contribute zero.
+The unused raw `time` table is excluded. Percentages apply to the aggregate
+source row count, rather than independently to each table. The table mix follows
+the generated event stream. Integer row counts compound after every refresh;
+the ideal growth target is `(1 + refresh_pct / 100)^refresh_count`.
+
+Generation runs before engine initialization. It measures the initial workload
+and available reservoir, then increases PDGF's native incremental horizon until
+the actual reservoir covers every compounded budget. The scale factor and
+initial table counts stay fixed. Extended mode first consumes the existing
+historical daily event window, then native future events if needed. Native customer/account CDC sequence IDs are mapped to the native day's clock
+for the CRM models; the original sequence controls stream cuts. Extended fact
+adapters likewise receive event timestamps in their CDC fields.
+The generator's date-reference horizon limits native extension to 1200 days;
+requests beyond that bound fail explicitly.
+
+Cuts may fall inside a native day. Within a day, customer/account events precede
+trades, and trades precede holdings; events within each source retain sequence
+order. Each generated event is consumed at most once, with its original keys
+and relationships. Static references receive no inserts. Batch 1 is the initial
+load; batches 2 through `refresh_count + 1` are the refreshes. Legacy batch
+percentage/day knobs are replaced by this mode's row budgets; mutation knobs
+must remain zero. With `repeated_refresh` omitted, the existing three-batch
+behavior is unchanged.
+
+`refresh-plan.json` records generator sizing and initial, before, inserted, and
+resulting counts for every source table and round. The server logs these counts
+and archives them in `source-row-counts.json`; `results.csv` includes every
+refresh and its before/after source totals. The small two-workload experiment
+file is `src/containers/benchmark-server/experiments/smoke-repeated-refresh.json`.
+
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden
 intermediate state required by the engine (for example Feldera DBSP storage or
@@ -438,3 +489,36 @@ set inherits from the file's `baseline` block.
 As this repo's implementation of the TPC-DI is an unpublished and unofficial TPC Benchmark, the following is required legalese per TPC Fair Use Policy:
 
 > The `ivm-bench` TPC-DI is derived from the TPC-DI source data to test Incremental View Maintenance and as such is NOT comparable to officially published TPC-DI results.
+
+
+### OpenIVM profiling on Fabric and local Spark
+
+`OPENIVM_PROFILE_REFRESH=1` exports refresh-step CSVs after each timed batch
+for both `spark-openivm` and `fabric-openivm-jvm-35`. `OPENIVM_QUERY_LOG=1`
+exports their refresh SQL. Files use the engine name so the two engines can
+be compared without overwriting each other's results:
+
+- `mount/results/<sf>/dbt-server/<engine>-profile-batch<N>.csv`
+- `mount/results/<sf>/dbt-server/<engine>-profile-by-step-batch<N>.csv`
+- `mount/results/<sf>/dbt-server/<engine>-query-log-batch<N>.json`
+- `mount/results/<sf>/<engine>/query-log/<view>/<refresh>/` (formatted working copy; OAT cleanup removes it)
+
+Fabric attaches to the existing dbt Livy session in the resolved compute
+lakehouse. If that session has expired, export fails instead of starting a
+new driver with an empty catalog. Export requests run after the batch timer
+stops. Profile catalogs are cumulative; use refresh IDs and timestamps to
+identify the batch, not the export filename alone.
+
+Both dbt profiles set `livy.rsc.sql.num-rows` to 100,000. Livy's default
+1,000-row cap silently clips cumulative profiles. Export rejects results
+of exactly 1,000 rows (possibly an old session) or at least 100,000 rows;
+these checks are conservative and do not prove completeness for arbitrary
+server-side limits. Use fresh sessions with the checked-in configuration.
+The Fabric adapter contract tests in `test_fabric_profile.py` require the
+dbt-server requirements; they are skipped on hosts without the adapter.
+
+Batch-1 profile metadata also records a small allowlist of effective SQL
+execution settings from `SET -v` (broadcast, shuffle, AQE and Delta MERGE
+source materialization). Missing keys mean the runtime did not report them;
+they must not be interpreted as default values. Arbitrary session properties
+and credentials are not saved.

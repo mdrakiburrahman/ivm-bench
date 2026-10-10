@@ -18,7 +18,7 @@ from models.config import (
     EngineConfig,
     is_cloud_engine,
 )
-from models.result import EngineResult
+from models.result import BatchResult, EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager, compute_cpu_usage_delta
 from services.storage_sync import (
@@ -159,7 +159,9 @@ class EngineRunner:
         self._config = config
         self._engine = engine_config
         self._emit = emit
-        self._result = EngineResult(engine=engine_config.name)
+        self._result = EngineResult(engine=engine_config.name, batches=[
+            BatchResult(batch_num=i) for i in range(1, config.batch_count + 1)
+        ])
         self._benchmark_id = benchmark_id
         self._storage_barrier = storage_barrier
         docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
@@ -346,8 +348,8 @@ class EngineRunner:
                 self._emit(f"[{name}] compiler-bench completed successfully")
                 return self._result
 
-            # Run 3 batches
-            for batch_num in range(1, 4):
+            # Initialize in batch 1, then refresh the same engine state.
+            for batch_num in range(1, self._config.batch_count + 1):
                 self._run_batch(batch_num)
                 if self._result.batches[batch_num - 1].status == "failed":
                     raise RuntimeError(
@@ -877,7 +879,7 @@ class EngineRunner:
                 self._validate_duckdb_openivm(run_id, batch_num)
 
             if (
-                name == "spark-openivm"
+                name in ("spark-openivm", "fabric-openivm-jvm-35")
                 and run_id
                 and batch.status != "failed"
                 and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
@@ -893,7 +895,7 @@ class EngineRunner:
                 self._export_duckdb_openivm_profile(run_id, batch_num)
 
             if (
-                name == "spark-openivm"
+                name in ("spark-openivm", "fabric-openivm-jvm-35")
                 and run_id
                 and batch.status != "failed"
                 and os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
@@ -901,7 +903,7 @@ class EngineRunner:
                 self._export_spark_openivm_profile(run_id, batch_num)
 
             if (
-                name == "spark-openivm"
+                name in ("spark-openivm", "fabric-openivm-jvm-35")
                 and run_id
                 and batch.status != "failed"
                 and os.environ.get("OPENIVM_QUERY_LOG", "0") == "1"
@@ -1877,10 +1879,12 @@ class EngineRunner:
         materialized views over Livy. Mirrors `_validate_duckdb_openivm`
         — keeps the per-batch hook + result-JSON shape engine-agnostic so
         the existing chart/aggregate pipeline can consume both."""
-        self._emit(f"[spark-openivm] Validating batch {batch_num} with EXCEPT ALL")
+        name = self._engine.name
+        method = "count_hash_rounded"
+        self._emit(f"[{name}] Validating batch {batch_num} with {method}")
         try:
             resp = requests.post(
-                f"{self._dbt_url}/validate/spark-openivm/{run_id}",
+                f"{self._dbt_url}/validate/{name}/{run_id}",
                 timeout=604800,
             )
             data = resp.json()
@@ -1895,7 +1899,7 @@ class EngineRunner:
         )
         os.makedirs(results_dir, exist_ok=True)
         with open(
-            os.path.join(results_dir, f"validation-spark-openivm-batch{batch_num}.json"),
+            os.path.join(results_dir, f"validation-{name}-batch{batch_num}.json"),
             "w",
         ) as f:
             json.dump(data, f, indent=2)
@@ -1911,7 +1915,7 @@ class EngineRunner:
                 + (f": {detail}" if detail else f": {data.get('error', 'unknown error')}")
             )
         self._emit(
-            f"[spark-openivm] Validation passed for batch {batch_num}: "
+            f"[{name}] Validation passed for batch {batch_num}: "
             f"{data.get('models_checked', 0)} models in {data.get('duration_s', '?')}s"
         )
 
@@ -1938,6 +1942,7 @@ class EngineRunner:
         csv_payloads = data.get("csv") or {}
         file_map = {
             "profile": f"openivm-profile-batch{batch_num}.csv",
+            "cli_timings": f"openivm-cli-timings-batch{batch_num}.csv",
             "by_step": f"openivm-profile-by-step-batch{batch_num}.csv",
             "by_view_step": f"openivm-profile-by-view-step-batch{batch_num}.csv",
         }
@@ -1964,16 +1969,24 @@ class EngineRunner:
         Mirrors `_export_duckdb_openivm_profile`. The dbt-server route issues
         `SHOW OPENIVM REFRESH PROFILE` against the live Livy SQL session.
         """
-        self._emit(f"[spark-openivm] Exporting OpenIVM profile after batch {batch_num}")
+        engine = self._engine.name
+        self._emit(f"[{engine}] Exporting OpenIVM profile after batch {batch_num}")
         resp = requests.post(
-            f"{self._dbt_url}/profile/spark-openivm/{run_id}/{batch_num}",
+            f"{self._dbt_url}/profile/{engine}/{run_id}/{batch_num}",
             timeout=7200,
         )
         data = resp.json()
         if resp.status_code != 200 or data.get("status") != "ok":
             raise RuntimeError(
-                f"spark-openivm profile export failed for batch {batch_num}: "
+                f"{engine} profile export failed for batch {batch_num}: "
                 f"{data.get('error', 'unknown error')}"
+            )
+
+        # TPC-DI has already created MVs; a cumulative export cannot be empty.
+        if not data.get("row_count"):
+            raise RuntimeError(
+                f"{engine} profile export is empty after batch {batch_num}; "
+                "verify spark.openivm.profile.refresh=true in the benchmark session"
             )
 
         results_dir = os.path.join(
@@ -1984,9 +1997,9 @@ class EngineRunner:
 
         csv_payloads = data.get("csv") or {}
         file_map = {
-            "profile": f"spark-openivm-profile-batch{batch_num}.csv",
-            "by_step": f"spark-openivm-profile-by-step-batch{batch_num}.csv",
-            "by_view_step": f"spark-openivm-profile-by-view-step-batch{batch_num}.csv",
+            "profile": f"{engine}-profile-batch{batch_num}.csv",
+            "by_step": f"{engine}-profile-by-step-batch{batch_num}.csv",
+            "by_view_step": f"{engine}-profile-by-view-step-batch{batch_num}.csv",
         }
         for key, filename in file_map.items():
             with open(os.path.join(results_dir, filename), "w", encoding="utf-8") as f:
@@ -1994,14 +2007,14 @@ class EngineRunner:
 
         metadata = {k: v for k, v in data.items() if k != "csv"}
         with open(
-            os.path.join(results_dir, f"spark-openivm-profile-export-batch{batch_num}.json"),
+            os.path.join(results_dir, f"{engine}-profile-export-batch{batch_num}.json"),
             "w",
             encoding="utf-8",
         ) as f:
             json.dump(metadata, f, indent=2)
 
         self._emit(
-            f"[spark-openivm] OpenIVM profile exported after batch {batch_num}: "
+            f"[{engine}] OpenIVM profile exported after batch {batch_num}: "
             f"{data.get('row_count', 0)} rows across {data.get('view_count', 0)} views"
         )
 
@@ -2023,24 +2036,45 @@ class EngineRunner:
         Idempotent: the per-refresh directory is `rmtree`d before being
         re-written so the on-disk state always equals the catalog state.
         """
+        engine = self._engine.name
         self._emit(
-            f"[spark-openivm] Exporting OpenIVM query-log after batch {batch_num}"
+            f"[{engine}] Exporting OpenIVM query-log after batch {batch_num}"
         )
         resp = requests.post(
-            f"{self._dbt_url}/query-log/spark-openivm/{run_id}/{batch_num}",
+            f"{self._dbt_url}/query-log/{engine}/{run_id}/{batch_num}",
             timeout=7200,
         )
         data = resp.json()
         if resp.status_code != 200 or data.get("status") != "ok":
             raise RuntimeError(
-                f"spark-openivm query-log export failed for batch {batch_num}: "
+                f"{engine} query-log export failed for batch {batch_num}: "
                 f"{data.get('error', 'unknown error')}"
             )
+
+        # TPC-DI has already created MVs; a cumulative export cannot be empty.
+        if not data.get("rows"):
+            raise RuntimeError(
+                f"{engine} query-log export is empty after batch {batch_num}; "
+                "verify spark.openivm.queryLog.enabled=true in the benchmark session"
+            )
+
+        # OAT cleanup removes the engine's result tree. Keep the raw export
+        # with the profile CSVs, which also get archived per repetition.
+        results_dir = os.path.join(
+            self._config.repo_dir,
+            "mount", "results", str(self._config.scale_factor), "dbt-server",
+        )
+        os.makedirs(results_dir, exist_ok=True)
+        with open(
+            os.path.join(results_dir, f"{engine}-query-log-batch{batch_num}.json"),
+            "w", encoding="utf-8",
+        ) as f:
+            json.dump(data, f)
 
         rows = data.get("rows") or []
         base_dir = os.path.join(
             self._config.repo_dir,
-            "mount", "results", str(self._config.scale_factor), "spark-openivm",
+            "mount", "results", str(self._config.scale_factor), engine,
             "query-log",
         )
         os.makedirs(base_dir, exist_ok=True)
@@ -2053,7 +2087,7 @@ class EngineRunner:
         )
 
         self._emit(
-            f"[spark-openivm] OpenIVM query-log exported after batch {batch_num}: "
+            f"[{engine}] OpenIVM query-log exported after batch {batch_num}: "
             f"{data.get('row_count', 0)} statements across "
             f"{data.get('refresh_count', 0)} refreshes / "
             f"{data.get('view_count', 0)} MVs "

@@ -65,6 +65,12 @@ RESULTS_CSV_FIELDS = (
     "batch_3_delete_pct",
     "databricks_refresh_policy",
     "source_rows",
+    "repeated_refresh",
+    "workload",
+    "refresh_count",
+    "refresh_pct",
+    "source_rows_before",
+    "source_rows_after",
     "schedule",
     "parallel",
     "openivm_validate",
@@ -460,7 +466,7 @@ def build_per_experiment_dict(
     dbt_run_files: Dict[str, List[str]] = {}
     for engine in inputs.engines:
         files: List[str] = []
-        for batch_num in (1, 2, 3):
+        for batch_num in range(1, inputs.refresh_count + 2 if inputs.repeated_refresh else 4):
             files.append(os.path.join(
                 "mount", "results", str(inputs.scale_factor), "dbt-server",
                 f"run-{engine}-batch{batch_num}.json",
@@ -666,7 +672,11 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
             engines_data = {}
         engines = list(dict.fromkeys([*configured_engines, *engines_data.keys()]))
         for engine in engines:
-            for batch_num in _BATCH_NUMBERS:
+            batch_numbers = (range(1, int(inputs.get("refresh_count", 20)) + 2)
+                             if inputs.get("repeated_refresh") else _BATCH_NUMBERS)
+            refresh_plan = source_row_counts.get("refresh_plan") or {}
+            refresh_rounds = {r["batch_num"]: r for r in refresh_plan.get("rounds", [])}
+            for batch_num in batch_numbers:
                 batch = _batch_dict(experiment, engine, batch_num)
                 batch_extra = batch.get("extra") or {}
                 if not isinstance(batch_extra, dict):
@@ -723,6 +733,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "source_rows": source_batches.get(
                             str(batch_num), {}
                         ).get("total_rows", ""),
+                        "repeated_refresh": inputs.get("repeated_refresh", False),
+                        "workload": inputs.get("workload", ""),
+                        "refresh_count": inputs.get("refresh_count", ""),
+                        "refresh_pct": inputs.get("refresh_pct", ""),
+                        "source_rows_before": refresh_rounds.get(batch_num, {}).get("before_rows", ""),
+                        "source_rows_after": refresh_rounds.get(batch_num, {}).get("resulting_rows", ""),
                         "schedule": inputs.get("schedule", ""),
                         "parallel": inputs.get("parallel", ""),
                         "openivm_validate": flags.get("openivm_validate", ""),

@@ -13,10 +13,11 @@ The standard /run/<engine> route handles dbt builds.
 
 import logging
 
-from flask import Blueprint, Flask, jsonify
+from flask import Blueprint, Flask, jsonify, request
 
 from handlers.base import BaseHandler
 from services import (
+    fabric,
     spark_openivm_profile,
     spark_openivm_query_log,
     spark_openivm_sources,
@@ -50,15 +51,25 @@ def spark_openivm_sources_append(batch_num):
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
-@bp.route("/validate/spark-openivm/<run_id>", methods=["POST"])
-def spark_openivm_validate_run(run_id):
+@bp.route("/validate/spark-openivm/<run_id>", methods=["POST"],
+          defaults={"engine": "spark-openivm"})
+@bp.route("/validate/fabric-openivm-jvm-35/<run_id>", methods=["POST"],
+          defaults={"engine": "fabric-openivm-jvm-35"})
+def spark_openivm_validate_run(run_id, engine):
     """Validate OpenIVM materialized views against compiled dbt SQL.
 
-    Mirrors /validate/duckdb-openivm/<run_id>. EXCEPT-ALL comparison runs
-    through a Livy SQL session against the spark-openivm Spark cluster.
+    Digest comparison is the default; exact bag comparison is opt-in.
     """
     try:
-        result = spark_openivm_validation.validate_run(run_id)
+        body = request.get_json(silent=True) or {}
+        exact = body.get("exact", False)
+        if not isinstance(exact, bool):
+            return jsonify({"status": "error", "error": "exact must be a boolean"}), 400
+        client_factory = (lambda: fabric.ProfileClient(require_tabular=False)
+                          ) if engine == "fabric-openivm-jvm-35" else None
+        result = spark_openivm_validation.validate_run(
+            run_id, exact=exact, client_factory=client_factory, engine=engine
+        )
         status_code = 200 if result["status"] == "passed" else 500
         return jsonify(result), status_code
     except Exception as e:
@@ -66,8 +77,15 @@ def spark_openivm_validate_run(run_id):
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
-@bp.route("/profile/spark-openivm/<run_id>/<int:batch_num>", methods=["POST"])
-def spark_openivm_export_profile(run_id, batch_num):
+@bp.route(
+    "/profile/spark-openivm/<run_id>/<int:batch_num>",
+    methods=["POST"], defaults={"engine": "spark-openivm"},
+)
+@bp.route(
+    "/profile/fabric-openivm-jvm-35/<run_id>/<int:batch_num>",
+    methods=["POST"], defaults={"engine": "fabric-openivm-jvm-35"},
+)
+def spark_openivm_export_profile(run_id, batch_num, engine):
     """Export spark-openivm refresh profile rows + summaries as CSV payloads.
 
     Mirrors /profile/duckdb-openivm/<run_id>/<batch_num>. Issues a single
@@ -76,15 +94,23 @@ def spark_openivm_export_profile(run_id, batch_num):
     CSV payloads (profile / by_step / by_view_step) tagged with the batch.
     """
     try:
-        result = spark_openivm_profile.export_profile(run_id, batch_num)
+        client = fabric.ProfileClient() if engine == "fabric-openivm-jvm-35" else None
+        result = spark_openivm_profile.export_profile(run_id, batch_num, client=client)
         return jsonify(result), 200
     except Exception as e:
-        logger.exception("[spark-openivm] Profile export failed")
+        logger.exception("[%s] Profile export failed", engine)
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
-@bp.route("/query-log/spark-openivm/<run_id>/<int:batch_num>", methods=["POST"])
-def spark_openivm_export_query_log(run_id, batch_num):
+@bp.route(
+    "/query-log/spark-openivm/<run_id>/<int:batch_num>",
+    methods=["POST"], defaults={"engine": "spark-openivm"},
+)
+@bp.route(
+    "/query-log/fabric-openivm-jvm-35/<run_id>/<int:batch_num>",
+    methods=["POST"], defaults={"engine": "fabric-openivm-jvm-35"},
+)
+def spark_openivm_export_query_log(run_id, batch_num, engine):
     """Export spark-openivm refresh SQL trace as structured JSON.
 
     Issues a single `SHOW OPENIVM QUERY LOG` against the live Livy SQL
@@ -93,10 +119,11 @@ def spark_openivm_export_query_log(run_id, batch_num):
     `sql_text` and writing the per-MV per-refresh `.sql` directory tree.
     """
     try:
-        result = spark_openivm_query_log.export_query_log(run_id, batch_num)
+        client = fabric.ProfileClient() if engine == "fabric-openivm-jvm-35" else None
+        result = spark_openivm_query_log.export_query_log(run_id, batch_num, client=client)
         return jsonify(result), 200
     except Exception as e:
-        logger.exception("[spark-openivm] Query-log export failed")
+        logger.exception("[%s] Query-log export failed", engine)
         return jsonify({"status": "error", "error": str(e)}), 500
 
 

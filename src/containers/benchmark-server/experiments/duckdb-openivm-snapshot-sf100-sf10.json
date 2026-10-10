@@ -1,0 +1,37 @@
+{
+  "_design_notes": [
+    "Snapshot publication ON in the dbt-server image; native main pin e773415d.",
+    "One repetition, profiling ON, inserts 100/1/0.01%. SF100 first without validation, then SF10 with exact validation."
+  ],
+  "baseline": {
+    "engines": [
+      "duckdb-openivm"
+    ],
+    "schedule": "serial",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "feature_flags": {
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "duckdb-openivm-snapshot-sf100",
+      "scale_factor": 100,
+      "feature_flags": {
+        "openivm_validate": false
+      }
+    },
+    {
+      "label": "duckdb-openivm-snapshot-sf10-validated",
+      "scale_factor": 10,
+      "feature_flags": {
+        "openivm_validate": true
+      }
+    }
+  ]
+}

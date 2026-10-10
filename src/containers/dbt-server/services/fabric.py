@@ -60,6 +60,8 @@ CACHE_LAKEHOUSE_NAME = os.environ.get("FABRIC_CACHE_LAKEHOUSE_NAME", "ivmbench_c
 BASE_NAME = os.environ.get("FABRIC_BASE_NAME", "openivm_jvm_35")
 # Minted per-experiment by the orchestrator (mirrors DATABRICKS_EXPERIMENT_ID).
 RUN_ID = os.environ.get("FABRIC_RUN_ID", "")
+# Both jvm-35 engines must use the Spark 3.5 runtime, independently of Fabric defaults.
+RUNTIME_VERSION = "1.3"
 STALE_MAX_AGE_S = int(os.environ.get("FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS", "") or "86400")
 # Per-run resolved IDs (compute + cache), persisted so dbt_runner can inject them
 # into the dbt subprocess env and teardown can find what to delete.
@@ -485,6 +487,7 @@ def provision_run(openivm: bool) -> dict:
         "environment_id": environment_id,
         "environment_name": name,
         "openivm": bool(openivm),
+        "fresh_compute": True,
     }
     _save_resolved(resolved)
     logger.info(
@@ -759,8 +762,8 @@ def seed_cache_init(sf: int) -> dict:
 def seed_cache_batch(sf: int, batch_num: int) -> dict:
     """Idempotently stage the per-batch staging Delta into the shared CACHE
     lakehouse's workload-keyed ``staging_batch<N>/``. Marker-guarded."""
-    if batch_num not in (2, 3):
-        raise ValueError(f"seed_cache_batch supports batch 2/3, got {batch_num}")
+    if batch_num < 2:
+        raise ValueError(f"seed_cache_batch requires batch >= 2, got {batch_num}")
     cache_lh = resolve_cache_lakehouse()
     root = batch_cache_root(CACHE_ROOT, sf, batch_num)
     marker = f"{root}/_UPLOADED_BATCH{batch_num}"
@@ -873,17 +876,43 @@ def _env_base() -> str:
 
 
 def publish_empty_environment() -> dict:
-    """Publish the freshly-created (empty) compute Environment so the baseline
-    Livy session can attach it. A brand-new env may have nothing to publish; a
-    non-2xx here is treated as already-usable (no-op)."""
+    """Publish the baseline Environment with the same explicit Spark runtime."""
+    _stage_spark_compute({})
     pub = _fabric_req("POST", f"{_env_base()}/staging/publish", headers=_fabric_headers())
     if pub.status_code in (200, 202):
         return {"publish_state": _poll_publish()}
-    logger.info(
-        "[fabric] empty env publish HTTP %s (treating as no-op): %s",
-        pub.status_code, pub.text[:200],
+    raise RuntimeError(f"baseline environment publish failed: HTTP {pub.status_code}")
+
+
+def _stage_spark_compute(properties: Dict[str, str]) -> None:
+    """Use the stable API contract and verify the runtime/config before publish."""
+    url = f"{_env_base()}/staging/sparkcompute"
+    hdr = {**_fabric_headers(), "Content-Type": "application/json"}
+    params = {"beta": "false"}
+    before = _fabric_req("GET", url, headers=hdr, params=params)
+    if before.status_code != 200:
+        raise RuntimeError(f"sparkcompute GET failed: HTTP {before.status_code}")
+    logger.info("[fabric] staging runtime before pin: %s", before.json().get("runtimeVersion"))
+    patch = _fabric_req(
+        "PATCH", url, headers=hdr, params=params,
+        json={"runtimeVersion": RUNTIME_VERSION,
+              "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()]},
     )
-    return {"publish_state": "skipped"}
+    if patch.status_code not in (200, 202):
+        raise RuntimeError(f"sparkcompute PATCH failed: HTTP {patch.status_code} {patch.text[:300]}")
+    if patch.status_code == 202 and patch.headers.get("Location"):
+        _lro_poll(patch.headers["Location"])
+    actual = _fabric_req("GET", url, headers=hdr, params=params)
+    if actual.status_code != 200:
+        raise RuntimeError(f"sparkcompute verification GET failed: HTTP {actual.status_code}")
+    compute = actual.json()
+    if compute.get("runtimeVersion") != RUNTIME_VERSION:
+        raise RuntimeError(f"Fabric runtime pin not applied: expected {RUNTIME_VERSION}, got {compute.get('runtimeVersion')}")
+    staged = {item["key"]: item["value"] for item in compute.get("sparkProperties", [])}
+    mismatches = [key for key, value in properties.items() if staged.get(key) != value]
+    if mismatches:
+        raise RuntimeError(f"Fabric Spark properties not applied: {', '.join(mismatches)}")
+    logger.info("[fabric] verified runtime=%s, Spark properties=%d", RUNTIME_VERSION, len(properties))
 
 
 def _staged_library_names(hdr: Dict[str, str]) -> List[str]:
@@ -983,16 +1012,7 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
     jar_abfss = upload_jar_to_lib()
 
     props = spark_properties or default_openivm_spark_properties()
-    patch = _fabric_req(
-        "PATCH",
-        f"{base}/staging/sparkcompute",
-        headers={**hdr, "Content-Type": "application/json"},
-        json={"sparkProperties": props},
-    )
-    if patch.status_code not in (200, 202):
-        raise RuntimeError(
-            f"sparkcompute PATCH failed: HTTP {patch.status_code} {patch.text[:300]}"
-        )
+    _stage_spark_compute(props)
 
     pub = _fabric_req("POST", f"{base}/staging/publish", headers=hdr)
     if pub.status_code not in (200, 202):
@@ -1014,4 +1034,62 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
         "jar_abfss": jar_abfss,
         "spark_properties": len(props),
         "publish_state": state,
+        "runtime_version": RUNTIME_VERSION,
     }
+
+
+class ProfileClient:
+    """Read telemetry from the dbt-owned Fabric session without creating one."""
+
+    def __init__(self, *, require_tabular=True):
+        self.require_tabular = require_tabular
+
+    def __enter__(self):
+        from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
+        from dbt.adapters.fabricspark.livysession import LivySession
+
+        session_file = Path("/tmp/fabric-openivm-jvm-35-livy.session-id")
+        session_id = session_file.read_text().strip()
+        if not session_id:
+            raise RuntimeError("Fabric dbt session ID is empty; cannot export telemetry")
+        credentials = FabricSparkCredentials(
+            endpoint=f"{FABRIC_API_BASE}/v1",
+            workspaceid=WORKSPACE_ID,
+            lakehouseid=_compute_lakehouse_id(),
+            lakehouse=str(_load_resolved()["lakehouse_name"]),
+            authentication="CLI",
+            livy_mode="fabric",
+            statement_timeout=1800,
+            spark_config={"name": "dbt-tpcdi-fabric-openivm-jvm-35"},
+        )
+        self.session = LivySession(credentials)
+        if not self.session.try_reuse_session(session_id):
+            raise RuntimeError("Fabric dbt session is unavailable; cannot export telemetry")
+        self.credentials = credentials
+        return self
+
+    def execute(self, sql: str) -> dict:
+        # The adapter's session manager can create a replacement driver. A new
+        # driver would not contain the catalog whose timings we are collecting.
+        if self.session.is_new_session_required:
+            raise RuntimeError("Fabric dbt session was lost during telemetry export")
+        from dbt.adapters.fabricspark.livysession import LivyCursor
+
+        # A statement owns its result buffer even when validation runs concurrently.
+        cursor = LivyCursor(self.credentials, self.session)
+        try:
+            cursor.execute(sql)
+            columns = cursor.description
+            if not columns and self.require_tabular:
+                raise RuntimeError("Fabric telemetry response has no tabular schema")
+            columns = columns or []
+            return {"output": {"data": {"application/json": {
+                "schema": {"fields": [{"name": column[0]} for column in columns]},
+                "data": cursor.fetchall() if columns else [],
+            }}}}
+        finally:
+            cursor.close()
+
+    def __exit__(self, *_args):
+        # The dbt-owned session survives profile export and validation.
+        pass
