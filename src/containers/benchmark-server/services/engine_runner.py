@@ -868,45 +868,19 @@ class EngineRunner:
             if not is_cloud_engine(name) and name != "feldera":
                 self._finish_cpu_measurement(batch_num)
 
-            if (
-                name == "duckdb-openivm"
-                and run_id
-                and batch.status != "failed"
-                and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
-            ):
-                self._validate_duckdb_openivm(run_id, batch_num)
-
-            if (
-                name in ("spark-openivm", "fabric-openivm-jvm-35")
-                and run_id
-                and batch.status != "failed"
-                and os.environ.get("OPENIVM_VALIDATE", "0") != "0"
-            ):
-                self._validate_spark_openivm(run_id, batch_num)
-
-            if (
-                name == "duckdb-openivm"
-                and run_id
-                and batch.status != "failed"
-                and os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
-            ):
-                self._export_duckdb_openivm_profile(run_id, batch_num)
-
-            if (
-                name in ("spark-openivm", "fabric-openivm-jvm-35")
-                and run_id
-                and batch.status != "failed"
-                and os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
-            ):
-                self._export_spark_openivm_profile(run_id, batch_num)
-
-            if (
-                name in ("spark-openivm", "fabric-openivm-jvm-35")
-                and run_id
-                and batch.status != "failed"
-                and os.environ.get("OPENIVM_QUERY_LOG", "0") == "1"
-            ):
-                self._export_spark_openivm_query_log(run_id, batch_num)
+            if run_id and batch.status != "failed":
+                if name == "duckdb-openivm":
+                    if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
+                        self._validate_duckdb_openivm(run_id, batch_num)
+                    if os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1":
+                        self._export_duckdb_openivm_profile(run_id, batch_num)
+                elif name in ("spark-openivm", "fabric-openivm-jvm-35"):
+                    if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
+                        self._validate_spark_openivm(run_id, batch_num)
+                    if os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1":
+                        self._export_spark_openivm_profile(run_id, batch_num)
+                    if os.environ.get("OPENIVM_QUERY_LOG", "0") == "1":
+                        self._export_spark_openivm_query_log(run_id, batch_num)
 
             if (
                 name in ("databricks-enzyme", "spark", "spark-openivm")
