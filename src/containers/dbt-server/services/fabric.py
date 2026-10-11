@@ -57,6 +57,7 @@ RAW_DELTA_DIR = os.environ.get("RAW_DELTA_DIR", "/data/raw/delta")
 # workspace needs to be pinned in ``.env``.
 CACHE_LAKEHOUSE_NAME = os.environ.get("FABRIC_CACHE_LAKEHOUSE_NAME", "ivmbench_cache")
 # Per-flavor compute base name; the compose files map the per-flavor .env value.
+RUNTIME_VERSION = "1.3"  # Both JVM-35 engines require Spark 3.5.
 BASE_NAME = os.environ.get("FABRIC_BASE_NAME", "openivm_jvm_35")
 # Minted per-experiment by the orchestrator (mirrors DATABRICKS_EXPERIMENT_ID).
 RUN_ID = os.environ.get("FABRIC_RUN_ID", "")
@@ -873,17 +874,43 @@ def _env_base() -> str:
 
 
 def publish_empty_environment() -> dict:
-    """Publish the freshly-created (empty) compute Environment so the baseline
-    Livy session can attach it. A brand-new env may have nothing to publish; a
-    non-2xx here is treated as already-usable (no-op)."""
+    """Publish the baseline Environment with the same explicit Spark runtime."""
+    _stage_spark_compute({})
     pub = _fabric_req("POST", f"{_env_base()}/staging/publish", headers=_fabric_headers())
     if pub.status_code in (200, 202):
         return {"publish_state": _poll_publish()}
-    logger.info(
-        "[fabric] empty env publish HTTP %s (treating as no-op): %s",
-        pub.status_code, pub.text[:200],
+    raise RuntimeError(f"baseline environment publish failed: HTTP {pub.status_code}")
+
+
+def _stage_spark_compute(properties: Dict[str, str]) -> None:
+    """Use the stable API contract and verify the runtime/config before publish."""
+    url = f"{_env_base()}/staging/sparkcompute"
+    hdr = {**_fabric_headers(), "Content-Type": "application/json"}
+    params = {"beta": "false"}
+    before = _fabric_req("GET", url, headers=hdr, params=params)
+    if before.status_code != 200:
+        raise RuntimeError(f"sparkcompute GET failed: HTTP {before.status_code}")
+    logger.info("[fabric] staging runtime before pin: %s", before.json().get("runtimeVersion"))
+    patch = _fabric_req(
+        "PATCH", url, headers=hdr, params=params,
+        json={"runtimeVersion": RUNTIME_VERSION,
+              "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()]},
     )
-    return {"publish_state": "skipped"}
+    if patch.status_code not in (200, 202):
+        raise RuntimeError(f"sparkcompute PATCH failed: HTTP {patch.status_code} {patch.text[:300]}")
+    if patch.status_code == 202 and patch.headers.get("Location"):
+        _lro_poll(patch.headers["Location"])
+    actual = _fabric_req("GET", url, headers=hdr, params=params)
+    if actual.status_code != 200:
+        raise RuntimeError(f"sparkcompute verification GET failed: HTTP {actual.status_code}")
+    compute = actual.json()
+    if compute.get("runtimeVersion") != RUNTIME_VERSION:
+        raise RuntimeError(f"Fabric runtime pin not applied: expected {RUNTIME_VERSION}, got {compute.get('runtimeVersion')}")
+    staged = {item["key"]: item["value"] for item in compute.get("sparkProperties", [])}
+    mismatches = [key for key, value in properties.items() if staged.get(key) != value]
+    if mismatches:
+        raise RuntimeError(f"Fabric Spark properties not applied: {', '.join(mismatches)}")
+    logger.info("[fabric] verified runtime=%s, Spark properties=%d", RUNTIME_VERSION, len(properties))
 
 
 def _staged_library_names(hdr: Dict[str, str]) -> List[str]:
@@ -983,16 +1010,7 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
     jar_abfss = upload_jar_to_lib()
 
     props = spark_properties or default_openivm_spark_properties()
-    patch = _fabric_req(
-        "PATCH",
-        f"{base}/staging/sparkcompute",
-        headers={**hdr, "Content-Type": "application/json"},
-        json={"sparkProperties": props},
-    )
-    if patch.status_code not in (200, 202):
-        raise RuntimeError(
-            f"sparkcompute PATCH failed: HTTP {patch.status_code} {patch.text[:300]}"
-        )
+    _stage_spark_compute(props)
 
     pub = _fabric_req("POST", f"{base}/staging/publish", headers=hdr)
     if pub.status_code not in (200, 202):

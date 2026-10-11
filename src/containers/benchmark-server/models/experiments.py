@@ -114,13 +114,13 @@ class SparkTunables:
     "fall back to YAML"; we only emit env vars when the experiment actually
     pins a value, so unset experiments inherit the existing YAML defaults.
 
-    ``dbt_threads`` is read by the spark / spark-openivm dbt profiles.yml
+    ``dbt_threads`` is read by the Spark, Fabric and Databricks dbt profiles.yml
     (via ``SPARK_DBT_THREADS``) and caps how many models dbt builds
     concurrently. Because Livy runs ``local[*]`` (one JVM), a high thread
     count lets several heavy gold facts build at once and can OOM the
     single driver heap at large SF — capping threads is the lever to keep
     peak concurrent memory in check. None means "inherit the profiles.yml
-    default" (30).
+    default" (30 for Spark/Fabric, 8 for Databricks).
     """
     driver_pct_ram: Optional[int] = None
     executor_pct_ram: Optional[int] = None
