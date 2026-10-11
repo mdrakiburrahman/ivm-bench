@@ -66,7 +66,6 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from typing import Any
 
 from services.db import get_db
@@ -599,7 +598,7 @@ def _validate_one(
     return entry
 
 
-def validate_run(run_id: str, *, exact: bool = False, client_factory=None, engine=None) -> dict:
+def validate_run(run_id: str, *, exact: bool = False, client=None, engine=None) -> dict:
     """Validate successful model nodes from a spark-openivm dbt run.
 
     Returns a dict shaped exactly like
@@ -629,7 +628,7 @@ def validate_run(run_id: str, *, exact: bool = False, client_factory=None, engin
             f"validation does not support {run['engine']}"
         )
     is_fabric = run["engine"] == "fabric-openivm-jvm-35"
-    if is_fabric and (run["status"] != "completed" or client_factory is None):
+    if is_fabric and (run["status"] != "completed" or client is None):
         conn.close()
         raise ValueError("Fabric validation requires a completed run and its existing dbt session")
 
@@ -687,25 +686,20 @@ def validate_run(run_id: str, *, exact: bool = False, client_factory=None, engin
 
     started = time.monotonic()
 
-    with (nullcontext() if client_factory else LivyClient()) as livy:
+    # Attach before starting queries: the Fabric adapter waits for idle during
+    # attachment, which can time out while other validation workers are busy.
+    # ProfileClient gives each statement its own cursor on this shared session.
+    with (client if client is not None else LivyClient()) as livy:
         # Set the lakehouse as the default catalog/database so the
         # `<schema>.<name>` references in compiled SQL resolve identically
         # to how dbt wrote them. Runs ONCE on the shared session before
         # the worker pool fans out so every concurrent statement inherits
         # the same default database.
-        if livy is not None:
+        if not is_fabric:
             try:
                 livy.execute(f"USE {LAKEHOUSE}")
             except RuntimeError as e:
                 logger.warning("[spark-openivm] USE %s failed: %s", LAKEHOUSE, e)
-
-        def validate(item):
-            if client_factory:
-                # Each worker owns its cursor, but attaches to the same dbt
-                # driver. Fabric's cursor stores mutable statement results.
-                with client_factory() as client:
-                    return _validate_one(client, **item, exact=exact)
-            return _validate_one(livy, **item, exact=exact)
 
         # Empty work list short-circuits cleanly.
         if not work:
@@ -728,7 +722,7 @@ def validate_run(run_id: str, *, exact: bool = False, client_factory=None, engin
                 # Submit by input index, then collect in input order
                 # (so `results` stays deterministic).
                 futures = [
-                    executor.submit(validate, item)
+                    executor.submit(_validate_one, livy, **item, exact=exact)
                     for item in work
                 ]
                 results = []

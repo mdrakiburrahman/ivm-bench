@@ -65,10 +65,10 @@ def spark_openivm_validate_run(run_id, engine):
         exact = body.get("exact", False)
         if not isinstance(exact, bool):
             return jsonify({"status": "error", "error": "exact must be a boolean"}), 400
-        client_factory = (lambda: fabric.ProfileClient(require_tabular=False)
-                          ) if engine == "fabric-openivm-jvm-35" else None
+        client = (fabric.ProfileClient(require_tabular=False)
+                  if engine == "fabric-openivm-jvm-35" else None)
         result = spark_openivm_validation.validate_run(
-            run_id, exact=exact, client_factory=client_factory, engine=engine
+            run_id, exact=exact, client=client, engine=engine
         )
         status_code = 200 if result["status"] == "passed" else 500
         return jsonify(result), status_code

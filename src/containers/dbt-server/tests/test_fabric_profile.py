@@ -3,8 +3,10 @@ import io
 import os
 import re
 import sys
+import threading
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -96,6 +98,19 @@ class FabricCursorOwnershipTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "query failed"):
                 client.execute("SELECT 1")
         self.cursors[0].close.assert_called_once()
+        self.session.close.assert_not_called()
+
+    def test_parallel_statements_keep_separate_result_buffers(self):
+        barrier = threading.Barrier(2)
+        for cursor in self.cursors:
+            cursor.execute.side_effect = lambda _sql: barrier.wait(timeout=5)
+        with fabric.ProfileClient() as client, ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(client.execute, ("SELECT 1", "SELECT 2")))
+        self.assertEqual(sorted(r["output"]["data"]["application/json"]["data"][0][0]
+                                for r in results), [1, 2])
+        self.session.try_reuse_session.assert_called_once()
+        for cursor in self.cursors:
+            cursor.close.assert_called_once()
         self.session.close.assert_not_called()
 
     def test_dead_or_lost_session_never_creates_replacement(self):

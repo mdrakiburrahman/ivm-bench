@@ -1,8 +1,9 @@
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import MagicMock, Mock, mock_open, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services import spark_openivm_validation as validation
@@ -91,7 +92,7 @@ class FabricValidationRoutingTest(unittest.TestCase):
             response = self.client.post("/validate/fabric-openivm-jvm-35/run", json={"exact": True})
             self.assertEqual(response.status_code, 200)
             self.assertTrue(validate.call_args.kwargs["exact"])
-            validate.call_args.kwargs["client_factory"]()
+            self.assertIs(validate.call_args.kwargs["client"], client.return_value)
             client.assert_called_once_with(require_tabular=False)
 
     def test_spark_route_retains_local_livy_client(self):
@@ -99,7 +100,7 @@ class FabricValidationRoutingTest(unittest.TestCase):
             validate.return_value = {"status": "passed"}
             response = self.client.post("/validate/spark-openivm/run", json={"exact": False})
             self.assertEqual(response.status_code, 200)
-            self.assertIsNone(validate.call_args.kwargs["client_factory"])
+            self.assertIsNone(validate.call_args.kwargs["client"])
 
     def test_invalid_boolean_does_not_start_validation(self):
         with patch("handlers.spark_openivm.spark_openivm_validation.validate_run") as validate:
@@ -110,34 +111,35 @@ class FabricValidationRoutingTest(unittest.TestCase):
 
 
 class FabricValidationSessionTest(unittest.TestCase):
-    def test_fabric_run_uses_its_manifest_and_worker_owned_cursors(self):
-        from contextlib import contextmanager
+    def test_fabric_attaches_once_before_parallel_checks(self):
         conn = Mock()
         conn.execute.return_value.fetchone.return_value = {"engine": "fabric-openivm-jvm-35", "status": "completed"}
         conn.execute.return_value.fetchall.return_value = [
             {"unique_id": f"model.test.v{i}", "name": f"v{i}", "resource_type": "model", "status": "success", "compiled_sql": "SELECT 1"}
             for i in range(2)
         ]
-        clients = []
-        @contextmanager
-        def factory():
-            client = Mock()
-            clients.append(client)
-            yield client
-        def validate(client, **kwargs):
+        client = MagicMock()
+        # A second attachment while another check is running must not occur.
+        client.__enter__.side_effect = [client, RuntimeError("session is busy")]
+        barrier = threading.Barrier(2)
+        def validate(actual_client, **kwargs):
+            self.assertIs(actual_client, client)
+            client.__enter__.assert_called_once()
             self.assertTrue(kwargs["exact"])
             self.assertEqual(kwargs["schema"], "silver")
+            barrier.wait(timeout=5)
             return {"status": "pass", "diff_count": 0, "validation_method": "except_all"}
         with patch.object(validation, "get_db", return_value=conn), \
              patch("services.dbt_compiler.get_compiled_models") as manifest, \
              patch("builtins.open", mock_open(read_data=json.dumps({"nodes": {f"model.test.v{i}": {"schema": "silver"} for i in range(2)}}))), \
              patch.object(validation, "_validate_one", side_effect=validate), \
              patch.object(validation, "LivyClient") as local:
-            result = validation.validate_run("run", exact=True, client_factory=factory)
+            result = validation.validate_run("run", exact=True, client=client)
         manifest.assert_not_called()
         local.assert_not_called()
-        self.assertEqual(len(clients), 2)
-        self.assertIsNot(clients[0], clients[1])
+        client.__enter__.assert_called_once()
+        client.__exit__.assert_called_once()
+        self.assertEqual(result["status"], "passed")
         self.assertEqual(result["models_checked"], 2)
         self.assertEqual(result["validation_method"], "except_all")
 
@@ -149,7 +151,7 @@ class FabricValidationSessionTest(unittest.TestCase):
         with patch.object(validation, "get_db", return_value=conn), \
              patch("builtins.open", mock_open(read_data='{"nodes":{}}')):
             with self.assertRaisesRegex(ValueError, "no successful models"):
-                validation.validate_run("run", client_factory=lambda: nullcontext())
+                validation.validate_run("run", client=nullcontext())
 
     def test_incomplete_fabric_models_cannot_pass(self):
         from contextlib import nullcontext
@@ -167,7 +169,7 @@ class FabricValidationSessionTest(unittest.TestCase):
                      patch("builtins.open", mock_open(read_data=json.dumps({"nodes": {"model.test.v": {"schema": schema}}}))), \
                      patch.object(validation, "_validate_one") as compare:
                     with self.assertRaisesRegex(ValueError, message):
-                        validation.validate_run("run", client_factory=lambda: nullcontext())
+                        validation.validate_run("run", client=nullcontext())
                     compare.assert_not_called()
 
     def test_wrong_route_and_failed_run_are_rejected_before_queries(self):
@@ -178,7 +180,7 @@ class FabricValidationSessionTest(unittest.TestCase):
             with self.subTest(run=run), patch.object(validation, "get_db", return_value=conn), \
                     patch.object(validation, "_validate_one") as compare:
                 with self.assertRaisesRegex(ValueError, message):
-                    validation.validate_run("run", engine="fabric-openivm-jvm-35", client_factory=Mock())
+                    validation.validate_run("run", engine="fabric-openivm-jvm-35", client=MagicMock())
                 conn.close.assert_called_once()
                 compare.assert_not_called()
 
