@@ -18,7 +18,7 @@ from models.config import (
     EngineConfig,
     is_cloud_engine,
 )
-from models.result import BatchResult, EngineResult
+from models.result import EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager, compute_cpu_usage_delta
 from services.storage_sync import (
@@ -159,9 +159,7 @@ class EngineRunner:
         self._config = config
         self._engine = engine_config
         self._emit = emit
-        self._result = EngineResult(engine=engine_config.name, batches=[
-            BatchResult(batch_num=i) for i in range(1, config.batch_count + 1)
-        ])
+        self._result = EngineResult(engine=engine_config.name)
         self._benchmark_id = benchmark_id
         self._storage_barrier = storage_barrier
         docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
@@ -348,8 +346,8 @@ class EngineRunner:
                 self._emit(f"[{name}] compiler-bench completed successfully")
                 return self._result
 
-            # Initialize in batch 1, then refresh the same engine state.
-            for batch_num in range(1, self._config.batch_count + 1):
+            # Run 3 batches
+            for batch_num in range(1, 4):
                 self._run_batch(batch_num)
                 if self._result.batches[batch_num - 1].status == "failed":
                     raise RuntimeError(
