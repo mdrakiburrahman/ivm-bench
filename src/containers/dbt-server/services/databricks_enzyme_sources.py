@@ -626,9 +626,9 @@ def _seed_cache_batch(
     ws: WorkspaceClient, sf: int, batch_num: int,
 ) -> Tuple[int, bool]:
     """Upload one immutable generated batch to the shared cache."""
-    if batch_num not in (2, 3):
+    if batch_num < 2:
         raise ValueError(
-            f"_seed_cache_batch only supports batch 2 or 3, got {batch_num}"
+            f"_seed_cache_batch requires batch >= 2, got {batch_num}"
         )
     marker = _cache_batch_marker(sf, batch_num)
     if _file_exists(ws, marker):
@@ -755,9 +755,9 @@ def append_sources(batch_num: int, sf: int) -> dict:
     The next dbt-databricks REFRESH on the MVs will see the new rows
     via the standard Delta change-feed path.
     """
-    if batch_num not in (2, 3):
+    if batch_num < 2:
         raise ValueError(
-            f"append_sources only supports batch 2 or 3, got {batch_num}"
+            f"append_sources requires batch >= 2, got {batch_num}"
         )
 
     ws = _workspace_client()

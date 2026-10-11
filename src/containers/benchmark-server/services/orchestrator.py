@@ -235,6 +235,10 @@ class Orchestrator:
             "benchmark_runs": self._config.benchmark_runs,
             "engines": self._config.engines,
             "parallel": self._config.parallel,
+            "repeated_refresh": self._config.repeated_refresh,
+            "workload": self._config.workload,
+            "refresh_count": self._config.refresh_count,
+            "refresh_pct": self._config.refresh_pct,
             "batch_1_pct": self._config.batch_1_pct,
             "batch_2_pct": self._config.batch_2_pct,
             "batch_2_days": self._config.batch_2_days,
@@ -252,7 +256,7 @@ class Orchestrator:
                 (self._benchmark_id, "running", now_iso, config_json),
             )
             for engine in self._config.engines:
-                for batch_num in range(1, 4):
+                for batch_num in range(1, self._config.batch_count + 1):
                     conn.execute(
                         "INSERT INTO engine_batches (benchmark_id, engine, batch_num, status) VALUES (?,?,?,?)",
                         (self._benchmark_id, engine, batch_num, "pending"),
@@ -505,30 +509,58 @@ class Orchestrator:
         with self._heartbeat("datagen/build"):
             mgr.build(["tpc-di-gen", "spark-digen-delta"])
 
-        self.emit("  [datagen] Running tpc-di-gen → spark-digen-delta")
-        # 2h timeout — SF=400 tpc-di-gen alone takes >660s, SF=1000 estimated
-        # ~2500s for tpc-di-gen + ~600s for spark-digen-delta. DockerManager
-        # default 600s + 60s buffer SIGKILLs the compose subprocess mid-run
-        # at SF≥400. Bump to 7200s to safely cover SF up to ~1500.
-        with self._heartbeat("datagen/run"):
-            mgr.up(
-                services=["spark-digen-delta"],
-                detach=False,
-                timeout=7200,
-                stream_callback=lambda line: logger.debug("[datagen] %s", line),
+        horizon = 2
+        initial_tables = None
+        while True:
+            mgr.update_env({"DIGEN_INCREMENTAL_BATCHES": str(horizon)})
+            self.emit(f"  [datagen] Running tpc-di-gen → spark-digen-delta (horizon={horizon})")
+            log_dir = os.path.join(repo, "mount/logs", str(self._config.scale_factor), "datagen")
+            os.makedirs(log_dir, exist_ok=True)
+            with open(os.path.join(log_dir, f"horizon-{horizon}.log"), "w", encoding="utf-8") as log_file:
+                def capture(line):
+                    log_file.write(line + "\n")
+                    log_file.flush()
+                    logger.info("[datagen] %s", line)
+
+                try:
+                    with self._heartbeat("datagen/run"):
+                        # Explicitly attach both services: dependency output is
+                        # otherwise hidden while Compose waits for the generator.
+                        mgr.up(
+                            services=["tpc-di-gen", "spark-digen-delta"], detach=False, timeout=7200,
+                            stream_callback=capture,
+                        )
+                    digen_exit = mgr.get_exit_code("tpc-di-gen")
+                    delta_exit = mgr.get_exit_code("spark-digen-delta")
+                    if digen_exit != "0" or delta_exit != "0":
+                        raise RuntimeError(
+                            f"Datagen failed (tpc-di-gen={digen_exit}, spark-digen-delta={delta_exit})"
+                        )
+                except Exception as exc:
+                    logs = mgr.logs()
+                    capture(logs)
+                    raise RuntimeError(f"{exc}\nDatagen container logs:\n{logs[-6000:]}") from exc
+                finally:
+                    mgr.down()
+            if not self._config.repeated_refresh:
+                break
+            plan_path = os.path.join(repo, "mount", "raw", str(self._config.scale_factor),
+                                     "delta", "refresh-plan.json")
+            with open(plan_path, encoding="utf-8") as plan_file:
+                plan = json.load(plan_file)
+            if initial_tables is None:
+                initial_tables = plan["initial_tables"]
+            elif plan["initial_tables"] != initial_tables:
+                raise RuntimeError("Extending the generator horizon changed the requested initial row counts")
+            if plan["status"] == "ready":
+                break
+            horizon = int(plan["next_horizon"])
+            if horizon > 1200:
+                raise ValueError("Repeated refresh needs a generator horizon beyond the supported 1200 days")
+            self.emit(
+                f"  [datagen] Measured {plan['available_insert_rows']:,} reservoir rows; "
+                f"need {plan['required_insert_rows']:,}; extending native horizon to {horizon}"
             )
-
-        digen_exit = mgr.get_exit_code("tpc-di-gen")
-        delta_exit = mgr.get_exit_code("spark-digen-delta")
-
-        if digen_exit != "0" or delta_exit != "0":
-            logs = mgr.logs()
-            mgr.down()
-            raise RuntimeError(
-                f"Datagen failed (tpc-di-gen={digen_exit}, spark-digen-delta={delta_exit})\n{logs[:2000]}"
-            )
-
-        mgr.down()
         self.emit("  [datagen] Complete")
 
         # Fix permissions
@@ -544,7 +576,7 @@ class Orchestrator:
         delta_dir = os.path.join(
             repo, "mount", "raw", str(inputs.scale_factor), "delta",
         )
-        counts = collect_source_row_counts(delta_dir)
+        counts = collect_source_row_counts(delta_dir, self._config.batch_count)
         counts.update({
             "scale_factor": inputs.scale_factor,
             "batch_2_days": inputs.batch_2_days,
@@ -555,7 +587,21 @@ class Orchestrator:
             },
         })
         self._current_source_row_counts = counts
-        for batch_num in (1, 2, 3):
+        if inputs.repeated_refresh:
+            counts["configured_insert_pct"] = {
+                str(batch): "100" if batch == 1 else inputs.refresh_pct
+                for batch in range(1, self._config.batch_count + 1)
+            }
+            with open(os.path.join(delta_dir, "refresh-plan.json"), encoding="utf-8") as plan_file:
+                counts["refresh_plan"] = json.load(plan_file)
+            for refresh in counts["refresh_plan"]["rounds"]:
+                for table, rows in refresh["tables"].items():
+                    self.emit(
+                        f"  [refresh] round={refresh['round']} table={table} "
+                        f"initial={rows['initial_rows']:,} before={rows['before_rows']:,} "
+                        f"inserted={rows['inserted_rows']:,} resulting={rows['resulting_rows']:,}"
+                    )
+        for batch_num in range(1, self._config.batch_count + 1):
             batch = counts["batches"][str(batch_num)]
             tables = ", ".join(
                 f"{table}={rows:,}" for table, rows in batch["tables"].items()
@@ -1633,6 +1679,10 @@ class Orchestrator:
 
     def _apply_experiment(self, inputs: ExperimentInputs) -> None:
         """Mutate ``self._config`` + ``os.environ`` to match this experiment's knobs."""
+        self._config.repeated_refresh = inputs.repeated_refresh
+        self._config.workload = inputs.workload
+        self._config.refresh_count = inputs.refresh_count
+        self._config.refresh_pct = inputs.refresh_pct
         self._config.scale_factor = inputs.scale_factor
         self._config.batch_2_days = inputs.batch_2_days
         self._config.batch_1_pct = inputs.batch_1_pct

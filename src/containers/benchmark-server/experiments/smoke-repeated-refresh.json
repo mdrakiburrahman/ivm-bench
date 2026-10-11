@@ -1,0 +1,14 @@
+{
+  "baseline": {
+    "scale_factor": 3,
+    "repeated_refresh": true,
+    "refresh_count": 3,
+    "refresh_pct": "1",
+    "engines": ["duckdb"],
+    "feature_flags": {"spark_metrics_capture": false}
+  },
+  "experiments": [
+    {"label": "standard repeated refresh smoke", "workload": "standard"},
+    {"label": "Databricks-style repeated refresh smoke", "workload": "databricks"}
+  ]
+}

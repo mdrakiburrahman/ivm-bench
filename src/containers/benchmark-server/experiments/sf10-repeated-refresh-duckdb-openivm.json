@@ -1,0 +1,21 @@
+{
+  "baseline": {
+    "scale_factor": 10,
+    "repeated_refresh": true,
+    "workload": "standard",
+    "refresh_count": 20,
+    "refresh_pct": "1",
+    "engines": ["duckdb-openivm"],
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {"label": "GCI SF10 standard TPC-DI: 20 compounded 1% refreshes"}
+  ]
+}

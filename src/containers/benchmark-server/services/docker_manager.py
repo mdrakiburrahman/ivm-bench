@@ -159,7 +159,8 @@ class DockerManager:
             raise RuntimeError(
                 f"Docker compose command failed (exit {result.returncode}):\n"
                 f"cmd: {' '.join(cmd)}\n"
-                f"stderr: {result.stderr[:2000]}"
+                f"stdout (tail): {result.stdout[-4000:]}\n"
+                f"stderr (tail): {result.stderr[-4000:]}"
             )
         return result
 
