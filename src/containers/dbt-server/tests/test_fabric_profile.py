@@ -168,6 +168,7 @@ class FabricProfileTest(unittest.TestCase):
                 ]}, "data": rows,
             }},
         }}
+        self.get.return_value = session
         self.get.side_effect = [session, statement]
         return statement
 
@@ -184,6 +185,70 @@ class FabricProfileTest(unittest.TestCase):
         self.assertIn("/sessions/existing-session/statements", self.post.call_args.args[0])
         self.connect.assert_not_called()
         self.delete.assert_not_called()
+
+    def test_missing_read_result_is_reissued_once_with_a_new_statement_id(self):
+        statement = self.output(["count"], [[42]])
+        session = self.get.return_value
+        missing = Mock(status_code=404, text='{"message":"Statement not found"}')
+        self.get.side_effect = [session] + [missing] * 21 + [statement]
+        responses = [Mock(status_code=200), Mock(status_code=200)]
+        for response, statement_id in zip(responses, (17, 18)):
+            response.json.return_value = {"id": statement_id}
+        self.post.side_effect = responses
+        with patch("dbt.adapters.fabricspark.livysession.time.sleep"), \
+                patch("services.fabric.logger.warning"), fabric.ProfileClient() as client:
+            result = client.execute_read("SELECT COUNT(*) FROM existing_model")
+        self.assertEqual(result["output"]["data"]["application/json"]["data"], [[42]])
+        self.assertEqual(self.post.call_count, 2)
+        self.assertEqual(self.post.call_args_list[0].kwargs["data"],
+                         self.post.call_args_list[1].kwargs["data"])
+        self.assertTrue(self.get.call_args.args[0].endswith("/statements/18"))
+        self.connect.assert_not_called()
+        self.delete.assert_not_called()
+
+    def test_persistent_missing_result_fails_after_one_read_reissue(self):
+        from dbt_common.exceptions import DbtRuntimeError
+
+        self.output(["count"], [[42]])
+        session = self.get.return_value
+        missing = Mock(status_code=404, text='{"message":"Statement not found"}')
+        self.get.side_effect = [session] + [missing] * 42
+        with patch("dbt.adapters.fabricspark.livysession.time.sleep"), \
+                patch("services.fabric.logger.warning"), fabric.ProfileClient() as client:
+            with self.assertRaisesRegex(DbtRuntimeError, "HTTP 404"):
+                client.execute_read("SELECT COUNT(*) FROM existing_model")
+        self.assertEqual(self.post.call_count, 2)
+        self.connect.assert_not_called()
+
+    def test_other_read_errors_do_not_reissue(self):
+        from dbt_common.exceptions import DbtRuntimeError
+
+        self.output(["count"], [[42]])
+        session = self.get.return_value
+        forbidden = Mock(status_code=403, text='{"message":"Statement not found"}')
+        self.get.side_effect = [session, forbidden]
+        with fabric.ProfileClient() as client:
+            with self.assertRaisesRegex(DbtRuntimeError, "HTTP 403"):
+                client.execute_read("SELECT COUNT(*) FROM existing_model")
+        self.assertEqual(self.post.call_count, 1)
+
+    def test_mutating_commands_are_not_reissued_after_missing_result(self):
+        from dbt_common.exceptions import DbtRuntimeError
+
+        for sql in ("CREATE TEMP VIEW expected AS SELECT 1", "DROP VIEW expected",
+                    "REFRESH MATERIALIZED VIEW existing_model", "INSERT INTO target SELECT 1"):
+            with self.subTest(sql=sql):
+                self.post.reset_mock()
+                self.output([], [])
+                session = self.get.return_value
+                missing = Mock(status_code=404, text='{"message":"Statement not found"}')
+                self.get.side_effect = [session] + [missing] * 21
+                with patch("dbt.adapters.fabricspark.livysession.time.sleep"), \
+                        fabric.ProfileClient(require_tabular=False) as client:
+                    with self.assertRaisesRegex(DbtRuntimeError, "HTTP 404"):
+                        client.execute(sql)
+                self.assertEqual(self.post.call_count, 1)
+        self.connect.assert_not_called()
 
     def test_query_log_preserves_sql_and_refresh_identity(self):
         row = ["r1", "v1", "2026-09-25", 1, 0, "incremental", "apply", "merge", 17,

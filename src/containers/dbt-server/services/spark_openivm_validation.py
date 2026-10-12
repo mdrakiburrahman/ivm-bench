@@ -408,6 +408,7 @@ def _validate_one(
         f"{compiled_sql}"
     )
     drop_sql = f"DROP VIEW IF EXISTS {expected_name}"
+    execute_read = getattr(livy, "execute_read", livy.execute)
     try:
         livy.execute(create_expected_sql)
 
@@ -432,14 +433,14 @@ def _validate_one(
         # canonical projection: both sides project those columns
         # in that order, so EXCEPT ALL only ever reports a true
         # value-bag difference.
-        describe_mv_out = livy.execute(f"DESCRIBE {relation}")
+        describe_mv_out = execute_read(f"DESCRIBE {relation}")
         mv_col_pairs = _extract_columns_with_types(
             describe_mv_out.get("output") or {},
             f"describe {schema}.{name}",
         )
         mv_cols = [c for c, _ in mv_col_pairs]
         mv_types = {c: t for c, t in mv_col_pairs}
-        describe_exp_out = livy.execute(f"DESCRIBE {expected_name}")
+        describe_exp_out = execute_read(f"DESCRIBE {expected_name}")
         exp_col_pairs = _extract_columns_with_types(
             describe_exp_out.get("output") or {},
             f"describe {expected_name}",
@@ -488,7 +489,7 @@ def _validate_one(
                 f"({expected_raw_subquery} EXCEPT ALL {mv_raw_subquery})"
                 ") AS __ivm_diff"
             )
-            output = livy.execute(diff_sql)
+            output = execute_read(diff_sql)
             diff_count = _extract_diff_count(output.get("output") or {}, label)
         else:
             inner_proj, hash_args = _build_canonical_projection(
@@ -498,11 +499,11 @@ def _validate_one(
                 "SELECT COUNT(*) AS __ivm_cnt, "
                 f"COALESCE(SUM(xxhash64({', '.join(hash_args)})), 0L) AS __ivm_hash"
             )
-            mv_out = livy.execute(
+            mv_out = execute_read(
                 f"{digest_select} FROM (SELECT {inner_proj} FROM {relation}) AS __ivm_mv"
             )
             mv_cnt, mv_hash = _extract_two_longs(mv_out.get("output") or {}, label)
-            exp_out = livy.execute(
+            exp_out = execute_read(
                 f"{digest_select} FROM (SELECT {inner_proj} FROM {expected_name}) AS __ivm_exp"
             )
             exp_cnt, exp_hash = _extract_two_longs(exp_out.get("output") or {}, label)
@@ -524,7 +525,7 @@ def _validate_one(
                     f"SELECT 'mv' AS side, * FROM "
                     f"({mv_raw_subquery}) AS __ivm_mv_sample LIMIT 5"
                 )
-                mv_extra = livy.execute(sample_sql)
+                mv_extra = execute_read(sample_sql)
                 sample_payload_mv = (
                     (mv_extra.get("output") or {}).get("data") or {}
                 ).get("application/json") or {}
@@ -532,7 +533,7 @@ def _validate_one(
                     f"SELECT 'expected' AS side, * FROM "
                     f"({expected_raw_subquery}) AS __ivm_exp_sample LIMIT 5"
                 )
-                exp_extra = livy.execute(sample_sql2)
+                exp_extra = execute_read(sample_sql2)
                 sample_payload_exp = (
                     (exp_extra.get("output") or {}).get("data") or {}
                 ).get("application/json") or {}

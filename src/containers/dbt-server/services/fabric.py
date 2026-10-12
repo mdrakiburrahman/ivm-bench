@@ -1090,6 +1090,22 @@ class ProfileClient:
         finally:
             cursor.close()
 
+    def execute_read(self, sql: str) -> dict:
+        """Recover one lost validation result by reissuing its read, not its poll."""
+        from dbt_common.exceptions import DbtRuntimeError
+
+        try:
+            return self.execute(sql)
+        except DbtRuntimeError as error:
+            message = str(error)
+            if ("Livy statement poll failed (HTTP 404):" not in message
+                    or "Statement not found" not in message):
+                raise
+            # The adapter already exhausted polling this statement ID. Reads
+            # are safe to repeat against the unchanged post-batch state.
+            logger.warning("[fabric] Livy lost a validation read result; reissuing once on the same session")
+            return self.execute(sql)
+
     def __exit__(self, *_args):
         # The dbt-owned session survives profile export and validation.
         pass

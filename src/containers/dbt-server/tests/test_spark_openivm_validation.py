@@ -35,7 +35,7 @@ class ExactValidationTest(unittest.TestCase):
             return output([])
         with patch.object(validation.logger, "exception"):
             result = validation._validate_one(
-                Mock(execute=execute), unique_id="model.test.example", name="example",
+                Mock(spec=["execute"], execute=execute), unique_id="model.test.example", name="example",
                 schema="silver", compiled_sql="SELECT amount, id FROM source",
                 exact=exact,
             )
@@ -74,6 +74,28 @@ class ExactValidationTest(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(sum("xxhash64" in s for s in sql), 2)
         self.assertTrue(any("ROUND" in s for s in sql))
+
+    def test_read_recovery_path_still_reports_a_value_mismatch(self):
+        def execute(statement):
+            self.assertTrue(statement.startswith(("CREATE OR REPLACE", "DROP VIEW")))
+            return output([])
+
+        def execute_read(statement):
+            if statement.startswith("DESCRIBE"):
+                return output([["amount", "double"], ["id", "bigint"]])
+            if "xxhash64" in statement:
+                return output([[2, 17 if "AS __ivm_mv" in statement else 19]])
+            return output([])
+
+        client = Mock(spec=["execute", "execute_read"], execute=execute,
+                      execute_read=execute_read)
+        result = validation._validate_one(
+            client, unique_id="model.test.example", name="example", schema="silver",
+            compiled_sql="SELECT amount, id FROM source",
+        )
+        self.assertEqual(result["status"], "fail")
+        self.assertGreater(result["diff_count"], 0)
+        self.assertEqual(result["sample"]["diff_kind"], "values_only")
 
 
 @unittest.skipUnless(HAS_FLASK, "requires dbt-server Flask dependency")
