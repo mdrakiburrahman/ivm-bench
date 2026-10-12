@@ -14,11 +14,12 @@ from services.source_cache import batch_cache_root, incremental_staging_tables
 PROJECTS_DIR = "/app/dbt-projects"
 
 
-def _inject_fabric_resolved(env: dict) -> None:
+def _inject_fabric_resolved(env: dict, *, claim_fresh: bool = False) -> None:
     """Inject the per-run resolved Fabric IDs (compute lakehouse/env + shared
     cache lakehouse) written by ``fabric.provision_run`` so the profile's
     ``env_var()`` lookups + the ``load_fabric_sources`` macro target the dynamic
     resources. No-op for non-fabric engines (resolved file absent)."""
+    env.pop("FABRIC_OPENIVM_FRESH_BUILD", None)
     path = os.environ.get("FABRIC_RESOLVED_PATH", "/tmp/fabric-resolved.json")
     try:
         with open(path) as f:
@@ -35,6 +36,16 @@ def _inject_fabric_resolved(env: dict) -> None:
         val = r.get(resolved_key)
         if val:
             env[env_key] = str(val)
+
+    # Claim before starting dbt: a failed/partial build must retain DROP on retry.
+    if claim_fresh and r.get("fresh_compute") and r.get("openivm") and r.get("lakehouse_id"):
+        marker = path + "." + r["lakehouse_id"] + ".build-started"
+        try:
+            fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return
+        os.close(fd)
+        env["FABRIC_OPENIVM_FRESH_BUILD"] = "1"
 
 
 def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, batch_num: int = 1):
@@ -83,7 +94,14 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
     env["FABRIC_INCREMENTAL_STAGING_TABLES"] = ",".join(
         incremental_staging_tables()
     )
-    _inject_fabric_resolved(env)
+    _inject_fabric_resolved(
+        env, claim_fresh=(engine == "fabric-openivm-jvm-35" and full_refresh and batch_num == 1)
+    )
+    if engine.startswith("fabric-") and env.get("OPENIVM_PROFILE_REFRESH") == "1":
+        cmd = ["python", "-m", "services.fabric_dbt_profile", *cmd[1:]]
+        stats_path = env.get("STATS_DIR", "/data/stats")
+        os.makedirs(stats_path, exist_ok=True)
+        env["FABRIC_DBT_TIMINGS_PATH"] = f"{stats_path}/fabric-timings-batch{batch_num}-{run_id}.jsonl"
 
     start_ts = time.monotonic()
     stderr_buf = []

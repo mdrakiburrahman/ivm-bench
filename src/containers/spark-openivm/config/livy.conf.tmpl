@@ -4,3 +4,7 @@ livy.file.local-dir-whitelist = /
 livy.server.session.timeout = 3h
 livy.repl.enable-hive-context = true
 livy.server.spark-home = /opt/spark
+
+# Local dbt-fabricspark sessions discard spark_config.conf. Set this on
+# the server so dbt and source-loader sessions both retain complete profiles.
+livy.rsc.sql.num-rows = 100000

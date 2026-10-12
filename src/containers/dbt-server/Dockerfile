@@ -19,6 +19,8 @@ RUN curl -sL https://aka.ms/downloadazcopy-v10-linux -o /tmp/azcopy.tgz && \
     chmod +x /usr/local/bin/azcopy && \
     rm -rf /tmp/azcopy*
 
+ENV OPENIVM_SNAPSHOT_PUBLICATION=1
+
 WORKDIR /app
 
 COPY requirements.txt .

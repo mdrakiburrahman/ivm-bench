@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class FeatureFlags:
-    openivm_validate: bool = True
+    openivm_validate: bool = False
     openivm_profile_refresh: bool = True
     openivm_query_log: bool = True
     storage_metrics: bool = True

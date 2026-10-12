@@ -1,0 +1,37 @@
+{
+  "_design_notes": [
+    "Restore historical compiler-runtime/global-window commits and asynchronous metadata backups on Spark main. Diagnostic only: remote backup completion is no longer guaranteed before a command returns.",
+    "One SF100 repetition, inserts 100/1/0.01, validation OFF to match run 37236087660, profiling/query log/storage ON, serial, four dbt threads. Native compiler remains 8c5940a9. Only Spark OpenIVM and Fabric OpenIVM."
+  ],
+  "baseline": {
+    "engines": [
+      "spark-openivm",
+      "fabric-openivm-jvm-35"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "fig1-backup-regression-sf100",
+      "scale_factor": 100,
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_3_pct": "0.01",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0",
+      "spark_tunables": {
+        "dbt_threads": 4
+      }
+    }
+  ]
+}

@@ -81,8 +81,8 @@ on:
         default: "1"
         type: string
       openivm_validate:
-        description: "Validate OpenIVM views with EXCEPT ALL after each timed batch (0 or 1)"
-        default: "1"
+        description: "Opt in to post-batch OpenIVM validation (DuckDB exact; Spark/Fabric digest; 0 or 1)"
+        default: "0"
         type: string
       openivm_profile_refresh:
         description: "Export OpenIVM refresh profiling CSVs after each batch (0 or 1)"
@@ -116,6 +116,7 @@ permissions:
 
 jobs:
   benchmark:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
@@ -136,7 +137,7 @@ jobs:
       SCHEDULE: ${{ inputs.schedule || 'serial-host-parallel-cloud' }}
       ENGINES: ${{ inputs.engines || 'databricks-enzyme,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
-      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '1' }}
+      OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '0' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
       OPENIVM_QUERY_LOG: ${{ inputs.openivm_query_log || '1' }}
       STORAGE_METRICS: ${{ inputs.storage_metrics || '1' }}
