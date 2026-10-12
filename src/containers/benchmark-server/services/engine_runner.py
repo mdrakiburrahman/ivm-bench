@@ -917,14 +917,12 @@ class EngineRunner:
             ):
                 self._export_query_plans(name, run_id, batch_num)
 
-            if (
-                name == "databricks-enzyme"
-                and batch.status != "failed"
-            ):
-                self._export_databricks_enzyme_metrics(batch_num)
-                # Pipeline-flow metrics are diagnostic only: autoscaling makes
-                # them unsuitable as a CPU proxy, so batch.duration_s remains
-                # the measured end-to-end wall clock.
+            if name == "databricks-enzyme":
+                if batch.status != "failed":
+                    self._export_databricks_enzyme_metrics(batch_num)
+                # Failed refreshes need their planning/error events captured
+                # before teardown drops the materialized views and pipelines.
+                # Collection remains outside the measured batch timer.
                 self._collect_databricks_enzyme_flow_metrics(batch_num, batch)
 
             # Check status from the stream_progress result

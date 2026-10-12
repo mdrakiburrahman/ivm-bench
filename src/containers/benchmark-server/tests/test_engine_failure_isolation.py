@@ -11,6 +11,7 @@ sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from models.config import BenchmarkConfig  # noqa: E402
 from models.result import BenchmarkResult, EngineResult  # noqa: E402
+from services.engine_runner import EngineRunner
 from services.orchestrator import Orchestrator  # noqa: E402
 from services.storage_sync import storage_snapshot_barrier  # noqa: E402
 
@@ -90,6 +91,45 @@ class EngineFailureIsolationTest(unittest.TestCase):
             orchestrator._run_serial_host_parallel_cloud()
 
         orchestrator._run_engine_wave.assert_called_once()
+
+
+class DatabricksFailureDiagnosticsTest(unittest.TestCase):
+    @patch("services.engine_runner.time.time", side_effect=[100, 103, 103])
+    def test_failed_refresh_captures_events_and_retains_error_and_timing(self, _time):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._engine = SimpleNamespace(name="databricks-enzyme")
+        runner._result = EngineResult(engine="databricks-enzyme")
+        batch = runner._result.batches[1]
+        for name in (
+            "_emit", "_persist_batch_result", "_batch_loader_append",
+            "_capture_delta_stats", "_databricks_enzyme_warmup",
+            "_ensure_cpu_measurement_status", "_export_databricks_enzyme_metrics",
+            "_save_openivm_ops_chart", "_capture_storage_metrics",
+        ):
+            setattr(runner, name, Mock())
+
+        def failed_refresh(_batch_num):
+            batch.status = "failed"
+            batch.error = "JVM_OUT_OF_MEMORY"
+            return "failed-run"
+
+        def capture_events(_batch_num, result):
+            self.assertEqual(result.duration_s, 3)
+            self.assertEqual(result.extra["wall_window_start_ms"], 100000)
+            self.assertEqual(result.extra["wall_window_end_ms"], 103000)
+
+        runner._run_databricks_enzyme = Mock(side_effect=failed_refresh)
+        runner._collect_databricks_enzyme_flow_metrics = Mock(side_effect=capture_events)
+        runner._run_batch(2)
+
+        runner._collect_databricks_enzyme_flow_metrics.assert_called_once_with(2, batch)
+        runner._export_databricks_enzyme_metrics.assert_not_called()
+        runner._capture_storage_metrics.assert_not_called()
+        runner._save_openivm_ops_chart.assert_not_called()
+        self.assertEqual(batch.status, "failed")
+        self.assertEqual(batch.error, "JVM_OUT_OF_MEMORY")
+        self.assertEqual(batch.duration_s, 3)
+        self.assertEqual(runner._persist_batch_result.call_count, 2)
 
 
 if __name__ == "__main__":

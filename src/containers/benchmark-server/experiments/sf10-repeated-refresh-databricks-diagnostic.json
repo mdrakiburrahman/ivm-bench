@@ -1,0 +1,29 @@
+{
+  "baseline": {
+    "scale_factor": 10,
+    "repeated_refresh": true,
+    "workload": "standard",
+    "refresh_count": 1,
+    "refresh_pct": "1",
+    "engines": [
+      "databricks-enzyme"
+    ],
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": false
+    },
+    "spark_tunables": {
+      "dbt_threads": 1
+    }
+  },
+  "experiments": [
+    {
+      "label": "SF10 Databricks first compounded 1% refresh: capture failed pipeline diagnostics"
+    }
+  ]
+}
