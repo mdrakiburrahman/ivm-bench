@@ -42,7 +42,8 @@ dispatch:
 #   REFRESH POLICY INCREMENTAL STRICT
 #   AS <compiled_sql>
 # for every non-ephemeral model and records which models support strict
-# incrementalization. The actual run still uses DATABRICKS_REFRESH_POLICY.
+# incrementalization. DATABRICKS_REFRESH_POLICY is the baseline policy;
+# model overrides below are recorded in dbt manifests and pipeline events.
 # Artifacts land under
 #   mount/query-plan/<sf>/databricks-enzyme/explain-create-materialized-view/.
 models:
@@ -53,6 +54,12 @@ models:
       +schema: bronze
     silver:
       +schema: silver
+      daily_market:
+        # AUTO rejects the nested-window plan by cost, then rewrites all rows.
+        # Its large change feed overwhelms fact_market_history's incremental
+        # join. Keep this eligible source incremental in repeated AUTO runs;
+        # explicit policy choices and legacy three-batch runs still apply.
+        +refresh_policy: "{{ 'INCREMENTAL STRICT' if env_var('REPEATED_REFRESH', '0') == '1' and env_var('DATABRICKS_REFRESH_POLICY', 'AUTO') == 'AUTO' else env_var('DATABRICKS_REFRESH_POLICY', 'AUTO') }}"
     gold:
       +schema: gold
     work:

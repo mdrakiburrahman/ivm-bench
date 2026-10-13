@@ -157,6 +157,13 @@ percentage/day knobs are replaced by this mode's row budgets; mutation knobs
 must remain zero. With `repeated_refresh` omitted, the existing three-batch
 behavior is unchanged.
 
+In repeated Databricks runs with policy `AUTO`, `daily_market` uses
+`INCREMENTAL STRICT`. Databricks' cost model rejects its nested-window
+incremental plan under `AUTO`, producing a full-table change feed that overloads
+the downstream `fact_market_history` join. The model override keeps that source
+incremental and appears in the dbt manifest and pipeline events. Explicit
+refresh-policy choices still apply to every model.
+
 `refresh-plan.json` records generator sizing and initial, before, inserted, and
 resulting counts for every source table and round. The server logs these counts
 and archives them in `source-row-counts.json`; `results.csv` includes every
