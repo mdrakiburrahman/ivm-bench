@@ -157,12 +157,11 @@ percentage/day knobs are replaced by this mode's row budgets; mutation knobs
 must remain zero. With `repeated_refresh` omitted, the existing three-batch
 behavior is unchanged.
 
-In repeated Databricks runs with policy `AUTO`, `daily_market` uses
-`INCREMENTAL STRICT`. Databricks' cost model rejects its nested-window
-incremental plan under `AUTO`, producing a full-table change feed that overloads
-the downstream `fact_market_history` join. The model override keeps that source
-incremental and appears in the dbt manifest and pipeline events. Explicit
-refresh-policy choices still apply to every model.
+Repeated Databricks runs partition `fact_market_history` by `sk_date_id`.
+Its SF10 output has 190 million rows and otherwise occupies one highly
+compressed file; date partitions spread that materialization across smaller
+files. The query, row multiplicities, and selected refresh policy are preserved.
+The partition layout appears in the dbt manifest and materialized-view DDL.
 
 `refresh-plan.json` records generator sizing and initial, before, inserted, and
 resulting counts for every source table and round. The server logs these counts

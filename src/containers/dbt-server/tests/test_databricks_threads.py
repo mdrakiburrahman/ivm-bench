@@ -17,18 +17,19 @@ class DatabricksThreadsTest(unittest.TestCase):
                 self.assertEqual(int(result["tpcdi"]["outputs"]["databricks-enzyme"]["threads"]), expected)
 
 
-class DatabricksRefreshPolicyTest(unittest.TestCase):
-    def test_repeated_auto_keeps_window_source_incremental(self):
+class DatabricksLayoutTest(unittest.TestCase):
+    def test_repeated_layout_and_explicit_refresh_policies(self):
+        from jinja2.nativetypes import NativeEnvironment
         project = Path(__file__).resolve().parents[1] / "dbt-projects/databricks-enzyme/dbt_project.yml"
         models = yaml.safe_load(project.read_text())["models"]["tpcdi"]
-        window_policy = Environment().from_string(models["silver"]["daily_market"]["+refresh_policy"])
-        baseline_policy = Environment().from_string(models["+refresh_policy"])
+        layout = NativeEnvironment().from_string(models["gold"]["fact_market_history"]["+partition_by"])
+        policy_template = Environment().from_string(models["+refresh_policy"])
         for workload in ("standard", "databricks"):
             for repeated in ("0", "1"):
                 for policy in ("AUTO", "FULL", "INCREMENTAL", "INCREMENTAL STRICT"):
                     with self.subTest(workload=workload, repeated=repeated, policy=policy):
                         env = {"TPCDI_WORKLOAD": workload, "REPEATED_REFRESH": repeated, "DATABRICKS_REFRESH_POLICY": policy}
                         context = {"env_var": lambda key, default="": env.get(key, default)}
-                        expected = "INCREMENTAL STRICT" if repeated == "1" and policy == "AUTO" else policy
-                        self.assertEqual(window_policy.render(**context), expected)
-                        self.assertEqual(baseline_policy.render(**context), policy)
+                        self.assertEqual(layout.render(**context), ["sk_date_id"] if repeated == "1" else [])
+                        self.assertEqual(policy_template.render(**context), policy)
+                        self.assertNotIn("daily_market", models["silver"])
