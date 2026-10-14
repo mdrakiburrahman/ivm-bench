@@ -153,6 +153,8 @@ jobs:
 
       - name: "🧪 Run storage collector unit tests"
         run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv
           GCI_TEST_ENV="${RUNNER_TEMP}/ivm-bench-unit-tests"
           python3 -m venv --system-site-packages "$GCI_TEST_ENV"
           "$GCI_TEST_ENV/bin/pip" install -r src/containers/dbt-server/tests/requirements.txt
