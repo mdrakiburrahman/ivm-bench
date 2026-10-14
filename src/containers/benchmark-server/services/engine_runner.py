@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import time
+from datetime import datetime
 from threading import Barrier, Lock
 from typing import Any, Callable, Dict, List, Optional
 
@@ -1740,7 +1741,7 @@ class EngineRunner:
                 self._save_run_result(run_id, batch_num)
                 return run_id
 
-            transient, summary = self._is_databricks_transient(run_id)
+            transient, summary = self._is_databricks_transient(run_id, batch_num)
             if not transient or attempt == max_attempts:
                 # Real bug, or retries exhausted — surface the failure.
                 self._save_run_result(run_id, batch_num)
@@ -1775,7 +1776,7 @@ class EngineRunner:
 
         return last_run_id
 
-    def _is_databricks_transient(self, run_id: str) -> tuple[bool, str]:
+    def _is_databricks_transient(self, run_id: str, batch_num: int) -> tuple[bool, str]:
         """Inspect failed nodes from a dbt run and decide if the failure
         was a Databricks-side platform transient (worth retrying) vs a
         real model/SQL bug (must surface immediately).
@@ -1801,6 +1802,22 @@ class EngineRunner:
             # almost always a dbt compile / parse error, not transient.
             return False, "no failing nodes (likely compile/parse error)"
 
+        # Ad-hoc serverless updates do not automatically restart after OOM.
+        # A subsequent REFRESH uses the larger workers selected by Databricks.
+        # Never apply this recovery to initialization: full_refresh recreates
+        # the MV and discards the backing pipeline's scaling history.
+        scale_up_models = set()
+        if batch_num > 1 and not data.get("full_refresh", True) and any(
+            "TASK_FAILED_EXECUTOR_LOSS" in (n.get("message") or "")
+            or "JVM_OUT_OF_MEMORY" in (n.get("message") or "")
+            for n in failed_nodes
+        ):
+            try:
+                events = self._export_databricks_enzyme_pipeline_events(batch_num)
+                scale_up_models = self._databricks_scale_up_models(data, events or {})
+            except Exception as exc:
+                self._emit(f"[databricks-enzyme] scale-up evidence unavailable: {exc}")
+
         transient_nodes = []
         non_transient_nodes = []
         for n in failed_nodes:
@@ -1809,6 +1826,10 @@ class EngineRunner:
                 (sig for sig in DATABRICKS_TRANSIENT_SIGNATURES if sig in msg),
                 None,
             )
+            if n.get("name") in scale_up_models and (
+                "TASK_FAILED_EXECUTOR_LOSS" in msg or "JVM_OUT_OF_MEMORY" in msg
+            ):
+                hit = "OUT_OF_MEMORY: WILL_SCALE_UP"
             if hit:
                 transient_nodes.append((n.get("name", "?"), hit))
             else:
@@ -1830,6 +1851,48 @@ class EngineRunner:
             if len(transient_nodes) > 3 else ""
         )
         return True, f"all {len(transient_nodes)} transient — {sig_summary}{more}"
+
+    @staticmethod
+    def _databricks_scale_up_models(run: dict, payload: dict) -> set[str]:
+        """Match explicit OOM recovery to the latest update of this dbt run."""
+        try:
+            started_ms = datetime.fromisoformat(
+                run["started_at"].replace("Z", "+00:00")
+            ).timestamp() * 1000
+        except (KeyError, TypeError, ValueError):
+            return set()
+        models = set()
+        pipelines = payload.get("pipelines") or []
+        for pipeline in pipelines:
+            name = pipeline.get("table")
+            # A dbt node name cannot identify an ambiguous relation safely.
+            if not name or sum(p.get("table") == name for p in pipelines) != 1:
+                continue
+            updates = pipeline.get("updates") or []
+            if not updates:
+                continue
+            update = max(updates, key=lambda u: u.get("creation_time") or 0)
+            if (
+                (update.get("creation_time") or 0) < started_ms
+                or str(update.get("state")).split(".")[-1] != "FAILED"
+                or update.get("full_refresh") is not False
+            ):
+                continue
+            events = update.get("events") or []
+            oom = any(
+                (e.get("details") or {}).get("abnormal_termination", {}).get("cause")
+                == "OUT_OF_MEMORY" for e in events
+            )
+            scale_up = any(
+                decision.get("scaling_decision") == "WILL_SCALE_UP"
+                for e in events
+                for decision in (e.get("details") or {}).get(
+                    "resource_info", {}
+                ).get("vertical_autoscaling_info", [])
+            )
+            if oom and scale_up:
+                models.add(name)
+        return models
 
     def _validate_duckdb_openivm(self, run_id: str, batch_num: int) -> None:
         """Run default OpenIVM correctness validation outside the benchmark timer."""
@@ -2154,7 +2217,7 @@ class EngineRunner:
             f"{len(data.get('relations', []))} relations"
         )
 
-    def _export_databricks_enzyme_pipeline_events(self, batch_num: int) -> None:
+    def _export_databricks_enzyme_pipeline_events(self, batch_num: int) -> Optional[dict]:
         """Capture every Databricks Lakeflow pipeline event for every
         ``MV-<catalog>.*`` pipeline in the workspace. One JSON file per
         update, ALL events for that update embedded (including the
@@ -2164,7 +2227,8 @@ class EngineRunner:
         Persisted to
         ``mount/pipeline-events/<sf>/databricks-enzyme/batch<N>/<schema>.<table>/<update_id>.json``
         plus a per-batch ``manifest.json``. Best-effort: failures here do
-        not fail the batch (the timer is already stopped before this runs).
+        not fail the batch. Returns the captured payload for retry decisions;
+        recovery diagnostics are included in the retry's wall-clock duration.
         """
         self._emit(
             f"[databricks-enzyme] Capturing pipeline events for batch {batch_num}"
@@ -2249,6 +2313,7 @@ class EngineRunner:
             f"{manifest['event_count']} events / "
             f"{files_written} files"
         )
+        return data
 
     def _collect_databricks_enzyme_flow_metrics(self, batch_num: int, batch) -> None:
         """Persist best-effort pipeline-flow diagnostics without changing timings."""

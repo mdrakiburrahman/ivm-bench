@@ -163,6 +163,15 @@ compressed file; date partitions spread that materialization across smaller
 files. The query, row multiplicities, and selected refresh policy are preserved.
 The partition layout appears in the dbt manifest and materialized-view DDL.
 
+If a Databricks refresh fails with an executor OOM and its latest failed
+pipeline update explicitly announces `WILL_SCALE_UP`, the harness retries the
+refresh on the same materialized views. Databricks uses larger workers for
+the next ad-hoc update ([vertical autoscaling documentation](https://docs.databricks.com/aws/en/ldp/auto-scaling)).
+The source batch is appended once; retry attempts and backoff remain inside
+the reported refresh duration. Failed attempts and pipeline events are saved.
+Recovery uses the existing retry limit (two retries by default), excludes
+initialization, and does not retry SQL errors or OOM without scaling evidence.
+
 `refresh-plan.json` records generator sizing and initial, before, inserted, and
 resulting counts for every source table and round. The server logs these counts
 and archives them in `source-row-counts.json`; `results.csv` includes every

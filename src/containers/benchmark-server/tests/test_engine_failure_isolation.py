@@ -1,4 +1,5 @@
 import sys
+from copy import deepcopy
 import unittest
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError
@@ -94,6 +95,146 @@ class EngineFailureIsolationTest(unittest.TestCase):
 
 
 class DatabricksFailureDiagnosticsTest(unittest.TestCase):
+    def setUp(self):
+        self.run = {
+            "started_at": "2026-10-13T19:40:00+00:00",
+            "full_refresh": False,
+            "nodes": [{"name": "fact_market_history", "status": "error",
+                       "message": "[TASK_FAILED_EXECUTOR_LOSS] Command exited with code 52, oom"}],
+        }
+        self.events = {"pipelines": [{
+            "table": "fact_market_history", "updates": [{
+                "creation_time": 1791920401000, "state": "UpdateInfoState.FAILED",
+                "full_refresh": False,
+                "events": [
+                    {"details": {"abnormal_termination": {"cause": "OUT_OF_MEMORY"}}},
+                    {"details": {"resource_info": {"vertical_autoscaling_info": [
+                        {"scaling_decision": "WILL_SCALE_UP"}
+                    ]}}},
+                ],
+            }],
+        }]}
+
+    def classifier(self, batch_num=2):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._dbt_url = "http://dbt"
+        runner._emit = Mock()
+        runner._export_databricks_enzyme_pipeline_events = Mock(return_value=self.events)
+        with patch("services.engine_runner.requests.get") as get:
+            get.return_value.json.return_value = self.run
+            result = runner._is_databricks_transient("failed-run", batch_num)
+        return result, runner
+
+    def test_oom_with_explicit_scale_up_retries_refresh(self):
+        result, runner = self.classifier()
+        self.assertTrue(result[0])
+        self.assertIn("OUT_OF_MEMORY", result[1])
+        runner._export_databricks_enzyme_pipeline_events.assert_called_once_with(2)
+
+    def test_scale_up_requires_matching_latest_failed_update(self):
+        for case in ("no_oom", "no_scale_up", "old", "completed", "full_refresh",
+                     "newer_update", "ambiguous", "missing_started_at"):
+            with self.subTest(case=case):
+                events = deepcopy(self.events)
+                run = deepcopy(self.run)
+                update = events["pipelines"][0]["updates"][0]
+                if case == "no_oom":
+                    update["events"].pop(0)
+                elif case == "no_scale_up":
+                    update["events"].pop()
+                elif case == "old":
+                    update["creation_time"] -= 2000
+                elif case == "completed":
+                    update["state"] = "UpdateInfoState.COMPLETED"
+                elif case == "full_refresh":
+                    update["full_refresh"] = True
+                elif case == "newer_update":
+                    events["pipelines"][0]["updates"].append({
+                        "creation_time": update["creation_time"] + 1,
+                        "state": "COMPLETED", "full_refresh": False,
+                    })
+                elif case == "ambiguous":
+                    events["pipelines"].append(deepcopy(events["pipelines"][0]))
+                else:
+                    run.pop("started_at")
+                self.assertEqual(EngineRunner._databricks_scale_up_models(run, events), set())
+
+    def test_initialization_does_not_use_scale_up_recovery(self):
+        result, runner = self.classifier(batch_num=1)
+        self.assertFalse(result[0])
+        runner._export_databricks_enzyme_pipeline_events.assert_not_called()
+        self.run["full_refresh"] = True
+        result, runner = self.classifier()
+        self.assertFalse(result[0])
+        runner._export_databricks_enzyme_pipeline_events.assert_not_called()
+
+    def test_sql_error_prevents_retry_even_when_another_node_can_scale(self):
+        self.run["nodes"].append({
+            "name": "other_model", "status": "error", "message": "UNRESOLVED_COLUMN"
+        })
+        result, _runner = self.classifier()
+        self.assertFalse(result[0])
+
+    def test_oom_without_scale_up_does_not_retry(self):
+        self.events["pipelines"][0]["updates"][0]["events"].pop()
+        result, _runner = self.classifier()
+        self.assertFalse(result[0])
+
+    @patch("services.engine_runner.time.sleep")
+    @patch("services.engine_runner.requests.post")
+    def test_scale_up_retries_are_bounded_and_preserve_final_error(self, post, sleep):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(scale_factor=10)
+        runner._dbt_url = "http://dbt"
+        runner._result = EngineResult(engine="databricks-enzyme")
+        batch = runner._result.batches[1]
+        for name in ("_emit", "_stream_dbt_progress", "_save_run_result"):
+            setattr(runner, name, Mock())
+        runner._is_databricks_transient = Mock(return_value=(True, "WILL_SCALE_UP"))
+        post.return_value.json.return_value = {"run_id": "still-oom"}
+
+        def fail(*_args):
+            batch.status = "failed"
+            batch.error = "oom"
+
+        runner._check_run_result = Mock(side_effect=fail)
+        with patch("services.engine_runner.DATABRICKS_ENZYME_MAX_RETRIES", 2):
+            self.assertEqual(runner._run_databricks_enzyme_dbt_with_retry(2, False), "still-oom")
+        self.assertEqual(post.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        runner._save_run_result.assert_called_with("still-oom", 2)
+        self.assertEqual(batch.status, "failed")
+        self.assertEqual(batch.error, "oom")
+
+    @patch("services.engine_runner.time.sleep")
+    @patch("services.engine_runner.requests.post")
+    def test_recovery_keeps_refresh_payload_and_archives_attempt(self, post, sleep):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(scale_factor=10)
+        runner._dbt_url = "http://dbt"
+        runner._result = EngineResult(engine="databricks-enzyme")
+        batch = runner._result.batches[1]
+        for name in ("_emit", "_stream_dbt_progress", "_save_run_result"):
+            setattr(runner, name, Mock())
+        runner._is_databricks_transient = Mock(return_value=(True, "WILL_SCALE_UP"))
+        post.return_value.json.side_effect = [{"run_id": "oom"}, {"run_id": "scaled"}]
+
+        def check(run_id, batch_num):
+            self.assertEqual(batch_num, 2)
+            batch.status = "failed" if run_id == "oom" else "completed"
+            batch.error = "oom" if run_id == "oom" else ""
+
+        runner._check_run_result = Mock(side_effect=check)
+        self.assertEqual(runner._run_databricks_enzyme_dbt_with_retry(2, False), "scaled")
+        self.assertEqual(post.call_count, 2)
+        for call in post.call_args_list:
+            self.assertEqual(call.kwargs["json"], {"scale_factor": 10, "full_refresh": False})
+            self.assertEqual(call.args[0], "http://dbt/run/databricks-enzyme")
+        runner._save_run_result.assert_any_call("oom", 2, suffix="-attempt1")
+        runner._save_run_result.assert_any_call("scaled", 2)
+        self.assertEqual(batch.status, "completed")
+        sleep.assert_called_once()
+
     @patch("services.engine_runner.time.time", side_effect=[100, 103, 103])
     def test_failed_refresh_captures_events_and_retains_error_and_timing(self, _time):
         runner = EngineRunner.__new__(EngineRunner)
