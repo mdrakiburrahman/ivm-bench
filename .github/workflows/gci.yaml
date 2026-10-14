@@ -35,25 +35,13 @@ on:
         description: "% of batch 1 data"
         default: "100"
         type: string
-      batch_1_insert_pct:
-        description: "% of batch 1 inserts (overrides batch_1_pct)"
-        default: ""
-        type: string
       batch_2_pct:
         description: "% of batch 2 data"
         default: "1"
         type: string
-      batch_2_insert_pct:
-        description: "% of batch 2 inserts (overrides batch_2_pct)"
-        default: ""
-        type: string
       batch_3_pct:
         description: "% of batch 3 data"
         default: "2"
-        type: string
-      batch_3_insert_pct:
-        description: "% of batch 3 inserts (overrides batch_3_pct)"
-        default: ""
         type: string
       batch_2_update_pct:
         description: "% of existing staging rows to update before batch 2 insert"
@@ -177,12 +165,12 @@ jobs:
     env:
       SCALE_FACTOR: ${{ inputs.scale_factor || '10' }}
       BENCHMARK_RUNS: ${{ inputs.benchmark_runs || '1' }}
-      BATCH_1_INSERT_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
-      BATCH_2_INSERT_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
-      BATCH_3_INSERT_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}
-      BATCH_1_PCT: ${{ inputs.batch_1_insert_pct || inputs.batch_1_pct || '100' }}
-      BATCH_2_PCT: ${{ inputs.batch_2_insert_pct || inputs.batch_2_pct || '1' }}
-      BATCH_3_PCT: ${{ inputs.batch_3_insert_pct || inputs.batch_3_pct || '2' }}
+      BATCH_1_INSERT_PCT: ${{ inputs.batch_1_pct || '100' }}
+      BATCH_2_INSERT_PCT: ${{ inputs.batch_2_pct || '1' }}
+      BATCH_3_INSERT_PCT: ${{ inputs.batch_3_pct || '2' }}
+      BATCH_1_PCT: ${{ inputs.batch_1_pct || '100' }}
+      BATCH_2_PCT: ${{ inputs.batch_2_pct || '1' }}
+      BATCH_3_PCT: ${{ inputs.batch_3_pct || '2' }}
       BATCH_2_UPDATE_PCT: ${{ inputs.batch_2_update_pct || '0' }}
       BATCH_2_DELETE_PCT: ${{ inputs.batch_2_delete_pct || '0' }}
       BATCH_3_UPDATE_PCT: ${{ inputs.batch_3_update_pct || '0' }}

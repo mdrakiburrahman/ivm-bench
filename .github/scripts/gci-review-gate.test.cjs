@@ -7,6 +7,20 @@ const sha = 'a'.repeat(40);
 const pr = {state:'open', draft:false, user:{login:'author'}, head:{sha,repo:{full_name:'o/r'}}, base:{repo:{full_name:'o/r'}}};
 const review = {id:1,state:'APPROVED',commit_id:sha,user:{login:'reviewer'}};
 const trusted = new Set(['reviewer']);
+test('dispatch inputs fit GitHub limits and use one percentage name per batch', () => {
+  const workflow = fs.readFileSync(path.join(__dirname,'../workflows/gci.yaml'),'utf8');
+  const block = workflow.split('\n  workflow_dispatch:\n')[1].split('\nconcurrency:\n')[0];
+  const inputs = [...block.matchAll(/^      ([a-z][a-z0-9_]*):$/gm)].map(match => match[1]);
+  assert.ok(inputs.length > 0 && inputs.length <= 25, `GitHub permits at most 25 dispatch inputs, found ${inputs.length}`);
+  for (const batch of [1,2,3]) {
+    assert.ok(inputs.includes(`batch_${batch}_pct`));
+    assert.ok(!inputs.includes(`batch_${batch}_insert_pct`));
+    assert.ok(!workflow.includes(`inputs.batch_${batch}_insert_pct`));
+  }
+  for (const input of ['reviewed_pr','reviewed_sha','openivm_validate','openivm_profile_refresh']) {
+    assert.ok(inputs.includes(input));
+  }
+});
 test('only exact independently approved same-repository head passes', () => {
   assert.equal(approved(pr,[review],sha,trusted),true);
   for (const changed of [{...pr,draft:true},{...pr,state:'closed'},

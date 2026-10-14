@@ -16,6 +16,13 @@ Manual dispatch retains the benchmark inputs but requires `reviewed_pr` and
 write permission, and the same current-review checks apply. This binds custom
 Dockerfile pins to the reviewed commit rather than accepting an unreviewed ref.
 
+The workflow declares 24 inputs, below GitHub's 25-input limit. Use `batch_1_pct`,
+`batch_2_pct` and `batch_3_pct` for insert percentages. The redundant dispatch
+aliases `batch_1_insert_pct`, `batch_2_insert_pct` and `batch_3_insert_pct` were
+removed to keep review identity inputs within that limit; update manual dispatch
+scripts to the canonical names. Runtime `BATCH_*_INSERT_PCT` environment variables
+and the update/delete controls are unchanged. Prebuilt experiment files remain supported.
+
 Run deterministic tests: `node --test .github/scripts/gci-review-gate.test.cjs`.
 Both checks load policy from the same immutable trusted commit: the PR base SHA,
 or the default branch SHA resolved before manual dispatch admission. Candidate
