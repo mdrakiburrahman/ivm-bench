@@ -276,6 +276,7 @@ class LivyClient:
             if statement_timeout_s > 0
             else None
         )
+        warned_missing_output = False
         while True:
             resp = requests.get(url, timeout=self.timeout_s)
             resp.raise_for_status()
@@ -295,7 +296,19 @@ class LivyClient:
                     raise RuntimeError(
                         f"Livy statement failed.\nSQL: {sql[:2000]}\n{head}\n{traceback}"
                     )
-                return data
+                if output.get("status") == "ok":
+                    return data
+                # State and output cross Livy's RPC boundary as separate
+                # mutable fields. An available state without a final output
+                # is not a successful result, even for DDL. Poll this ID;
+                # resubmitting SQL could apply a write twice.
+                if not warned_missing_output:
+                    logger.warning(
+                        "[spark-openivm] Livy statement %s is %s without final "
+                        "output (status=%r); waiting for the same statement",
+                        stmt_id, state, output.get("status"),
+                    )
+                    warned_missing_output = True
             if state in ("cancelled", "cancelling"):
                 raise RuntimeError(
                     f"Livy statement cancelled.\nSQL: {sql[:500]}"
