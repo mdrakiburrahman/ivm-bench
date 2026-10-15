@@ -38,6 +38,21 @@ class DatabricksOpenivmTest(unittest.TestCase):
         self.assertIn("`cat`.`exp`.`data` VERSION AS OF 4", result)
         self.assertIn("x.id", result)
 
+    def test_compiler_remaps_quoted_uc_refs_to_plain_schema_names(self):
+        result = backend.remap_sql("SELECT 'cat.exp.events' AS text, id FROM `cat`.`exp`.`events`",
+                                   {"cat.exp.events": "openivm_compile.events"}, quote_targets=False)
+        self.assertIn("FROM openivm_compile.events", result)
+        self.assertNotIn("`", result)
+        self.assertIn("'cat.exp.events'", result)
+
+    @patch.object(backend.requests, "post")
+    def test_native_compiler_error_body_reaches_run_failure(self, post):
+        post.return_value.ok = False
+        post.return_value.status_code = 500
+        post.return_value.text = '{"error":"Parser Error near backtick"}'
+        with self.assertRaisesRegex(RuntimeError, "Parser Error near backtick"):
+            backend.compiler({"operation": "compile"})
+
     def test_virtual_delta_paths_become_managed_tables(self):
         sql = "CREATE TABLE delta.`openivm-view-delta` USING DELTA AS SELECT 1 AS id"
         result = backend.remap_sql(sql, {}, {"delta.openivm-view-delta": "cat.exp.scratch"})
@@ -82,6 +97,7 @@ class DatabricksOpenivmTest(unittest.TestCase):
             "compiled_sql": "compiled-maintenance", "output_schema": {"fields": [{"name": "id"}]}}
         state = {"run_id": "initial"}
         backend.build_models(executor, self.manifest(), state, full_refresh=True, batch_num=1)
+        self.assertIn("FROM openivm_compile.events", compile_sql.call_args.args[0]["query"])
         self.assertEqual(state["models"]["model.a"]["source_versions"], {"cat.exp_data.events": 4})
         initial_calls = [c.args[0] for c in executor.execute.call_args_list]
         self.assertTrue(any("CREATE TABLE" in sql for sql in initial_calls))

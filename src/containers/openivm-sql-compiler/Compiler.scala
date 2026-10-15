@@ -5,7 +5,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.types.{DataType, StructField, StructType}
 import org.openivm.spark.common.SparkRefreshRewriter
-import org.openivm.spark.compiler.LptsSparkDialect
+import org.openivm.spark.compiler.{CompileRequest, LptsSparkDialect}
 import scala.collection.JavaConverters._
 
 /** Compile against empty schemas; all data processing happens remotely. */
@@ -34,8 +34,13 @@ object BenchSqlCompiler {
       }
       val query = in.get("query").asText()
       val result = MvDryCompile.dryCompile(spark, ident, query)
-      if (result.compiled.sql.isEmpty && result.compiled.initialLoadSql.isEmpty)
+      if (result.compiled.sql.isEmpty && result.compiled.initialLoadSql.isEmpty) {
+        // The introspection API suppresses native compiler errors. Recover the
+        // exception here so the warehouse harness retains the actual cause.
+        val (_, _, schemas, qualified) = MvCommandHelper.collectSourceSchemas(spark, query)
+        OpenIvmCompilers.forSession(spark).compile(CompileRequest(name, query, schemas, qualified))
         throw new IllegalStateException("OpenIVM compilation failed: " + name)
+      }
       out.put("refresh_type", result.classification.refreshType)
       out.put("refresh_type_name", result.classification.refreshTypeName)
       out.put("classification_reason", result.classification.reason)

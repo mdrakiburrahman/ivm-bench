@@ -70,7 +70,7 @@ def physical(name):
     return ".".join(parts)
 
 
-def remap_sql(sql, mapping, paths=None, snapshots=None):
+def remap_sql(sql, mapping, paths=None, snapshots=None, *, quote_targets=True):
     """Change relation names, never column expressions or string literals."""
     tree = sqlglot.parse_one(sql, read="databricks")
     for table in list(tree.find_all(exp.Table)):
@@ -81,7 +81,7 @@ def remap_sql(sql, mapping, paths=None, snapshots=None):
         ) or mapping.get(key)
         if target:
             alias = table.alias or table.name
-            replacement = sqlglot.to_table(quote(target), dialect="databricks")
+            replacement = sqlglot.to_table(quote(target) if quote_targets else target, dialect="databricks")
             for attr in ("this", "db", "catalog"):
                 table.set(attr, replacement.args.get(attr))
             if isinstance(snapshot, dict):
@@ -146,6 +146,8 @@ class SqlExecutor:
 
 def compiler(payload):
     response = requests.post(f"{COMPILER_URL}/compile", json=payload, timeout=300)
+    if not response.ok:
+        raise RuntimeError(f"OpenIVM SQL compiler HTTP {response.status_code}: {response.text[:6000]}")
     response.raise_for_status()
     return response.json()
 
@@ -194,7 +196,9 @@ def build_models(executor, manifest, checkpoint, *, full_refresh, batch_num):
         if full_refresh:
             schemas = {dep.split(".")[-1]: executor.schema(dep) for dep in deps}
             compiled = compiler({"operation": "compile", "name": name,
-                                 "query": remap_sql(query, mapping), "schemas": schemas})
+                                 # The Spark-to-DuckDB bridge strips plain db.table
+                                 # names; it cannot bind backtick-quoted UC refs.
+                                 "query": remap_sql(query, mapping, quote_targets=False), "schemas": schemas})
             initial = remap_sql(compiled["initial_sql"], {v: k for k, v in mapping.items()})
             executor.execute(f"CREATE TABLE {quote(target)} USING DELTA "
                              "TBLPROPERTIES ('delta.enableChangeDataFeed'='true') AS " + initial)
