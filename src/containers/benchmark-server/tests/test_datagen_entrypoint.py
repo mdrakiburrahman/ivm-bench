@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[4]
 
 
 class DatagenEntrypointTest(unittest.TestCase):
-    def run_generator(self, root, crash=False):
+    def run_generator(self, root, crash=False, config_error=False):
         tools = root / "bin"
         tools.mkdir(exist_ok=True)
         for name, body in {
@@ -26,6 +26,10 @@ sys.stdin.readline()
 sys.stdin.readline()
 args = sys.argv
 assert args[args.index("-workers") + 1] == "1"
+if os.environ.get("FAKE_CONFIG_ERROR") == "1":
+    print("pdgf.common.util.xml.XmlException: Error description: 'minUpdateSize' is '2' but must be between [3, 2147483647]", flush=True)
+    import time
+    while True: time.sleep(0.1)
 output = pathlib.Path(args[args.index("-o") + 1].strip("'"))
 batch = output / "Batch1"
 batch.mkdir(parents=True, exist_ok=True)
@@ -50,7 +54,8 @@ print("generation finished", flush=True)
         env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
                "DIGEN_PATH": str(root / "output"), "REPEATED_REFRESH": "1",
                "DIGEN_INCREMENTAL_BATCHES": "53", "SCALE_FACTOR": "10",
-               "FAKE_CRASH": "1" if crash else "0"}
+               "FAKE_CRASH": "1" if crash else "0",
+               "FAKE_CONFIG_ERROR": "1" if config_error else "0"}
         return subprocess.run(["bash", "-c", script], env=env, text=True,
                               capture_output=True, timeout=15)
 
@@ -72,10 +77,22 @@ print("generation finished", flush=True)
             root = Path(tmp)
             result = self.run_generator(root, crash=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("PDGF worker crashed", result.stdout)
+            self.assertIn("PDGF failed", result.stdout)
             output = root / "output/horizon-53"
             self.assertFalse((output / ".generation-complete").exists())
             self.assertIn("HouseKeeper", (output / "generator.log").read_text())
+
+    def test_config_error_before_first_file_fails_promptly_and_keeps_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self.run_generator(root, config_error=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PDGF failed", result.stdout)
+            self.assertNotIn("timeout", result.stdout)
+            output = root / "output/horizon-53"
+            self.assertFalse((output / ".generation-complete").exists())
+            self.assertFalse((output / "Batch1/Date.txt").exists())
+            self.assertIn("minUpdateSize", (output / "generator.log").read_text())
 
 
 if __name__ == "__main__":

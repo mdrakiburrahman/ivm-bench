@@ -76,8 +76,8 @@ ELAPSED=0
 while kill -0 "$DIGEN_PID" 2>/dev/null; do
   sleep 5
   ELAPSED=$((ELAPSED + 5))
-  if [[ "${REPEATED_REFRESH:-0}" == "1" ]] && grep -q 'Exception in thread' "$DIGEN_PATH/generator.log"; then
-    echo "ERROR: PDGF worker crashed; see $DIGEN_PATH/generator.log"
+  if [[ "${REPEATED_REFRESH:-0}" == "1" ]] && grep -Eq 'Exception in thread|pdgf\.common\.util\.xml\.XmlException' "$DIGEN_PATH/generator.log"; then
+    echo "ERROR: PDGF failed (worker crash or invalid configuration); see $DIGEN_PATH/generator.log"
     kill -- -"$DIGEN_PID" 2>/dev/null || kill "$DIGEN_PID" 2>/dev/null || true
     exit 1
   fi
