@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import sqlite3
 import sys
 import tempfile
@@ -82,6 +83,30 @@ class SparkExecutionEvidenceTest(unittest.TestCase):
                 self.assertEqual(row["adaptive_physical_plan"], f"latest observed adaptive plan for {model}")
             self.assertEqual(sum(r["metric_value"] for r in long_rows if r["metric_name"] == "records_read"), 6)
 
+    def test_archive_keeps_requested_sidecars_and_excludes_previous_engine(self):
+        with tempfile.TemporaryDirectory() as root:
+            processed = Path(root) / "processed"
+            processed.mkdir()
+            (processed / "RESULTS.md").write_text("rollup")
+            sidecars = {}
+            for engine in spark_metrics.ENGINES:
+                path = Path(root) / f"{engine}.jsonl"
+                path.write_text(json.dumps({"physical_plan": "initial", "adaptive_physical_plan": "latest"}) + "\n")
+                sidecars[engine] = str(path)
+            archive_path = str(Path(root) / "metrics.zip")
+            spark_metrics._zip_processed(str(processed), archive_path, sidecars)
+            with zipfile.ZipFile(archive_path) as archive:
+                for engine, path in sidecars.items():
+                    self.assertEqual(archive.read(f"{engine}-executions.jsonl"), Path(path).read_bytes())
+                self.assertEqual(archive.read("RESULTS.md"), b"rollup")
+            spark_metrics._zip_processed(str(processed), archive_path, {"spark": sidecars["spark"]})
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(set(archive.namelist()), {"RESULTS.md", "spark-executions.jsonl"})
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("duckdb") and importlib.util.find_spec("pandas"),
+        "Parquet integration needs runtime DuckDB/pandas; archive coverage uses only the standard library",
+    )
     def test_saved_bundle_keeps_both_sidecars_without_changing_parquet_contract(self):
         import duckdb
 
