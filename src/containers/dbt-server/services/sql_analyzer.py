@@ -19,7 +19,6 @@ ENGINE_DIALECTS = {
     "duckdb": "duckdb",
     "duckdb-openivm": "duckdb",
     "databricks-enzyme": "databricks",
-    "databricks-openivm": "databricks",
     "feldera": None,  # sqlglot doesn't support Feldera; use generic
 }
 

@@ -30,8 +30,6 @@ def get_manifest(engine: str, force_compile: bool = False) -> dict[str, Any] | N
     Get the dbt manifest for an engine. Compiles on-demand if not cached.
     Returns the parsed manifest.json dict, or None on failure.
     """
-    if engine == "databricks-openivm":
-        engine = "databricks-enzyme"
     if not force_compile and engine in _manifest_cache:
         return _manifest_cache[engine]
 

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
-LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "databricks-enzyme", "databricks-openivm"}
+LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "databricks-enzyme"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
 SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES
@@ -31,11 +31,10 @@ PROCESSED_ROOTS = {
     "duckdb-openivm": Path("/data/processed/duckdb-openivm"),
     "feldera": Path("/data/processed/feldera"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
-    "databricks-openivm": Path("/data/processed/databricks-openivm"),
 }
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
 RAW_BACKED_ENGINES = {"spark", "feldera"}
-RAW_REFERENCE_ENGINES = RAW_BACKED_ENGINES | {"databricks-enzyme", "databricks-openivm"}
+RAW_REFERENCE_ENGINES = RAW_BACKED_ENGINES | {"databricks-enzyme"}
 DATABRICKS_BACKING_TABLE = re.compile(
     r"^__materialization_mat_"
     r"[0-9a-f]{8}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{4}_[0-9a-f]{12}"
@@ -228,8 +227,6 @@ def _classify_processed(engine: str, rel: str, *, is_delta_table: bool = False) 
             return "visible_output"
         if first in {"_ivm", "_openivm", "_tmp", "tmp"}:
             return "helper_data"
-    if engine == "databricks-openivm":
-        return "metadata"
     if engine == "databricks-enzyme" and first in {"query-plan", "pipeline-events"}:
         return "metadata"
     if first in {"_tmp", "tmp"}:
@@ -597,8 +594,6 @@ def _collect_ducklake_storage(
 
 
 def _databricks_category(src: Any, schema: str, name: str) -> str:
-    if name.startswith("_openivm_delta_"):
-        return "helper_data"
     if name.startswith("event_log_"):
         return "metadata"
     if schema == src.data_schema():
@@ -697,7 +692,7 @@ def _databricks_physical_relations(
 
 
 def _databricks_relation_storage(
-    *, deadline: Optional[float] = None, engine: str = "databricks-enzyme"
+    *, deadline: Optional[float] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[str]]:
     from services import databricks_enzyme_metrics as metrics
     from services import databricks_enzyme_sources as src
@@ -755,7 +750,7 @@ def _databricks_relation_storage(
                     _add_item(
                         items,
                         totals,
-                        engine=engine,
+                        engine="databricks-enzyme",
                         name=relation,
                         category=category,
                         bytes_=values["active_bytes"],
@@ -771,7 +766,7 @@ def _databricks_relation_storage(
                         _add_item(
                             items,
                             totals,
-                            engine=engine,
+                            engine="databricks-enzyme",
                             name=f"{relation}:retained-data",
                             category=category,
                             bytes_=values["retained_data_bytes"],
@@ -787,7 +782,7 @@ def _databricks_relation_storage(
                         _add_item(
                             items,
                             totals,
-                            engine=engine,
+                            engine="databricks-enzyme",
                             name=f"{relation}:transaction-log",
                             category="metadata",
                             bytes_=values["transaction_log_bytes"],
@@ -888,7 +883,7 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
             "items": items,
         }
 
-    default_timeout_s = 1800 if engine in {"databricks-enzyme", "databricks-openivm"} else 90
+    default_timeout_s = 1800 if engine == "databricks-enzyme" else 90
     configured_timeout = os.environ.get("STORAGE_COLLECTION_TIMEOUT_S", "").strip()
     timeout_s = max(
         1,
@@ -921,10 +916,10 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
         _merge_totals(totals, helper_totals)
         errors.extend(helper_errors)
 
-    if engine in {"databricks-enzyme", "databricks-openivm"} and time.monotonic() < deadline:
+    if engine == "databricks-enzyme" and time.monotonic() < deadline:
         try:
             remote_items, remote_totals, remote_errors = (
-                _databricks_relation_storage(deadline=deadline, engine=engine)
+                _databricks_relation_storage(deadline=deadline)
             )
             items.extend(remote_items)
             _merge_totals(totals, remote_totals)

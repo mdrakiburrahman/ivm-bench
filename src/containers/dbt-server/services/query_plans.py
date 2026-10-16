@@ -317,7 +317,6 @@ def _collect_spark_openivm_plans(
 
 _ENGINE_DISPATCH = {
     "databricks-enzyme": _collect_databricks_plans,
-    "databricks-openivm": _collect_databricks_plans,
     "spark": _collect_spark_plans,
     "spark-openivm": _collect_spark_openivm_plans,
 }

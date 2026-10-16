@@ -35,7 +35,7 @@ _BASE_TABLE_PAIRS = {
     "duckdb-openivm": "duckdb",
     "fabric-openivm-jvm-35": "fabric-jvm-35",
 }
-_RAW_REFERENCE_BASELINES = {"databricks-enzyme", "databricks-openivm"}
+_RAW_REFERENCE_BASELINES = {"databricks-enzyme"}
 
 RESULTS_CSV_FIELDS = (
     "oat_run_id",

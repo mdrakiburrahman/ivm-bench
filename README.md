@@ -172,31 +172,6 @@ the reported refresh duration. Failed attempts and pipeline events are saved.
 Recovery uses the existing retry limit (two retries by default), excludes
 initialization, and does not retry SQL errors or OOM without scaling evidence.
 
-The opt-in `databricks-openivm` engine uses OpenIVM's compiler and Spark SQL
-rewriter with the same dbt model SQL as `databricks-enzyme`. A local compiler
-container sees schemas only; the Databricks SQL warehouse optimizes and executes
-the generated SQL. Model results and maintenance state are managed Delta tables
-with CDF, exposed through views that hide OpenIVM bookkeeping columns. The
-backend records OpenIVM's effective refresh classification, including full
-recompute where OpenIVM Spark requires it.
-
-Each model remembers the Delta versions it has consumed. Refreshes read exact
-CDF intervals in dependency order, including updates and deletes from upstream
-models. Interrupted multi-statement refreshes mark the checkpoint dirty and
-fail instead of replaying partially applied maintenance. The benchmark retains
-the initial state and appends each source batch once. Enzyme and OpenIVM use
-separate experiment schemas, and cleanup drops their respective schemas.
-
-`mount/results/<sf>/databricks-openivm/` contains the checkpoint, generated
-`sql-batch<N>.sql`, statement IDs and timings, bag-equivalence validation using
-`EXCEPT ALL` in both directions, and observed Photon/task time from query
-history. Photon metrics are collected outside the benchmark timer; missing
-metrics are reported as partial rather than proof of native execution.
-Use `smoke-repeated-refresh-databricks-openivm.json` for the SF3 standard and
-extended TPC-DI correctness runs with two compounded 1% refreshes.
-SF3 matches the existing repeated-refresh smoke scale; SF1 produces an invalid
-native FINWIRE configuration (`minUpdateSize=2`, below PDGF's minimum of 3).
-
 `refresh-plan.json` records generator sizing and initial, before, inserted, and
 resulting counts for every source table and round. The server logs these counts
 and archives them in `source-row-counts.json`; `results.csv` includes every
