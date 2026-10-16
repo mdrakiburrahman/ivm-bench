@@ -47,6 +47,27 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("databricks_enzyme", __name__)
 
 
+@bp.route("/validate/databricks-openivm/<int:batch_num>", methods=["POST"])
+def validate_openivm(batch_num):
+    from services import databricks_openivm
+    try:
+        payload = databricks_openivm.validate(batch_num)
+        return jsonify(payload), 200 if payload["status"] == "ok" else 422
+    except Exception as exc:
+        logger.exception("Databricks OpenIVM validation failed")
+        return jsonify(status="error", error=str(exc)), 500
+
+
+@bp.route("/metrics/databricks-openivm/<int:batch_num>", methods=["POST"])
+def openivm_photon_metrics(batch_num):
+    from services import databricks_openivm
+    try:
+        return jsonify(databricks_openivm.photon_metrics(batch_num)), 200
+    except Exception as exc:
+        logger.exception("Databricks Photon metrics unavailable")
+        return jsonify(status="unavailable", error=str(exc)), 200
+
+
 @bp.route("/sources/databricks-enzyme/init/<int:sf>", methods=["POST"])
 def init(sf: int):
     try:
