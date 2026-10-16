@@ -330,6 +330,19 @@ class FabricProfileTest(unittest.TestCase):
 
 
 class FabricProfileConfigTest(unittest.TestCase):
+    def test_window_feature_flags_match_spark_benchmark(self):
+        root = Path(__file__).resolve().parents[4]
+        config = (root / "src/containers/spark-openivm/config/spark-defaults.conf.tmpl").read_text()
+        spark = dict(line.split("=", 1) for line in config.splitlines()
+                     if line.startswith("spark.openivm.") and "=" in line)
+        with patch("services.fabric.onelake_abfss", return_value="abfss://test"):
+            properties = fabric.default_openivm_spark_properties()
+        for key in ("spark.openivm.refresh.groupedWindowState.enabled",
+                    "spark.openivm.compile.classificationCache.enabled",
+                    "spark.openivm.refresh.windowClusterPrune.enabled"):
+            with self.subTest(key=key):
+                self.assertEqual(properties[key], spark[key])
+
     def test_compose_forwards_recording_flags_to_environment_publisher(self):
         root = Path(__file__).resolve().parents[4]
         compose = (root / "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml").read_text()
