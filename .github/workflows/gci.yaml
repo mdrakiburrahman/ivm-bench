@@ -12,12 +12,16 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: relay-diagnostic-${{ github.run_id }}
       - name: Diagnose existing relay from host and container
         env:
           BASE64_ENV: ${{ secrets.BASE64_ENV }}
         shell: bash
         run: |
           set -euo pipefail
+          cd "$GITHUB_WORKSPACE/relay-diagnostic-$GITHUB_RUN_ID"
+          task_checkout="$PWD"
           umask 077
           task_env="$(mktemp "$RUNNER_TEMP/fabric-relay-env.XXXXXX")"
           trap 'rm -f "$task_env"' EXIT
@@ -30,5 +34,5 @@ jobs:
           python3 tools/scripts/github/diagnose-fabric-relay.py || true
           docker run --rm --pull=missing \
             -e IMDS_RELAY_URL -e IMDS_RELAY_SENDER_KEY -e IMDS_RELAY_KEY_NAME -e UAMI_CLIENT_ID \
-            -v "$GITHUB_WORKSPACE:/work:ro" -w /work python:3.11-slim \
+            -v "$task_checkout:/work:ro" -w /work python:3.11-slim \
             python3 tools/scripts/github/diagnose-fabric-relay.py
