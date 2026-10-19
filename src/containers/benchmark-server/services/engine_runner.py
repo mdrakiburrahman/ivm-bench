@@ -121,6 +121,8 @@ DATABRICKS_TRANSIENT_SIGNATURES = (
     "PIPELINE_INTERNAL_ERROR",
     "SERVICE_UNAVAILABLE",
     "TEMPORARILY_UNAVAILABLE",
+    # CLUSTER_UNREACHABLE is rendered without its error class by dbt.
+    "Communication lost with driver. Cluster ",
     # DLT pipeline service failed to start on the cluster (startup race /
     # transient cluster-side infra), e.g. "Failed to initialize the pipeline
     # service on cluster <id>. Check the cluster driver logs for more details."
