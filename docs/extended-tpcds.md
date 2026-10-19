@@ -271,6 +271,27 @@ OpenIVM models remain incremental, and Docker CPU counters were captured.
 The [earlier local engine evidence](../src/workloads/extended-tpcds/validation/engines-local.json)
 retains historical failures from older builds, before the required OpenIVM fixes.
 
+An [experimental standalone Spark probe](../src/workloads/extended-tpcds/validation/engines-spark-sf001.json)
+uses OpenIVM Spark `54859a47`, Spark 4.1.0 and Delta 4.2.0 with Spark's native
+compiler pin `8c5940a9`, built against matching DuckDB 1.5.4 headers/runtime.
+This is separate from OAT integration. All 96 initial models match DuckDB at
+native SF 0.01; 95 are classified incremental and the constant ingestion metadata
+view uses full refresh. During the first mixed-DML batch, 47 models match before
+`int_customer_status_transaction` loses 75 rows: 6,541 incremental rows versus
+6,616 expected rows. A fresh Spark query over the already-validated parent bags
+matches the reference exactly. SF 1 was not started after this correctness failure.
+The run used four cores, a 4 GiB driver heap and 300-second statement timeouts;
+peak combined RSS was about 3.82 GiB, without a resource-guard stop.
+
+The Spark probe fixes both sessions to UTC, normalizes Parquet timestamp loading,
+uses CalendarInterval compatibility and keeps Delta's automatic MERGE source
+materialization. Forcing materialization off fails when OpenIVM supplies cached
+delta inputs. A separate three-model reproduction passes all six initial/updated
+comparisons with automatic materialization. The newer native compiler `91ae4040`
+also requires Spark bridge support for its qualified/internal storage identifiers;
+it was not used for the recorded Spark initial-load acceptance. Spark mutation
+correctness and OAT integration remain open.
+
 CI installs the test dependencies and runs all three test directories. To run the
 same tests locally, install `src/workloads/extended-tpcds/requirements-test.txt`,
 then use `python -m unittest discover -s DIRECTORY -v` for
