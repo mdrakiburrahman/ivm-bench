@@ -14,6 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services import fabric, spark_openivm_profile, spark_openivm_query_log
 
+try:
+    import flask
+    HAS_FLASK = True
+except ImportError:
+    HAS_FLASK = False
+
 
 class FabricRuntimePinTest(unittest.TestCase):
     def setUp(self):
@@ -196,6 +202,7 @@ class FabricSparkRuntimeMetricsTest(unittest.TestCase):
         self.assertEqual(result["status"], "partial")
         self.request.assert_not_called()
 
+    @unittest.skipUnless(HAS_FLASK, "requires dbt-server Flask dependency")
     def test_profile_export_keeps_csv_if_runtime_capture_fails(self):
         from flask import Flask
         from handlers.spark_openivm import spark_openivm_export_profile
