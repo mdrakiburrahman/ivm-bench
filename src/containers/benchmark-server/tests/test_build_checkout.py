@@ -13,12 +13,11 @@ from services.docker_manager import DockerManager
 
 
 class BuildCheckoutTest(unittest.TestCase):
-    def test_spark_build_fetches_a_pin_outside_branch_history(self):
+    def test_builds_fetch_a_pin_outside_branch_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source, checkout = root / "source", root / "checkout"
+            source = root / "source"
             source.mkdir()
-            checkout.mkdir()
 
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=source, text=True,
@@ -34,20 +33,31 @@ class BuildCheckoutTest(unittest.TestCase):
             (source / "payload").write_text("pinned")
             git("commit", "-am", "pin outside main")
             pin = git("rev-parse", "HEAD")
+            git("update-ref", "refs/pull/1/head", pin)
             git("checkout", "main")
             self.assertNotEqual(git("rev-parse", "HEAD"), pin)
 
             # Execute the actual Docker instruction against a local Git remote.
-            dockerfile = BENCHMARK_SERVER.parent / "spark-openivm-build/Dockerfile"
-            stage = dockerfile.read_text().split("AS spark-ext-builder\n", 1)[1]
-            instruction = stage.split("WORKDIR /src\n\n", 1)[1].split("\n\n", 1)[0]
-            command = instruction.removeprefix("RUN ").replace("\\\n", "")
-            subprocess.run(["sh", "-c", command], cwd=checkout, check=True,
-                           env={**os.environ, "OPENIVM_SPARK_REPO": str(source),
-                                "OPENIVM_SPARK_COMMIT": pin}, capture_output=True, text=True)
-            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
-            self.assertEqual(head, pin)
-            self.assertEqual((checkout / "payload").read_text(), "pinned")
+            for image in ("spark-openivm-build", "duckdb-openivm"):
+                with self.subTest(image=image):
+                    checkout = root / image
+                    checkout.mkdir()
+                    dockerfile = (BENCHMARK_SERVER.parent / image / "Dockerfile").read_text()
+                    if image == "spark-openivm-build":
+                        stage = dockerfile.split("AS spark-ext-builder\n", 1)[1]
+                        instruction = stage.split("WORKDIR /src\n\n", 1)[1].split("\n\n", 1)[0]
+                    else:
+                        # Test checkout only; the fixture has no DuckDB submodules.
+                        instruction = "RUN git clone" + dockerfile.split("RUN git clone",1)[1].split("    git submodule",1)[0]
+                        instruction = instruction.rsplit("&&",1)[0]
+                    command = instruction.removeprefix("RUN ").replace("\\\n", "")
+                    subprocess.run(["sh", "-c", command], cwd=checkout, check=True,
+                                   env={**os.environ, "OPENIVM_SPARK_REPO": source.as_uri(),
+                                        "OPENIVM_SPARK_COMMIT": pin, "OPENIVM_REPO":source.as_uri(),
+                                        "OPENIVM_COMMIT":pin}, capture_output=True, text=True)
+                    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=checkout, text=True).strip()
+                    self.assertEqual(head, pin)
+                    self.assertEqual((checkout / "payload").read_text(), "pinned")
 
     def test_compose_failure_reports_stdout_and_stderr_tails(self):
         result = subprocess.CompletedProcess([], 128,

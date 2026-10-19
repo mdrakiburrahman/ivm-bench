@@ -1,0 +1,135 @@
+{
+  "_design_notes": [
+    "All 96 models, fixed report date, strict materialized-view policy and fresh full-DAG validation after each snapshot.",
+    "Daily arrivals and repeated insertions include a fourth snapshot; batch-three percentages repeat for later batches.",
+    "Both engines replay the same immutable row images for each experiment."
+  ],
+  "baseline": {
+    "workload": "extended-tpcds",
+    "scale_factor": 0.01,
+    "engines": [
+      "duckdb",
+      "duckdb-openivm"
+    ],
+    "schedule": "serial",
+    "batch_1_pct": "100",
+    "extended_tpcds": {
+      "report_date": "2002-12-31",
+      "seed": 17,
+      "batches": 3,
+      "days": 3,
+      "fallback_policy": "strict"
+    },
+    "feature_flags": {
+      "openivm_validate": true,
+      "storage_metrics": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "extended-tpcds sf0.01 native insertion",
+      "extended_tpcds": {
+        "profile": "native",
+        "mode": "insertion"
+      },
+      "batch_2_pct": "1",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_pct": "1",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0"
+    },
+    {
+      "label": "extended-tpcds sf0.01 native updates",
+      "extended_tpcds": {
+        "profile": "native",
+        "mode": "updates"
+      },
+      "batch_2_pct": "0",
+      "batch_2_update_pct": "1",
+      "batch_2_delete_pct": "0",
+      "batch_3_pct": "0",
+      "batch_3_update_pct": "1",
+      "batch_3_delete_pct": "0"
+    },
+    {
+      "label": "extended-tpcds sf0.01 native deletes",
+      "extended_tpcds": {
+        "profile": "native",
+        "mode": "deletes"
+      },
+      "batch_2_pct": "0",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "1",
+      "batch_3_pct": "0",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "1"
+    },
+    {
+      "label": "extended-tpcds sf0.01 native days",
+      "extended_tpcds": {
+        "profile": "native",
+        "mode": "days"
+      },
+      "batch_2_pct": "0",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_pct": "0",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0"
+    },
+    {
+      "label": "extended-tpcds sf0.01 native repeated_insertions",
+      "extended_tpcds": {
+        "profile": "native",
+        "mode": "repeated_insertions",
+        "batches": 4
+      },
+      "batch_2_pct": "1",
+      "batch_2_update_pct": "0",
+      "batch_2_delete_pct": "0",
+      "batch_3_pct": "1",
+      "batch_3_update_pct": "0",
+      "batch_3_delete_pct": "0"
+    },
+    {
+      "label": "extended-tpcds sf0.01 native mixed",
+      "extended_tpcds": {
+        "profile": "native",
+        "mode": "mixed"
+      },
+      "batch_2_pct": "1",
+      "batch_2_update_pct": "1",
+      "batch_2_delete_pct": "1",
+      "batch_3_pct": "1",
+      "batch_3_update_pct": "1",
+      "batch_3_delete_pct": "1"
+    },
+    {
+      "label": "extended-tpcds sf0.01 calibrated mixed",
+      "extended_tpcds": {
+        "profile": "calibrated",
+        "mode": "mixed"
+      },
+      "batch_2_pct": "1",
+      "batch_2_update_pct": "1",
+      "batch_2_delete_pct": "1",
+      "batch_3_pct": "1",
+      "batch_3_update_pct": "1",
+      "batch_3_delete_pct": "1"
+    },
+    {
+      "label": "extended-tpcds sf0.01 jcc_stress mixed",
+      "extended_tpcds": {
+        "profile": "jcc_stress",
+        "mode": "mixed"
+      },
+      "batch_2_pct": "1",
+      "batch_2_update_pct": "1",
+      "batch_2_delete_pct": "1",
+      "batch_3_pct": "1",
+      "batch_3_update_pct": "1",
+      "batch_3_delete_pct": "1"
+    }
+  ]
+}

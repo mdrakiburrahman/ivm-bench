@@ -18,7 +18,7 @@ from models.config import (
     EngineConfig,
     is_cloud_engine,
 )
-from models.result import EngineResult
+from models.result import BatchResult, EngineResult
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager, compute_cpu_usage_delta
 from services.storage_sync import (
@@ -159,7 +159,7 @@ class EngineRunner:
         self._config = config
         self._engine = engine_config
         self._emit = emit
-        self._result = EngineResult(engine=engine_config.name)
+        self._result = EngineResult(engine=engine_config.name, batches=[BatchResult(batch_num=i) for i in range(1, config.batch_count+1)])
         self._benchmark_id = benchmark_id
         self._storage_barrier = storage_barrier
         docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
@@ -178,7 +178,7 @@ class EngineRunner:
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
 
-        if engine_config.staging_dir and engine_config.staging_dir != "staging":
+        if config.workload == "tpc-di" and engine_config.staging_dir and engine_config.staging_dir != "staging":
             # Parallel mode: create compose overrides for staging isolation
             self._override_file = self._create_staging_override()
             self._engine_mgr = DockerManager(
@@ -315,7 +315,8 @@ class EngineRunner:
             # waste time.
             compiler_bench = self._compiler_bench_enabled()
             if (
-                name not in ("duckdb", "duckdb-openivm")
+                self._config.workload == "tpc-di"
+                and name not in ("duckdb", "duckdb-openivm")
                 and not self._parallel
                 and not compiler_bench
             ):
@@ -332,7 +333,7 @@ class EngineRunner:
 
             # Start container stats
             self._start_stats()
-            if not compiler_bench:
+            if not compiler_bench and self._config.workload == "tpc-di":
                 # Also TPC-DI-only: nothing to measure when those tables are
                 # neither generated nor read.
                 self._capture_delta_stats(1)
@@ -347,7 +348,7 @@ class EngineRunner:
                 return self._result
 
             # Run 3 batches
-            for batch_num in range(1, 4):
+            for batch_num in range(1, self._config.batch_count+1):
                 self._run_batch(batch_num)
                 if self._result.batches[batch_num - 1].status == "failed":
                     raise RuntimeError(
@@ -357,8 +358,9 @@ class EngineRunner:
 
             # Post-run: lineage and sql analysis. Stats are stopped in finally
             # so completed batch telemetry survives later failures.
-            self._fetch_sql_analysis()
-            self._fetch_lineage()
+            if self._config.workload == "tpc-di":
+                self._fetch_sql_analysis()
+                self._fetch_lineage()
 
             self._result.status = "completed"
             self._emit(f"[{name}] Benchmark completed successfully")
@@ -802,6 +804,8 @@ class EngineRunner:
 
     def _run_batch(self, batch_num: int) -> None:
         """Run a single batch for this engine."""
+        if self._config.workload == "extended-tpcds":
+            return self._run_extended_tpcds_batch(batch_num)
         name = self._engine.name
         batch = self._result.batches[batch_num - 1]
         batch.status = "running"
@@ -915,6 +919,47 @@ class EngineRunner:
             self._ensure_cpu_measurement_status(batch_num)
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
+
+    def _run_extended_tpcds_batch(self, batch_num):
+        name = self._engine.name
+        batch = self._result.batches[batch_num-1]
+        batch.status = "running"
+        self._persist_batch_result(batch_num, batch)
+        try:
+            self._start_cpu_measurement(batch_num)
+            response = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{name}/batch/{batch_num}", timeout=86400)
+            if response.status_code != 200:
+                raise RuntimeError(f"{name} Extended TPC-DS batch {batch_num}: {response.json()}")
+            data = response.json()
+            batch.duration_s = data["duration_s"]
+            self._finish_cpu_measurement(batch_num)
+            batch.extra.update({"workload":"extended-tpcds", "plan_id":data["plan_id"],
+                                "classification_counts":data["classification_counts"],
+                                "engine_result":data, "source_storage":"duckdb_native",
+                                "storage_metrics":{"status":"not_supported", "errors":["Extended TPC-DS native storage accounting is not integrated"]}})
+            if os.environ.get("OPENIVM_VALIDATE", "1") != "0":
+                validation = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{name}/validate/{batch_num}", timeout=86400)
+                details = validation.json()
+                data["validation"] = details
+                if details.get("status") != "passed":
+                    raise OpenIvmValidationError(f"{name} Extended TPC-DS batch {batch_num} validation failed: {details}")
+            results_dir = os.path.join(self._config.repo_dir,"mount","results",str(self._config.scale_factor),"dbt-server")
+            os.makedirs(results_dir,exist_ok=True)
+            path = os.path.join(results_dir,f"run-{name}-batch{batch_num}.json")
+            # Preserve the established per-model chart envelope.
+            artifact = {**data, "engine":name, "nodes":[{"name":model,"unique_id":"model.extended_tpcds."+model,
+                        "resource_type":"model", "status":"success", "execution_time_s":seconds} for model,seconds in data["model_sql_duration_s"].items()]}
+            with open(path,"w") as handle:
+                json.dump(artifact,handle,indent=2)
+            batch.status = "completed"
+            self._emit(f"[{name}] Extended TPC-DS batch {batch_num}: {data['classification_counts']}")
+        except Exception as error:
+            batch.status = "failed"
+            batch.error = str(error)
+            raise
+        finally:
+            self._ensure_cpu_measurement_status(batch_num)
+            self._persist_batch_result(batch_num,batch)
 
     def _save_openivm_ops_chart(self, name: str, batch_num: int) -> None:
         if name not in ("spark-openivm", "duckdb-openivm"):

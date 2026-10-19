@@ -56,6 +56,15 @@ RESULTS_CSV_FIELDS = (
     "skip_reason",
     "scale_factor",
     "batch_2_days",
+    "workload",
+    "workload_profile",
+    "workload_mode",
+    "query_cohort",
+    "mutation_cohort",
+    "plan_id",
+    "incremental_models",
+    "full_refresh_models",
+    "unsupported_mv_table_fallback_models",
     "batch_1_pct",
     "batch_2_pct",
     "batch_3_pct",
@@ -246,6 +255,20 @@ def _archive_failure_forensics(
             emit(f"  [oat-archive] saved {os.path.relpath(dst, repo_dir)}")
         except OSError as e:
             emit(f"  [oat-archive] WARN failed to archive {src} → {dst}: {e}")
+
+    # Extended TPC-DS keeps batch diagnostics beside its disposable native DB.
+    for engine in engines:
+        source = os.path.join(mount, "results", sf, engine, "extended-tpcds")
+        if not os.path.isdir(source):
+            continue
+        try:
+            destination = os.path.join(archive_dir, f"{engine}-extended-tpcds")
+            os.makedirs(destination, exist_ok=True)
+            for name in os.listdir(source):
+                if name.endswith(".json"):
+                    shutil.copy2(os.path.join(source, name), os.path.join(destination, name))
+        except OSError as error:
+            emit(f"  [oat-archive] WARN failed to archive {source}: {error}")
 
     # dbt-server JSON (small but worth bundling for self-contained forensics).
     dbt_src = os.path.join(mount, "results", sf, "dbt-server")
@@ -460,7 +483,7 @@ def build_per_experiment_dict(
     dbt_run_files: Dict[str, List[str]] = {}
     for engine in inputs.engines:
         files: List[str] = []
-        for batch_num in (1, 2, 3):
+        for batch_num in range(1, inputs.batch_count+1):
             files.append(os.path.join(
                 "mount", "results", str(inputs.scale_factor), "dbt-server",
                 f"run-{engine}-batch{batch_num}.json",
@@ -666,7 +689,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
             engines_data = {}
         engines = list(dict.fromkeys([*configured_engines, *engines_data.keys()]))
         for engine in engines:
-            for batch_num in _BATCH_NUMBERS:
+            batch_numbers = _BATCH_NUMBERS
+            if inputs.get("workload") == "extended-tpcds":
+                options = inputs.get("extended_tpcds") or {}
+                count = int(options.get("days", 3)) + 1 if options.get("mode") == "days" else int(options.get("batches", 3))
+                batch_numbers = range(1, count + 1)
+            for batch_num in batch_numbers:
                 batch = _batch_dict(experiment, engine, batch_num)
                 batch_extra = batch.get("extra") or {}
                 if not isinstance(batch_extra, dict):
@@ -710,6 +738,15 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                             "scale_factor", experiment.get("scale_factor", "")
                         ),
                         "batch_2_days": inputs.get("batch_2_days", ""),
+                        "workload": inputs.get("workload", "tpc-di"),
+                        "workload_profile": (inputs.get("extended_tpcds") or {}).get("profile", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "workload_mode": (inputs.get("extended_tpcds") or {}).get("mode", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "query_cohort": (inputs.get("extended_tpcds") or {}).get("query_cohort", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "mutation_cohort": (inputs.get("extended_tpcds") or {}).get("mutation_cohort", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "plan_id": batch_extra.get("plan_id", ""),
+                        "incremental_models": (batch_extra.get("classification_counts") or {}).get("incremental", ""),
+                        "full_refresh_models": (batch_extra.get("classification_counts") or {}).get("full", ""),
+                        "unsupported_mv_table_fallback_models": (batch_extra.get("classification_counts") or {}).get("unsupported_mv_table_fallback", ""),
                         "batch_1_pct": inputs.get("batch_1_pct", ""),
                         "batch_2_pct": inputs.get("batch_2_pct", ""),
                         "batch_3_pct": inputs.get("batch_3_pct", ""),

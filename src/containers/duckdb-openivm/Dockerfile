@@ -19,9 +19,10 @@ RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::
 
 WORKDIR /src
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=e773415d2b8b8551e9f052a84abed1ce7ddbe480
+ARG OPENIVM_COMMIT=91ae4040438cb1b0cf11c04b9f68a20cfadf9c48
 RUN git clone "${OPENIVM_REPO}" . && \
-    git checkout "${OPENIVM_COMMIT}" && \
+    git fetch origin "${OPENIVM_COMMIT}" && \
+    git checkout --detach FETCH_HEAD && \
     git submodule update --init --recursive && \
     (cd duckdb && git fetch --depth 1 origin 08e34c447bae34eaee3723cac61f2878b6bdf787 && git checkout FETCH_HEAD) && \
     (cd extension-ci-tools && git fetch --depth 1 origin 72e76e99cd7fee45a99739cd118ec2db64e034ec && git checkout FETCH_HEAD)
@@ -41,7 +42,7 @@ RUN GEN=ninja EXTRA_EXTENSION_CONFIGS=/tmp/icu_extension_config.cmake make -j$(n
 
 FROM debian:bookworm-slim
 
-ARG OPENIVM_COMMIT=e773415d2b8b8551e9f052a84abed1ce7ddbe480
+ARG OPENIVM_COMMIT=91ae4040438cb1b0cf11c04b9f68a20cfadf9c48
 LABEL org.openivm.commit="${OPENIVM_COMMIT}"
 
 ARG DUCKDB_OPENIVM_DOCKERFILE_HASH=""
@@ -57,6 +58,7 @@ COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb
 COPY --from=builder /src/build/release/extension/openivm/cost_model_benchmark \
      /opt/duckdb-openivm/cost_model_benchmark
 COPY --from=builder /src/build/release/extension/icu/icu.duckdb_extension /opt/duckdb-openivm/icu.duckdb_extension
+COPY --from=builder /src/build/release/extension/json/json.duckdb_extension /opt/duckdb-openivm/json.duckdb_extension
 
 # The compiler-bench query corpus travels with the binary so the queries are
 # always the ones OPENIVM_COMMIT ships — no submodule in this repo to drift out

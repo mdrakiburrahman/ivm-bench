@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "status": "standalone_duckdb_baseline",
+  "workload": "extended-tpcds",
+  "reference": {
+    "repository": "https://github.com/mdrakiburrahman/dbt-insights",
+    "commit": "54711257f95d561e00305be33272daba87988da1",
+    "production_profile_month": "2026-08",
+    "seed_report_date": "2025-11-03",
+    "production_intermediate_counts": "unknown",
+    "table_counts": [
+      {
+        "extension_source": "ext_entity_registry",
+        "reference_staging_model": "stg_arm_collection_dim",
+        "full_source_rows": 97435870,
+        "predicate_slice_rows": 2046109
+      },
+      {
+        "extension_source": "ext_price_catalog",
+        "reference_staging_model": "stg_billing_meter_dim",
+        "full_source_rows": 1436,
+        "predicate_slice_rows": 1436
+      },
+      {
+        "extension_source": "ext_purchase_usage_events",
+        "reference_staging_model": "stg_billing_usage_summary_fact",
+        "full_source_rows": 4047833163,
+        "predicate_slice_rows": 158353
+      },
+      {
+        "extension_source": "ext_account_profile",
+        "reference_staging_model": "stg_customer_subscription_effective_mat_view",
+        "full_source_rows": 18832802,
+        "predicate_slice_rows": 18832802
+      },
+      {
+        "extension_source": "ext_calendar",
+        "reference_staging_model": "stg_date_dim",
+        "full_source_rows": 10958,
+        "predicate_slice_rows": 10958
+      },
+      {
+        "extension_source": "ext_customer_policy_history",
+        "reference_staging_model": "stg_extension_configuration_dim",
+        "full_source_rows": 43929177,
+        "predicate_slice_rows": 1248
+      },
+      {
+        "extension_source": "ext_engagement_service_history",
+        "reference_staging_model": "stg_instance_hadr_dim",
+        "full_source_rows": 229212520,
+        "predicate_slice_rows": 138099
+      },
+      {
+        "extension_source": "ext_engagement_activity_history",
+        "reference_staging_model": "stg_instance_health_dim",
+        "full_source_rows": 228616139,
+        "predicate_slice_rows": 138099
+      },
+      {
+        "extension_source": "ext_engagement_capacity_history",
+        "reference_staging_model": "stg_instance_infrastructure_dim",
+        "full_source_rows": 231752548,
+        "predicate_slice_rows": 138088
+      },
+      {
+        "extension_source": "ext_engagement_channel_history",
+        "reference_staging_model": "stg_instance_migration_dim",
+        "full_source_rows": 91676867,
+        "predicate_slice_rows": 138097
+      },
+      {
+        "extension_source": "ext_engagement_status_events",
+        "reference_staging_model": "stg_instance_status_fact",
+        "full_source_rows": 2983994619,
+        "predicate_slice_rows": 515886
+      },
+      {
+        "extension_source": "ext_engagement_product_history",
+        "reference_staging_model": "stg_instance_version_dim",
+        "full_source_rows": 230496047,
+        "predicate_slice_rows": 138098
+      },
+      {
+        "extension_source": "ext_customer_profile_history",
+        "reference_staging_model": "stg_machine_infrastructure_dim",
+        "full_source_rows": 56641479,
+        "predicate_slice_rows": 1603182
+      },
+      {
+        "extension_source": "ext_customer_preference_history",
+        "reference_staging_model": "stg_machine_os_dim",
+        "full_source_rows": 242231468,
+        "predicate_slice_rows": 1603179
+      },
+      {
+        "extension_source": "ext_customer_status_events",
+        "reference_staging_model": "stg_machine_status_fact",
+        "full_source_rows": 3892549712,
+        "predicate_slice_rows": 10469131
+      },
+      {
+        "extension_source": "ext_purchase_receipt_events",
+        "reference_staging_model": "stg_silver_billing_usage",
+        "full_source_rows": 16876164161,
+        "predicate_slice_rows": 149059
+      },
+      {
+        "extension_source": "ext_engagement_observation_events",
+        "reference_staging_model": "stg_silver_sqlserverinstance_global",
+        "full_source_rows": 15017100930,
+        "predicate_slice_rows": 1482764
+      },
+      {
+        "extension_source": "ext_account_household",
+        "reference_staging_model": "stg_subscription_tenant_mat_view",
+        "full_source_rows": 18832802,
+        "predicate_slice_rows": 18832802
+      }
+    ]
+  },
+  "measured_reference_targets": [
+    {
+      "metric": "status_events_per_engagement_collection_key",
+      "value": 3.741856399915862,
+      "population": "status predicate slice",
+      "role": "density reference; not an eligibility probability"
+    },
+    {
+      "metric": "customer_status_to_engagement_status_rows",
+      "value": 20.293497012905952,
+      "population": "source predicate slices",
+      "role": "relative input volume"
+    },
+    {
+      "metric": "purchase_usage_to_engagement_status_rows",
+      "value": 0.306953474217172,
+      "population": "source predicate slices",
+      "role": "relative input volume"
+    },
+    {
+      "metric": "receipt_to_purchase_usage_rows",
+      "value": 0.941308342753216,
+      "population": "source predicate slices",
+      "role": "relative input volume"
+    },
+    {
+      "metric": "secondary_observation_to_status_rows",
+      "value": 2.87420864299477,
+      "population": "source predicate slices",
+      "role": "relative input volume"
+    },
+    {
+      "metric": "purchase_relationship_metadata_fraction",
+      "value": 0.010587451480215514,
+      "population": "current capacity predicate slice",
+      "role": "dimension predicate frequency; event selectivity unknown"
+    },
+    {
+      "metric": "channel_assessment_nonnull_fraction",
+      "value": 0.0009268847259534964,
+      "population": "current assessment predicate slice",
+      "role": "nullable store/catalog assessment frequency; conditional distribution unknown"
+    },
+    {
+      "metric": "third_channel_assessment_nonnull_fraction",
+      "value": 0.0010210214559331484,
+      "population": "current assessment predicate slice",
+      "role": "nullable web assessment frequency; conditional distribution unknown"
+    },
+    {
+      "metric": "largest_account_share",
+      "value": 0.7474,
+      "population": "registry predicate slice",
+      "role": "conditional concentration target; do not impose globally"
+    },
+    {
+      "metric": "raw_registry_fanout_p99",
+      "value": 1,
+      "population": "raw join references in predicate slices",
+      "role": "lookup-dominated distribution before deduplication"
+    },
+    {
+      "metric": "raw_registry_fanout_max",
+      "value": 94,
+      "population": "raw join references in predicate slices",
+      "role": "tail size; tail frequency unknown"
+    },
+    {
+      "metric": "parent_capacity_limit_pearson_r",
+      "value": 0.977062,
+      "population": "current parent metadata predicate slice",
+      "role": "joint numeric reference"
+    },
+    {
+      "metric": "engagement_reported_allocated_units_pearson_r",
+      "value": -0.389847,
+      "population": "current capacity predicate slice",
+      "role": "joint numeric reference"
+    }
+  ],
+  "required_generation_inputs": [
+    "tpcds_generator_version",
+    "base_scale_factor",
+    "extension_seed",
+    "profile",
+    "report_date",
+    "history_months",
+    "extension_entity_budget",
+    "accounts_per_customer",
+    "household_size_distribution",
+    "eligible_event_distribution",
+    "observation_date_distribution",
+    "metadata_version_distribution",
+    "history_tail_frequency",
+    "missing_reference_conditionals",
+    "channel_assessment_conditionals",
+    "mutation_schedule",
+    "query_bindings"
+  ],
+  "profiles": {
+    "native": {
+      "origin": "control_scenario",
+      "transform_base_rows": false,
+      "metadata": "required generated extension, without injected hot-key skew",
+      "events": "derive from unmodified TPC-DS purchases; report achieved density"
+    },
+    "calibrated": {
+      "origin": "production_inspired_scenario",
+      "transform_base_rows": false,
+      "targets": "four implemented measured targets; remaining targets explicitly unimplemented",
+      "transformations": "synthetic status observations and generated metadata probabilities only",
+      "unknown_joint_statistics": "declared assumptions, independently swept; no claimed production intermediate fidelity"
+    },
+    "jcc_stress": {
+      "origin": "chosen_stress_scenario",
+      "transform_base_rows": false,
+      "hot_keys": 5,
+      "hot_event_share": 0.25,
+      "dimension_cohort_shares": {
+        "hot": 0.5,
+        "cold": 0.5
+      },
+      "query_bindings": [
+        "hot",
+        "cold"
+      ],
+      "correlation": "hot engagements owned by hot-cohort households; similar cohort dimension frequencies, different event fanout",
+      "update_bindings": [
+        "all",
+        "hot",
+        "cold"
+      ],
+      "insufficient_entities": "reject if the configured entity/cohort budgets cannot support the hot/cold assignment",
+      "transformations": "reassign generated status observations only; raw sales and purchase quantities unchanged"
+    }
+  },
+  "invariants": [
+    "unique physical primary keys",
+    "stable source-line identity",
+    "customer reassignment consistent across complete orders and linked returns",
+    "item reassignment preserves sales/returns identity and item effectivity",
+    "separate raw TPC-DS namespace and transformed working namespace",
+    "fixed report date for DML experiments",
+    "explicit unknown members or counted quarantine",
+    "same transformations and ordered mutations for all engines"
+  ],
+  "achieved_statistics": [
+    "full_and_staging_rows",
+    "physical_and_business_key_counts",
+    "events_per_entity",
+    "raw_and_deduplicated_fanout",
+    "missing_reference_rates",
+    "metadata_versions_per_key",
+    "conditional_predicate_selectivity",
+    "candidate_and_selected_rows",
+    "joint_group_counts",
+    "hot_key_input_and_intermediate_shares",
+    "base_and_extension_bytes"
+  ],
+  "implementation": {
+    "engine": "DuckDB 1.2.1",
+    "execution": "full_recomputation",
+    "materialized_models": 96,
+    "extension_sources": 18,
+    "registration_incarnations_per_engagement": 1,
+    "accounts_per_customer": 2,
+    "customers_per_household": 2,
+    "metadata_versions": 2,
+    "primary_capacity_omission": "every tenth engagement",
+    "base_reassignment": "not_implemented",
+    "maintenance_streams": "standalone immutable row-image plans: insertion, updates, deletes, days, repeated_insertions and mixed",
+    "required_generation_inputs": "future experiment requirements; current CLI records a subset",
+    "achieved_statistics": "generation counts/calibration/cohorts and pipeline model counts; complete fanout and byte accounting remain future work",
+    "maintenance_validation": "all selected models versus fresh replay/full recomputation after every batch; incremental adapters pending",
+    "engine_integration": "OAT DuckDB and DuckDB-OpenIVM dispatch, shared native-table source plans, compiler strategy and per-batch validation; tested OpenIVM mutation acceptance currently failing"
+  }
+}

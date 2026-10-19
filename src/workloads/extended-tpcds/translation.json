@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/mdrakiburrahman/dbt-insights",
+  "source_commit": "54711257f95d561e00305be33272daba87988da1",
+  "source_models": 96,
+  "source_data_copied": false,
+  "runtime_dialect": "DuckDB 1.2.1",
+  "one_time_translation_tools": {
+    "Jinja2": "3.1.6",
+    "sqlglot": "30.22.0"
+  },
+  "runtime_templates": "checked-in SQL; no Jinja2, sqlglot or private repository dependency",
+  "bindings": {
+    "__REPORT_DATE__": "frozen ISO date from xt_run",
+    "__history_months__": "positive integer from xt_run",
+    "__COHORT__": "all/hot/cold in eligible engagement branch only"
+  },
+  "intentional_changes": [
+    "Retail entities, metadata content, channel labels, JSON paths, child registry path parsing and account offer categories replace the original domain.",
+    "Preference normalization uses lowercasing and regex replacement of non-alphanumeric/non-underscore runs.",
+    "Latest-non-null channel windows use an explicit full-partition frame, with channel payload tie breakers.",
+    "Point-in-time windows compare dates inclusively, including report-day events with nonmidnight timestamps.",
+    "Monthly quantity keeps hidden engagement/catalog group keys and includes them in surrogate-key ordering.",
+    "Equal-time secondary observations and receipts choose the greatest non-null reported units; assessment lookup chooses the greatest non-null assessment key.",
+    "DuckDB syntax replaces Spark syntax; permissive casts use TRY_CAST.",
+    "Generated physical source IDs are separate from business and registry keys.",
+    "Hot/cold predicate is added to the eligible engagement family; monthly purchase quantity remains a control.",
+    "Equal-valued effective-unit candidates prefer parent capacity, then engagement units, then receipt units, retaining the leading coalesced-value ranking.",
+    "Equal-time parent state observations use customer_status descending, null last; inactive wins over active when timestamps tie.",
+    "Nullable household joins use IS NOT DISTINCT FROM, preserving null and bag semantics while enabling DuckDB hash joins."
+  ],
+  "preserved": [
+    "96 materialized roles and dependency graph, including logical metadata barrier",
+    "Shared intermediates, join families, aggregation and bag semantics",
+    "Business engagement versus registration-key ranking grains",
+    "Global row-number surrogate keys"
+  ],
+  "remaining_validation": [
+    "Conflicting equal-time current metadata arrivals beyond the generated schedules",
+    "Spark/Feldera dialect integration and paired Docker/OAT acceptance; native CLI evidence is recorded separately"
+  ]
+}
