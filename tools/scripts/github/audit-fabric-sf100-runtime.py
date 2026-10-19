@@ -65,7 +65,15 @@ def main():
                 calls.append({'path': path.split('?')[0], 'status': response.status})
                 return data
         except urllib.error.HTTPError as error:
-            calls.append({'path': path.split('?')[0], 'status': error.code})
+            entry = {'path': path.split('?')[0], 'status': error.code}
+            try:
+                body = json.loads(error.read(4096))
+                code = body.get('errorCode') or body.get('error', {}).get('code')
+                if isinstance(code, str) and re.fullmatch(r'[A-Za-z0-9_]{1,80}', code):
+                    entry['error_code'] = code
+            except (ValueError, AttributeError):
+                pass
+            calls.append(entry)
         except Exception as error:
             calls.append({'path': path.split('?')[0], 'error_type': type(error).__name__})
         return None
@@ -99,7 +107,20 @@ def main():
             prefix = f'/lakehouses/{item}/livySessions/{livy}/applications/{app}'
             record = {'session': pick(session, ('sparkApplicationId', 'state', 'livyId', 'capacityId',
                       'runtimeVersion', 'submittedDateTime', 'startDateTime', 'endDateTime',
-                      'queuedDuration', 'runningDuration', 'totalDuration'))}
+                      'queuedDuration', 'runningDuration', 'totalDuration',
+                      'driverCores', 'driverMemory', 'executorCores', 'executorMemory',
+                      'numExecutors', 'dynamicAllocationMaxExecutors', 'isDynamicAllocationEnabled',
+                      'isHighConcurrency', 'attemptNumber')),
+                      'available_session_fields': sorted(session)}
+            resource_uri = session.get('livySessionItemResourceUri')
+            if resource_uri:
+                record['resource_uri_path'] = urllib.parse.urlsplit(resource_uri).path
+            detail = get(f'/lakehouses/{item}/livySessions/{livy}')
+            if detail:
+                record['detailed_resources'] = pick(detail, ('driverCores', 'driverMemory',
+                    'executorCores', 'executorMemory', 'numExecutors', 'dynamicAllocationMaxExecutors',
+                    'isDynamicAllocationEnabled', 'isHighConcurrency', 'attemptNumber'))
+            get(f'/items/{item}')
             env = get(prefix + '/environment')
             if env:
                 record['spark_properties'] = {k: v for k, v in env.get('sparkProperties', []) if k in CONF}
