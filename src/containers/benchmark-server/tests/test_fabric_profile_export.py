@@ -37,7 +37,8 @@ class FabricProfileExportTest(unittest.TestCase):
                 runner = self.runner(root, engine)
                 post.return_value = Mock(status_code=200)
                 post.return_value.json.return_value = {
-                    "status": "ok", "row_count": 1, "csv": {"profile": "profile-data"}
+                    "status": "ok", "row_count": 1, "csv": {"profile": "profile-data"},
+                    "spark_runtime": {"status": "ok", "executors": [{"totalCores": 8}]}
                 }
                 runner._export_spark_openivm_profile("run", 2)
                 self.assertEqual(post.call_args.args[0], f"http://dbt/profile/{engine}/run/2")
@@ -57,6 +58,8 @@ class FabricProfileExportTest(unittest.TestCase):
                 raw = json.loads((base / f"dbt-server/{engine}-query-log-batch2.json").read_text())
                 self.assertEqual(raw["rows"][0]["sql_text"], "SELECT 1")
                 self.assertTrue((base / f"dbt-server/{engine}-profile-batch2.csv").exists())
+                metadata = json.loads((base / f"dbt-server/{engine}-profile-export-batch2.json").read_text())
+                self.assertEqual(metadata["spark_runtime"]["executors"][0]["totalCores"], 8)
 
     @patch.dict(os.environ, {"OPENIVM_VALIDATE": "1", "OPENIVM_PROFILE_REFRESH": "1", "OPENIVM_QUERY_LOG": "1"})
     def test_fabric_exports_are_after_batch_timer(self):

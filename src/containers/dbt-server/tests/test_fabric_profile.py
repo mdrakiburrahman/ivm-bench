@@ -148,6 +148,100 @@ class FabricCursorOwnershipTest(unittest.TestCase):
         self.session.close.assert_not_called()
 
 
+class FabricSparkRuntimeMetricsTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="owned"))
+        self.token = self.enterContext(patch("services.fabric.get_token", return_value="private-token"))
+        self.request = self.enterContext(patch("services.fabric._fabric_req"))
+        self.client = self.enterContext(patch("services.fabric.ProfileClient"))
+        self.request.side_effect = self.response
+
+    def response(self, method, url, **kwargs):
+        self.assertEqual(method, "GET")
+        self.assertIn("/lakehouses/owned/livySessions", url)
+        self.assertLessEqual(kwargs["timeout"], 10)
+        if url.endswith("/livySessions"):
+            data = {"value": [{"item": {"itemId": "owned"}, "livyId": "session",
+                               "sparkApplicationId": "application_1_0001"}]}
+        elif url.endswith("/session"):
+            data = {"executorCores": 8, "numExecutors": 4}
+        elif url.endswith("/environment"):
+            data = {"sparkProperties": [["spark.executor.cores", "8"],
+                                         ["spark.hadoop.secret", "DO_NOT_EXPORT"]]}
+        elif url.endswith("/allexecutors"):
+            data = [{"id": "1", "totalCores": 8, "totalGCTime": 99,
+                     "executorLogs": {"stdout": "DO_NOT_EXPORT"}}]
+        elif "/stages?" in url:
+            data = [{"stageId": 1, "executorCpuTime": 123, "diskBytesSpilled": 456,
+                     "description": "DO_NOT_EXPORT"}]
+        else:
+            data = {"data": {"allocatedCores": [32], "runningCores": [24]}}
+        return Mock(status_code=200, json=Mock(return_value=data))
+
+    def test_reads_owned_session_without_sql_and_keeps_only_diagnostic_fields(self):
+        result = fabric.spark_runtime_metrics()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["requested_resources"]["numExecutors"], 4)
+        self.assertEqual(result["executors"][0]["totalCores"], 8)
+        self.assertEqual(result["stages"][0]["diskBytesSpilled"], 456)
+        self.assertEqual(result["resource_usage"]["data"]["allocatedCores"], [32])
+        self.assertNotIn("DO_NOT_EXPORT", str(result))
+        self.assertNotIn("private-token", str(result))
+        self.assertEqual(self.request.call_count, 6)
+        self.client.assert_not_called()
+
+    def test_expired_collection_budget_stops_without_rest_calls(self):
+        with patch("services.fabric.time.monotonic", side_effect=[0, 61]):
+            result = fabric.spark_runtime_metrics()
+        self.assertEqual(result["status"], "partial")
+        self.request.assert_not_called()
+
+    def test_profile_export_keeps_csv_if_runtime_capture_fails(self):
+        from flask import Flask
+        from handlers.spark_openivm import spark_openivm_export_profile
+        app = Flask(__name__)
+        for engine in ("fabric-openivm-jvm-35", "spark-openivm"):
+            with self.subTest(engine=engine), app.app_context(), \
+                    patch("services.spark_openivm_profile.export_profile", return_value={"status": "ok", "csv": {"profile": "rows"}}), \
+                    patch("services.fabric.spark_runtime_metrics", side_effect=RuntimeError("DO_NOT_EXPORT")) as capture:
+                response, status = spark_openivm_export_profile("run", 1, engine)
+                result = response.get_json()
+                self.assertEqual(status, 200)
+                self.assertEqual(result["csv"]["profile"], "rows")
+                self.assertNotIn("DO_NOT_EXPORT", str(result))
+                if engine == "fabric-openivm-jvm-35":
+                    self.assertEqual(result["spark_runtime"], {"status": "error", "error_type": "RuntimeError"})
+                    capture.assert_called_once()
+                else:
+                    self.assertNotIn("spark_runtime", result)
+                    capture.assert_not_called()
+
+    def test_missing_history_is_partial_without_fabricated_resources(self):
+        original = self.response
+        self.request.side_effect = lambda method, url, **kw: (
+            original(method, url, **kw) if url.endswith("/livySessions")
+            else Mock(status_code=404))
+        result = fabric.spark_runtime_metrics()
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["executors"], [])
+        self.assertEqual(result["requested_resources"], {})
+        self.assertEqual(result["responses"][-1]["http_status"], 404)
+        self.client.assert_not_called()
+
+    def test_does_not_attach_to_another_lakehouse_or_guess_an_ambiguous_session(self):
+        for items in (("different",), ("owned", "owned")):
+            with self.subTest(items=items):
+                self.request.reset_mock()
+                self.request.side_effect = None
+                self.request.return_value = Mock(status_code=200, json=Mock(return_value={
+                    "value": [{"item": {"itemId": item}} for item in items]}))
+                result = fabric.spark_runtime_metrics()
+                self.assertEqual(result["status"], "partial")
+                self.assertEqual(self.request.call_count, 1)
+                self.assertNotIn("executors", result)
+                self.client.assert_not_called()
+
+
 try:
     import dbt.adapters.fabricspark.livysession
     HAS_ADAPTER = True
