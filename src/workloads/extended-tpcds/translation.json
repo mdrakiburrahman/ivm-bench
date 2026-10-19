@@ -27,7 +27,8 @@
     "Hot/cold predicate is added to the eligible engagement family; monthly purchase quantity remains a control.",
     "Equal-valued effective-unit candidates prefer parent capacity, then engagement units, then receipt units, retaining the leading coalesced-value ranking.",
     "Equal-time parent state observations use customer_status descending, null last; inactive wins over active when timestamps tie.",
-    "Nullable household joins use IS NOT DISTINCT FROM, preserving null and bag semantics while enabling DuckDB hash joins."
+    "Nullable household joins use IS NOT DISTINCT FROM, preserving null and bag semantics while enabling DuckDB hash joins.",
+    "Monthly engagement effective-unit sums explicitly round half away from zero before integer conversion, preserving the existing DuckDB benchmark policy across engine cast differences."
   ],
   "preserved": [
     "96 materialized roles and dependency graph, including logical metadata barrier",
@@ -37,6 +38,6 @@
   ],
   "remaining_validation": [
     "Conflicting equal-time current metadata arrivals beyond the generated schedules",
-    "Spark/Feldera dialect integration and paired Docker/OAT acceptance; native CLI evidence is recorded separately"
+    "Spark/Feldera dialect integration; paired Docker/OAT smoke and native CLI evidence are recorded separately"
   ]
 }

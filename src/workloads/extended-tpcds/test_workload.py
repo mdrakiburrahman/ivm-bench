@@ -193,6 +193,24 @@ class WorkloadTests(unittest.TestCase):
             pipeline.validate(connection, result["model_rows"])
             self.assertEqual(connection.execute("SELECT assessment_key FROM int_hist_active_28d WHERE engagement_registry_key=? AND report_as_of_date=DATE '2002-12-31'", [registry_key]).fetchone()[0], old_key)
 
+    def test_monthly_effective_units_round_half_away_from_zero(self):
+        with duckdb.connect() as connection:
+            connection.execute("""CREATE TABLE int_engagement_status_transaction AS
+                SELECT TIMESTAMP '2002-12-01' AS event_time,
+                       'engagement-' || household_key AS engagement_path,
+                       household_key, 1 AS account_offer_key, 1 AS account_usage_key,
+                       1 AS platform_key, 1 AS preference_key, 1 AS product_tier_key,
+                       1 AS product_version_key, 1 AS engagement_type_key, 1 AS mode_key,
+                       effective_units::DOUBLE AS effective_units
+                FROM (VALUES (1, 0.49), (2, 0.5), (3, -0.5), (4, 1.5),
+                             (5, -1.5), (6, NULL)) t(household_key, effective_units)""")
+            sql = pipeline.render_model("fact_engagement_status_monthly_snapshot",
+                                        {"report_date": "2002-12-31", "history_months": 12})
+            connection.execute("CREATE TABLE snapshot AS " + sql)
+            self.assertEqual(connection.execute(
+                "SELECT household_key,effective_units_count FROM snapshot ORDER BY household_key"
+            ).fetchall(), [(1, 0), (2, 1), (3, -1), (4, 2), (5, -2), (6, None)])
+
     def test_hidden_monthly_grain_preserves_equal_projected_rows(self):
         with fixture() as connection:
             generate.prepare(connection, "base", report_date=date(2002, 12, 31))

@@ -262,9 +262,13 @@ also exercises the actual preparation function, with the official cached TPC-DS
 extension, and verifies the query/thread/spill limits in all three connections.
 
 Docker lifecycle and controlled CPU sampling have not been exercised on the
-development laptop, where Docker is unavailable. The PR's GCI selector runs the
-paired Docker/OAT smoke; its result must be checked independently of native CLI
-validation. The [earlier local engine evidence](../src/workloads/extended-tpcds/validation/engines-local.json)
+development laptop, where Docker is unavailable. The paired Docker/OAT smoke
+passed in [GCI run 39282195577](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/39282195577)
+for benchmark revision `99f1dc280b605da693597e901352c1577366f04d`.
+The [Docker/OAT evidence](../src/workloads/extended-tpcds/validation/engines-docker-sf001.json)
+records 576 passing model comparisons across three snapshots per engine; all
+OpenIVM models remain incremental, and Docker CPU counters were captured.
+The [earlier local engine evidence](../src/workloads/extended-tpcds/validation/engines-local.json)
 retains historical failures from older builds, before the required OpenIVM fixes.
 
 CI installs the test dependencies and runs all three test directories. To run the
@@ -558,6 +562,9 @@ choose the greatest non-null reported units; channel/assessment lookups use
 explicit payload tie breakers. Preference normalization uses a
 retail-oriented regex, and offer buckets use retail categories. Casts translated
 from Spark use DuckDB `TRY_CAST` where the source's permissive cast returns null.
+The monthly engagement snapshot explicitly rounds fractional effective-unit sums
+half away from zero before converting them to integers. This preserves the
+benchmark's existing DuckDB result policy on engines whose integer casts truncate.
 See [translation provenance](../src/workloads/extended-tpcds/translation.json).
 Other original latest-row orderings remain intact: conflicting payloads with equal
 ordering timestamps in additional metadata-arrival scenarios need an explicit tie
@@ -581,10 +588,10 @@ tables materialized and all ten independent count/quantity checks passed. The
 small-input suite also checks leading nulls, report-day observations, winner
 deletion, stable generation and hidden monthly grain. The mode tests compare all
 96 models after every batch, including empty initial state, complete deletion and
-repeated insertions. These checks establish a recomputation baseline. Incremental
-engine acceptance in milestone 4 remains failing for the tested OpenIVM builds.
-Milestone 5 has DuckDB-family OAT wiring; successful Docker acceptance, other
-engines and controlled performance/storage sweeps in milestone 6 remain open.
+repeated insertions. Native CLI acceptance now covers all six modes at SF 0.01 and
+mixed DML at SF 0.03, and the paired Docker/OAT smoke passed for the revision
+recorded above. Other engines and controlled performance/storage sweeps remain
+open.
 
 1. Implement TPC-DS normalization and the extension sources, with immutable raw
    data, stable lineage and achieved-statistics output. Resolve unsupported or

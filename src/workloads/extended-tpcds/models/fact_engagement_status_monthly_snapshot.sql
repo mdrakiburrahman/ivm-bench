@@ -95,7 +95,7 @@ SELECT
   engagement_type_key,
   mode_key,
   TRY_CAST(engagement_total_count AS INT) AS engagement_total_count,
-  TRY_CAST(effective_units_count AS INT) AS effective_units_count
+  TRY_CAST(ROUND(effective_units_count) AS INT) AS effective_units_count
 FROM agg
 WHERE
   engagement_total_count > 0
