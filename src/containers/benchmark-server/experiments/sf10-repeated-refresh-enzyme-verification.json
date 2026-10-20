@@ -11,10 +11,9 @@
       "storage_metrics": true,
       "preserve_raw": true,
       "spark_metrics_capture": false
-    },
-    "spark_tunables": {"dbt_threads": 1}
+    }
   },
   "experiments": [
-    {"label": "SF10 standard TPC-DI: Enzyme verification, 20 compounded 1% refreshes"}
+    {"label": "SF10 standard TPC-DI: Enzyme default-thread verification, 20 compounded 1% refreshes"}
   ]
 }
