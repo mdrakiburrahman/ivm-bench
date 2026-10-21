@@ -152,10 +152,20 @@ jobs:
         with:
           clean: true
 
-      - name: "🧪 Run storage collector unit tests"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Install benchmark test dependencies"
         run: |
-          python3 -m unittest discover -s src/containers/dbt-server/tests -v
-          python3 -m unittest discover -s src/containers/benchmark-server/tests -v
+          python3 -m venv "$RUNNER_TEMP/ivm-bench-tests"
+          "$RUNNER_TEMP/ivm-bench-tests/bin/pip" install -r src/workloads/extended-tpcds/requirements-test.txt
+
+      - name: "🧪 Run benchmark unit tests"
+        run: |
+          "$RUNNER_TEMP/ivm-bench-tests/bin/python" -m unittest discover -s src/containers/dbt-server/tests -v
+          "$RUNNER_TEMP/ivm-bench-tests/bin/python" -m unittest discover -s src/containers/benchmark-server/tests -v
+          "$RUNNER_TEMP/ivm-bench-tests/bin/python" -m unittest discover -s src/workloads/extended-tpcds -p 'test_*.py' -v
 
       - name: "🧬 Resolve experiments file"
         env:

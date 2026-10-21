@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from models.result import EngineResult
+from models.config import BenchmarkConfig
 from models.experiments import FeatureFlags
 from services.engine_runner import EngineRunner
 from services.oat_runner import disk_cleanup_after_experiment
@@ -24,7 +25,7 @@ class FabricProfileExportTest(unittest.TestCase):
     def runner(self, root, engine="fabric-openivm-jvm-35"):
         runner = EngineRunner.__new__(EngineRunner)
         runner._engine = SimpleNamespace(name=engine)
-        runner._config = SimpleNamespace(repo_dir=root, scale_factor=100)
+        runner._config = BenchmarkConfig(repo_dir=root, scale_factor=100)
         runner._dbt_url = "http://dbt"
         runner._emit = Mock()
         runner._result = EngineResult(engine=engine)

@@ -1,0 +1,222 @@
+{
+  "status": "passed",
+  "scale_factor": 0.01,
+  "observed_connection_settings": [
+    [
+      "3.7 GiB",
+      4,
+      "3.7 GiB"
+    ],
+    [
+      "3.7 GiB",
+      4,
+      "3.7 GiB"
+    ],
+    [
+      "3.7 GiB",
+      4,
+      "3.7 GiB"
+    ]
+  ],
+  "elapsed_s": 4.887,
+  "plan_id": "bbb81446878a4494",
+  "batches": 3,
+  "configuration": {
+    "generator_version": 1,
+    "duckdb_version": "1.2.1",
+    "profile": "native",
+    "base_scale_factor": 0.01,
+    "base_generator": "DuckDB tpcds extension 1.2.1",
+    "base_signature": {
+      "customer": {
+        "rows": 1000,
+        "row_checksum_xor": "-39917636880868687117523333182184780923"
+      },
+      "item": {
+        "rows": 180,
+        "row_checksum_xor": "57741821061851064886760727648258440504"
+      },
+      "date_dim": {
+        "rows": 73049,
+        "row_checksum_xor": "-77181200345983161280827225212381880565"
+      },
+      "time_dim": {
+        "rows": 86400,
+        "row_checksum_xor": "-31346681985102018649007520020552729711"
+      },
+      "store_sales": {
+        "rows": 28810,
+        "row_checksum_xor": "162086804446187536439839388708584381402"
+      },
+      "catalog_sales": {
+        "rows": 14313,
+        "row_checksum_xor": "-79673409635362921318833808283689725227"
+      },
+      "web_sales": {
+        "rows": 7212,
+        "row_checksum_xor": "36782829488928840684648491626358562030"
+      }
+    },
+    "seed": 17,
+    "report_date": "2002-12-31",
+    "history_months": 12,
+    "accounts_per_customer": 2,
+    "household_size": 2,
+    "metadata_versions": 2,
+    "base_rows_transformed": false,
+    "missing_time_policy": "midnight when time lookup fails or t_time is null",
+    "primary_metadata_omission": {
+      "origin": "chosen_fallback_scenario",
+      "rule": "every tenth engagement"
+    },
+    "status_date_distribution": "purchase_timestamps",
+    "channel_assessment_probabilities": {
+      "store": 0.75,
+      "catalog": 0.75,
+      "web": 0.75
+    },
+    "implemented_calibration_targets": [],
+    "stress_assignment": null,
+    "calibration_target_values": {},
+    "dataset_id": "e76c2a019dacfc83"
+  },
+  "achieved": {
+    "extension_rows": {
+      "ext_entity_registry": 136004,
+      "ext_price_catalog": 90,
+      "ext_purchase_usage_events": 49042,
+      "ext_account_profile": 4004,
+      "ext_calendar": 73049,
+      "ext_customer_policy_history": 2002,
+      "ext_engagement_service_history": 84960,
+      "ext_engagement_activity_history": 84960,
+      "ext_engagement_capacity_history": 76464,
+      "ext_engagement_channel_history": 84960,
+      "ext_engagement_status_events": 49042,
+      "ext_engagement_product_history": 84960,
+      "ext_customer_profile_history": 2002,
+      "ext_customer_preference_history": 2002,
+      "ext_customer_status_events": 49042,
+      "ext_purchase_receipt_events": 49042,
+      "ext_engagement_observation_events": 49042,
+      "ext_account_household": 2002
+    },
+    "calibration": {
+      "status_events_per_engagement_collection_key": {
+        "target": 3.741856399915862,
+        "observed": 1.154472693032015,
+        "implemented": false,
+        "reference_population": "status predicate slice"
+      },
+      "customer_status_to_engagement_status_rows": {
+        "target": 20.293497012905952,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "source predicate slices"
+      },
+      "purchase_usage_to_engagement_status_rows": {
+        "target": 0.306953474217172,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "source predicate slices"
+      },
+      "receipt_to_purchase_usage_rows": {
+        "target": 0.941308342753216,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "source predicate slices"
+      },
+      "secondary_observation_to_status_rows": {
+        "target": 2.87420864299477,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "source predicate slices"
+      },
+      "purchase_relationship_metadata_fraction": {
+        "target": 0.010587451480215514,
+        "observed": 1.0,
+        "implemented": false,
+        "reference_population": "current capacity predicate slice"
+      },
+      "channel_assessment_nonnull_fraction": {
+        "target": 0.0009268847259534964,
+        "observed": {
+          "store": 0.7484227871939736,
+          "catalog": 0.7465866290018832
+        },
+        "implemented": false,
+        "reference_population": "current assessment predicate slice"
+      },
+      "third_channel_assessment_nonnull_fraction": {
+        "target": 0.0010210214559331484,
+        "observed": 0.7528719397363465,
+        "implemented": false,
+        "reference_population": "current assessment predicate slice"
+      },
+      "largest_account_share": {
+        "target": 0.7474,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "registry predicate slice"
+      },
+      "raw_registry_fanout_p99": {
+        "target": 1,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "raw join references in predicate slices"
+      },
+      "raw_registry_fanout_max": {
+        "target": 94,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "raw join references in predicate slices"
+      },
+      "parent_capacity_limit_pearson_r": {
+        "target": 0.977062,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "current parent metadata predicate slice"
+      },
+      "engagement_reported_allocated_units_pearson_r": {
+        "target": -0.389847,
+        "observed": null,
+        "implemented": false,
+        "reference_population": "current capacity predicate slice"
+      }
+    },
+    "normalized_purchase_rows": 50335,
+    "missing_customer_rows": 1271,
+    "missing_item_rows": 0,
+    "quarantined_missing_date_rows": 1293,
+    "status_event_rows": 49042,
+    "status_registry_keys": 42480,
+    "status_events_per_registry_key": 1.154472693032015,
+    "cohorts": [
+      {
+        "cohort": "cold",
+        "events": 24022,
+        "registry_keys": 20904
+      },
+      {
+        "cohort": "hot",
+        "events": 24352,
+        "registry_keys": 21400
+      },
+      {
+        "cohort": "unknown",
+        "events": 668,
+        "registry_keys": 176
+      }
+    ],
+    "reassigned_stress_event_share": 0.0
+  },
+  "resources": {
+    "peak_combined_rss_mib": 657.9,
+    "swap_start_mib": 2927.81,
+    "swap_peak_mib": 2927.81,
+    "elapsed_s": 5.1,
+    "returncode": 0,
+    "guard_stop_reason": null
+  },
+  "extension_installation": "Cached official DuckDB 1.2.1 TPC-DS extension, no generator SQL mocked"
+}

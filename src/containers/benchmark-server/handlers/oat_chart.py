@@ -51,7 +51,6 @@ from services import oat_runner
 bp = Blueprint("oat_chart", __name__)
 
 _MISSING = "—"
-_BATCHES = (1, 2, 3)
 _ENGINE_ORDER = ("spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35")
 
 
@@ -157,6 +156,16 @@ def _input_model(exp: Dict[str, Any]) -> ExperimentInputs:
 
 def _flat_inputs(exp: Dict[str, Any]) -> Dict[str, Any]:
     return _input_model(exp).flat_values()
+
+
+def _batch_numbers(experiments: Sequence[Dict[str, Any]]) -> range:
+    return range(1, max((_input_model(exp).batch_count for exp in experiments), default=3) + 1)
+
+
+def _comparison_engines(exp: Dict[str, Any]) -> Tuple[str, str]:
+    if _input_model(exp).workload == "extended-tpcds":
+        return "duckdb", "duckdb-openivm"
+    return "spark", "spark-openivm"
 
 
 def _scale_factor(exp: Dict[str, Any]) -> Any:
@@ -362,7 +371,7 @@ def _aggregate_columns(experiments: Sequence[Dict[str, Any]], engines: Sequence[
             )
         )
     for engine in engines:
-        for batch in _BATCHES:
+        for batch in _batch_numbers(experiments):
             key = f"{engine}.b{batch}"
             columns.append(_Column(key, key, f"{engine} batch {batch} wall-clock seconds", "OUTPUT", heatmap=True))
     columns.append(
@@ -594,10 +603,11 @@ def _exp_has_engines(exp: Dict[str, Any], required: Sequence[str]) -> bool:
 
 
 def _ratio_value(exp: Dict[str, Any], batch: int, state_dir: str) -> Tuple[Dict[str, Optional[float]], Dict[str, str]]:
-    if _status(exp).lower() == "skipped" or not _exp_has_engines(exp, ("spark", "spark-openivm")):
+    baseline, incremental = _comparison_engines(exp)
+    if _status(exp).lower() == "skipped" or not _exp_has_engines(exp, (baseline, incremental)):
         return {}, {}
-    spark = _load_model_times(exp, "spark", batch, state_dir)
-    openivm = _load_model_times(exp, "spark-openivm", batch, state_dir)
+    spark = _load_model_times(exp, baseline, batch, state_dir)
+    openivm = _load_model_times(exp, incremental, batch, state_dir)
     values: Dict[str, Optional[float]] = {}
     names: Dict[str, str] = {}
     for model in set(spark.keys()) | set(openivm.keys()):
@@ -615,7 +625,7 @@ def _ratio_value(exp: Dict[str, Any], batch: int, state_dir: str) -> Tuple[Dict[
 
 
 def generate_oat_per_model_png(oat_run_id: str, state_dir: str = "/data/state") -> bytes:
-    """Generate the OAT per-model log2(openivm/spark) heatmap PNG."""
+    """Generate the OAT per-model log2(incremental/baseline) heatmap PNG."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -633,7 +643,8 @@ def generate_oat_per_model_png(oat_run_id: str, state_dir: str = "/data/state") 
     batch_values: Dict[int, Dict[str, Dict[str, Optional[float]]]] = {}
     model_names: Dict[str, str] = {}
     model_union: Dict[int, List[str]] = {}
-    for batch in _BATCHES:
+    batches = _batch_numbers(experiments)
+    for batch in batches:
         per_exp: Dict[str, Dict[str, Optional[float]]] = {}
         models = set()
         for idx, exp in enumerate(experiments):
@@ -649,14 +660,14 @@ def generate_oat_per_model_png(oat_run_id: str, state_dir: str = "/data/state") 
     if max_rows == 0:
         return _empty_png(f"OAT sweep — {oat_run_id[:8]} — no dbt model timings")
 
-    labels = [f"{_exp_label(exp, i)}\nSF={_scale_factor(exp)}" for i, exp in enumerate(experiments)]
+    labels = [f"{_exp_label(exp, i)}\nSF={_scale_factor(exp)}\n{' / '.join(reversed(_comparison_engines(exp)))}" for i, exp in enumerate(experiments)]
     columns = [str(_exp_idx(exp, i)) for i, exp in enumerate(experiments)]
     _ = pd.DataFrame(columns=columns)
 
     fig_w = max(8.0, 3.0 + 0.85 * len(experiments))
     subplot_h = max(2.2, 0.22 * max_rows + 1.0)
-    fig_h = subplot_h * 3 + 1.25
-    fig, axes_raw = plt.subplots(3, 1, figsize=(fig_w, fig_h), dpi=120)
+    fig_h = subplot_h * len(batches) + 1.25
+    fig, axes_raw = plt.subplots(len(batches), 1, figsize=(fig_w, fig_h), dpi=120)
     try:
         axes = list(axes_raw.flat)
     except AttributeError:
@@ -665,9 +676,9 @@ def generate_oat_per_model_png(oat_run_id: str, state_dir: str = "/data/state") 
     cmap = plt.get_cmap("bwr")
     norm = Normalize(vmin=-3, vmax=3)
 
-    for ax, batch in zip(axes, _BATCHES):
+    for ax, batch in zip(axes, batches):
         rows = model_union[batch]
-        ax.set_title(f"batch {batch}: log₂(openivm / spark)", fontsize=11, pad=8)
+        ax.set_title(f"batch {batch}: log₂(incremental / baseline)", fontsize=11, pad=8)
         ax.set_xlim(0, max(1, len(experiments)))
         ax.set_ylim(0, max(1, len(rows)))
         ax.invert_yaxis()
@@ -718,8 +729,8 @@ def _md_escape(value: Any) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def _engine_batch_header(engines: Sequence[str]) -> List[str]:
-    return [f"{engine} b{batch}" for engine in engines for batch in _BATCHES]
+def _engine_batch_header(engines: Sequence[str], batches: Sequence[int]) -> List[str]:
+    return [f"{engine} b{batch}" for engine in engines for batch in batches]
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
@@ -738,8 +749,9 @@ def _engine_names_for_exp(exp: Dict[str, Any]) -> List[str]:
 
 
 def _batch_ratio(exp: Dict[str, Any], batch: int) -> Optional[float]:
-    spark = _batch_duration(exp, "spark", batch)
-    openivm = _batch_duration(exp, "spark-openivm", batch)
+    baseline, incremental = _comparison_engines(exp)
+    spark = _batch_duration(exp, baseline, batch)
+    openivm = _batch_duration(exp, incremental, batch)
     if spark is None or openivm is None or spark <= 0:
         return None
     return openivm / spark
@@ -754,8 +766,9 @@ def _break_even_rows(experiments: Sequence[Dict[str, Any]], state_dir: str) -> L
     model_names: Dict[str, str] = {}
     cached: Dict[int, Tuple[Dict[str, Tuple[str, float]], Dict[str, Tuple[str, float]]]] = {}
     for pos, exp in enumerate(sorted_exps):
-        spark = _load_model_times(exp, "spark", 2, state_dir)
-        openivm = _load_model_times(exp, "spark-openivm", 2, state_dir)
+        baseline, incremental = _comparison_engines(exp)
+        spark = _load_model_times(exp, baseline, 2, state_dir)
+        openivm = _load_model_times(exp, incremental, 2, state_dir)
         cached[pos] = (spark, openivm)
         model_keys.update(spark.keys())
         model_keys.update(openivm.keys())
@@ -785,6 +798,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     state = _load_oat_state(oat_run_id, state_dir)
     experiments = _sort_experiments(state)
     engines = _engine_union(experiments)
+    batches = _batch_numbers(experiments)
 
     lines: List[str] = [f"# OAT sweep results — {oat_run_id}", ""]
     lines.extend(
@@ -821,12 +835,12 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     )
     lines.extend(["", "## Per-engine timing (aggregate)", ""])
 
-    timing_headers = ["#", "label", "SF"] + _engine_batch_header(engines)
+    timing_headers = ["#", "label", "SF"] + _engine_batch_header(engines, batches)
     timing_rows = []
     for idx, exp in enumerate(experiments):
         row: List[Any] = [_exp_idx(exp, idx), _exp_label(exp, idx), _scale_factor(exp)]
         for engine in engines:
-            for batch in _BATCHES:
+            for batch in batches:
                 row.append(_format_duration(_batch_duration(exp, engine, batch), compact=True))
         timing_rows.append(row)
     lines.append(_markdown_table(timing_headers, timing_rows))
@@ -835,7 +849,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     storage_rows = []
     for idx, exp in enumerate(experiments):
         for engine in _engine_names_for_exp(exp):
-            for batch in _BATCHES:
+            for batch in batches:
                 summary = _storage_summary(exp, engine, batch)
                 if not summary:
                     storage_rows.append([
@@ -877,31 +891,31 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     lines.extend(
         [
             "",
-            "## Per-engine ratio (openivm / spark)",
+            "## Per-engine ratio (incremental / baseline)",
             "",
-            "For each batch, the ratio `openivm/spark` (lower is better for openivm).",
+            "For each batch, the ratio `incremental/baseline` (lower is better for the incremental engine).",
             "",
         ]
     )
     ratio_rows = []
     for idx, exp in enumerate(experiments):
-        row = [_exp_idx(exp, idx), _exp_label(exp, idx), _scale_factor(exp)]
-        for batch in _BATCHES:
+        row = [_exp_idx(exp, idx), _exp_label(exp, idx), _scale_factor(exp), "/".join(reversed(_comparison_engines(exp)))]
+        for batch in batches:
             ratio = _batch_ratio(exp, batch)
             row.append(_MISSING if ratio is None else f"{ratio:.2f}")
         ratio_rows.append(row)
-    lines.append(_markdown_table(["#", "label", "SF", "b1 ratio", "b2 ratio", "b3 ratio"], ratio_rows))
+    lines.append(_markdown_table(["#", "label", "SF", "comparison", *[f"b{batch} ratio" for batch in batches]], ratio_rows))
 
     lines.extend(
         [
             "",
             "## Per-model break-even (batch 2)",
             "",
-            "For each dbt model, the SMALLEST SF (in the sweep) at which spark-openivm < spark for batch 2. If never, \"—\".",
+            "For each dbt model, the SMALLEST SF (in the sweep) at which the incremental engine is faster than its paired baseline for batch 2. If never, \"—\".",
             "",
         ]
     )
-    lines.append(_markdown_table(["model", "break-even SF", "first openivm/spark ratio"], _break_even_rows(experiments, state_dir)))
+    lines.append(_markdown_table(["model", "break-even SF", "first incremental/baseline ratio"], _break_even_rows(experiments, state_dir)))
 
     lines.extend(["", "## Inputs legend", ""])
     if experiments:

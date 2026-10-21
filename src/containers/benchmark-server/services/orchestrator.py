@@ -233,6 +233,8 @@ class Orchestrator:
         config_json = json.dumps({
             "scale_factor": self._config.scale_factor,
             "benchmark_runs": self._config.benchmark_runs,
+            "workload": self._config.workload,
+            "extended_tpcds": self._config.base_env()["EXTENDED_TPCDS_OPTIONS"],
             "engines": self._config.engines,
             "parallel": self._config.parallel,
             "batch_1_pct": self._config.batch_1_pct,
@@ -252,7 +254,7 @@ class Orchestrator:
                 (self._benchmark_id, "running", now_iso, config_json),
             )
             for engine in self._config.engines:
-                for batch_num in range(1, 4):
+                for batch_num in range(1, self._config.batch_count + 1):
                     conn.execute(
                         "INSERT INTO engine_batches (benchmark_id, engine, batch_num, status) VALUES (?,?,?,?)",
                         (self._benchmark_id, engine, batch_num, "pending"),
@@ -449,6 +451,7 @@ class Orchestrator:
         include_datagen: bool = True,
         compiler_bench: Optional[bool] = None,
         cost_model_bench: Optional[bool] = None,
+        extended_tpcds: bool = False,
     ) -> None:
         """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
 
@@ -465,7 +468,8 @@ class Orchestrator:
         callables = []
         if include_datagen:
             callables.append(self._run_datagen)
-        callables.append(self._build_batch_loader)
+        if self._config.workload == "tpc-di":
+            callables.append(self._build_batch_loader)
         # At phase 0 the per-experiment env is not applied yet, so the caller
         # passes the decision in from the experiments list; None means "read env".
         if compiler_bench is None:
@@ -478,7 +482,7 @@ class Orchestrator:
         # Read from the passed-in decision rather than the environment: at phase 0 the per-experiment
         # flags have not been applied yet, so an experiment enabling the sweep without also listing
         # duckdb-openivm would skip the build it depends on.
-        if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench:
+        if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench or extended_tpcds:
             callables.append(self._run_duckdb_openivm_build)
         if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
             callables.append(self._run_spark_openivm_build)
@@ -493,7 +497,21 @@ class Orchestrator:
         self.emit("=== Phase 1: Complete ===")
 
     def _run_datagen(self) -> None:
-        """Run TPC-DI data generation (idempotent)."""
+        """Prepare the selected workload's shared source artifacts."""
+        if self._config.workload == "extended-tpcds":
+            repo = self._config.repo_dir
+            mgr = DockerManager(os.path.join(repo, "docker/docker-compose.extended-tpcds-datagen.yml"),
+                                project_name="extended-tpcds-datagen", env=self._config.base_env(), cwd=repo)
+            try:
+                with self._heartbeat("extended-tpcds/prepare"):
+                    mgr.build()
+                    mgr.up(detach=False, timeout=7200)
+                code = mgr.get_exit_code("extended-tpcds-datagen")
+                if code != "0":
+                    raise RuntimeError(f"Extended TPC-DS preparation failed ({code}): {mgr.logs()[-2000:]}")
+            finally:
+                mgr.down()
+            return
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
         mgr = DockerManager(
@@ -986,7 +1004,7 @@ class Orchestrator:
         if self._config.schedule == "serial-host-parallel-cloud":
             self._run_serial_host_parallel_cloud()
         else:
-            if self._config.parallel:
+            if self._config.parallel and self._config.workload == "tpc-di":
                 self._init_parallel_staging(engine_configs)
 
             if self._config.parallel and len(engines) > 1:
@@ -1391,6 +1409,8 @@ class Orchestrator:
         # Stash original config + temporarily widen engines for the build phase.
         # We restore the per-experiment config inside the loop via _apply_experiment.
         original_engines = list(self._config.engines)
+        original_workload = self._config.workload
+        self._config.workload = "tpc-di" if any(e.workload == "tpc-di" for e in experiments) else "extended-tpcds"
         self._config.engines = union_engines
         try:
             self._teardown_existing()
@@ -1409,6 +1429,7 @@ class Orchestrator:
             # per-experiment env is applied later, in the loop.
             self._phase1_prep(
                 include_datagen=False,
+                extended_tpcds=any(inp.workload == "extended-tpcds" for inp in experiments),
                 compiler_bench=any(
                     inp.feature_flags.compiler_bench for inp in experiments
                 ),
@@ -1418,6 +1439,7 @@ class Orchestrator:
             )
         finally:
             self._config.engines = original_engines
+            self._config.workload = original_workload
 
     def _run_one_oat_experiment(
         self, exp_idx: int, inputs: ExperimentInputs, min_free_pct: float
@@ -1635,6 +1657,8 @@ class Orchestrator:
         """Mutate ``self._config`` + ``os.environ`` to match this experiment's knobs."""
         self._config.scale_factor = inputs.scale_factor
         self._config.batch_2_days = inputs.batch_2_days
+        self._config.workload = inputs.workload
+        self._config.extended_tpcds = inputs.extended_tpcds
         self._config.batch_1_pct = inputs.batch_1_pct
         self._config.batch_2_pct = inputs.batch_2_pct
         self._config.batch_3_pct = inputs.batch_3_pct

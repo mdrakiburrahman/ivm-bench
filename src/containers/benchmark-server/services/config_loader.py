@@ -1,8 +1,9 @@
 """Configuration loader — reads environment variables into BenchmarkConfig."""
 
 import os
+import json
 
-from models.config import BenchmarkConfig
+from models.config import BenchmarkConfig, ExtendedTPCDSOptions
 
 
 def _insert_pct(batch_num: int, default: str) -> str:
@@ -24,7 +25,9 @@ def _load_schedule() -> str:
 def load_config() -> BenchmarkConfig:
     """Build a BenchmarkConfig from environment variables."""
     return BenchmarkConfig(
-        scale_factor=int(os.environ.get("SCALE_FACTOR", "3")),
+        scale_factor=float(os.environ.get("SCALE_FACTOR", "3")),
+        workload=os.environ.get("WORKLOAD", "tpc-di"),
+        extended_tpcds=ExtendedTPCDSOptions(**json.loads(os.environ.get("EXTENDED_TPCDS_OPTIONS", "{}"))),
         benchmark_runs=int(os.environ.get("BENCHMARK_RUNS", "1")),
         batch_2_days=int(os.environ.get("TPCDI_BATCH_2_DAYS", "0")),
         batch_1_pct=_insert_pct(1, "1"),
