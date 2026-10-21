@@ -292,6 +292,19 @@ also requires Spark bridge support for its qualified/internal storage identifier
 it was not used for the recorded Spark initial-load acceptance. Spark mutation
 correctness and OAT integration remain open.
 
+A later [SF1 precision probe](https://github.com/mdrakiburrahman/openivm-spark/actions/runs/39592027122)
+isolated the monthly effective-unit snapshot and its 30 ancestors. All ancestors
+matched independent DuckDB references. The original `DOUBLE` sum produced 4, 0,
+0, 4 and 2 bag differences at Spark shuffle partition counts 1, 2, 3, 4 and 8;
+DuckDB's original query also changed integer results with thread count. Casting
+each contribution to `DECIMAL(28,10)` before summing gave zero differences for
+the candidate materialized view and all five Spark query layouts. This is an
+initial-snapshot diagnostic, not a complete SF1 or mutation-mode acceptance run.
+The [recorded evidence](../src/workloads/extended-tpcds/validation/monthly-precision-sf1.json)
+includes provenance and resource limits. Separate focused refresh regressions
+pass on Spark 3.5 and 4.1 in both CDF and intercept modes, including mixed DML and
+an empty refresh; see [run 39585653273](https://github.com/mdrakiburrahman/openivm-spark/actions/runs/39585653273).
+
 CI installs the test dependencies and runs all three test directories. To run the
 same tests locally, install `src/workloads/extended-tpcds/requirements-test.txt`,
 then use `python -m unittest discover -s DIRECTORY -v` for
