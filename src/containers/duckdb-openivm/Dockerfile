@@ -19,7 +19,7 @@ RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::
 
 WORKDIR /src
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=3bbb4a33281db15870bce13ce9c4b2d939c849c2
+ARG OPENIVM_COMMIT=9b404c0e15cc851058e5b872b560cf802b765749
 RUN git clone "${OPENIVM_REPO}" . && \
     git checkout "${OPENIVM_COMMIT}" && \
     git submodule update --init --recursive && \
@@ -41,7 +41,7 @@ RUN GEN=ninja EXTRA_EXTENSION_CONFIGS=/tmp/icu_extension_config.cmake make -j$(n
 
 FROM debian:bookworm-slim
 
-ARG OPENIVM_COMMIT=3bbb4a33281db15870bce13ce9c4b2d939c849c2
+ARG OPENIVM_COMMIT=9b404c0e15cc851058e5b872b560cf802b765749
 LABEL org.openivm.commit="${OPENIVM_COMMIT}"
 
 ARG DUCKDB_OPENIVM_DOCKERFILE_HASH=""
