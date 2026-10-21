@@ -1962,6 +1962,8 @@ class Orchestrator:
                 state_dir=results_dir, sf=sf,
                 b1pct=b1, b2pct=b2, b3pct=b3,
                 stats_dir=stats_dir,
+                repeated_refresh=inputs.repeated_refresh,
+                refresh_pct=inputs.refresh_pct,
             )
             if png:
                 os.makedirs(imgs_dir, exist_ok=True)

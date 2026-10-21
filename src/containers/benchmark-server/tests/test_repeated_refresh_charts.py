@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -73,6 +74,25 @@ class RepeatedRefreshChartsTest(unittest.TestCase):
         exp["dbt_run_files"]["spark"] = ["run-spark-batch21.json"]
         self.assertTrue(oat_chart._dbt_run_path(exp, "spark", 1, "/tmp").endswith("-batch1.json"))
 
+    def test_legacy_positional_batches_render_markdown_and_aggregate_png(self):
+        exp = experiment(refresh_count=2)
+        exp["inputs"] = {"engines": ["spark", "spark-openivm"]}
+        for engine in exp["engines"].values():
+            for batch in engine["batches"]:
+                del batch["batch_num"]
+        self.assertEqual(oat_chart._batch_numbers([exp]), [1, 2, 3])
+        self.assertEqual(oat_chart._batch_duration(exp, "spark", 3), 6)
+        state = {"status": "completed", "experiments": [exp]}
+        with patch.object(oat_chart, "_load_oat_state", return_value=state):
+            md = oat_chart.generate_oat_results_md("test")
+            png = oat_chart.generate_oat_aggregate_png("test")
+        self.assertIn("spark b3", md)
+        self.assertIn("00:06", md)
+        self.assertIn("00:03", md)
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        exp["engines"]["spark"]["batches"] = [None, {"duration_s": 2}, {"batch_num": 4}]
+        self.assertEqual(oat_chart._batch_numbers([exp]), [1, 2, 3, 4])
+
     def test_rendered_aggregate_and_model_charts_include_batch_21(self):
         exp = experiment()
         state = {"status": "completed", "experiments": [exp]}
@@ -100,9 +120,10 @@ class RepeatedRefreshChartsTest(unittest.TestCase):
                     {"batch_num": n, "duration_s": n} for n in range(1, 5)
                 ]}},
             }))
-            Path(directory, "delta-stats-duckdb-batch4.json").write_text(json.dumps({
-                "tables": [{"name": "trade", "rows": 10, "size_gb": 0.1}],
-            }))
+            for batch in range(1, 5):
+                Path(directory, f"delta-stats-duckdb-batch{batch}.json").write_text(json.dumps({
+                    "tables": [{"name": "trade", "rows": 10, "size_gb": 0.1}],
+                }))
             original = matplotlib.figure.Figure.savefig
             figures = []
 
@@ -110,10 +131,50 @@ class RepeatedRefreshChartsTest(unittest.TestCase):
                 figures.append(fig)
                 return original(fig, *args, **kwargs)
 
-            with patch.object(matplotlib.figure.Figure, "savefig", save):
-                png = chart.generate_chart_png(directory, sf=3)
-            self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
-            self.assertTrue(any(ax.get_title().startswith("Batch 4 ") for ax in figures[-1].axes))
+            for repeated, pct in ((False, "1"), (True, "1"), (True, "2.5")):
+                with self.subTest(repeated=repeated, pct=pct):
+                    with patch.object(matplotlib.figure.Figure, "savefig", save):
+                        png = chart.generate_chart_png(
+                            directory, sf=3, b1pct="100", b2pct="1", b3pct="2",
+                            repeated_refresh=repeated, refresh_pct=pct,
+                        )
+                    self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+                    fig = figures[-1]
+                    titles = [ax.get_title() for ax in fig.axes]
+                    if repeated:
+                        self.assertIn("Batch 1 — 0.10 GB — initial load", titles)
+                        for batch in range(2, 5):
+                            self.assertIn(f"Batch {batch} — 0.10 GB — {pct}% of current source rows", titles)
+                        self.assertIn(f"refresh={pct}% of current source rows, compounded", fig._suptitle.get_text())
+                    else:
+                        self.assertIn("Batch 3 — 0.10 GB — 2%", titles)
+                        self.assertIn("Batch 4 — 0.10 GB — ?%", titles)
+                        self.assertIn("B3=2%", fig._suptitle.get_text())
+
+    def test_chart_callers_forward_repeated_refresh_configuration(self):
+        from flask import Flask
+        from models.config import BenchmarkConfig
+        from models.experiments import ExperimentInputs
+        from services.orchestrator import Orchestrator
+
+        with tempfile.TemporaryDirectory() as directory:
+            orchestrator = Orchestrator.__new__(Orchestrator)
+            orchestrator._config = BenchmarkConfig(repo_dir=directory)
+            orchestrator.emit = lambda _: None
+            inputs = ExperimentInputs(repeated_refresh=True, refresh_pct="2.5")
+            with patch.object(chart, "generate_chart_png", return_value=None) as render, \
+                    patch.object(chart, "generate_heuristics_png", return_value=None):
+                orchestrator._oat_write_per_experiment_imgs(inputs)
+            self.assertTrue(render.call_args.kwargs["repeated_refresh"])
+            self.assertEqual(render.call_args.kwargs["refresh_pct"], "2.5")
+
+        app = Flask(__name__)
+        app.register_blueprint(chart.bp)
+        with patch.dict(os.environ, {"REPEATED_REFRESH": "1", "REFRESH_PCT": "2.5"}), \
+                patch.object(chart, "generate_chart_png", return_value=b"png") as render:
+            self.assertEqual(app.test_client().get("/chart").status_code, 200)
+        self.assertTrue(render.call_args.kwargs["repeated_refresh"])
+        self.assertEqual(render.call_args.kwargs["refresh_pct"], "2.5")
 
 
 if __name__ == "__main__":

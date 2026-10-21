@@ -166,8 +166,9 @@ def _batch_numbers(experiments: Sequence[Dict[str, Any]]) -> List[int]:
         # Older artifacts may retain results without the original input knobs.
         engines = exp.get("engines")
         for engine in engines.values() if isinstance(engines, dict) else []:
-            for batch in engine.get("batches") or []:
-                batches.add(int(batch["batch_num"]))
+            for position, batch in enumerate(engine.get("batches") or [], start=1):
+                if isinstance(batch, dict):
+                    batches.add(int(batch.get("batch_num", position)))
     return sorted(batches) if batches else [1, 2, 3]
 
 
