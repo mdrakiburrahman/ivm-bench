@@ -180,9 +180,7 @@ counts the rows actually loaded, including the separately stored audit table;
 `generated_source_rows` and `generated_batches` retain the physical file counts,
 including unused initial tables. The initial resulting total therefore matches
 the first refresh's before total. Legacy row-count reporting is unchanged.
-The small two-workload experiment
-file is `src/containers/benchmark-server/experiments/smoke-repeated-refresh.json`.
-The SF10 DuckDB OpenIVM preset, `sf10-repeated-refresh-duckdb-openivm.json`, also
+The SF10 DuckDB OpenIVM preset, `sf10-repeated-refresh-duckdb-openivm.json`,
 contains both workloads as separate experiments sharing one baseline.
 
 #### Concurrency and resource settings
