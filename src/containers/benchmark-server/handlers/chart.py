@@ -151,14 +151,15 @@ def generate_chart_png(
 
     # --- Load delta-stats ---
     delta_stats = {}
-    for batch in [1, 2, 3]:
-        for pattern in [f"delta-stats-batch{batch}.json",
-                        f"delta-stats-*-batch{batch}.json"]:
-            for stats_file in _glob.glob(os.path.join(state_dir, pattern)):
-                with open(stats_file) as f:
-                    sdata = json.load(f)
-                if batch not in delta_stats:
-                    delta_stats[batch] = sdata.get("tables", [])
+    for stats_file in sorted(_glob.glob(os.path.join(state_dir, "delta-stats-*batch*.json"))):
+        match = re.search(r"batch(\d+)\.json$", os.path.basename(stats_file))
+        if not match:
+            continue
+        batch = int(match.group(1))
+        with open(stats_file) as f:
+            sdata = json.load(f)
+        if batch not in delta_stats:
+            delta_stats[batch] = sdata.get("tables", [])
 
     # --- Load container stats for time series ---
     container_stats = {}
@@ -189,7 +190,13 @@ def generate_chart_png(
     if not has_bar_chart and not has_exec_times:
         return None
 
-    batches = sorted(set(r["batch_num"] for r in records)) if records else [1, 2, 3]
+    batches = {r["batch_num"] for r in records} | set(delta_stats)
+    if has_bar_chart:
+        batches.update(
+            b["batch_num"] for engine in benchmark_data["engines"].values()
+            for b in engine.get("batches", [])
+        )
+    batches = sorted(batches) if batches else [1, 2, 3]
     n_batches = len(batches)
 
     # Prepare exec-time lookup
