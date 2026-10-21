@@ -576,7 +576,13 @@ class Orchestrator:
         delta_dir = os.path.join(
             repo, "mount", "raw", str(inputs.scale_factor), "delta",
         )
-        counts = collect_source_row_counts(delta_dir, self._config.batch_count)
+        refresh_plan = None
+        if inputs.repeated_refresh:
+            with open(os.path.join(delta_dir, "refresh-plan.json"), encoding="utf-8") as plan_file:
+                refresh_plan = json.load(plan_file)
+        counts = collect_source_row_counts(
+            delta_dir, self._config.batch_count, refresh_plan=refresh_plan,
+        )
         counts.update({
             "scale_factor": inputs.scale_factor,
             "batch_2_days": inputs.batch_2_days,
@@ -592,8 +598,6 @@ class Orchestrator:
                 str(batch): "100" if batch == 1 else inputs.refresh_pct
                 for batch in range(1, self._config.batch_count + 1)
             }
-            with open(os.path.join(delta_dir, "refresh-plan.json"), encoding="utf-8") as plan_file:
-                counts["refresh_plan"] = json.load(plan_file)
             for refresh in counts["refresh_plan"]["rounds"]:
                 for table, rows in refresh["tables"].items():
                     self.emit(
@@ -607,7 +611,7 @@ class Orchestrator:
                 f"{table}={rows:,}" for table, rows in batch["tables"].items()
             )
             self.emit(
-                f"  [datagen] Batch {batch_num} physical insert rows="
+                f"  [datagen] Batch {batch_num} loaded source insert rows="
                 f"{batch['total_rows']:,} (configured="
                 f"{counts['configured_insert_pct'][str(batch_num)]}%; {tables})"
             )

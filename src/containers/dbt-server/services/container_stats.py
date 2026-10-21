@@ -109,8 +109,25 @@ def _get_container_stats_snapshot(container_id: str) -> dict[str, Any] | None:
     net_in_bytes = sum(iface.get("rx_bytes", 0) for iface in networks.values())
     net_out_bytes = sum(iface.get("tx_bytes", 0) for iface in networks.values())
 
+    # Keep cumulative counters so long SQL pauses can be distinguished from
+    # CPU throttling or heavy block I/O without tracing timed queries.
+    throttling = data.get("cpu_stats", {}).get("throttling_data", {})
+    io_bytes = data.get("blkio_stats", {}).get("io_service_bytes_recursive")
+
+    def io_total(operation: str) -> int | None:
+        if not io_bytes:
+            return None
+        return sum(
+            entry["value"] for entry in io_bytes
+            if entry.get("op", "").lower() == operation
+        )
+
     return {
         "cpu_pct": cpu_pct,
+        "cpu_throttled_time_ns": throttling.get("throttled_time"),
+        "cpu_throttled_periods": throttling.get("throttled_periods"),
+        "io_read_bytes": io_total("read"),
+        "io_write_bytes": io_total("write"),
         "cpu_usage_ns": data.get("cpu_stats", {})
         .get("cpu_usage", {})
         .get("total_usage", 0),
@@ -206,11 +223,7 @@ class ContainerStatsCollector:
                 sample = {
                     "timestamp_s": round(time.time(), 3),
                     "container": container["service"],
-                    "cpu_pct": stats["cpu_pct"],
-                    "cpu_usage_ns": stats["cpu_usage_ns"],
-                    "mem_mb": stats["mem_mb"],
-                    "net_in_mb": stats["net_in_mb"],
-                    "net_out_mb": stats["net_out_mb"],
+                    **stats,
                 }
                 with self._lock:
                     self._samples.append(sample)

@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from models.refresh import validate_refresh
+from models.refresh import refresh_batch_count, refresh_env, validate_refresh
 
 
 @dataclass
@@ -191,15 +191,12 @@ class BenchmarkConfig:
 
     @property
     def batch_count(self) -> int:
-        return self.refresh_count + 1 if self.repeated_refresh else 3
+        return refresh_batch_count(self.repeated_refresh, self.refresh_count)
 
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
         return {
-            "REPEATED_REFRESH": "1" if self.repeated_refresh else "0",
-            "TPCDI_WORKLOAD": self.workload,
-            "REFRESH_COUNT": str(self.refresh_count),
-            "REFRESH_PCT": str(self.refresh_pct),
+            **refresh_env(self),
             "SCALE_FACTOR": str(self.scale_factor),
             "BENCHMARK_RUNS": str(self.benchmark_runs),
             "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),

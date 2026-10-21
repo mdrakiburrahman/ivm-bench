@@ -37,7 +37,7 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
-from models.refresh import validate_refresh
+from models.refresh import refresh_batch_count, refresh_env, validate_refresh
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ from models.refresh import validate_refresh
 
 @dataclass
 class FeatureFlags:
-    openivm_validate: bool = True
+    openivm_validate: bool = False
     openivm_profile_refresh: bool = True
     openivm_query_log: bool = True
     storage_metrics: bool = True
@@ -114,13 +114,13 @@ class SparkTunables:
     "fall back to YAML"; we only emit env vars when the experiment actually
     pins a value, so unset experiments inherit the existing YAML defaults.
 
-    ``dbt_threads`` is read by the Spark, Fabric and Databricks dbt profiles.yml
+    ``dbt_threads`` is read by the Spark and Fabric dbt profiles.yml
     (via ``SPARK_DBT_THREADS``) and caps how many models dbt builds
     concurrently. Because Livy runs ``local[*]`` (one JVM), a high thread
     count lets several heavy gold facts build at once and can OOM the
     single driver heap at large SF — capping threads is the lever to keep
     peak concurrent memory in check. None means "inherit the profiles.yml
-    default" (30 for Spark/Fabric, 8 for Databricks).
+    default" (30). Databricks uses its own ``databricks_dbt_threads`` setting.
     """
     driver_pct_ram: Optional[int] = None
     executor_pct_ram: Optional[int] = None
@@ -263,6 +263,7 @@ class ExperimentInputs:
     batch_3_update_pct: str = "0"
     batch_3_delete_pct: str = "0"
     databricks_refresh_policy: str = "AUTO"
+    databricks_dbt_threads: Optional[int] = None
     engines: List[str] = field(default_factory=lambda: ["spark", "spark-openivm"])
     parallel: bool = False
     # "serial" | "parallel" | "serial-host-parallel-cloud". Legacy `parallel:true`
@@ -276,6 +277,10 @@ class ExperimentInputs:
 
     def __post_init__(self):
         validate_refresh(self)
+        if self.databricks_dbt_threads is not None:
+            threads = self.databricks_dbt_threads
+            if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
+                raise ValueError("databricks_dbt_threads must be a positive integer")
         self.batch_2_days = int(self.batch_2_days)
         if self.batch_2_days < 0 or self.batch_2_days > 364:
             raise ValueError("batch_2_days must be between 0 and 364")
@@ -292,13 +297,14 @@ class ExperimentInputs:
     # Serialization
     # ------------------------------------------------------------------
 
+    @property
+    def batch_count(self) -> int:
+        return refresh_batch_count(self.repeated_refresh, self.refresh_count)
+
     def to_compose_env(self) -> Dict[str, str]:
         """Project this experiment to the env-var map that compose / orchestrator consume."""
         env: Dict[str, str] = {
-            "REPEATED_REFRESH": "1" if self.repeated_refresh else "0",
-            "TPCDI_WORKLOAD": self.workload,
-            "REFRESH_COUNT": str(self.refresh_count),
-            "REFRESH_PCT": str(self.refresh_pct),
+            **refresh_env(self),
             "SCALE_FACTOR": str(self.scale_factor),
             "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),
             "BATCH_1_PCT": str(self.batch_1_pct),
@@ -309,6 +315,9 @@ class ExperimentInputs:
             "BATCH_3_UPDATE_PCT": str(self.batch_3_update_pct),
             "BATCH_3_DELETE_PCT": str(self.batch_3_delete_pct),
             "DATABRICKS_REFRESH_POLICY": self.databricks_refresh_policy,
+            "DATABRICKS_DBT_THREADS": (
+                str(self.databricks_dbt_threads) if self.databricks_dbt_threads is not None else ""
+            ),
             "PARALLEL": "1" if self.schedule == "parallel" else "0",
             "SCHEDULE": self.schedule,
             "ENGINES": ",".join(self.engines),
@@ -336,6 +345,7 @@ class ExperimentInputs:
             "batch_3_update_pct": self.batch_3_update_pct,
             "batch_3_delete_pct": self.batch_3_delete_pct,
             "databricks_refresh_policy": self.databricks_refresh_policy,
+            "databricks_dbt_threads": self.databricks_dbt_threads,
             "engines": list(self.engines),
             "parallel": self.parallel,
             "schedule": self.schedule,
@@ -361,6 +371,7 @@ class ExperimentInputs:
             "batch_3_update_pct": self.batch_3_update_pct,
             "batch_3_delete_pct": self.batch_3_delete_pct,
             "databricks_refresh_policy": self.databricks_refresh_policy,
+            "databricks_dbt_threads": self.databricks_dbt_threads,
             "engines": ",".join(self.engines),
             "parallel": int(self.parallel),
             "schedule": self.schedule,
@@ -393,6 +404,7 @@ class ExperimentInputs:
             "batch_3_update_pct": "b3u%",
             "batch_3_delete_pct": "b3d%",
             "databricks_refresh_policy": "DB policy",
+            "databricks_dbt_threads": "DB threads override",
             "engines": "engines",
             "parallel": "parallel",
             "schedule": "schedule",
@@ -510,6 +522,7 @@ class ExperimentInputs:
             databricks_refresh_policy=str(
                 d.get("databricks_refresh_policy", base.databricks_refresh_policy)
             ),
+            databricks_dbt_threads=d.get("databricks_dbt_threads", base.databricks_dbt_threads),
             engines=engines,
             parallel=(schedule == "parallel"),
             schedule=schedule,

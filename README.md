@@ -175,8 +175,42 @@ initialization, and does not retry SQL errors or OOM without scaling evidence.
 `refresh-plan.json` records generator sizing and initial, before, inserted, and
 resulting counts for every source table and round. The server logs these counts
 and archives them in `source-row-counts.json`; `results.csv` includes every
-refresh and its before/after source totals. The small two-workload experiment
+refresh and its before/after source totals. In repeated mode, `source_rows`
+counts the rows actually loaded, including the separately stored audit table;
+`generated_source_rows` and `generated_batches` retain the physical file counts,
+including unused initial tables. The initial resulting total therefore matches
+the first refresh's before total. Legacy row-count reporting is unchanged.
+The small two-workload experiment
 file is `src/containers/benchmark-server/experiments/smoke-repeated-refresh.json`.
+The SF10 DuckDB OpenIVM preset, `sf10-repeated-refresh-duckdb-openivm.json`, also
+contains both workloads as separate experiments sharing one baseline.
+
+#### Concurrency and resource settings
+
+Model concurrency is distinct from execution threads within an engine:
+
+| Engine | Default model concurrency | Execution resources |
+| --- | ---: | --- |
+| Spark / Spark OpenIVM | 30 | Local Spark uses `local[*]`; default shuffle partitions and parallelism are 16. |
+| Fabric / Fabric OpenIVM | 30 | Remote Fabric Spark; local container limits describe the orchestration client. |
+| Databricks Enzyme | 8 | Managed Databricks compute; local container limits describe the orchestration client. |
+| DuckDB / DuckDB OpenIVM | Serial model execution | SQL threads use the allocated CPU count; engine memory is capped at 80% of the container allocation. |
+| Feldera | 1 | 12 execution workers; maximum RSS is 95% of the container allocation. |
+
+`spark_tunables.dbt_threads` caps only Spark/Fabric model concurrency. The SF10
+all-engine repeated preset and the existing augmented/sweep presets set it to
+4; `full.json` sets it to 4 at SF100. These limits do not change Enzyme's default.
+Use the separate optional `databricks_dbt_threads` experiment field to override
+Enzyme concurrency, for example `"databricks_dbt_threads": 1` for diagnostics.
+The overrides are recorded separately in `results.csv`; blank means the engine
+default. The focused Enzyme verification preset inherits 8; its diagnostic
+preset explicitly requests 1 and labels that restriction.
+
+Serial local-engine runs receive the available host allocation; parallel runs
+divide it among engines. Spark and Feldera reserve part of their allocation for
+the dbt client. Cloud CPU totals are not inferred from local container limits.
+Repeated-refresh experiments are opt-in: normal GCI selection continues to use
+the existing three-batch benchmark.
 
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden
@@ -504,3 +538,36 @@ set inherits from the file's `baseline` block.
 As this repo's implementation of the TPC-DI is an unpublished and unofficial TPC Benchmark, the following is required legalese per TPC Fair Use Policy:
 
 > The `ivm-bench` TPC-DI is derived from the TPC-DI source data to test Incremental View Maintenance and as such is NOT comparable to officially published TPC-DI results.
+
+
+### OpenIVM profiling on Fabric and local Spark
+
+`OPENIVM_PROFILE_REFRESH=1` exports refresh-step CSVs after each timed batch
+for both `spark-openivm` and `fabric-openivm-jvm-35`. `OPENIVM_QUERY_LOG=1`
+exports their refresh SQL. Files use the engine name so the two engines can
+be compared without overwriting each other's results:
+
+- `mount/results/<sf>/dbt-server/<engine>-profile-batch<N>.csv`
+- `mount/results/<sf>/dbt-server/<engine>-profile-by-step-batch<N>.csv`
+- `mount/results/<sf>/dbt-server/<engine>-query-log-batch<N>.json`
+- `mount/results/<sf>/<engine>/query-log/<view>/<refresh>/` (formatted working copy; OAT cleanup removes it)
+
+Fabric attaches to the existing dbt Livy session in the resolved compute
+lakehouse. If that session has expired, export fails instead of starting a
+new driver with an empty catalog. Export requests run after the batch timer
+stops. Profile catalogs are cumulative; use refresh IDs and timestamps to
+identify the batch, not the export filename alone.
+
+Both dbt profiles set `livy.rsc.sql.num-rows` to 100,000. Livy's default
+1,000-row cap silently clips cumulative profiles. Export rejects results
+of exactly 1,000 rows (possibly an old session) or at least 100,000 rows;
+these checks are conservative and do not prove completeness for arbitrary
+server-side limits. Use fresh sessions with the checked-in configuration.
+The Fabric adapter contract tests in `test_fabric_profile.py` require the
+dbt-server requirements; they are skipped on hosts without the adapter.
+
+Batch-1 profile metadata also records a small allowlist of effective SQL
+execution settings from `SET -v` (broadcast, shuffle, AQE and Delta MERGE
+source materialization). Missing keys mean the runtime did not report them;
+they must not be interpreted as default values. Arbitrary session properties
+and credentials are not saved.

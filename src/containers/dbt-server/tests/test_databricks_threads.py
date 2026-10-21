@@ -6,15 +6,18 @@ from jinja2 import Environment
 
 
 class DatabricksThreadsTest(unittest.TestCase):
-    def test_thread_override_and_legacy_default(self):
+    def test_thread_override_and_legacy_default_are_independent_of_spark(self):
         profile = Path(__file__).resolve().parents[1] / "dbt-projects/databricks-enzyme/profiles.yml"
         template = Environment().from_string(profile.read_text())
         for override, expected in ((None, 8), ("1", 1), ("4", 4)):
-            with self.subTest(override=override):
-                def env_var(name, default="test"):
-                    return (override or "") if name == "SPARK_DBT_THREADS" else default
-                result = yaml.safe_load(template.render(env_var=env_var))
-                self.assertEqual(int(result["tpcdi"]["outputs"]["databricks-enzyme"]["threads"]), expected)
+            for spark_threads in ("", "1", "4", "30"):
+                with self.subTest(override=override, spark_threads=spark_threads):
+                    def env_var(name, default="test"):
+                        if name == "SPARK_DBT_THREADS":
+                            return spark_threads
+                        return (override or "") if name == "DATABRICKS_DBT_THREADS" else default
+                    result = yaml.safe_load(template.render(env_var=env_var))
+                    self.assertEqual(int(result["tpcdi"]["outputs"]["databricks-enzyme"]["threads"]), expected)
 
 
 class DatabricksLayoutTest(unittest.TestCase):

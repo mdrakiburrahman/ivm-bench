@@ -105,6 +105,10 @@ def export_profile(run_id: str, batch_num: int) -> dict:
             by_view_step_path,
         )
 
+        cli_path = TEMP_DIR / "cli-timings.csv"
+        cli_timings = "timestamp_s,sql,attempt,returncode,wall_s,setup_sql_s,operation_sql_s,outside_sql_s\n"
+        if cli_path.exists():
+            cli_timings += cli_path.read_text()
         profile_csv = profile_path.read_text()
         rows = list(csv.DictReader(profile_csv.splitlines()))
         return {
@@ -115,6 +119,7 @@ def export_profile(run_id: str, batch_num: int) -> dict:
             "view_count": len({row["view_name"] for row in rows if row.get("view_name")}),
             "csv": {
                 "profile": profile_csv,
+                "cli_timings": cli_timings,
                 "by_step": by_step_path.read_text(),
                 "by_view_step": by_view_step_path.read_text(),
             },

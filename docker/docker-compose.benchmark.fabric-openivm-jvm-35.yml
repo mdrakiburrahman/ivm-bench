@@ -47,6 +47,9 @@ services:
       # openivm JAR (built by spark-openivm-build) — staged to OneLake for the
       # driver classpath (spark.jars) with DuckDB compile assets baked in.
       OPENIVM_JAR_PATH: /data/bin/openivm-extension.jar
+      # Environment publishing reads these in dbt-server, not benchmark-server.
+      OPENIVM_PROFILE_REFRESH: "${OPENIVM_PROFILE_REFRESH:-0}"
+      OPENIVM_QUERY_LOG: "${OPENIVM_QUERY_LOG:-0}"
       # Locally-generated Delta dirs to stage into the OneLake Files cache.
       RAW_DELTA_DIR: /data/raw/delta
     volumes:
