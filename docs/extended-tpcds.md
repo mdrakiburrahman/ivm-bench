@@ -583,9 +583,13 @@ choose the greatest non-null reported units; channel/assessment lookups use
 explicit payload tie breakers. Preference normalization uses a
 retail-oriented regex, and offer buckets use retail categories. Casts translated
 from Spark use DuckDB `TRY_CAST` where the source's permissive cast returns null.
-The monthly engagement snapshot explicitly rounds fractional effective-unit sums
-half away from zero before converting them to integers. This preserves the
-benchmark's existing DuckDB result policy on engines whose integer casts truncate.
+The monthly engagement snapshot casts each fractional effective-unit contribution
+to `DECIMAL(28,10)` before summing, then rounds the exact sum half away from zero
+before converting it to an integer. Ten fractional digits match the floating-point
+comparison precision used by the benchmark; eighteen integer digits accommodate
+the generated capacities. This explicit precision prevents parallel floating-point
+reduction order from changing integer results at half-unit boundaries. It also
+preserves half-away-from-zero rounding on engines whose integer casts truncate.
 See [translation provenance](../src/workloads/extended-tpcds/translation.json).
 Other original latest-row orderings remain intact: conflicting payloads with equal
 ordering timestamps in additional metadata-arrival scenarios need an explicit tie

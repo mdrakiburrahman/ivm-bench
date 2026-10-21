@@ -211,6 +211,29 @@ class WorkloadTests(unittest.TestCase):
                 "SELECT household_key,effective_units_count FROM snapshot ORDER BY household_key"
             ).fetchall(), [(1, 0), (2, 1), (3, -1), (4, 2), (5, -2), (6, None)])
 
+    def test_monthly_fractional_units_use_fixed_precision_before_summing(self):
+        # These nearby DOUBLE values straddle a half-unit total depending on
+        # reduction order; at ten decimal places each contributes 0.0384615385.
+        values = [0.038461538461538464] * 12 + [0.03846153846153846]
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse), duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as connection:
+                connection.execute("""CREATE TABLE int_engagement_status_transaction AS
+                    SELECT TIMESTAMP '2002-12-01' AS event_time,
+                           'engagement-' || household_key || '-' || i AS engagement_path,
+                           household_key, 1 AS account_offer_key, 1 AS account_usage_key,
+                           1 AS platform_key, 1 AS preference_key, 1 AS product_tier_key,
+                           1 AS product_version_key, 1 AS engagement_type_key, 1 AS mode_key,
+                           units * sign AS effective_units
+                    FROM (SELECT unnest(?::DOUBLE[]) AS units, unnest(range(13)) AS i)
+                    CROSS JOIN (VALUES (1,1),(2,-1)) s(household_key,sign)""",
+                    [values[::-1] if reverse else values])
+                sql = pipeline.render_model("fact_engagement_status_monthly_snapshot",
+                                            {"report_date": "2002-12-31", "history_months": 12})
+                connection.execute("CREATE TABLE snapshot AS " + sql)
+                self.assertEqual(connection.execute(
+                    "SELECT household_key,effective_units_count FROM snapshot ORDER BY household_key"
+                ).fetchall(), [(1, 1), (2, -1)])
+
     def test_hidden_monthly_grain_preserves_equal_projected_rows(self):
         with fixture() as connection:
             generate.prepare(connection, "base", report_date=date(2002, 12, 31))

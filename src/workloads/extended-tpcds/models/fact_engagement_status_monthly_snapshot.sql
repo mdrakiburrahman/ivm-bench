@@ -66,7 +66,7 @@ WITH latest AS (
     engagement_type_key,
     mode_key,
     COUNT(DISTINCT engagement_path) AS engagement_total_count,
-    SUM(effective_units) AS effective_units_count
+    SUM(CAST(effective_units AS DECIMAL(28,10))) AS effective_units_count
   FROM deduped
   GROUP BY
     dim_date_key,

@@ -28,7 +28,7 @@
     "Equal-valued effective-unit candidates prefer parent capacity, then engagement units, then receipt units, retaining the leading coalesced-value ranking.",
     "Equal-time parent state observations use customer_status descending, null last; inactive wins over active when timestamps tie.",
     "Nullable household joins use IS NOT DISTINCT FROM, preserving null and bag semantics while enabling DuckDB hash joins.",
-    "Monthly engagement effective-unit sums explicitly round half away from zero before integer conversion, preserving the existing DuckDB benchmark policy across engine cast differences."
+    "Monthly engagement effective-unit contributions use DECIMAL(28,10) before SUM, then round half away from zero before integer conversion. The explicit ten-digit fractional precision prevents floating-point reduction order from changing integer results at half-unit boundaries."
   ],
   "preserved": [
     "96 materialized roles and dependency graph, including logical metadata barrier",
