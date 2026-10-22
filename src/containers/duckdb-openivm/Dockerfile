@@ -4,18 +4,22 @@
 # fails at load with `GLIBC_2.38 not found`. 22.04's 2.35 is compatible.
 # lpts 13786cbd needs GCC 13 (GCC 11 fails to compile it), so pull gcc-13 from
 # the toolchain PPA and make it the default cc/c++.
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:22.04 AS toolchain
 
-RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && \
+# Apply download retries to installs as well as index updates.
+RUN printf 'Acquire::Retries "5";\nAcquire::ForceIPv4 "true";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-download-retries
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git ca-certificates python3 \
         libssl-dev software-properties-common gpg-agent && \
     add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
-    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && \
+    apt-get update && \
     apt-get install -y --no-install-recommends gcc-13 g++-13 && \
     update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+FROM toolchain AS builder
 
 WORKDIR /src
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
@@ -47,7 +51,8 @@ LABEL org.openivm.commit="${OPENIVM_COMMIT}"
 ARG DUCKDB_OPENIVM_DOCKERFILE_HASH=""
 LABEL org.openivm.duckdb.dockerfile_hash="${DUCKDB_OPENIVM_DOCKERFILE_HASH}"
 
-RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && \
+COPY --from=toolchain /etc/apt/apt.conf.d/80-download-retries /etc/apt/apt.conf.d/80-download-retries
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
