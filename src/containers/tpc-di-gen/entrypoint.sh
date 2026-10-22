@@ -5,7 +5,7 @@ trap '' PIPE
 
 DIGEN_PATH="${DIGEN_PATH:-/data/digen}"
 SCALE_FACTOR="${SCALE_FACTOR:-3}"
-DIGEN_DIR="/opt/digen"
+DIGEN_DIR="${DIGEN_DIR:-/opt/digen}"
 # Increase the native event horizon, not SF: Batch1 keeps its requested size.
 HORIZON="${DIGEN_INCREMENTAL_BATCHES:-2}"
 if [[ "${REPEATED_REFRESH:-0}" == "1" ]]; then
@@ -26,7 +26,7 @@ fi
 
 echo "=== DIGen: Generating TPC-DI data (SF=$SCALE_FACTOR) ==="
 # Generate to a local temp directory first, then copy to the output path.
-LOCAL_GEN="/tmp/digen_out"
+LOCAL_GEN="${TMPDIR:-/tmp}/digen_out"
 rm -rf "$LOCAL_GEN"
 mkdir -p "$LOCAL_GEN" "$DIGEN_PATH"
 
@@ -34,7 +34,7 @@ mkdir -p "$LOCAL_GEN" "$DIGEN_PATH"
 # Use a named pipe to keep stdin open (PDGF reads commands from stdin;
 # closing it causes "null" command errors).
 cd "$DIGEN_DIR"
-FIFO="/tmp/digen_input"
+FIFO="${TMPDIR:-/tmp}/digen_input"
 rm -f "$FIFO"
 mkfifo "$FIFO"
 
