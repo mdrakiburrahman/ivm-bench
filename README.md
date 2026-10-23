@@ -112,6 +112,104 @@ The built-in augmented sweeps map 10, 20, 30, 40, and 50 percent of the
 `smoke-augmented-daily.json` file is the focused SF3 integration test. Set
 `BENCHMARK_RUNS=2` for two repetitions per point.
 
+### Repeated percentage refreshes
+
+Set `repeated_refresh: true` in an experiment to initialize once at the
+requested `scale_factor`, then retain source and engine state across refreshes.
+`workload` selects `standard` or `databricks` (the extended TPC-DI workload).
+`refresh_count` defaults to **20**, and `refresh_pct` defaults to **1**:
+
+```json
+{"experiments": [{
+  "scale_factor": 3,
+  "repeated_refresh": true,
+  "workload": "standard",
+  "refresh_count": 20,
+  "refresh_pct": "1",
+  "engines": ["duckdb"]
+}]}
+```
+
+Each refresh inserts `ceil(current_source_rows * refresh_pct / 100)` rows.
+The denominator counts the source tables actually loaded by the engines,
+including static references; empty initial staging tables contribute zero.
+The unused raw `time` table is excluded. Percentages apply to the aggregate
+source row count, rather than independently to each table. The table mix follows
+the generated event stream. Integer row counts compound after every refresh;
+the ideal growth target is `(1 + refresh_pct / 100)^refresh_count`.
+
+Generation runs before engine initialization. It measures the initial workload
+and available reservoir, then increases PDGF's native incremental horizon until
+the actual reservoir covers every compounded budget. The scale factor and
+initial table counts stay fixed. Extended mode first consumes the existing
+historical daily event window, then native future events if needed. Native customer/account CDC sequence IDs are mapped to the native day's clock
+for the CRM models; the original sequence controls stream cuts. Extended fact
+adapters likewise receive event timestamps in their CDC fields.
+The generator's date-reference horizon limits native extension to 1200 days;
+requests beyond that bound fail explicitly.
+
+Cuts may fall inside a native day. Within a day, customer/account events precede
+trades, and trades precede holdings; events within each source retain sequence
+order. Each generated event is consumed at most once, with its original keys
+and relationships. Static references receive no inserts. Batch 1 is the initial
+load; batches 2 through `refresh_count + 1` are the refreshes. Legacy batch
+percentage/day knobs are replaced by this mode's row budgets; mutation knobs
+must remain zero. With `repeated_refresh` omitted, the existing three-batch
+behavior is unchanged.
+
+Repeated Databricks runs partition `fact_market_history` by `sk_date_id`.
+Its SF10 output has 190 million rows and otherwise occupies one highly
+compressed file; date partitions spread that materialization across smaller
+files. The query, row multiplicities, and selected refresh policy are preserved.
+The partition layout appears in the dbt manifest and materialized-view DDL.
+
+If a Databricks refresh fails with an executor OOM and its latest failed
+pipeline update explicitly announces `WILL_SCALE_UP`, the harness retries the
+refresh on the same materialized views. Databricks uses larger workers for
+the next ad-hoc update ([vertical autoscaling documentation](https://docs.databricks.com/aws/en/ldp/auto-scaling)).
+The source batch is appended once; retry attempts and backoff remain inside
+the reported refresh duration. Failed attempts and pipeline events are saved.
+Recovery uses the existing retry limit (two retries by default), excludes
+initialization, and does not retry SQL errors or OOM without scaling evidence.
+
+`refresh-plan.json` records generator sizing and initial, before, inserted, and
+resulting counts for every source table and round. The server logs these counts
+and archives them in `source-row-counts.json`; `results.csv` includes every
+refresh and its before/after source totals. In repeated mode, `source_rows`
+counts the rows actually loaded, including the separately stored audit table;
+`generated_source_rows` and `generated_batches` retain the physical file counts,
+including unused initial tables. The initial resulting total therefore matches
+the first refresh's before total. Legacy row-count reporting is unchanged.
+The SF10 DuckDB OpenIVM preset, `sf10-repeated-refresh-duckdb-openivm.json`,
+contains both workloads as separate experiments sharing one baseline.
+
+#### Concurrency and resource settings
+
+Model concurrency is distinct from execution threads within an engine:
+
+| Engine | Default model concurrency | Execution resources |
+| --- | ---: | --- |
+| Spark / Spark OpenIVM | 30 | Local Spark uses `local[*]`; default shuffle partitions and parallelism are 16. |
+| Fabric / Fabric OpenIVM | 30 | Remote Fabric Spark; local container limits describe the orchestration client. |
+| Databricks Enzyme | 8 | Managed Databricks compute; local container limits describe the orchestration client. |
+| DuckDB / DuckDB OpenIVM | Serial model execution | SQL threads use the allocated CPU count; engine memory is capped at 80% of the container allocation. |
+| Feldera | 1 | 12 execution workers; maximum RSS is 95% of the container allocation. |
+
+`spark_tunables.dbt_threads` caps only Spark/Fabric model concurrency. The SF10
+all-engine repeated preset and the existing augmented/sweep presets set it to
+4; `full.json` sets it to 4 at SF100. These limits do not change Enzyme's default.
+Use the separate optional `databricks_dbt_threads` experiment field to override
+Enzyme concurrency, for example `"databricks_dbt_threads": 1` for diagnostics.
+The overrides are recorded separately in `results.csv`; blank means the engine
+default. The focused Enzyme verification preset inherits 8; its diagnostic
+preset explicitly requests 1 and labels that restriction.
+
+Serial local-engine runs receive the available host allocation; parallel runs
+divide it among engines. Spark and Feldera reserve part of their allocation for
+the dbt client. Cloud CPU totals are not inferred from local container limits.
+Repeated-refresh experiments are opt-in: normal GCI selection continues to use
+the existing three-batch benchmark.
+
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden
 intermediate state required by the engine (for example Feldera DBSP storage or

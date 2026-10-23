@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Simulate PDGF completion and failures without running the real generator."""
+
+import os
+from pathlib import Path
+import sys
+import time
+
+sys.stdin.readline()
+sys.stdin.readline()
+assert sys.argv[sys.argv.index("-workers") + 1] == "1"
+
+if os.environ.get("FAKE_CONFIG_ERROR") == "1":
+    print(
+        "pdgf.common.util.xml.XmlException: Error description: 'minUpdateSize' "
+        "is '2' but must be between [3, 2147483647]",
+        flush=True,
+    )
+    while True:
+        time.sleep(0.1)
+
+output = Path(sys.argv[sys.argv.index("-o") + 1].strip("'"))
+batch = output / "Batch1"
+batch.mkdir(parents=True, exist_ok=True)
+(batch / "Date.txt").write_text("partial reference data")
+
+if os.environ.get("FAKE_CRASH") == "1":
+    print('Exception in thread "HouseKeeper" java.lang.IllegalArgumentException', flush=True)
+    # A failed background worker can leave the main process alive.
+    while True:
+        time.sleep(0.1)
+
+(batch / "TradeType.txt").write_text("complete reference data")
+print("generation finished", flush=True)

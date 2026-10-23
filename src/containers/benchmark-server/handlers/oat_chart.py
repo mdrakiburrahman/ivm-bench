@@ -51,7 +51,6 @@ from services import oat_runner
 bp = Blueprint("oat_chart", __name__)
 
 _MISSING = "—"
-_BATCHES = (1, 2, 3)
 _ENGINE_ORDER = ("spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35")
 
 
@@ -159,6 +158,20 @@ def _flat_inputs(exp: Dict[str, Any]) -> Dict[str, Any]:
     return _input_model(exp).flat_values()
 
 
+def _batch_numbers(experiments: Sequence[Dict[str, Any]]) -> List[int]:
+    batches = set()
+    for exp in experiments:
+        # Include expected rounds even when an experiment failed or was skipped.
+        batches.update(range(1, _input_model(exp).batch_count + 1))
+        # Older artifacts may retain results without the original input knobs.
+        engines = exp.get("engines")
+        for engine in engines.values() if isinstance(engines, dict) else []:
+            for position, batch in enumerate(engine.get("batches") or [], start=1):
+                if isinstance(batch, dict):
+                    batches.add(int(batch.get("batch_num", position)))
+    return sorted(batches) if batches else [1, 2, 3]
+
+
 def _scale_factor(exp: Dict[str, Any]) -> Any:
     if exp.get("scale_factor") is not None:
         return exp.get("scale_factor")
@@ -264,7 +277,8 @@ def _batch_duration(exp: Dict[str, Any], engine: str, batch: int) -> Optional[fl
             item_batch = None
         if item_batch == batch:
             return _numeric(item.get("duration_s"))
-    if 0 <= batch - 1 < len(batches) and isinstance(batches[batch - 1], dict):
+    if (0 <= batch - 1 < len(batches) and isinstance(batches[batch - 1], dict)
+            and "batch_num" not in batches[batch - 1]):
         return _numeric(batches[batch - 1].get("duration_s"))
     return None
 
@@ -361,8 +375,9 @@ def _aggregate_columns(experiments: Sequence[Dict[str, Any]], engines: Sequence[
                 text_only=key == "engines",
             )
         )
+    batches = _batch_numbers(experiments)
     for engine in engines:
-        for batch in _BATCHES:
+        for batch in batches:
             key = f"{engine}.b{batch}"
             columns.append(_Column(key, key, f"{engine} batch {batch} wall-clock seconds", "OUTPUT", heatmap=True))
     columns.append(
@@ -544,10 +559,8 @@ def _dbt_run_path(exp: Dict[str, Any], engine: str, batch: int, state_dir: str) 
         if isinstance(engine_files, str):
             engine_files = [engine_files]
         for raw in engine_files:
-            if f"batch{batch}" in os.path.basename(str(raw)):
+            if os.path.basename(str(raw)).endswith(f"-batch{batch}.json"):
                 return _resolve_relative(str(raw), state_dir)
-        if 0 <= batch - 1 < len(engine_files):
-            return _resolve_relative(str(engine_files[batch - 1]), state_dir)
 
     sf = str(_scale_factor(exp))
     fallback = os.path.join("mount", "results", sf, "dbt-server", f"run-{engine}-batch{batch}.json")
@@ -633,7 +646,8 @@ def generate_oat_per_model_png(oat_run_id: str, state_dir: str = "/data/state") 
     batch_values: Dict[int, Dict[str, Dict[str, Optional[float]]]] = {}
     model_names: Dict[str, str] = {}
     model_union: Dict[int, List[str]] = {}
-    for batch in _BATCHES:
+    batches = _batch_numbers(experiments)
+    for batch in batches:
         per_exp: Dict[str, Dict[str, Optional[float]]] = {}
         models = set()
         for idx, exp in enumerate(experiments):
@@ -655,8 +669,8 @@ def generate_oat_per_model_png(oat_run_id: str, state_dir: str = "/data/state") 
 
     fig_w = max(8.0, 3.0 + 0.85 * len(experiments))
     subplot_h = max(2.2, 0.22 * max_rows + 1.0)
-    fig_h = subplot_h * 3 + 1.25
-    fig, axes_raw = plt.subplots(3, 1, figsize=(fig_w, fig_h), dpi=120)
+    fig_h = subplot_h * len(batches) + 1.25
+    fig, axes_raw = plt.subplots(len(batches), 1, figsize=(fig_w, fig_h), dpi=120)
     try:
         axes = list(axes_raw.flat)
     except AttributeError:
@@ -665,7 +679,7 @@ def generate_oat_per_model_png(oat_run_id: str, state_dir: str = "/data/state") 
     cmap = plt.get_cmap("bwr")
     norm = Normalize(vmin=-3, vmax=3)
 
-    for ax, batch in zip(axes, _BATCHES):
+    for ax, batch in zip(axes, batches):
         rows = model_union[batch]
         ax.set_title(f"batch {batch}: log₂(openivm / spark)", fontsize=11, pad=8)
         ax.set_xlim(0, max(1, len(experiments)))
@@ -718,8 +732,8 @@ def _md_escape(value: Any) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def _engine_batch_header(engines: Sequence[str]) -> List[str]:
-    return [f"{engine} b{batch}" for engine in engines for batch in _BATCHES]
+def _engine_batch_header(engines: Sequence[str], batches: Sequence[int]) -> List[str]:
+    return [f"{engine} b{batch}" for engine in engines for batch in batches]
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
@@ -785,6 +799,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     state = _load_oat_state(oat_run_id, state_dir)
     experiments = _sort_experiments(state)
     engines = _engine_union(experiments)
+    batches = _batch_numbers(experiments)
 
     lines: List[str] = [f"# OAT sweep results — {oat_run_id}", ""]
     lines.extend(
@@ -821,12 +836,12 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     )
     lines.extend(["", "## Per-engine timing (aggregate)", ""])
 
-    timing_headers = ["#", "label", "SF"] + _engine_batch_header(engines)
+    timing_headers = ["#", "label", "SF"] + _engine_batch_header(engines, batches)
     timing_rows = []
     for idx, exp in enumerate(experiments):
         row: List[Any] = [_exp_idx(exp, idx), _exp_label(exp, idx), _scale_factor(exp)]
         for engine in engines:
-            for batch in _BATCHES:
+            for batch in batches:
                 row.append(_format_duration(_batch_duration(exp, engine, batch), compact=True))
         timing_rows.append(row)
     lines.append(_markdown_table(timing_headers, timing_rows))
@@ -835,7 +850,7 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     storage_rows = []
     for idx, exp in enumerate(experiments):
         for engine in _engine_names_for_exp(exp):
-            for batch in _BATCHES:
+            for batch in _batch_numbers([exp]):
                 summary = _storage_summary(exp, engine, batch)
                 if not summary:
                     storage_rows.append([
@@ -886,11 +901,13 @@ def generate_oat_results_md(oat_run_id: str, state_dir: str = "/data/state") -> 
     ratio_rows = []
     for idx, exp in enumerate(experiments):
         row = [_exp_idx(exp, idx), _exp_label(exp, idx), _scale_factor(exp)]
-        for batch in _BATCHES:
+        for batch in batches:
             ratio = _batch_ratio(exp, batch)
             row.append(_MISSING if ratio is None else f"{ratio:.2f}")
         ratio_rows.append(row)
-    lines.append(_markdown_table(["#", "label", "SF", "b1 ratio", "b2 ratio", "b3 ratio"], ratio_rows))
+    lines.append(_markdown_table(
+        ["#", "label", "SF"] + [f"b{batch} ratio" for batch in batches], ratio_rows,
+    ))
 
     lines.extend(
         [

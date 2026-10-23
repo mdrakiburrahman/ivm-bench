@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from models.refresh import refresh_batch_count, refresh_env, validate_refresh
+
 
 @dataclass
 class ResourceAllocation:
@@ -149,6 +151,10 @@ class BenchmarkConfig:
     """Top-level benchmark configuration."""
     scale_factor: int = 3
     benchmark_runs: int = 1
+    repeated_refresh: bool = False
+    workload: str = "standard"
+    refresh_count: int = 20
+    refresh_pct: str = "1"
     batch_2_days: int = 0
     batch_1_pct: str = "1"
     batch_2_pct: str = "0.001"
@@ -177,14 +183,20 @@ class BenchmarkConfig:
     repo_dir: str = "/repo"
 
     def __post_init__(self):
+        validate_refresh(self)
         self.benchmark_runs = max(1, int(self.benchmark_runs))
         self.batch_2_days = int(self.batch_2_days)
         if self.batch_2_days < 0 or self.batch_2_days > 364:
             raise ValueError("batch_2_days must be between 0 and 364")
 
+    @property
+    def batch_count(self) -> int:
+        return refresh_batch_count(self.repeated_refresh, self.refresh_count)
+
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
         return {
+            **refresh_env(self),
             "SCALE_FACTOR": str(self.scale_factor),
             "BENCHMARK_RUNS": str(self.benchmark_runs),
             "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),

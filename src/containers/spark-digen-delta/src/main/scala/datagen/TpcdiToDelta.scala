@@ -76,11 +76,18 @@ object TpcdiToDelta {
     new File(path).exists()
 
   def main(args: Array[String]): Unit = {
-    val digenPath = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
+    val repeated = sys.env.getOrElse("REPEATED_REFRESH", "0") == "1"
+    val horizon = sys.env.getOrElse("DIGEN_INCREMENTAL_BATCHES", "2").toInt
+    val digenRoot = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
+    val digenPath = if (repeated) s"$digenRoot/horizon-$horizon" else digenRoot
     val deltaPath = sys.env.getOrElse("DELTA_PATH", "/data/delta")
-    val batch2Days = sys.env.getOrElse("TPCDI_BATCH_2_DAYS", "0").toInt
+    val workload = sys.env.getOrElse("TPCDI_WORKLOAD", "standard")
+    require(!repeated || Set("standard", "databricks")(workload), "TPCDI_WORKLOAD must be standard or databricks")
+    val batch2Days = if (repeated) { if (workload == "databricks") 1 else 0 }
+      else sys.env.getOrElse("TPCDI_BATCH_2_DAYS", "0").toInt
     require(batch2Days >= 0 && batch2Days <= 364, "TPCDI_BATCH_2_DAYS must be between 0 and 364")
-    val augmented = batch2Days > 0
+    val augmented = if (repeated) workload == "databricks"
+      else batch2Days > 0
     if (augmented) {
       println(
         s"=== Databricks-style augmented window: Batch 2 $AugmentedStart until " +
@@ -96,7 +103,7 @@ object TpcdiToDelta {
         .getOrElse(sys.error(s"BATCH_${batch}_INSERT_PCT or BATCH_${batch}_PCT env var required"))
         .toDouble
 
-    val batchPct = if (augmented) Map(1 -> 100.0, 2 -> 100.0, 3 -> 100.0) else Map(
+    val batchPct = if (augmented || repeated) Map(1 -> 100.0, 2 -> 100.0, 3 -> 100.0) else Map(
       1 -> insertPct(1),
       2 -> insertPct(2),
       3 -> insertPct(3),
@@ -113,8 +120,19 @@ object TpcdiToDelta {
       .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
       .getOrCreate()
 
+    val refresh = if (repeated) Some(new RepeatedRefresh(
+      spark, deltaPath, augmented, horizon,
+      sys.env.getOrElse("REFRESH_COUNT", "20").toInt,
+      BigDecimal(sys.env.getOrElse("REFRESH_PCT", "1")),
+    )) else None
+
     def augmentedBatch(df: DataFrame, eventColumn: String, batch: Int): DataFrame = {
       require(batch >= 1 && batch <= 3, "batch must be 1, 2, or 3")
+      if (repeated && batch > 1) {
+        // All remaining historical events, including the full extended window.
+        val rows = df.filter(to_date(col(eventColumn)) >= lit(AugmentedStart.toString).cast(DateType))
+        return if (batch == 2) rows else rows.limit(0)
+      }
       val eventDate = to_date(col(eventColumn))
       val start = lit(AugmentedStart.toString).cast(DateType)
       val end = lit(AugmentedEnd(batch2Days).toString).cast(DateType)
@@ -138,7 +156,9 @@ object TpcdiToDelta {
     }
 
     def writeDelta(df: DataFrame, outPath: String, label: String, batch: Int): Unit = {
-      if (deltaExists(outPath)) {
+      if (repeated) {
+        refresh.get.add(df, label.split("/").last, batch)
+      } else if (deltaExists(outPath)) {
         println(s"  SKIP: $label — Delta table already exists")
         skipped += 1
       } else {
@@ -167,6 +187,7 @@ object TpcdiToDelta {
         val label = s"batch$outputBatch/$table"
         writeDelta(readCsv(path, schema, delimiter), s"$deltaPath/batch$outputBatch/$table", label, outputBatch)
       } else {
+        require(!repeated || outputBatch == 1, s"missing generated source: $path")
         println(s"  WARN: Source not found: $path")
       }
     }
@@ -269,7 +290,7 @@ object TpcdiToDelta {
       .add("batchdate", DateType)
 
     if (!augmented) {
-      for (b <- 1 to 3)
+      for (b <- 1 to (if (repeated) horizon + 1 else 3))
         writeSource(b, "BatchDate.txt", batchDateSchema, "batch_date")
     } else {
       println("  SKIP: BatchDate is not part of the Databricks augmented workload")
@@ -499,8 +520,13 @@ object TpcdiToDelta {
         writeDelta(trades, s"$deltaPath/batch$b/trade", s"batch$b/trade", b)
       }
     } else {
-      for (b <- 2 to 3; (file, schema, table) <- incrTxn)
+      for (b <- 2 to (if (repeated) horizon + 1 else 3); (file, schema, table) <- incrTxn)
         writeSource(b, file, schema, table)
+    }
+
+    if (repeated && augmented) {
+      for (b <- 2 to horizon + 1; (file, schema, table) <- incrTxn)
+        refresh.get.addNative(readCsv(s"$digenPath/Batch$b/$file", schema), table, b)
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -593,7 +619,7 @@ object TpcdiToDelta {
         writeDelta(rows, s"$deltaPath/batch$b/customer", s"batch$b/customer", b)
       }
     } else {
-      for (b <- 1 to 3)
+      for (b <- 1 to (if (repeated) horizon + 1 else 3))
         writeSource(b, "Customer.txt", customerSchema, "customer")
     }
 
@@ -639,8 +665,15 @@ object TpcdiToDelta {
         writeDelta(rows, s"$deltaPath/batch$b/account", s"batch$b/account", b)
       }
     } else {
-      for (b <- 1 to 3)
+      for (b <- 1 to (if (repeated) horizon + 1 else 3))
         writeSource(b, "Account.txt", accountSchema, "account")
+    }
+
+    if (repeated && augmented) {
+      for (b <- 2 to horizon + 1) {
+        refresh.get.addNative(readCsv(s"$digenPath/Batch$b/Customer.txt", customerSchema), "customer", b)
+        refresh.get.addNative(readCsv(s"$digenPath/Batch$b/Account.txt", accountSchema), "account", b)
+      }
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -672,7 +705,7 @@ object TpcdiToDelta {
       .add("numbercreditcards", IntegerType)
       .add("networth", IntegerType)
 
-    for (b <- 1 to 3 if batch2Days == 0 || b == 1)
+    for (b <- 1 to (if (repeated && !augmented) horizon + 1 else 3) if !augmented || b == 1)
       writeSource(b, "Prospect.csv", prospectSchema, "prospect", ",")
 
     // ════════════════════════════════════════════════════════════════════════
@@ -763,6 +796,7 @@ object TpcdiToDelta {
     // ════════════════════════════════════════════════════════════════════════
     println(s"=== Complete: $written tables written, $skipped tables skipped (already existed) ===")
 
+    refresh.foreach(_.write())
     spark.stop()
   }
 }
