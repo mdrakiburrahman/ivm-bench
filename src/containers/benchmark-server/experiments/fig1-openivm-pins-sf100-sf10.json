@@ -1,0 +1,63 @@
+{
+  "_design_notes": [
+    "TPC-DI Fig. 1 settings: one repetition, inserts 100/1/0.01, no synthetic updates/deletes, serial execution and four Spark dbt threads.",
+    "SF100 runs both OpenIVM engines; only Spark validates there (the harness digest comparison after each timed batch).",
+    "A separate SF10 DuckDB run uses exact post-batch validation. Validation is outside timed maintenance.",
+    "Native DuckDB integrates OpenIVM PRs #119 and #141 plus the shared row-repetition cleanup. Spark uses the immutable native/LPTS revisions in its own pins.env."
+  ],
+  "baseline": {
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "spark-openivm",
+      "duckdb-openivm"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "spark_tunables": {
+      "dbt_threads": 4
+    },
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "fig1-sf100-spark-openivm-validate",
+      "scale_factor": 100,
+      "engines": [
+        "spark-openivm"
+      ],
+      "feature_flags": {
+        "openivm_validate": true
+      }
+    },
+    {
+      "label": "fig1-sf100-duckdb-openivm",
+      "scale_factor": 100,
+      "engines": [
+        "duckdb-openivm"
+      ]
+    },
+    {
+      "label": "fig1-sf10-duckdb-openivm-validate",
+      "scale_factor": 10,
+      "engines": [
+        "duckdb-openivm"
+      ],
+      "feature_flags": {
+        "openivm_validate": true
+      }
+    }
+  ]
+}
