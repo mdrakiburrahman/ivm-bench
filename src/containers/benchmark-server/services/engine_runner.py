@@ -182,6 +182,9 @@ class EngineRunner:
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
+        if engine_config.name == "databricks-openivm":
+            # Enzyme and OpenIVM may run together in one experiment wave.
+            engine_env["DATABRICKS_EXPERIMENT_ID"] = str(time.time_ns() // 1000)
 
         if engine_config.staging_dir and engine_config.staging_dir != "staging":
             # Parallel mode: create compose overrides for staging isolation
@@ -605,7 +608,7 @@ class EngineRunner:
 
         No-op for any other engine.
         """
-        if self._engine.name != "databricks-enzyme":
+        if self._engine.name not in ("databricks-enzyme", "databricks-openivm"):
             return
         try:
             resp = requests.post(
@@ -824,7 +827,7 @@ class EngineRunner:
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
 
-            if name == "databricks-enzyme":
+            if name in ("databricks-enzyme", "databricks-openivm"):
                 self._databricks_enzyme_warmup(batch_num)
 
             if not is_cloud_engine(name) and name != "feldera":
@@ -850,6 +853,8 @@ class EngineRunner:
                 run_id = self._run_spark_openivm(batch_num)
             elif name == "databricks-enzyme":
                 run_id = self._run_databricks_enzyme(batch_num)
+            elif name == "databricks-openivm":
+                run_id = self._run_databricks_openivm(batch_num)
             elif name in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
                 run_id = self._run_fabric(batch_num)
             else:
@@ -886,6 +891,19 @@ class EngineRunner:
                         self._export_spark_openivm_profile(run_id, batch_num)
                     if os.environ.get("OPENIVM_QUERY_LOG", "0") == "1":
                         self._export_spark_openivm_query_log(run_id, batch_num)
+
+            if name == "databricks-openivm" and run_id and batch.status != "failed":
+                try:
+                    resp = requests.post(f"{self._dbt_url}/metrics/databricks-openivm/{batch_num}", timeout=300)
+                    resp.raise_for_status()
+                    batch.extra["databricks_photon_metrics"] = resp.json()
+                except Exception as exc:
+                    batch.extra["databricks_photon_metrics"] = {"status": "unavailable", "error": str(exc)}
+                if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
+                    resp = requests.post(f"{self._dbt_url}/validate/databricks-openivm/{batch_num}", timeout=7200)
+                    resp.raise_for_status()
+                    if resp.json().get("status") != "ok":
+                        raise RuntimeError("Databricks OpenIVM correctness validation failed")
 
             if (
                 name in ("databricks-enzyme", "spark", "spark-openivm")
@@ -1502,6 +1520,25 @@ class EngineRunner:
             f"[databricks-enzyme] EXPLAIN artifacts written: "
             f"{base_dir} ({len(plans)} models)"
         )
+
+    def _run_databricks_openivm(self, batch_num: int) -> str:
+        """Load sources once, append once per round, then run generated SQL."""
+        sf = self._config.scale_factor
+        paths = (["cleanup-schema", f"init/{sf}"] if batch_num == 1
+                 else [f"append/{batch_num}/{sf}"])
+        for path in paths:
+            response = requests.post(f"{self._dbt_url}/sources/databricks-enzyme/{path}", timeout=7200)
+            response.raise_for_status()
+            if response.json().get("status") != "ok":
+                raise RuntimeError(f"Databricks OpenIVM source operation failed: {path}")
+        response = requests.post(f"{self._dbt_url}/run/databricks-openivm",
+                                 json={"scale_factor": sf, "full_refresh": batch_num == 1, "batch_num": batch_num}, timeout=30)
+        response.raise_for_status()
+        run_id = response.json()["run_id"]
+        self._stream_dbt_progress(run_id, batch_num)
+        self._check_run_result(run_id, batch_num)
+        self._save_run_result(run_id, batch_num)
+        return run_id
 
     def _run_databricks_enzyme(self, batch_num: int) -> str:
         """Run databricks-enzyme: per-batch source sync, then dbt build.
@@ -2967,7 +3004,7 @@ class EngineRunner:
         self, name: str, batch_num: int, batch, out_path: str
     ) -> None:
         try:
-            default_timeout = 1820 if name == "databricks-enzyme" else 110
+            default_timeout = 1820 if name in ("databricks-enzyme", "databricks-openivm") else 110
             configured_timeout = os.environ.get(
                 "STORAGE_COLLECTION_TIMEOUT_S", ""
             ).strip()
