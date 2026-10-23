@@ -115,7 +115,32 @@ permissions:
   contents: read
 
 jobs:
+  adapter-tests:
+    runs-on: ubuntu-latest
+    container: python:3.11-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the OpenIVM adapter's declared dependencies
+        run: pip install ./src/containers/dbt-server/adapters/dbt-duckdb-openivm
+      - name: Verify CLI phase observation and retry safety
+        run: |
+          python -c 'from dbt.adapters.openivm import connections'
+          python -m unittest discover -s src/containers/dbt-server/tests -p 'test_openivm_cli*.py' -v
+          python -m unittest discover -s src/containers/benchmark-server/tests -p test_fig1_attribution.py -v
+
+  source-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require both immutable Spark sources to pass correctness CI
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BENCHMARK_EXPERIMENTS_FILE: src/containers/benchmark-server/experiments/fig1-attribution.json
+        run: python3 tools/scripts/benchmarks/fig1_attribution.py --check-gates
+
   benchmark:
+    needs: [adapter-tests, source-gates]
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
@@ -259,8 +284,8 @@ jobs:
           chmod 600 "$GITHUB_WORKSPACE/.env"
           echo "Wrote $(wc -c < "$GITHUB_WORKSPACE/.env") bytes to .env"
 
-      - name: "🏁 Run benchmark"
-        run: bash src/.scripts/benchmark.sh
+      - name: "🏁 Run paired attribution benchmark"
+        run: python3 tools/scripts/benchmarks/fig1_attribution.py
 
       - name: "💬 Post PR comment"
         if: github.event_name == 'pull_request' && !cancelled()

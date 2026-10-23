@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 import agate
 from dbt.adapters.contracts.connection import AdapterResponse, Connection, ConnectionState
 from dbt.adapters.sql import SQLConnectionManager
+from dbt.adapters.openivm.cli_process import run_profiled_cli
 from dbt_common.exceptions import DbtDatabaseError
 
 logger = logging.getLogger(__name__)
@@ -76,18 +77,27 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     token = uuid.uuid4().hex
     started_marker = f"OPENIVM_SQL_STARTED_{token}"
     finished_marker = f"OPENIVM_SQL_FINISHED_{token}"
+    ready_marker = f"OPENIVM_CLI_READY_{token}"
     program = f"{preamble}.print {started_marker}\n{sql}\n;\n.print {finished_marker}\n"
+    if PROFILE_REFRESH:
+        # DuckDB flushes output before reading each next input line, so these
+        # observer timestamps bound startup, setup, SQL, and process teardown.
+        program = f".print {ready_marker}\n" + program
     for attempt in range(MAX_RETRIES + 1):
-        cli_started = time.monotonic()
-        proc = subprocess.run(
-            [OPENIVM_BIN, db_file],
-            input=program,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=3600,
-        )
-        cli_wall = time.monotonic() - cli_started
+        offsets = {}
+        if PROFILE_REFRESH:
+            proc, cli_wall, offsets = run_profiled_cli(
+                [OPENIVM_BIN, db_file], program,
+                {"ready_offset_s": ready_marker, "sql_started_offset_s": started_marker,
+                 "sql_finished_offset_s": finished_marker}, timeout=3600,
+            )
+        else:
+            cli_started = time.monotonic()
+            proc = subprocess.run(
+                [OPENIVM_BIN, db_file], input=program, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=3600,
+            )
+            cli_wall = time.monotonic() - cli_started
         lines = (proc.stdout or "").splitlines(keepends=True)
         if PROFILE_REFRESH:
             setup_seconds = sql_seconds = 0.0
@@ -111,12 +121,16 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
                     csv.writer(trace).writerow([
                         time.time(), sql[:200], attempt, proc.returncode, cli_wall,
                         setup_seconds, sql_seconds, cli_wall - setup_seconds - sql_seconds,
+                        *[offsets.get(key) for key in (
+                            "spawn_return_offset_s", "first_response_offset_s", "ready_offset_s",
+                            "sql_started_offset_s", "sql_finished_offset_s", "exit_offset_s",
+                        )],
                     ])
             except OSError as error:
                 logger.warning("Could not record OpenIVM CLI timings: %s", error)
         sql_started = any(line.strip() == started_marker for line in lines)
         sql_finished = any(line.strip() == finished_marker for line in lines)
-        output = "".join(line for line in lines if line.strip() not in (started_marker, finished_marker))
+        output = "".join(line for line in lines if line.strip() not in (ready_marker, started_marker, finished_marker))
         if proc.returncode == 0 and sql_started and sql_finished:
             return output
 

@@ -1,0 +1,56 @@
+{
+  "_design_notes": [
+    "Paired Figure 1 attribution: same worker, fresh engine state per repetition, A-B-B-A order per engine.",
+    "Spark A/B differs only in the restored global-window single-write optimization; both carry identical whole-command instrumentation.",
+    "Native A is pre-PR119 main; B includes PR119 and PR141. Both first validate at SF10, then time SF100 without native validation.",
+    "Spark SF100 validation, profiles, query logs, Spark metrics and storage collection are identical in every paired repetition."
+  ],
+  "_attribution": {
+    "spark_control": "2720971b99c812ec3f504d8a7e3733232e7de6e4",
+    "spark_treatment": "12607f4dfb854a1525312963568e63e718806824",
+    "spark_native": "13b30d9b1d35e88599b22c5e3684d0b405f6d3ad",
+    "native_control": "9b404c0e15cc851058e5b872b560cf802b765749",
+    "native_treatment": "4a71959694ff18e239fb249d188218ed5f5c04ff",
+    "correctness_gates": [
+      {
+        "run_id": 39966425609,
+        "sha": "2720971b99c812ec3f504d8a7e3733232e7de6e4"
+      },
+      {
+        "run_id": 39976188047,
+        "sha": "12607f4dfb854a1525312963568e63e718806824"
+      }
+    ]
+  },
+  "baseline": {
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "spark-openivm"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "spark_tunables": {
+      "dbt_threads": 4
+    },
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "paired-controller-template",
+      "scale_factor": 100
+    }
+  ]
+}

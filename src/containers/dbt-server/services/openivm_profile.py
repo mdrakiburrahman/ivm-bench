@@ -106,7 +106,11 @@ def export_profile(run_id: str, batch_num: int) -> dict:
         )
 
         cli_path = TEMP_DIR / "cli-timings.csv"
-        cli_timings = "timestamp_s,sql,attempt,returncode,wall_s,setup_sql_s,operation_sql_s,outside_sql_s\n"
+        cli_timings = (
+            "timestamp_s,sql,attempt,returncode,wall_s,setup_sql_s,operation_sql_s,outside_sql_s,"
+            "spawn_return_offset_s,first_response_offset_s,ready_offset_s,sql_started_offset_s,"
+            "sql_finished_offset_s,exit_offset_s\n"
+        )
         if cli_path.exists():
             cli_timings += cli_path.read_text()
         profile_csv = profile_path.read_text()
