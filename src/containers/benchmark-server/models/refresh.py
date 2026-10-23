@@ -3,6 +3,19 @@
 from decimal import Decimal, InvalidOperation
 
 
+def refresh_batch_count(repeated_refresh: bool, refresh_count: int = 20) -> int:
+    return int(refresh_count) + 1 if repeated_refresh else 3
+
+
+def refresh_env(config):
+    return {
+        "REPEATED_REFRESH": "1" if config.repeated_refresh else "0",
+        "TPCDI_WORKLOAD": config.workload,
+        "REFRESH_COUNT": str(config.refresh_count),
+        "REFRESH_PCT": str(config.refresh_pct),
+    }
+
+
 def validate_refresh(config):
     if config.workload not in {"standard", "databricks"}:
         raise ValueError("workload must be standard or databricks")

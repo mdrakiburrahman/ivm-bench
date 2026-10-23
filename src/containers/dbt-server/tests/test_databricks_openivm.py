@@ -40,10 +40,38 @@ class DatabricksOpenivmTest(unittest.TestCase):
 
     def test_compiler_remaps_quoted_uc_refs_to_plain_schema_names(self):
         result = backend.remap_sql("SELECT 'cat.exp.events' AS text, id FROM `cat`.`exp`.`events`",
-                                   {"cat.exp.events": "openivm_compile.events"}, quote_targets=False)
+                                   {"cat.exp.events": "openivm_compile.events"}, for_compiler=True)
         self.assertIn("FROM openivm_compile.events", result)
         self.assertNotIn("`", result)
         self.assertIn("'cat.exp.events'", result)
+
+    def test_compiler_preserves_window_null_treatment_in_bridge_syntax(self):
+        import duckdb
+
+        connection = duckdb.connect()
+        self.addCleanup(connection.close)
+        connection.execute("CREATE SCHEMA openivm_compile")
+        connection.execute("CREATE TABLE openivm_compile.events (id INT, value INT)")
+        connection.execute("INSERT INTO openivm_compile.events VALUES (1, NULL), (2, 7), (3, NULL)")
+        for function in ("FIRST_VALUE", "LAST_VALUE"):
+            for treatment in ("IGNORE", "RESPECT"):
+                with self.subTest(function=function, treatment=treatment):
+                    query = (f"SELECT id, {function}(value) {treatment} NULLS OVER "
+                             "(ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS result "
+                             "FROM cat.exp.events ORDER BY id")
+                    compiled = backend.remap_sql(query, {"cat.exp.events": "openivm_compile.events"}, for_compiler=True)
+                    arguments = "value, TRUE" if treatment == "IGNORE" else "value"
+                    self.assertIn(f"{function}({arguments})", compiled)
+                    self.assertNotIn(f") {treatment} NULLS", compiled)
+                    # The bridge translates this boolean form to DuckDB's native modifier.
+                    duck_sql = sqlglot.transpile(compiled, read="spark", write="duckdb")[0]
+                    expected = {
+                        ("FIRST_VALUE", "IGNORE"): [(1, None), (2, 7), (3, 7)],
+                        ("FIRST_VALUE", "RESPECT"): [(1, None), (2, None), (3, None)],
+                        ("LAST_VALUE", "IGNORE"): [(1, None), (2, 7), (3, 7)],
+                        ("LAST_VALUE", "RESPECT"): [(1, None), (2, 7), (3, None)],
+                    }
+                    self.assertEqual(connection.execute(duck_sql).fetchall(), expected[function, treatment])
 
     @patch.object(backend.requests, "post")
     def test_native_compiler_error_body_reaches_run_failure(self, post):

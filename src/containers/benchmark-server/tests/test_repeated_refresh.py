@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -14,13 +15,66 @@ from models.config import BenchmarkConfig
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BatchResult, EngineResult
 from services.engine_runner import EngineRunner
-from services.oat_runner import generate_results_csv
+from services.oat_runner import apply_experiment_env, generate_results_csv
 from services.source_row_counts import collect_source_row_counts
 from services.orchestrator import Orchestrator
 from services.resource_calc import compute_engine_configs
 
 
 class RepeatedRefreshTest(unittest.TestCase):
+    def test_thread_overrides_are_independent_and_do_not_leak_between_experiments(self):
+        inputs = ExperimentInputs.from_dict({
+            "databricks_dbt_threads": 2, "spark_tunables": {"dbt_threads": 4},
+        })
+        self.assertEqual(ExperimentInputs.from_dict(inputs.to_dict()), inputs)
+        with patch.dict(os.environ, {}, clear=True):
+            apply_experiment_env(inputs)
+            self.assertEqual(os.environ["DATABRICKS_DBT_THREADS"], "2")
+            self.assertEqual(os.environ["SPARK_DBT_THREADS"], "4")
+            apply_experiment_env(ExperimentInputs())
+            self.assertNotIn("DATABRICKS_DBT_THREADS", os.environ)
+            self.assertNotIn("SPARK_DBT_THREADS", os.environ)
+        rows = list(csv.DictReader(io.StringIO(generate_results_csv({"experiments": [{
+            "inputs": inputs.to_dict(),
+        }]}))))
+        self.assertEqual(rows[0]["databricks_dbt_threads"], "2")
+        self.assertEqual(rows[0]["spark_dbt_threads"], "4")
+        for invalid in (0, -1, True, 1.5, "4"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "positive integer"):
+                ExperimentInputs(databricks_dbt_threads=invalid)
+
+    def test_generated_and_loaded_rows_remain_distinct_in_plan_and_csv(self):
+        with tempfile.TemporaryDirectory() as root:
+            def table(path, rows):
+                log = Path(root, path, "_delta_log")
+                log.mkdir(parents=True)
+                (log / "00000000000000000000.json").write_text(json.dumps({
+                    "add": {"path": "part.parquet", "stats": json.dumps({"numRecords": rows})},
+                }) + "\n")
+            for path, rows in (("batch1/trade", 100), ("batch1/time", 86),
+                               ("batch1/batch_date", 1), ("audit", 2), ("batch2/trade", 2)):
+                table(path, rows)
+            plan = {"initial_rows": 102,
+                    "initial_tables": {"trade": 100, "time": 0, "batch_date": 0, "audit": 2},
+                    "rounds": [{"batch_num": 2, "before_rows": 102,
+                                "inserted_rows": 2, "resulting_rows": 104,
+                                "tables": {"trade": {"inserted_rows": 2}}}]}
+            counts = collect_source_row_counts(root, 2, refresh_plan=plan)
+            self.assertEqual(counts["generated_batches"]["1"]["total_rows"], 189)
+            self.assertEqual(counts["batches"]["1"]["total_rows"], 102)
+            self.assertEqual(collect_source_row_counts(root, 2)["batches"]["1"]["total_rows"], 187)
+            rows = list(csv.DictReader(io.StringIO(generate_results_csv({"experiments": [{
+                "inputs": {"engines": ["duckdb"], "repeated_refresh": True, "refresh_count": 1},
+                "source_row_counts": counts,
+            }]}))))
+            self.assertEqual(rows[0]["source_rows"], "102")
+            self.assertEqual(rows[0]["generated_source_rows"], "189")
+            self.assertEqual(rows[0]["source_rows_after"], rows[1]["source_rows_before"])
+            self.assertEqual(rows[1]["source_rows_after"], "104")
+            plan["rounds"][0]["tables"]["trade"]["inserted_rows"] = 3
+            with self.assertRaisesRegex(ValueError, "does not match its refresh plan"):
+                collect_source_row_counts(root, 2, refresh_plan=plan)
+
     def test_real_engine_configuration_and_runner_initialization(self):
         for repeated, workload, count in (
             (False, "standard", 3), (True, "standard", 21),

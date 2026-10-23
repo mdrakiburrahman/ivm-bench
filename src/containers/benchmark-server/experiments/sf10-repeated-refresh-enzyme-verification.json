@@ -2,20 +2,18 @@
   "baseline": {
     "scale_factor": 10,
     "repeated_refresh": true,
-    "workload": "databricks",
+    "workload": "standard",
     "refresh_count": 20,
     "refresh_pct": "1",
-    "engines": ["duckdb-openivm"],
+    "engines": ["databricks-enzyme"],
+    "schedule": "serial",
     "feature_flags": {
-      "openivm_validate": true,
-      "openivm_profile_refresh": true,
-      "openivm_query_log": true,
       "storage_metrics": true,
       "preserve_raw": true,
       "spark_metrics_capture": false
     }
   },
   "experiments": [
-    {"label": "GCI SF10 Databricks-style TPC-DI: 20 compounded 1% refreshes"}
+    {"label": "SF10 standard TPC-DI: Enzyme default-thread verification, 20 compounded 1% refreshes"}
   ]
 }

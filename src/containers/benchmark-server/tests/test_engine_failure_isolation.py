@@ -131,6 +131,63 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
         self.assertIn("OUT_OF_MEMORY", result[1])
         runner._export_databricks_enzyme_pipeline_events.assert_called_once_with(2)
 
+    def test_driver_disconnect_is_retryable_but_mixed_sql_failure_is_not(self):
+        self.run["nodes"] = [{
+            "name": "trades_history", "status": "error",
+            "message": "Communication lost with driver. Cluster "
+                       "1016-223934-sjcqo5z-v2n was not reachable for 120 seconds.",
+        }]
+        result, runner = self.classifier()
+        self.assertTrue(result[0])
+        runner._export_databricks_enzyme_pipeline_events.assert_not_called()
+        self.run["nodes"].append({
+            "name": "other_model", "status": "error", "message": "UNRESOLVED_COLUMN"
+        })
+        result, _runner = self.classifier()
+        self.assertFalse(result[0])
+
+    @patch("services.engine_runner.time.sleep")
+    @patch("services.engine_runner.requests.get")
+    @patch("services.engine_runner.requests.post")
+    def test_driver_disconnect_retries_refresh_without_reappending_sources(self, post, get, sleep):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(scale_factor=10)
+        runner._dbt_url = "http://dbt"
+        runner._result = EngineResult(engine="databricks-enzyme")
+        batch = runner._result.batches[1]
+        for name in ("_emit", "_stream_dbt_progress", "_save_run_result"):
+            setattr(runner, name, Mock())
+        message = ("Communication lost with driver. Cluster "
+                   "1016-223934-sjcqo5z-v2n was not reachable for 120 seconds.")
+        get.return_value.json.return_value = {
+            "nodes": [{"name": "trades_history", "status": "error", "message": message}]
+        }
+        append_response, failed_response, success_response = Mock(), Mock(), Mock()
+        append_response.status_code = 200
+        append_response.json.return_value = {"status": "ok"}
+        failed_response.json.return_value = {"run_id": "unreachable"}
+        success_response.json.return_value = {"run_id": "recovered"}
+        post.side_effect = [append_response, failed_response, success_response]
+
+        def check(run_id, batch_num):
+            self.assertEqual(batch_num, 2)
+            batch.status = "failed" if run_id == "unreachable" else "completed"
+            batch.error = message if run_id == "unreachable" else ""
+
+        runner._check_run_result = Mock(side_effect=check)
+        self.assertEqual(runner._run_databricks_enzyme(2), "recovered")
+        self.assertEqual([call.args[0] for call in post.call_args_list], [
+            "http://dbt/sources/databricks-enzyme/append/2/10",
+            "http://dbt/run/databricks-enzyme",
+            "http://dbt/run/databricks-enzyme",
+        ])
+        for call in post.call_args_list[1:]:
+            self.assertEqual(call.kwargs["json"], {"scale_factor": 10, "full_refresh": False})
+        runner._save_run_result.assert_any_call("unreachable", 2, suffix="-attempt1")
+        runner._save_run_result.assert_any_call("recovered", 2)
+        sleep.assert_called_once()
+        self.assertEqual(batch.status, "completed")
+
     def test_scale_up_requires_matching_latest_failed_update(self):
         for case in ("no_oom", "no_scale_up", "old", "completed", "full_refresh",
                      "newer_update", "ambiguous", "missing_started_at"):
@@ -271,6 +328,43 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
         self.assertEqual(batch.error, "JVM_OUT_OF_MEMORY")
         self.assertEqual(batch.duration_s, 3)
         self.assertEqual(runner._persist_batch_result.call_count, 2)
+
+
+class OpenIvmValidationHookTest(unittest.TestCase):
+    def runner(self, repo_dir, scale_factor):
+        from services.engine_runner import EngineRunner
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._engine = SimpleNamespace(name="fabric-openivm-jvm-35")
+        runner._config = SimpleNamespace(repo_dir=repo_dir, scale_factor=scale_factor)
+        runner._dbt_url = "http://dbt.invalid"
+        runner._emit = Mock()
+        return runner
+
+    def test_validation_uses_digest_at_every_scale_and_engine_specific_artifacts(self):
+        from tempfile import TemporaryDirectory
+        for engine in ("fabric-openivm-jvm-35", "spark-openivm"):
+            for sf in (10, 100):
+                with self.subTest(engine=engine, sf=sf), TemporaryDirectory() as repo, \
+                        patch("services.engine_runner.requests.post") as post:
+                    post.return_value = Mock(status_code=200)
+                    post.return_value.json.return_value = {
+                        "status": "passed", "models_checked": 49, "validation_method": "count_hash_rounded"
+                    }
+                    runner = self.runner(repo, sf)
+                    runner._engine.name = engine
+                    runner._validate_spark_openivm("run", 2)
+                    self.assertEqual(post.call_args.args[0], f"http://dbt.invalid/validate/{engine}/run")
+                    self.assertNotIn("json", post.call_args.kwargs)
+                    self.assertTrue((Path(repo) / f"mount/results/{sf}/dbt-server/validation-{engine}-batch2.json").exists())
+
+    def test_failed_comparison_fails_batch_at_any_scale(self):
+        from tempfile import TemporaryDirectory
+        from services.engine_runner import OpenIvmValidationError
+        with TemporaryDirectory() as repo, patch("services.engine_runner.requests.post") as post:
+            post.return_value = Mock(status_code=200)
+            post.return_value.json.return_value = {"status": "failed", "validation_method": "count_hash_rounded"}
+            with self.assertRaisesRegex(OpenIvmValidationError, "validation failed"):
+                self.runner(repo, 10)._validate_spark_openivm("run", 2)
 
 
 if __name__ == "__main__":

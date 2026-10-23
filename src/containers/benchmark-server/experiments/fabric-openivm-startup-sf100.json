@@ -1,0 +1,30 @@
+{
+  "_design_notes": [
+    "One Fabric SF100 repetition, inserts 100/1/0.01%; exact validation and client/engine profiling ON. Native/Spark pins unchanged. Skip redundant DROP only for first build of newly provisioned lakehouse; Livy polling unchanged."
+  ],
+  "baseline": {
+    "engines": [
+      "fabric-openivm-jvm-35"
+    ],
+    "schedule": "serial",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true
+    },
+    "spark_tunables": {
+      "dbt_threads": 4
+    }
+  },
+  "experiments": [
+    {
+      "label": "fabric-openivm-startup-sf100",
+      "scale_factor": 100
+    }
+  ]
+}

@@ -50,6 +50,14 @@ def _extract_rows(output: Dict[str, Any], label: str) -> List[List[Any]]:
     payload = data.get("application/json")
     if isinstance(payload, dict):
         rows = payload.get("data") or []
+        # An old/reused session may still have Livy's default cap. Neither
+        # limit is a complete export when reached; require a larger fresh
+        # session instead of silently presenting a partial profile as valid.
+        if len(rows) == 1000 or len(rows) >= 100000:
+            raise RuntimeError(
+                f"{label}: response reached a Livy row limit ({len(rows)} rows); "
+                "increase livy.rsc.sql.num-rows and start a fresh session"
+            )
         return [list(row) for row in rows]
     # Fall back to text/plain — only happens if the cluster mis-routes a sql
     # statement to spark-shell kind; treat as empty result with a warning.
@@ -186,7 +194,24 @@ def _fetch_profile_rows(livy: LivyClient) -> List[Dict[str, Any]]:
     return rows
 
 
-def export_profile(run_id: str, batch_num: int) -> dict:
+def _runtime_sql_settings(livy) -> Dict[str, str]:
+    # Persist only execution settings: a complete SET dump may contain secrets.
+    keys = {
+        "spark.sql.shuffle.partitions",
+        "spark.sql.autoBroadcastJoinThreshold",
+        "spark.sql.adaptive.enabled",
+        "spark.sql.adaptive.autoBroadcastJoinThreshold",
+        "spark.sql.adaptive.coalescePartitions.enabled",
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes",
+        "spark.sql.adaptive.skewJoin.enabled",
+        "spark.databricks.delta.merge.materializeSource",
+    }
+    result = livy.execute("SET -v")
+    rows = _extract_rows(result.get("output") or {}, "SET -v")
+    return {str(row[0]): str(row[1]) for row in rows if len(row) >= 2 and row[0] in keys}
+
+
+def export_profile(run_id: str, batch_num: int, *, client=None) -> dict:
     """Export spark-openivm refresh-profile rows + summaries as CSV strings.
 
     Cumulative: the catalog accumulates rows across the entire benchmark run.
@@ -194,8 +219,9 @@ def export_profile(run_id: str, batch_num: int) -> dict:
     `exported_after_run_id` so a post-mortem reader can attribute every entry
     to the batch that exported it without dropping any history.
     """
-    with LivyClient() as livy:
+    with (client if client is not None else LivyClient()) as livy:
         rows = _fetch_profile_rows(livy)
+        settings = _runtime_sql_settings(livy) if batch_num == 1 else None
 
     # ---------------- Main profile CSV ----------------
     profile_headers = [
@@ -252,6 +278,7 @@ def export_profile(run_id: str, batch_num: int) -> dict:
         "batch_num": batch_num,
         "row_count": len(rows),
         "view_count": view_count,
+        **({"runtime_sql_settings": settings} if settings is not None else {}),
         "csv": {
             "profile": profile_csv,
             "by_step": by_step_csv,

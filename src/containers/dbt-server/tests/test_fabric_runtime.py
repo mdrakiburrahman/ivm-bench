@@ -54,5 +54,3 @@ class FabricRuntimePinTest(unittest.TestCase):
         self.request.side_effect = [self.initial, Mock(status_code=202, headers={"Location": "https://example.invalid/operation"}), self.updated]
         fabric._stage_spark_compute(self.properties)
         poll.assert_called_once_with("https://example.invalid/operation")
-
-

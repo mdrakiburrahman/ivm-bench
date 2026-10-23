@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 def _active_table_rows(table_dir: str) -> int:
@@ -28,8 +28,10 @@ def _active_table_rows(table_dir: str) -> int:
     return sum(active_files.values())
 
 
-def collect_source_row_counts(delta_dir: str, batch_count: int = 3) -> Dict[str, Any]:
-    """Return total and per-table rows for each generated benchmark batch."""
+def collect_source_row_counts(
+    delta_dir: str, batch_count: int = 3, *, refresh_plan: Optional[dict] = None,
+) -> Dict[str, Any]:
+    """Count physical payloads; a refresh plan also identifies loaded sources."""
     batches: Dict[str, Any] = {}
     for batch_num in range(1, batch_count + 1):
         batch_dir = os.path.join(delta_dir, f"batch{batch_num}")
@@ -43,4 +45,23 @@ def collect_source_row_counts(delta_dir: str, batch_count: int = 3) -> Dict[str,
             "total_rows": sum(tables.values()),
             "tables": tables,
         }
-    return {"batches": batches}
+    if refresh_plan is None:
+        return {"batches": batches}
+
+    # Audit is loaded from outside batch1; time and initial Category B tables
+    # are generated but not loaded. Keep both inventories explicitly.
+    audit = os.path.join(delta_dir, "audit")
+    if os.path.isdir(os.path.join(audit, "_delta_log")):
+        batches["1"]["tables"]["audit"] = _active_table_rows(audit)
+        batches["1"]["total_rows"] = sum(batches["1"]["tables"].values())
+    initial = refresh_plan["initial_tables"]
+    loaded = {**batches, "1": {"tables": dict(initial), "total_rows": sum(initial.values())}}
+    if loaded["1"]["total_rows"] != refresh_plan["initial_rows"]:
+        raise ValueError("refresh plan initial table counts do not match its initial_rows")
+    for round_ in refresh_plan["rounds"]:
+        batch_num = str(round_["batch_num"])
+        actual = batches[batch_num]["tables"]
+        planned = {table: rows["inserted_rows"] for table, rows in round_["tables"].items()}
+        if any(actual.get(table, 0) != planned.get(table, 0) for table in actual.keys() | planned.keys()):
+            raise ValueError(f"generated batch {batch_num} does not match its refresh plan")
+    return {"batches": loaded, "generated_batches": batches, "refresh_plan": refresh_plan}

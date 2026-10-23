@@ -2,10 +2,11 @@
   "baseline": {
     "scale_factor": 10,
     "repeated_refresh": true,
-    "workload": "standard",
     "refresh_count": 20,
     "refresh_pct": "1",
-    "engines": ["duckdb-openivm"],
+    "engines": [
+      "duckdb-openivm"
+    ],
     "feature_flags": {
       "openivm_validate": true,
       "openivm_profile_refresh": true,
@@ -16,6 +17,13 @@
     }
   },
   "experiments": [
-    {"label": "GCI SF10 standard TPC-DI: 20 compounded 1% refreshes"}
+    {
+      "label": "SF10 standard TPC-DI: 20 compounded 1% refreshes",
+      "workload": "standard"
+    },
+    {
+      "label": "SF10 extended TPC-DI: 20 compounded 1% refreshes",
+      "workload": "databricks"
+    }
   ]
 }

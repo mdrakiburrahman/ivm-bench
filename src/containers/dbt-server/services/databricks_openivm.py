@@ -16,6 +16,7 @@ from pathlib import Path
 import requests
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.databricks import Databricks
 
 from services.db import DB_LOCK, get_db
 from services.dbt_compiler import get_manifest
@@ -25,6 +26,21 @@ from services.progress import LIVE_PROGRESS, PROGRESS_LOCK, cleanup_progress, in
 WORK_DIR = Path(os.environ.get("DATABRICKS_OPENIVM_WORK_DIR", "/data/processed/databricks-openivm"))
 COMPILER_URL = os.environ.get("OPENIVM_SQL_COMPILER_URL", "http://openivm-sql-compiler:8998")
 _RUN_LOCK = threading.Lock()
+
+
+class _CompilerDialect(Databricks):
+    """Keep the window null-treatment syntax understood by the Spark bridge."""
+
+    class Generator(Databricks.Generator):
+        def ignorenulls_sql(self, expression):
+            if isinstance(expression.this, (exp.FirstValue, exp.LastValue)):
+                return self.func(expression.this.sql_name(), expression.this.this, exp.true())
+            return super().ignorenulls_sql(expression)
+
+        def respectnulls_sql(self, expression):
+            if isinstance(expression.this, (exp.FirstValue, exp.LastValue)):
+                return self.sql(expression, "this")
+            return super().respectnulls_sql(expression)
 
 
 def quote(name):
@@ -70,7 +86,7 @@ def physical(name):
     return ".".join(parts)
 
 
-def remap_sql(sql, mapping, paths=None, snapshots=None, *, quote_targets=True):
+def remap_sql(sql, mapping, paths=None, snapshots=None, *, for_compiler=False):
     """Change relation names, never column expressions or string literals."""
     tree = sqlglot.parse_one(sql, read="databricks")
     for table in list(tree.find_all(exp.Table)):
@@ -81,7 +97,7 @@ def remap_sql(sql, mapping, paths=None, snapshots=None, *, quote_targets=True):
         ) or mapping.get(key)
         if target:
             alias = table.alias or table.name
-            replacement = sqlglot.to_table(quote(target) if quote_targets else target, dialect="databricks")
+            replacement = sqlglot.to_table(target if for_compiler else quote(target), dialect="databricks")
             for attr in ("this", "db", "catalog"):
                 table.set(attr, replacement.args.get(attr))
             if isinstance(snapshot, dict):
@@ -93,7 +109,7 @@ def remap_sql(sql, mapping, paths=None, snapshots=None, *, quote_targets=True):
                 if snapshot.get("predicate"):
                     query = query.where(snapshot["predicate"], dialect="databricks")
                 table.replace(query.subquery(alias=alias))
-    return tree.sql(dialect="databricks")
+    return tree.sql(dialect=_CompilerDialect if for_compiler else "databricks")
 
 
 def _save(path, payload):
@@ -198,7 +214,7 @@ def build_models(executor, manifest, checkpoint, *, full_refresh, batch_num):
             compiled = compiler({"operation": "compile", "name": name,
                                  # The Spark-to-DuckDB bridge strips plain db.table
                                  # names; it cannot bind backtick-quoted UC refs.
-                                 "query": remap_sql(query, mapping, quote_targets=False), "schemas": schemas})
+                                 "query": remap_sql(query, mapping, for_compiler=True), "schemas": schemas})
             initial = remap_sql(compiled["initial_sql"], {v: k for k, v in mapping.items()})
             executor.execute(f"CREATE TABLE {quote(target)} USING DELTA "
                              "TBLPROPERTIES ('delta.enableChangeDataFeed'='true') AS " + initial)

@@ -57,10 +57,11 @@ RAW_DELTA_DIR = os.environ.get("RAW_DELTA_DIR", "/data/raw/delta")
 # workspace needs to be pinned in ``.env``.
 CACHE_LAKEHOUSE_NAME = os.environ.get("FABRIC_CACHE_LAKEHOUSE_NAME", "ivmbench_cache")
 # Per-flavor compute base name; the compose files map the per-flavor .env value.
-RUNTIME_VERSION = "1.3"  # Both JVM-35 engines require Spark 3.5.
 BASE_NAME = os.environ.get("FABRIC_BASE_NAME", "openivm_jvm_35")
 # Minted per-experiment by the orchestrator (mirrors DATABRICKS_EXPERIMENT_ID).
 RUN_ID = os.environ.get("FABRIC_RUN_ID", "")
+# Both jvm-35 engines must use the Spark 3.5 runtime, independently of Fabric defaults.
+RUNTIME_VERSION = "1.3"
 STALE_MAX_AGE_S = int(os.environ.get("FABRIC_STALE_RESOURCE_MAX_AGE_SECONDS", "") or "86400")
 # Per-run resolved IDs (compute + cache), persisted so dbt_runner can inject them
 # into the dbt subprocess env and teardown can find what to delete.
@@ -486,6 +487,7 @@ def provision_run(openivm: bool) -> dict:
         "environment_id": environment_id,
         "environment_name": name,
         "openivm": bool(openivm),
+        "fresh_compute": True,
     }
     _save_resolved(resolved)
     logger.info(
@@ -1032,4 +1034,78 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
         "jar_abfss": jar_abfss,
         "spark_properties": len(props),
         "publish_state": state,
+        "runtime_version": RUNTIME_VERSION,
     }
+
+
+class ProfileClient:
+    """Read telemetry from the dbt-owned Fabric session without creating one."""
+
+    def __init__(self, *, require_tabular=True):
+        self.require_tabular = require_tabular
+
+    def __enter__(self):
+        from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
+        from dbt.adapters.fabricspark.livysession import LivySession
+
+        session_file = Path("/tmp/fabric-openivm-jvm-35-livy.session-id")
+        session_id = session_file.read_text().strip()
+        if not session_id:
+            raise RuntimeError("Fabric dbt session ID is empty; cannot export telemetry")
+        credentials = FabricSparkCredentials(
+            endpoint=f"{FABRIC_API_BASE}/v1",
+            workspaceid=WORKSPACE_ID,
+            lakehouseid=_compute_lakehouse_id(),
+            lakehouse=str(_load_resolved()["lakehouse_name"]),
+            authentication="CLI",
+            livy_mode="fabric",
+            statement_timeout=1800,
+            spark_config={"name": "dbt-tpcdi-fabric-openivm-jvm-35"},
+        )
+        self.session = LivySession(credentials)
+        if not self.session.try_reuse_session(session_id):
+            raise RuntimeError("Fabric dbt session is unavailable; cannot export telemetry")
+        self.credentials = credentials
+        return self
+
+    def execute(self, sql: str) -> dict:
+        # The adapter's session manager can create a replacement driver. A new
+        # driver would not contain the catalog whose timings we are collecting.
+        if self.session.is_new_session_required:
+            raise RuntimeError("Fabric dbt session was lost during telemetry export")
+        from dbt.adapters.fabricspark.livysession import LivyCursor
+
+        # A statement owns its result buffer even when validation runs concurrently.
+        cursor = LivyCursor(self.credentials, self.session)
+        try:
+            cursor.execute(sql)
+            columns = cursor.description
+            if not columns and self.require_tabular:
+                raise RuntimeError("Fabric telemetry response has no tabular schema")
+            columns = columns or []
+            return {"output": {"data": {"application/json": {
+                "schema": {"fields": [{"name": column[0]} for column in columns]},
+                "data": cursor.fetchall() if columns else [],
+            }}}}
+        finally:
+            cursor.close()
+
+    def execute_read(self, sql: str) -> dict:
+        """Recover one lost validation result by reissuing its read, not its poll."""
+        from dbt_common.exceptions import DbtRuntimeError
+
+        try:
+            return self.execute(sql)
+        except DbtRuntimeError as error:
+            message = str(error)
+            if ("Livy statement poll failed (HTTP 404):" not in message
+                    or "Statement not found" not in message):
+                raise
+            # The adapter already exhausted polling this statement ID. Reads
+            # are safe to repeat against the unchanged post-batch state.
+            logger.warning("[fabric] Livy lost a validation read result; reissuing once on the same session")
+            return self.execute(sql)
+
+    def __exit__(self, *_args):
+        # The dbt-owned session survives profile export and validation.
+        pass
