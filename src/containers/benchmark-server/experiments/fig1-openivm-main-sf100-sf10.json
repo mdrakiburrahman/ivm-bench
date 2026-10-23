@@ -1,0 +1,55 @@
+{
+  "_design_notes": [
+    "Unmodified OpenIVM Spark and native main revisions resolved on 2026-10-23; immutable source pins are recorded below and in the engine Dockerfiles.",
+    "Same harness parent and settings as PR86 run39931568364: one repetition, inserts 100/1/0.01, no synthetic updates/deletes, serial execution, four Spark dbt threads.",
+    "SF100 runs both OpenIVM engines; only Spark validates there. A separate SF10 native run uses exact post-batch validation. Validation is outside timed maintenance.",
+    "Spark uses the native/LPTS/ABI revisions in its own main pins.env; neither engine carries experimental instrumentation or restored window optimizations."
+  ],
+  "_source_pins": {
+    "harness_parent": "a20496a9650b960e3d4a57bf33c99e614c79b6b5",
+    "spark_main": "ddbd6b60433e264d4ff5ff1671d6ed0d47250530",
+    "spark_native": "8c5940a952b19ab13f2d235df9d9e5463576f8be",
+    "spark_lpts": "29c606ee18ad8e4d04cab940f361cbf6fbe5b881",
+    "native_main": "ececf5a00fd2b1918a585e51f3237de6828948d9"
+  },
+  "baseline": {
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": ["spark-openivm", "duckdb-openivm"],
+    "parallel": false,
+    "schedule": "serial",
+    "spark_tunables": {"dbt_threads": 4},
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "fig1-main-sf100-spark-openivm-validate",
+      "scale_factor": 100,
+      "engines": ["spark-openivm"],
+      "feature_flags": {"openivm_validate": true}
+    },
+    {
+      "label": "fig1-main-sf100-duckdb-openivm",
+      "scale_factor": 100,
+      "engines": ["duckdb-openivm"]
+    },
+    {
+      "label": "fig1-main-sf10-duckdb-openivm-validate",
+      "scale_factor": 10,
+      "engines": ["duckdb-openivm"],
+      "feature_flags": {"openivm_validate": true}
+    }
+  ]
+}
