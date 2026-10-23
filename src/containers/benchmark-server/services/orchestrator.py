@@ -659,7 +659,9 @@ class Orchestrator:
                 "from source (~5-10 min)"
             )
             with self._heartbeat("duckdb-openivm-build/build"):
-                mgr.build()
+                # Keep the compiler stage tagged across CI's dangling-image prune.
+                mgr.build(services=["duckdb-openivm-toolchain"])
+                mgr.build(services=["duckdb-openivm-builder"])
         else:
             self.emit(f"  [duckdb-openivm-build] Reusing image (dockerfile {dockerfile_hash[:7]})")
         with self._heartbeat("duckdb-openivm-build/run"):
