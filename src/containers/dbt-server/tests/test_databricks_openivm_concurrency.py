@@ -240,7 +240,6 @@ class WorkerSessionTest(unittest.TestCase):
 
         self.sources = types.ModuleType("services.databricks_enzyme_sources")
         self.sources.open_connection = Mock()
-        self.enterContext(patch.dict(sys.modules, {self.sources.__name__: self.sources}))
         self.enterContext(patch.object(services, "databricks_enzyme_sources", self.sources, create=True))
 
     def test_workers_open_independent_sessions_and_cdf_reuse_is_session_local(self):

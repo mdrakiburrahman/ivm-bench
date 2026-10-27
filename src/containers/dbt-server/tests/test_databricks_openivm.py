@@ -185,20 +185,24 @@ class DatabricksOpenivmTest(unittest.TestCase):
             self.assertIn("dirty", fail.call_args.args[1])
 
     def test_photon_metrics_use_statement_ids_and_do_not_infer_missing_task_time(self):
+        from databricks.sdk.service.sql import QueryFilter
+
         fake_sources = types.ModuleType("services.databricks_enzyme_sources")
         fake_sources._workspace_client = Mock()
         history = fake_sources._workspace_client.return_value.query_history
         query = Mock()
         history.list.return_value.res = [query]
         import services
+        # Mock the package attribute, leaving native SDK imports cached. Older
+        # runner crypto bindings cannot be initialized twice in one process.
         with tempfile.TemporaryDirectory() as tmp, patch.object(backend, "WORK_DIR", Path(tmp)), \
-                patch.dict(sys.modules, {"services.databricks_enzyme_sources": fake_sources}), \
                 patch.object(services, "databricks_enzyme_sources", fake_sources, create=True):
             Path(tmp, "sql-batch2.json").write_text(json.dumps({"statements": [{"query_id": "q1"}]}))
             query.as_dict.return_value = {"query_id": "q1", "metrics": {"photon_total_time_ms": 250, "task_total_time_ms": 500}}
             result = backend.photon_metrics(2)
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["photon_total_time_ms"], 250)
+            self.assertIsInstance(history.list.call_args.kwargs["filter_by"], QueryFilter)
             self.assertEqual(history.list.call_args.kwargs["filter_by"].statement_ids, ["q1"])
             query.as_dict.return_value = {"query_id": "q1"}
             self.assertEqual(backend.photon_metrics(2)["status"], "partial")
@@ -220,8 +224,7 @@ class DatabricksOpenivmTest(unittest.TestCase):
         }))
         (backend.WORK_DIR / "timing-batch2.json").write_text(json.dumps({"manifest_compile_s": 3}))
         import services
-        with patch.dict(sys.modules, {"services.databricks_enzyme_sources": fake_sources}), \
-                patch.object(services, "databricks_enzyme_sources", fake_sources, create=True):
+        with patch.object(services, "databricks_enzyme_sources", fake_sources, create=True):
             result = backend.photon_metrics(2)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["statement_count"], 1)
