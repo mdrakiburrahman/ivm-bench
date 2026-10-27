@@ -84,29 +84,35 @@ def extract_batch(directory, batch, archive, seen_requests, seen_refreshes):
                 refresh_statements=len(records), statements=records)
 
 
-def main():
+def package_scale(directory, output):
     csv.field_size_limit(sys.maxsize)
-    root = Path(__file__).resolve().parents[3]
-    output = root/'mount/oat-state/native-full-sql'
     output.mkdir(parents=True, exist_ok=True)
+    scale = directory.parent.name
+    seen_requests,seen_refreshes = set(),set()
+    summary = {'scale_factor': scale, 'batches': []}
+    with zipfile.ZipFile(output/f'full-native-sql-sf{scale}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+        for batch in [1,2,3]:
+            result = extract_batch(directory, batch, archive, seen_requests, seen_refreshes)
+            if result['model_count'] != 49:
+                raise RuntimeError('TPC-DI capture must cover all 49 models')
+            summary['batches'].append(result)
+        archive.writestr('manifest.json', json.dumps(summary, indent=2)+'\n')
+    (output/f'coverage-sf{scale}.json').write_text(json.dumps(summary, indent=2)+'\n')
+    print(f'SF{scale}: all 49 models captured in every batch; '
+          f'{sum(b["refresh_statements"] for b in summary["batches"])} full refresh statements verified', flush=True)
+    return summary
+
+
+def main():
+    root = Path(__file__).resolve().parents[3]
+    # Containers own mount/oat-state; the hosted runner owns the checkout.
+    output = root/'native-full-sql'
     found = False
     for directory in sorted((root/'mount/results').glob('*/dbt-server')):
         if not (directory/'openivm-query-log-batch1.csv').exists():
             continue
         found = True
-        scale = directory.parent.name
-        seen_requests,seen_refreshes = set(),set()
-        summary = {'scale_factor': scale, 'batches': []}
-        with zipfile.ZipFile(output/f'full-native-sql-sf{scale}.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
-            for batch in [1,2,3]:
-                result = extract_batch(directory, batch, archive, seen_requests, seen_refreshes)
-                if result['model_count'] != 49:
-                    raise RuntimeError('TPC-DI capture must cover all 49 models')
-                summary['batches'].append(result)
-            archive.writestr('manifest.json', json.dumps(summary, indent=2)+'\n')
-        (output/f'coverage-sf{scale}.json').write_text(json.dumps(summary, indent=2)+'\n')
-        print(f'SF{scale}: all 49 models captured in every batch; '
-              f'{sum(b["refresh_statements"] for b in summary["batches"])} full refresh statements verified', flush=True)
+        package_scale(directory, output)
     if not found:
         raise RuntimeError('No native full-SQL captures found')
 
