@@ -13,6 +13,18 @@ from services import databricks_openivm as backend
 
 
 class DatabricksOpenivmTest(unittest.TestCase):
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.object(backend, "WORK_DIR", Path(directory)))
+
+    def executor(self):
+        executor = Mock()
+        executor.connection_s = 0.0
+        executor.statements = []
+        executor.model_timings = []
+        executor.ensure_delta_view.side_effect = lambda short, sql: executor.execute(sql)
+        return executor
+
     def model(self, name, deps=(), materialized="materialized_view"):
         return {"name": name, "alias": name, "database": "cat", "schema": "exp_gold",
                 "resource_type": "model", "config": {"materialized": materialized},
@@ -116,7 +128,7 @@ class DatabricksOpenivmTest(unittest.TestCase):
     @patch.object(backend, "_save")
     @patch.object(backend, "compiler")
     def test_initialize_once_then_refresh_pinned_cdf_and_commit_watermark(self, compile_sql, _save, _record):
-        executor = Mock()
+        executor = self.executor()
         executor.schema.return_value = [{"name": "id", "ddl_type": "bigint"}]
         executor.version.return_value = 4
         compile_sql.return_value = {
@@ -124,7 +136,8 @@ class DatabricksOpenivmTest(unittest.TestCase):
             "initial_sql": "SELECT id FROM openivm_compile.events",
             "compiled_sql": "compiled-maintenance", "output_schema": {"fields": [{"name": "id"}]}}
         state = {"run_id": "initial"}
-        backend.build_models(executor, self.manifest(), state, full_refresh=True, batch_num=1)
+        backend.build_models(self.manifest(), state, full_refresh=True, batch_num=1,
+                             threads=1, executor_factory=lambda: executor)
         self.assertIn("FROM openivm_compile.events", compile_sql.call_args.args[0]["query"])
         self.assertEqual(state["models"]["model.a"]["source_versions"], {"cat.exp_data.events": 4})
         initial_calls = [c.args[0] for c in executor.execute.call_args_list]
@@ -136,7 +149,8 @@ class DatabricksOpenivmTest(unittest.TestCase):
         executor.version.return_value = 5
         compile_sql.return_value = {"statements": [
             "INSERT INTO openivm_compile.a SELECT id FROM openivm_delta_events"]}
-        backend.build_models(executor, self.manifest(), state, full_refresh=False, batch_num=2)
+        backend.build_models(self.manifest(), state, full_refresh=False, batch_num=2,
+                                 threads=1, executor_factory=lambda: executor)
         calls = [c.args[0] for c in executor.execute.call_args_list]
         self.assertTrue(any("table_changes('cat.exp_data.events', 5, 5)" in sql for sql in calls))
         self.assertTrue(any("INSERT INTO `cat`.`exp_gold`.`_openivm_data_a`" in sql for sql in calls))
@@ -148,7 +162,7 @@ class DatabricksOpenivmTest(unittest.TestCase):
     @patch.object(backend, "_save")
     @patch.object(backend, "compiler")
     def test_failed_maintenance_does_not_advance_checkpoint(self, compile_sql, _save, _record):
-        executor = Mock()
+        executor = self.executor()
         executor.version.return_value = 5
         compile_sql.return_value = {"statements": ["INSERT INTO openivm_compile.a SELECT 1"]}
         executor.execute.side_effect = [[], [], RuntimeError("failure")]
@@ -157,7 +171,8 @@ class DatabricksOpenivmTest(unittest.TestCase):
             "refresh_type": 2, "compiled_sql": "compiled", "schemas": {"events": [{"name": "id"}]},
             "source_versions": {"cat.exp_data.events": 4}}}}
         with self.assertRaisesRegex(RuntimeError, "failure"):
-            backend.build_models(executor, self.manifest(), state, full_refresh=False, batch_num=2)
+            backend.build_models(self.manifest(), state, full_refresh=False, batch_num=2,
+                                 threads=1, executor_factory=lambda: executor)
         self.assertEqual(state["models"]["model.a"]["source_versions"], {"cat.exp_data.events": 4})
 
     def test_dirty_checkpoint_is_rejected_before_any_sql_or_compilation(self):
@@ -187,6 +202,36 @@ class DatabricksOpenivmTest(unittest.TestCase):
             self.assertEqual(history.list.call_args.kwargs["filter_by"].statement_ids, ["q1"])
             query.as_dict.return_value = {"query_id": "q1"}
             self.assertEqual(backend.photon_metrics(2)["status"], "partial")
+
+    def test_metadata_is_attributed_without_requiring_photon_execution_for_metadata_queries(self):
+        fake_sources = types.ModuleType("services.databricks_enzyme_sources")
+        fake_sources._workspace_client = Mock()
+        query = Mock()
+        query.as_dict.return_value = {"query_id": "write", "metrics": {"photon_total_time_ms": 10}}
+        metadata = Mock()
+        metadata.as_dict.return_value = {"query_id": "describe", "metrics": {"total_time_ms": 20}}
+        fake_sources._workspace_client.return_value.query_history.list.return_value.res = [query, metadata]
+        (backend.WORK_DIR / "sql-batch2.json").write_text(json.dumps({
+            "timing": {"threads": 8},
+            "statements": [
+                {"query_id": "write", "model_id": "model.a", "phase": "maintenance", "duration_s": 1},
+                {"query_id": "describe", "model_id": "model.a", "phase": "metadata", "duration_s": 2},
+            ],
+        }))
+        (backend.WORK_DIR / "timing-batch2.json").write_text(json.dumps({"manifest_compile_s": 3}))
+        import services
+        with patch.dict(sys.modules, {"services.databricks_enzyme_sources": fake_sources}), \
+                patch.object(services, "databricks_enzyme_sources", fake_sources, create=True):
+            result = backend.photon_metrics(2)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["statement_count"], 1)
+        self.assertEqual(result["metadata_statement_count"], 1)
+        self.assertEqual(result["metrics_statement_count"], 1)
+        self.assertEqual(result["client_timing"], {"threads": 8})
+        self.assertEqual(result["run_timing"], {"manifest_compile_s": 3})
+        self.assertEqual(result["queries"][1]["phase"], "metadata")
+        self.assertEqual(result["queries"][1]["model_id"], "model.a")
+        self.assertEqual(result["queries"][1]["client_duration_s"], 2)
 
 
 if __name__ == "__main__":

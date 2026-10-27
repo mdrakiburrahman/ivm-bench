@@ -902,7 +902,8 @@ class EngineRunner:
                 if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
                     resp = requests.post(f"{self._dbt_url}/validate/databricks-openivm/{batch_num}", timeout=7200)
                     resp.raise_for_status()
-                    if resp.json().get("status") != "ok":
+                    batch.extra["openivm_validation"] = resp.json()
+                    if batch.extra["openivm_validation"].get("status") != "ok":
                         raise RuntimeError("Databricks OpenIVM correctness validation failed")
 
             if (
@@ -1526,11 +1527,13 @@ class EngineRunner:
         sf = self._config.scale_factor
         paths = (["cleanup-schema", f"init/{sf}"] if batch_num == 1
                  else [f"append/{batch_num}/{sf}"])
+        source_started = time.monotonic()
         for path in paths:
             response = requests.post(f"{self._dbt_url}/sources/databricks-enzyme/{path}", timeout=7200)
             response.raise_for_status()
             if response.json().get("status") != "ok":
                 raise RuntimeError(f"Databricks OpenIVM source operation failed: {path}")
+        self._result.batches[batch_num - 1].extra["source_load_s"] = time.monotonic() - source_started
         response = requests.post(f"{self._dbt_url}/run/databricks-openivm",
                                  json={"scale_factor": sf, "full_refresh": batch_num == 1, "batch_num": batch_num}, timeout=30)
         response.raise_for_status()

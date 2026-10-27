@@ -4,12 +4,13 @@
     "repeated_refresh": true,
     "refresh_count": 2,
     "refresh_pct": "1",
-    "engines": ["databricks-openivm"],
+    "engines": ["databricks-openivm", "databricks-enzyme"],
+    "databricks_dbt_threads": 8,
     "schedule": "serial",
     "feature_flags": {"openivm_validate": true, "storage_metrics": true, "preserve_raw": true, "spark_metrics_capture": false}
   },
   "experiments": [
-    {"label": "OpenIVM SQL on Databricks Photon: standard TPC-DI smoke", "workload": "standard"},
-    {"label": "OpenIVM SQL on Databricks Photon: extended TPC-DI smoke", "workload": "databricks"}
+    {"label": "SF3 Databricks OpenIVM vs Enzyme: standard TPC-DI", "workload": "standard"},
+    {"label": "SF3 Databricks OpenIVM vs Enzyme: extended TPC-DI", "workload": "databricks"}
   ]
 }

@@ -187,13 +187,24 @@ fail instead of replaying partially applied maintenance. The benchmark retains
 the initial state and appends each source batch once. Enzyme and OpenIVM use
 separate experiment schemas, and cleanup drops their respective schemas.
 
+OpenIVM schedules ready models in dependency order with up to eight workers,
+matching Enzyme's default model concurrency. Each worker owns a separate SQL
+session and reuses its CDF temporary views only for an identical source range.
+Source schemas and Delta versions are cached within a batch; a model's version
+is invalidated after its writes finish, before its children can start. Failed
+maintenance stops new work and waits for active writes before reporting failure.
+
 `mount/results/<sf>/databricks-openivm/` contains the checkpoint, generated
 `sql-batch<N>.sql`, statement IDs and timings, bag-equivalence validation using
 `EXCEPT ALL` in both directions, and observed Photon/task time from query
 history. Photon metrics are collected outside the benchmark timer; missing
 metrics are reported as partial rather than proof of native execution.
+The batch result also retains validation details and client timings for source
+loading, metadata SQL, compiler requests, and each model. Fields ending in
+`work_s` sum spans across concurrent workers; they are not elapsed batch time.
 Use `smoke-repeated-refresh-databricks-openivm.json` for the SF3 standard and
-extended TPC-DI correctness runs with two compounded 1% refreshes.
+extended TPC-DI comparison against Enzyme, with two compounded 1% refreshes and
+eight model workers for each engine.
 SF3 matches the existing repeated-refresh smoke scale; SF1 produces an invalid
 native FINWIRE configuration (`minUpdateSize=2`, below PDGF's minimum of 3).
 
@@ -216,7 +227,7 @@ Model concurrency is distinct from execution threads within an engine:
 | --- | ---: | --- |
 | Spark / Spark OpenIVM | 30 | Local Spark uses `local[*]`; default shuffle partitions and parallelism are 16. |
 | Fabric / Fabric OpenIVM | 30 | Remote Fabric Spark; local container limits describe the orchestration client. |
-| Databricks Enzyme | 8 | Managed Databricks compute; local container limits describe the orchestration client. |
+| Databricks Enzyme / Databricks OpenIVM | 8 | Managed Databricks compute; local container limits describe the orchestration client. |
 | DuckDB / DuckDB OpenIVM | Serial model execution | SQL threads use the allocated CPU count; engine memory is capped at 80% of the container allocation. |
 | Feldera | 1 | 12 execution workers; maximum RSS is 95% of the container allocation. |
 
@@ -224,7 +235,7 @@ Model concurrency is distinct from execution threads within an engine:
 all-engine repeated preset and the existing augmented/sweep presets set it to
 4; `full.json` sets it to 4 at SF100. These limits do not change Enzyme's default.
 Use the separate optional `databricks_dbt_threads` experiment field to override
-Enzyme concurrency, for example `"databricks_dbt_threads": 1` for diagnostics.
+Databricks model concurrency, for example `"databricks_dbt_threads": 1` for diagnostics.
 The overrides are recorded separately in `results.csv`; blank means the engine
 default. The focused Enzyme verification preset inherits 8; its diagnostic
 preset explicitly requests 1 and labels that restriction.
