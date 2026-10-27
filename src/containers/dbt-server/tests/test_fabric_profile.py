@@ -439,6 +439,7 @@ class FabricProfileConfigTest(unittest.TestCase):
         with patch("services.fabric.onelake_abfss", return_value="abfss://test"):
             properties = fabric.default_openivm_spark_properties()
         for key in ("spark.openivm.refresh.groupedWindowState.enabled",
+                    "spark.openivm.stateSync.async.enabled",
                     "spark.openivm.compile.classificationCache.enabled",
                     "spark.openivm.refresh.windowClusterPrune.enabled"):
             with self.subTest(key=key):

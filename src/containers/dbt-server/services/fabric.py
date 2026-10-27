@@ -857,6 +857,7 @@ def default_openivm_spark_properties() -> Dict[str, str]:
         # RocksDB on local driver disk; mirrored to OneLake for durability.
         "spark.openivm.statePath": "/tmp/openivm-state",
         "spark.openivm.stateSync.uri": state_sync_uri,
+        "spark.openivm.stateSync.async.enabled": "true",
         # MV / staging Delta land in durable OneLake, not the ephemeral driver.
         "spark.sql.warehouse.dir": warehouse_uri,
         "spark.openivm.rocksdb.multiProcess": "false",

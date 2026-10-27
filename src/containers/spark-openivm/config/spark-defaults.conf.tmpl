@@ -107,6 +107,8 @@ spark.openivm.refresh.scd2RangeAccel.enabled=true
 spark.openivm.refresh.windowRunningIncremental.enabled=true
 # Opt into the bounded grouped-state candidate for this benchmark branch.
 spark.openivm.refresh.groupedWindowState.enabled=true
+# Compare the WF candidate with asynchronous remote backup, as explicitly requested.
+spark.openivm.stateSync.async.enabled=true
 spark.openivm.compile.classificationCache.enabled=true
 spark.openivm.refresh.windowClusterPrune.enabled=false
 
