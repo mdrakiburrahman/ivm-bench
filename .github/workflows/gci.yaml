@@ -278,6 +278,7 @@ jobs:
         with:
           name: benchmark-results-sf${{ env.SCALE_FACTOR }}
           path: |
+            native-full-sql/
             mount/logs/
             mount/results/
             mount/stats/
