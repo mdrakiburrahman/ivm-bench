@@ -6,7 +6,7 @@
   ],
   "_source_pins": {
     "harness_parent": "a20496a9650b960e3d4a57bf33c99e614c79b6b5",
-    "native": "4a71959694ff18e239fb249d188218ed5f5c04ff"
+    "native": "ececf5a00fd2b1918a585e51f3237de6828948d9"
   },
   "baseline": {
     "engines": ["duckdb-openivm"],
