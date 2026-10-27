@@ -262,6 +262,9 @@ jobs:
       - name: "🏁 Run benchmark"
         run: bash src/.scripts/benchmark.sh
 
+      - name: Package full native SQL and verify model and statement coverage
+        run: python3 tools/scripts/benchmarks/extract_native_sql.py
+
       - name: "💬 Post PR comment"
         if: github.event_name == 'pull_request' && !cancelled()
         env:

@@ -8,6 +8,7 @@ QUERIES="/opt/duckdb-openivm/queries"
 
 mkdir -p "${OUTPUT_DIR}"
 cp "${BINARY}" "${OUTPUT_DIR}/duckdb"
+cp "${BINARY}.real" "${OUTPUT_DIR}/duckdb.real"
 chmod +x "${OUTPUT_DIR}/duckdb"
 echo "DuckDB-OpenIVM binary copied to ${OUTPUT_DIR}/duckdb"
 

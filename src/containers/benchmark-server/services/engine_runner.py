@@ -1915,6 +1915,8 @@ class EngineRunner:
         file_map = {
             "profile": f"openivm-profile-batch{batch_num}.csv",
             "cli_timings": f"openivm-cli-timings-batch{batch_num}.csv",
+            "query_log": f"openivm-query-log-batch{batch_num}.csv",
+            "query_requests": f"openivm-query-requests-batch{batch_num}.csv",
             "by_step": f"openivm-profile-by-step-batch{batch_num}.csv",
             "by_view_step": f"openivm-profile-by-view-step-batch{batch_num}.csv",
         }

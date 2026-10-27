@@ -1,8 +1,11 @@
 """OpenIVM profiling export helpers."""
 
 import csv
+import io
+import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -11,6 +14,38 @@ OPENIVM_BIN = os.environ.get("DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duc
 MEM_LIMIT = os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB")
 TEMP_DIR = Path(os.environ.get("DUCKDB_OPENIVM_TEMP_DIR", str(WORK_DIR / "_tmp")))
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
+
+
+def export_query_log(directory: Path) -> dict:
+    """Keep the complete native trace and its submitted SQL, without truncation."""
+    csv.field_size_limit(sys.maxsize)
+    requests_buffer, queries_buffer = io.StringIO(), io.StringIO()
+    requests_writer = csv.DictWriter(requests_buffer, fieldnames=[
+        'invocation_id', 'created_at', 'argv_json', 'submitted_sql'])
+    requests_writer.writeheader()
+    query_fields = ['context_id', 'scope', 'connection_id', 'transaction_id', 'query_id',
+                    'thread_id', 'timestamp', 'type', 'log_level', 'message']
+    queries_writer = csv.DictWriter(queries_buffer, fieldnames=['invocation_id', 'sequence', *query_fields])
+    queries_writer.writeheader()
+    invocation_count = row_count = 0
+    for path in sorted(directory.glob('*/request.json')):
+        request = json.loads(path.read_text())
+        invocation_count += 1
+        requests_writer.writerow(dict(
+            invocation_id=request['invocation_id'], created_at=request['created_at'],
+            argv_json=json.dumps(request['argv']),
+            submitted_sql=request['stdin_sql'] or '\n'.join(request['command_sql'])))
+        with path.with_name('queries.csv').open(newline='') as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames != query_fields:
+                raise RuntimeError(f'Unexpected native SQL capture schema: {path}')
+            for sequence,row in enumerate(reader):
+                queries_writer.writerow(dict(invocation_id=request['invocation_id'], sequence=sequence, **row))
+                row_count += 1
+    if not invocation_count or not row_count:
+        raise RuntimeError('Native full-SQL capture is empty')
+    return dict(invocation_count=invocation_count, row_count=row_count,
+                requests_csv=requests_buffer.getvalue(), queries_csv=queries_buffer.getvalue())
 
 
 def _sql_literal(value: str) -> str:
@@ -111,16 +146,21 @@ def export_profile(run_id: str, batch_num: int) -> dict:
             cli_timings += cli_path.read_text()
         profile_csv = profile_path.read_text()
         rows = list(csv.DictReader(profile_csv.splitlines()))
+        trace = export_query_log(WORK_DIR / '_sql_trace') if os.environ.get('OPENIVM_QUERY_LOG') == '1' else None
         return {
             "status": "ok",
             "run_id": run_id,
             "batch_num": batch_num,
             "row_count": len(rows),
             "view_count": len({row["view_name"] for row in rows if row.get("view_name")}),
+            "query_log_invocations": trace['invocation_count'] if trace else 0,
+            "query_log_rows": trace['row_count'] if trace else 0,
             "csv": {
                 "profile": profile_csv,
                 "cli_timings": cli_timings,
                 "by_step": by_step_path.read_text(),
                 "by_view_step": by_view_step_path.read_text(),
+                "query_log": trace['queries_csv'] if trace else '',
+                "query_requests": trace['requests_csv'] if trace else '',
             },
         }

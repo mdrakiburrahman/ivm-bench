@@ -52,7 +52,8 @@ RUN apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::
         ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb
+COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb.real
+COPY capture_sql.py /opt/duckdb-openivm/duckdb
 # Internal: the cost model sweep runs this binary directly rather than through dbt.
 COPY --from=builder /src/build/release/extension/openivm/cost_model_benchmark \
      /opt/duckdb-openivm/cost_model_benchmark
@@ -65,6 +66,6 @@ COPY --from=builder /src/build/release/extension/icu/icu.duckdb_extension /opt/d
 COPY --from=builder /src/benchmark/queries /opt/duckdb-openivm/queries
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /opt/duckdb-openivm/duckdb /opt/duckdb-openivm/cost_model_benchmark
+RUN chmod +x /entrypoint.sh /opt/duckdb-openivm/duckdb /opt/duckdb-openivm/duckdb.real /opt/duckdb-openivm/cost_model_benchmark
 
 ENTRYPOINT ["/entrypoint.sh"]

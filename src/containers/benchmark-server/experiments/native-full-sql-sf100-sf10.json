@@ -1,0 +1,35 @@
+{
+  "_design_notes": [
+    "Diagnostic collection of full native DuckDB SQL, including OpenIVM internal helper connections. These instrumented timings are not performance baselines.",
+    "Same TPC-DI workload as PR86: one repetition, inserts 100/1/0.01, no synthetic updates/deletes, serial execution, SF100 unvalidated and separate SF10 exact validation.",
+    "OPENIVM_QUERY_LOG enables the native-only CLI wrapper; complete input and executed SQL are exported after every batch without truncation."
+  ],
+  "_source_pins": {
+    "harness_parent": "a20496a9650b960e3d4a57bf33c99e614c79b6b5",
+    "native": "4a71959694ff18e239fb249d188218ed5f5c04ff"
+  },
+  "baseline": {
+    "engines": ["duckdb-openivm"],
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "parallel": false,
+    "schedule": "serial",
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true
+    }
+  },
+  "experiments": [
+    {"label": "native-full-sql-sf100", "scale_factor": 100},
+    {"label": "native-full-sql-sf10-validated", "scale_factor": 10,
+     "feature_flags": {"openivm_validate": true}}
+  ]
+}
