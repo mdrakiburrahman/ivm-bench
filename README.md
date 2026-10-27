@@ -205,6 +205,7 @@ loading, metadata SQL, compiler requests, and each model. Fields ending in
 Use `smoke-repeated-refresh-databricks-openivm.json` for the SF3 standard and
 extended TPC-DI comparison against Enzyme, with two compounded 1% refreshes and
 eight model workers for each engine.
+`sf10-databricks-openivm-enzyme.json` repeats that comparison at SF10.
 SF3 matches the existing repeated-refresh smoke scale; SF1 produces an invalid
 native FINWIRE configuration (`minUpdateSize=2`, below PDGF's minimum of 3).
 
