@@ -13,7 +13,8 @@ Single consolidated module that:
      under ``mount/metrics/<sf>/processed/`` (DuckDB does the aggregation +
      Parquet write, so no pyarrow dependency).
   4. Renders an A/B diff PNG + RESULTS.md and bundles everything into
-     ``mount/metrics/<sf>/spark-metrics-<run_id>.zip`` (+ a ``latest`` copy).
+     ``mount/metrics/<sf>/spark-metrics-<run_id>.zip`` (+ a ``latest`` copy),
+     including execution sidecars with initial and last observed adaptive plans.
 
 The Parquet schema + paths are a STABLE CONTRACT for openivm-spark (issue §6).
 
@@ -243,11 +244,18 @@ def parse_app_events(files: List[str]) -> Dict[str, Any]:
                         "model": None,
                         "files_scanned": 0.0,
                         "description": desc[:200],
+                        "physical_plan": plan,
+                        "adaptive_physical_plan": None,
                     }
                     files_accum_ids.update(int(x) for x in _FILES_ACCUM_RE.findall(line))
                 elif etype.endswith("SparkListenerSQLAdaptiveExecutionUpdate"):
                     # AQE re-plans expose fresh metric defs (new accumulatorIds).
                     files_accum_ids.update(int(x) for x in _FILES_ACCUM_RE.findall(line))
+                    meta = executions.get(ev.get("executionId"))
+                    plan = ev.get("physicalPlanDescription")
+                    if meta is not None and plan:
+                        # Keep only the last observed update; it need not be final.
+                        meta["adaptive_physical_plan"] = plan
                 elif etype.endswith("SparkListenerDriverAccumUpdates"):
                     eid = ev.get("executionId")
                     meta = executions.get(eid)
@@ -453,6 +461,8 @@ def build_engine_rows(
                 if (meta.get("end_ms") is not None and start is not None) else None,
                 "files_scanned": files_scanned,
                 "description": meta.get("description"),
+                "physical_plan": meta.get("physical_plan"),
+                "adaptive_physical_plan": meta.get("adaptive_physical_plan"),
             })
             if files_scanned:
                 long_rows.append({
@@ -517,7 +527,8 @@ def _write_parquet_and_rollup(
     by_model = con.execute(by_model_sql).fetchdf()
 
     # wall_clock_ms per (engine,batch,model) from execution durations.
-    exec_df = pd.DataFrame(exec_rows)
+    # Plans belong in the execution sidecar, not in DuckDB's timing rollup.
+    exec_df = pd.DataFrame(exec_rows, columns=["engine", "batch", "dbt_model", "duration_ms"])
     if not exec_df.empty:
         con.register("exec_df", exec_df)
         wall = con.execute(
@@ -766,6 +777,7 @@ def process(
     all_long: List[Dict[str, Any]] = []
     all_ts: List[Dict[str, Any]] = []
     per_engine_exec: Dict[str, List[Dict[str, Any]]] = {}
+    execution_paths: Dict[str, str] = {}
     engines_with_data: List[str] = []
 
     for engine in engines:
@@ -786,6 +798,7 @@ def process(
 
         # Write the per-engine executions.jsonl sidecar.
         exec_path = os.path.join(metrics_root, engine, "executions.jsonl")
+        execution_paths[engine] = exec_path
         os.makedirs(os.path.dirname(exec_path), exist_ok=True)
         with open(exec_path, "w", encoding="utf-8") as f:
             for row in exec_rows:
@@ -815,7 +828,7 @@ def process(
     _render_results_md(by_model_rows, md_path, run_id)
 
     zip_path = os.path.join(metrics_root, f"spark-metrics-{run_id}.zip")
-    _zip_processed(processed_dir, zip_path)
+    _zip_processed(processed_dir, zip_path, execution_paths)
     latest_zip = os.path.join(metrics_root, "spark-metrics-latest.zip")
     try:
         shutil.copy2(zip_path, latest_zip)
@@ -840,11 +853,13 @@ def process(
     return summary
 
 
-def _zip_processed(processed_dir: str, zip_path: str) -> None:
+def _zip_processed(processed_dir: str, zip_path: str, execution_paths: Dict[str, str]) -> None:
     tmp = zip_path + ".tmp"
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for dirpath, _dn, filenames in os.walk(processed_dir):
             for fn in filenames:
                 full = os.path.join(dirpath, fn)
                 zf.write(full, os.path.relpath(full, processed_dir))
+        for engine, path in execution_paths.items():
+            zf.write(path, f"{engine}-executions.jsonl")
     os.replace(tmp, zip_path)

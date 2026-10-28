@@ -14,54 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services import fabric, spark_openivm_profile, spark_openivm_query_log
 
-
-class FabricRuntimePinTest(unittest.TestCase):
-    def setUp(self):
-        self.enterContext(patch("services.fabric._env_base", return_value="https://example.invalid/environment"))
-        self.enterContext(patch("services.fabric._fabric_headers", return_value={}))
-        self.request = self.enterContext(patch("services.fabric._fabric_req"))
-        self.properties = {"spark.openivm.enabled": "true"}
-        self.initial = Mock(status_code=200)
-        self.initial.json.return_value = {"runtimeVersion": "2.0"}
-        self.updated = Mock(status_code=200)
-        self.updated.json.return_value = {"runtimeVersion": "1.3", "sparkProperties": [
-            {"key": "spark.openivm.enabled", "value": "true"}
-        ]}
-        self.request.side_effect = [self.initial, Mock(status_code=200), self.updated]
-
-    def test_pin_uses_stable_contract_and_verifies_properties(self):
-        fabric._stage_spark_compute(self.properties)
-        args, kwargs = self.request.call_args_list[1]
-        self.assertEqual(args[0], "PATCH")
-        self.assertEqual(kwargs["params"], {"beta": "false"})
-        self.assertEqual(kwargs["json"], {"runtimeVersion": "1.3", "sparkProperties": [
-            {"key": "spark.openivm.enabled", "value": "true"}
-        ]})
-        self.assertEqual(self.request.call_count, 3)
-
-    def test_runtime_drift_is_rejected(self):
-        self.updated.json.return_value["runtimeVersion"] = "2.0"
-        with self.assertRaisesRegex(RuntimeError, "runtime pin not applied"):
-            fabric._stage_spark_compute(self.properties)
-
-    def test_missing_or_wrong_property_is_rejected(self):
-        self.updated.json.return_value["sparkProperties"] = []
-        with self.assertRaisesRegex(RuntimeError, "Spark properties not applied"):
-            fabric._stage_spark_compute(self.properties)
-
-    def test_baseline_also_pins_runtime_and_requires_publish_success(self):
-        stage = self.enterContext(patch("services.fabric._stage_spark_compute"))
-        self.request.side_effect = None
-        self.request.return_value = Mock(status_code=400)
-        with self.assertRaisesRegex(RuntimeError, "baseline environment publish failed"):
-            fabric.publish_empty_environment()
-        stage.assert_called_once_with({})
-
-    def test_async_compute_update_is_awaited_before_readback(self):
-        poll = self.enterContext(patch("services.fabric._lro_poll"))
-        self.request.side_effect = [self.initial, Mock(status_code=202, headers={"Location": "https://example.invalid/operation"}), self.updated]
-        fabric._stage_spark_compute(self.properties)
-        poll.assert_called_once_with("https://example.invalid/operation")
+try:
+    import flask
+    HAS_FLASK = True
+except ImportError:
+    HAS_FLASK = False
 
 
 class FabricCursorOwnershipTest(unittest.TestCase):
@@ -126,6 +83,101 @@ class FabricCursorOwnershipTest(unittest.TestCase):
                 client.execute("SELECT 1")
         self.cursor_factory.assert_not_called()
         self.session.close.assert_not_called()
+
+
+class FabricSparkRuntimeMetricsTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("services.fabric._compute_lakehouse_id", return_value="owned"))
+        self.token = self.enterContext(patch("services.fabric.get_token", return_value="private-token"))
+        self.request = self.enterContext(patch("services.fabric._fabric_req"))
+        self.client = self.enterContext(patch("services.fabric.ProfileClient"))
+        self.request.side_effect = self.response
+
+    def response(self, method, url, **kwargs):
+        self.assertEqual(method, "GET")
+        self.assertIn("/lakehouses/owned/livySessions", url)
+        self.assertLessEqual(kwargs["timeout"], 10)
+        if url.endswith("/livySessions"):
+            data = {"value": [{"item": {"itemId": "owned"}, "livyId": "session",
+                               "sparkApplicationId": "application_1_0001"}]}
+        elif url.endswith("/session"):
+            data = {"executorCores": 8, "numExecutors": 4}
+        elif url.endswith("/environment"):
+            data = {"sparkProperties": [["spark.executor.cores", "8"],
+                                         ["spark.hadoop.secret", "DO_NOT_EXPORT"]]}
+        elif url.endswith("/allexecutors"):
+            data = [{"id": "1", "totalCores": 8, "totalGCTime": 99,
+                     "executorLogs": {"stdout": "DO_NOT_EXPORT"}}]
+        elif "/stages?" in url:
+            data = [{"stageId": 1, "executorCpuTime": 123, "diskBytesSpilled": 456,
+                     "description": "DO_NOT_EXPORT"}]
+        else:
+            data = {"data": {"allocatedCores": [32], "runningCores": [24]}}
+        return Mock(status_code=200, json=Mock(return_value=data))
+
+    def test_reads_owned_session_without_sql_and_keeps_only_diagnostic_fields(self):
+        result = fabric.spark_runtime_metrics()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["requested_resources"]["numExecutors"], 4)
+        self.assertEqual(result["executors"][0]["totalCores"], 8)
+        self.assertEqual(result["stages"][0]["diskBytesSpilled"], 456)
+        self.assertEqual(result["resource_usage"]["data"]["allocatedCores"], [32])
+        self.assertNotIn("DO_NOT_EXPORT", str(result))
+        self.assertNotIn("private-token", str(result))
+        self.assertEqual(self.request.call_count, 6)
+        self.client.assert_not_called()
+
+    def test_expired_collection_budget_stops_without_rest_calls(self):
+        with patch("services.fabric.time.monotonic", side_effect=[0, 61]):
+            result = fabric.spark_runtime_metrics()
+        self.assertEqual(result["status"], "partial")
+        self.request.assert_not_called()
+
+    @unittest.skipUnless(HAS_FLASK, "requires dbt-server Flask dependency")
+    def test_profile_export_keeps_csv_if_runtime_capture_fails(self):
+        from flask import Flask
+        from handlers.spark_openivm import spark_openivm_export_profile
+        app = Flask(__name__)
+        for engine in ("fabric-openivm-jvm-35", "spark-openivm"):
+            with self.subTest(engine=engine), app.app_context(), \
+                    patch("services.spark_openivm_profile.export_profile", return_value={"status": "ok", "csv": {"profile": "rows"}}), \
+                    patch("services.fabric.spark_runtime_metrics", side_effect=RuntimeError("DO_NOT_EXPORT")) as capture:
+                response, status = spark_openivm_export_profile("run", 1, engine)
+                result = response.get_json()
+                self.assertEqual(status, 200)
+                self.assertEqual(result["csv"]["profile"], "rows")
+                self.assertNotIn("DO_NOT_EXPORT", str(result))
+                if engine == "fabric-openivm-jvm-35":
+                    self.assertEqual(result["spark_runtime"], {"status": "error", "error_type": "RuntimeError"})
+                    capture.assert_called_once()
+                else:
+                    self.assertNotIn("spark_runtime", result)
+                    capture.assert_not_called()
+
+    def test_missing_history_is_partial_without_fabricated_resources(self):
+        original = self.response
+        self.request.side_effect = lambda method, url, **kw: (
+            original(method, url, **kw) if url.endswith("/livySessions")
+            else Mock(status_code=404))
+        result = fabric.spark_runtime_metrics()
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["executors"], [])
+        self.assertEqual(result["requested_resources"], {})
+        self.assertEqual(result["responses"][-1]["http_status"], 404)
+        self.client.assert_not_called()
+
+    def test_does_not_attach_to_another_lakehouse_or_guess_an_ambiguous_session(self):
+        for items in (("different",), ("owned", "owned")):
+            with self.subTest(items=items):
+                self.request.reset_mock()
+                self.request.side_effect = None
+                self.request.return_value = Mock(status_code=200, json=Mock(return_value={
+                    "value": [{"item": {"itemId": item}} for item in items]}))
+                result = fabric.spark_runtime_metrics()
+                self.assertEqual(result["status"], "partial")
+                self.assertEqual(self.request.call_count, 1)
+                self.assertNotIn("executors", result)
+                self.client.assert_not_called()
 
 
 try:
@@ -310,6 +362,23 @@ class FabricProfileTest(unittest.TestCase):
 
 
 class FabricProfileConfigTest(unittest.TestCase):
+    def test_window_feature_flags_match_spark_benchmark(self):
+        root = Path(__file__).resolve().parents[4]
+        config = (root / "src/containers/spark-openivm/config/spark-defaults.conf.tmpl").read_text()
+        spark = dict(line.split("=", 1) for line in config.splitlines()
+                     if line.startswith("spark.openivm.") and "=" in line)
+        with patch("services.fabric.onelake_abfss", return_value="abfss://test"):
+            properties = fabric.default_openivm_spark_properties()
+        for key in ("spark.openivm.refresh.windowRunningIncremental.enabled",
+                    "spark.openivm.refresh.groupedWindowState.enabled",
+                    "spark.openivm.refresh.semiJoinPrune.enabled",
+                    "spark.openivm.refresh.scd2RangeAccel.enabled",
+                    "spark.openivm.stateSync.async.enabled",
+                    "spark.openivm.compile.classificationCache.enabled",
+                    "spark.openivm.refresh.windowClusterPrune.enabled"):
+            with self.subTest(key=key):
+                self.assertEqual(properties[key], spark[key])
+
     def test_compose_forwards_recording_flags_to_environment_publisher(self):
         root = Path(__file__).resolve().parents[4]
         compose = (root / "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml").read_text()

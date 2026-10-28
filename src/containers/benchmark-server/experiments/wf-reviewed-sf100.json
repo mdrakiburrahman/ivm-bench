@@ -1,0 +1,41 @@
+{
+  "_design_notes": [
+    "Reproduce validated run 40569379743: Spark and Fabric OpenIVM, SF100, one repetition, standard three batches, inserts 100/1/0.01%, no updates/deletes, four dbt threads, serial.",
+    "Both engines retain the tested WF, compile-cache and asynchronous-backup settings. Native compiler and LPTS pins stay unchanged. The Spark source adds only the async default plus tests/docs to the measured head.",
+    "Validation, profiling, SQL logs, storage and Spark metrics are enabled. Validation is outside the timed maintenance batches; retain background backup logs when comparing async and synchronous modes."
+  ],
+  "baseline": {
+    "engines": [
+      "spark-openivm",
+      "fabric-openivm-jvm-35"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "repeated_refresh": false,
+    "workload": "standard",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "spark_tunables": {
+      "dbt_threads": 4
+    },
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "wf-reviewed-sf100-validated",
+      "scale_factor": 100
+    }
+  ]
+}

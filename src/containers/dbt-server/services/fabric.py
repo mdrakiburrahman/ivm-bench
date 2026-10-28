@@ -857,12 +857,17 @@ def default_openivm_spark_properties() -> Dict[str, str]:
         # RocksDB on local driver disk; mirrored to OneLake for durability.
         "spark.openivm.statePath": "/tmp/openivm-state",
         "spark.openivm.stateSync.uri": state_sync_uri,
+        "spark.openivm.stateSync.async.enabled": "true",
         # MV / staging Delta land in durable OneLake, not the ephemeral driver.
         "spark.sql.warehouse.dir": warehouse_uri,
         "spark.openivm.rocksdb.multiProcess": "false",
         "spark.openivm.delta.enableDeletionVectors": "true",
         "spark.openivm.refresh.semiJoinPrune.enabled": "true",
         "spark.openivm.refresh.scd2RangeAccel.enabled": "true",
+        "spark.openivm.refresh.windowRunningIncremental.enabled": "true",
+        "spark.openivm.refresh.groupedWindowState.enabled": "true",
+        "spark.openivm.compile.classificationCache.enabled": "true",
+        "spark.openivm.refresh.windowClusterPrune.enabled": "false",
         "spark.databricks.delta.schema.autoMerge.enabled": "true",
         "spark.openivm.profile.refresh": _b("OPENIVM_PROFILE_REFRESH"),
         "spark.openivm.queryLog.enabled": _b("OPENIVM_QUERY_LOG"),
@@ -889,6 +894,7 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     url = f"{_env_base()}/staging/sparkcompute"
     hdr = {**_fabric_headers(), "Content-Type": "application/json"}
     params = {"beta": "false"}
+    allocation = {"enabled": True, "minExecutors": 4, "maxExecutors": 9}
     before = _fabric_req("GET", url, headers=hdr, params=params)
     if before.status_code != 200:
         raise RuntimeError(f"sparkcompute GET failed: HTTP {before.status_code}")
@@ -896,6 +902,7 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     patch = _fabric_req(
         "PATCH", url, headers=hdr, params=params,
         json={"runtimeVersion": RUNTIME_VERSION,
+              "dynamicExecutorAllocation": allocation,
               "sparkProperties": [{"key": key, "value": value} for key, value in properties.items()]},
     )
     if patch.status_code not in (200, 202):
@@ -908,6 +915,9 @@ def _stage_spark_compute(properties: Dict[str, str]) -> None:
     compute = actual.json()
     if compute.get("runtimeVersion") != RUNTIME_VERSION:
         raise RuntimeError(f"Fabric runtime pin not applied: expected {RUNTIME_VERSION}, got {compute.get('runtimeVersion')}")
+    actual_allocation = compute.get("dynamicExecutorAllocation", {})
+    if any(actual_allocation.get(key) != value for key, value in allocation.items()):
+        raise RuntimeError("Fabric executor allocation pin not applied")
     staged = {item["key"]: item["value"] for item in compute.get("sparkProperties", [])}
     mismatches = [key for key, value in properties.items() if staged.get(key) != value]
     if mismatches:
@@ -1036,6 +1046,83 @@ def refresh_environment(spark_properties: Optional[Dict[str, str]] = None) -> di
         "publish_state": state,
         "runtime_version": RUNTIME_VERSION,
     }
+
+
+def spark_runtime_metrics() -> dict:
+    """Read this run's Spark history before its compute lakehouse is deleted."""
+    deadline = time.monotonic() + 60
+    lid = _compute_lakehouse_id()
+    base = f"{_workspace_base()}/lakehouses/{lid}/livySessions"
+    headers = {"Authorization": f"Bearer {get_token(FABRIC_RESOURCE, timeout=10, deadline=deadline, warm_livy=False)}"}
+    result = {"status": "ok", "responses": []}
+
+    def read(suffix):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            result["status"] = "partial"
+            return None
+        try:
+            response = _fabric_req("GET", base + suffix, headers=headers,
+                                   timeout=min(10, remaining), retries=1)
+            result["responses"].append({"endpoint": suffix, "http_status": response.status_code})
+            if response.status_code == 200:
+                return response.json()
+        except (requests.RequestException, ValueError) as error:
+            result["responses"].append({"endpoint": suffix, "error_type": type(error).__name__})
+        result["status"] = "partial"
+        return None
+
+    def pick(row, fields):
+        return {key: row[key] for key in fields if key in row}
+
+    listed = read("") or {}
+    sessions = [s for s in listed.get("value", []) if s.get("item", {}).get("itemId") == lid]
+    if len(sessions) != 1:
+        return {**result, "status": "partial", "session_matches": len(sessions)}
+    session = sessions[0]
+    result["session"] = pick(session, (
+        "sparkApplicationId", "livyId", "runtimeVersion", "capacityId", "state",
+        "driverCores", "driverMemory", "executorCores", "executorMemory",
+        "numExecutors", "dynamicAllocationMaxExecutors", "isDynamicAllocationEnabled",
+        "submittedDateTime", "startDateTime", "queuedDuration",
+    ))
+    prefix = f"/{session['livyId']}/applications/{session['sparkApplicationId']}"
+    detail = read(f"/{session['livyId']}") or {}
+    result["requested_resources"] = pick(detail, (
+        "driverCores", "driverMemory", "executorCores", "executorMemory", "numExecutors",
+        "dynamicAllocationMaxExecutors", "isDynamicAllocationEnabled", "isHighConcurrency",
+    ))
+    environment = read(prefix + "/environment") or {}
+    allowed = {
+        "spark.executor.cores", "spark.executor.memory", "spark.executor.instances",
+        "spark.driver.cores", "spark.driver.memory", "spark.dynamicAllocation.enabled",
+        "spark.dynamicAllocation.minExecutors", "spark.dynamicAllocation.maxExecutors",
+        "spark.dynamicAllocation.initialExecutors", "spark.sql.shuffle.partitions",
+        "spark.sql.adaptive.enabled", "spark.sql.adaptive.coalescePartitions.enabled",
+        "spark.sql.autoBroadcastJoinThreshold", "spark.sql.adaptive.autoBroadcastJoinThreshold",
+    }
+    result["spark_properties"] = {k: v for k, v in environment.get("sparkProperties", []) if k in allowed}
+    executors = read(prefix + "/allexecutors")
+    result["executors"] = [pick(row, (
+        "id", "isActive", "totalCores", "totalTasks", "failedTasks", "completedTasks",
+        "totalDuration", "totalGCTime", "totalInputBytes", "totalShuffleRead", "totalShuffleWrite",
+        "addTime", "removeTime", "memoryUsed", "diskUsed",
+    )) for row in (executors or [])]
+    stages = read(prefix + "/stages?details=false")
+    result["stages"] = [pick(row, (
+        "stageId", "attemptId", "status", "numTasks", "numCompleteTasks", "numFailedTasks",
+        "submissionTime", "completionTime", "executorRunTime", "executorCpuTime",
+        "inputBytes", "outputBytes", "shuffleReadBytes", "shuffleWriteBytes",
+        "memoryBytesSpilled", "diskBytesSpilled",
+    )) for row in (stages or [])]
+    usage = read(prefix + "/resourceUsage") or {}
+    result["resource_usage"] = pick(usage, ("duration", "idleTime", "coreEfficiency", "capacityExceeded"))
+    result["resource_usage"]["data"] = pick(usage.get("data", {}), (
+        "timestamps", "allocatedCores", "idleCores", "runningCores", "isPartials",
+    ))
+    if not executors or not stages or not usage.get("data"):
+        result["status"] = "partial"
+    return result
 
 
 class ProfileClient:

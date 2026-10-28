@@ -96,6 +96,11 @@ def spark_openivm_export_profile(run_id, batch_num, engine):
     try:
         client = fabric.ProfileClient() if engine == "fabric-openivm-jvm-35" else None
         result = spark_openivm_profile.export_profile(run_id, batch_num, client=client)
+        if engine == "fabric-openivm-jvm-35":
+            try:
+                result["spark_runtime"] = fabric.spark_runtime_metrics()
+            except Exception as error:
+                result["spark_runtime"] = {"status": "error", "error_type": type(error).__name__}
         return jsonify(result), 200
     except Exception as e:
         logger.exception("[%s] Profile export failed", engine)

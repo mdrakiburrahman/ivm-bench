@@ -466,7 +466,9 @@ def _validate_one(
             raise RuntimeError(
                 f"{label}: no user-visible columns shared between "
                 f"{relation} ({mv_cols}) and expected view "
-                f"({expected_cols})"
+                f"({expected_cols}); DESCRIBE outputs: "
+                f"mv={str(describe_mv_out.get('output'))[:1000]}, "
+                f"expected={str(describe_exp_out.get('output'))[:1000]}"
             )
         if missing_from_mv or missing_from_expected:
             raise RuntimeError(
