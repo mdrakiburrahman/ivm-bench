@@ -1,8 +1,8 @@
 {
   "_design_notes": [
-    "Reproduce validated run 40569379743: Spark and Fabric OpenIVM, SF100, one repetition, standard three batches, inserts 100/1/0.01%, no updates/deletes, four dbt threads, serial.",
-    "Both engines retain the tested WF, compile-cache and asynchronous-backup settings. Native compiler and LPTS pins stay unchanged. The Spark source adds only the async default plus tests/docs to the measured head.",
-    "Validation, profiling, SQL logs, storage and Spark metrics are enabled. Validation is outside the timed maintenance batches; retain background backup logs when comparing async and synchronous modes."
+    "Compare source 306b8b0e with validated run 40667200914 (source 5c37b45f): bounded local window-state decoding and grouped publication simplification. Native compiler and LPTS pins stay unchanged.",
+    "Spark and Fabric OpenIVM, SF100, one repetition, standard three batches, inserts 100/1/0.01%, no updates/deletes, four dbt threads, serial; retain the verified WF, compile-cache and asynchronous-backup settings.",
+    "Validation, profiling, SQL logs, storage and Spark metrics are enabled. Validation is outside timed maintenance batches; retain background backup logs and dbt/engine/experiment times. Ordered-rank POCs are excluded."
   ],
   "baseline": {
     "engines": [
