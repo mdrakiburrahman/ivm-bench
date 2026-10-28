@@ -479,6 +479,28 @@ def run(run_id, scale_factor, full_refresh, batch_num):
             cleanup_progress(run_id)
 
 
+def _validation_diagnostics(executor, query, node):
+    # Freeze two independent recomputations before sampling. Floating-point
+    # aggregates can otherwise change between the count and sample queries.
+    tables = [physical(relation(node)) + "_validation_" + suffix for suffix in ("expected", "repeat")]
+    with ExitStack() as cleanup:
+        for table in tables:
+            cleanup.callback(executor.execute, f"DROP TABLE IF EXISTS {quote(table)}")
+            executor.execute(f"CREATE TABLE {quote(table)} USING DELTA AS {query}")
+        expected = "SELECT * FROM " + quote(tables[0])
+        comparisons = {}
+        for label, actual in (("expected_vs_actual", "SELECT * FROM " + quote(relation(node))),
+                              ("expected_vs_repeat", "SELECT * FROM " + quote(tables[1]))):
+            differences = {}
+            for direction, left, right in (("missing", expected, actual), ("extra", actual, expected)):
+                difference = f"(({left}) EXCEPT ALL ({right}))"
+                differences[direction + "_rows"] = executor.execute(f"SELECT COUNT(*) FROM {difference}")[0][0]
+                differences[direction + "_samples"] = [r[0] for r in executor.execute(
+                    "SELECT to_json(struct(*), map('ignoreNullFields', 'false')) FROM " + difference + " LIMIT 5")]
+            comparisons[label] = differences
+        return comparisons
+
+
 def validate(batch_num):
     checkpoint = json.loads((WORK_DIR / "checkpoint.json").read_text())
     if checkpoint.get("dirty") or checkpoint["batch_num"] != batch_num:
@@ -492,7 +514,13 @@ def validate(batch_num):
             actual = "SELECT * FROM " + quote(relation(node))
             missing = executor.execute(f"SELECT COUNT(*) FROM (({query}) EXCEPT ALL ({actual}))")[0][0]
             extra = executor.execute(f"SELECT COUNT(*) FROM (({actual}) EXCEPT ALL ({query}))")[0][0]
-            results.append({"model": node["name"], "missing_rows": missing, "extra_rows": extra})
+            result = {"model": node["name"], "missing_rows": missing, "extra_rows": extra}
+            results.append(result)
+            if missing or extra:
+                try:
+                    result["diagnostics"] = _validation_diagnostics(executor, query, node)
+                except Exception as exc:
+                    result["diagnostics_error"] = str(exc)
     finally:
         executor.close()
     payload = {"status": "ok" if all(r["missing_rows"] == r["extra_rows"] == 0 for r in results) else "error",

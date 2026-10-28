@@ -202,6 +202,9 @@ metrics are reported as partial rather than proof of native execution.
 The batch result also retains validation details and client timings for source
 loading, metadata SQL, compiler requests, and each model. Fields ending in
 `work_s` sum spans across concurrent workers; they are not elapsed batch time.
+On a validation mismatch, the report includes exact differing-row samples from
+two frozen recomputations, compared with the maintained result and each other.
+These diagnostics run outside the timer and do not override the original failure.
 Use `smoke-repeated-refresh-databricks-openivm.json` for the SF3 standard and
 extended TPC-DI comparison against Enzyme, with two compounded 1% refreshes and
 eight model workers for each engine.

@@ -901,8 +901,8 @@ class EngineRunner:
                     batch.extra["databricks_photon_metrics"] = {"status": "unavailable", "error": str(exc)}
                 if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
                     resp = requests.post(f"{self._dbt_url}/validate/databricks-openivm/{batch_num}", timeout=7200)
-                    resp.raise_for_status()
                     batch.extra["openivm_validation"] = resp.json()
+                    resp.raise_for_status()
                     if batch.extra["openivm_validation"].get("status") != "ok":
                         raise RuntimeError("Databricks OpenIVM correctness validation failed")
 

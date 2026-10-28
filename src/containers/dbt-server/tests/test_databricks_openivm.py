@@ -34,6 +34,54 @@ class DatabricksOpenivmTest(unittest.TestCase):
         return {"nodes": {"model.a": self.model("a")}, "sources": {
             "source.events": {"database": "cat", "schema": "exp_data", "name": "events"}}}
 
+    def test_validation_preserves_failure_even_when_frozen_recomputations_match(self):
+        backend._save(backend.WORK_DIR / "checkpoint.json", {
+            "batch_num": 3, "models": {"model.a": {"query": "SELECT id FROM events"}}})
+        executor = self.executor()
+        executor.execute.side_effect = [[[1]], [[0]]]
+        diagnostics = {"expected_vs_actual": {"missing_rows": 0, "extra_rows": 0},
+                       "expected_vs_repeat": {"missing_rows": 0, "extra_rows": 0}}
+        with patch.object(backend, "get_manifest", return_value=self.manifest()), \
+                patch.object(backend, "SqlExecutor", return_value=executor), \
+                patch.object(backend, "_validation_diagnostics", return_value=diagnostics):
+            result = backend.validate(3)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["models"][0]["missing_rows"], 1)
+        self.assertEqual(result["models"][0]["diagnostics"], diagnostics)
+        self.assertEqual(json.loads((backend.WORK_DIR / "validation-batch3.json").read_text()), result)
+        executor.close.assert_called_once()
+
+    def test_validation_diagnostics_freeze_recomputations_and_keep_exact_samples(self):
+        executor = self.executor()
+        def execute(sql):
+            if sql.startswith("SELECT COUNT"):
+                return [[1]]
+            if sql.startswith("SELECT to_json"):
+                return [['{"id":null,"value":0.12345678901234567}']]
+            return []
+        executor.execute.side_effect = execute
+        result = backend._validation_diagnostics(executor, "SELECT id FROM events", self.model("a"))
+        calls = [c.args[0] for c in executor.execute.call_args_list]
+        self.assertTrue(all(c.startswith("CREATE TABLE") for c in calls[:2]))
+        for comparison in result.values():
+            self.assertEqual(comparison["missing_rows"], 1)
+            self.assertIn('"id":null', comparison["missing_samples"][0])
+            self.assertIn("0.12345678901234567", comparison["extra_samples"][0])
+        self.assertTrue(all("EXCEPT ALL" in c for c in calls[2:-2]))
+        self.assertTrue(all(c.startswith("DROP TABLE IF EXISTS") for c in calls[-2:]))
+        self.assertFalse(any("ROUND(" in c or "HASH(" in c for c in calls))
+
+    def test_validation_diagnostics_drop_both_tables_when_second_snapshot_fails(self):
+        executor = self.executor()
+        def execute(sql):
+            if sql.startswith("CREATE TABLE") and "_validation_repeat`" in sql:
+                raise RuntimeError("snapshot failed")
+        executor.execute.side_effect = execute
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            backend._validation_diagnostics(executor, "SELECT id FROM events", self.model("a"))
+        calls = [c.args[0] for c in executor.execute.call_args_list]
+        self.assertEqual(sum(c.startswith("DROP TABLE IF EXISTS") for c in calls), 2)
+
     def test_dependencies_through_ephemeral_models_are_ordered(self):
         manifest = {"nodes": {
             "model.a": self.model("a", ["model.e"]),
