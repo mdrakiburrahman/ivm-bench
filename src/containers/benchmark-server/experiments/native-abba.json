@@ -1,0 +1,47 @@
+{
+  "_design_notes": [
+    "Native-only retry of original runs39980368833 (main) and39931568364 (PR86); immutable identical native source revisions.",
+    "SF10 exact validation for both pins, then fresh-state SF100 repetitions in main/PR86/PR86/main (ABBA) order on one worker.",
+    "Same model SQL, inserts100/1/0.01, no synthetic updates or deletes, resources and engine settings as original harness a20496a.",
+    "CLI phase markers and per-process/host I/O sampling are common to both pins. No full QueryLog capture, cache eviction, sync, or inserted settling delay. Diagnostic overhead is retained.",
+    "Fresh engine state/session per repetition; host page caches are shared. All49models and all3batches are required."
+  ],
+  "baseline": {
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "duckdb-openivm"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "spark_tunables": {
+      "dbt_threads": 4
+    },
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": false,
+      "storage_metrics": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "native-abba-controller-template",
+      "scale_factor": 100,
+      "engines": [
+        "duckdb-openivm"
+      ]
+    }
+  ],
+  "_attribution": {
+    "native_control": "ececf5a00fd2b1918a585e51f3237de6828948d9",
+    "native_treatment": "4a71959694ff18e239fb249d188218ed5f5c04ff"
+  }
+}

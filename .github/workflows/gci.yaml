@@ -115,7 +115,21 @@ permissions:
   contents: read
 
 jobs:
+  adapter-tests:
+    runs-on: ubuntu-latest
+    container: python:3.11-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install adapter dependencies in the test container
+        run: pip install ./src/containers/dbt-server/adapters/dbt-duckdb-openivm
+      - name: Verify CLI phase observation and retry safety
+        run: |
+          python -c 'from dbt.adapters.openivm import connections'
+          python -m unittest discover -s src/containers/dbt-server/tests -p 'test_openivm_cli*.py' -v
+          python -m unittest discover -s src/containers/benchmark-server/tests -p test_native_abba.py -v
+
   benchmark:
+    needs: adapter-tests
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
@@ -260,7 +274,7 @@ jobs:
           echo "Wrote $(wc -c < "$GITHUB_WORKSPACE/.env") bytes to .env"
 
       - name: "🏁 Run benchmark"
-        run: bash src/.scripts/benchmark.sh
+        run: python3 tools/scripts/benchmarks/native_abba.py
 
       - name: "💬 Post PR comment"
         if: github.event_name == 'pull_request' && !cancelled()
@@ -296,6 +310,7 @@ jobs:
             # benchmark flushes a row per completed case, so a shard cut short still has
             # everything it finished.
             mount/cost-model-bench/**
+            native-abba-results/
             gci-experiments.json
           if-no-files-found: warn
           retention-days: 30

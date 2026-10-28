@@ -66,21 +66,22 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
             return result
         sql = 'SELECT "a,b", 2'
         with patch.object(connections, 'PROFILE_REFRESH', True), \
-                patch.object(connections.time, 'monotonic', side_effect=[10.0, 13.0]), \
-                patch.object(connections.subprocess, 'run', side_effect=execute):
+                patch.object(connections, 'run_profiled_cli', side_effect=
+                             lambda args, program, markers, timeout: (execute(input=program), 3.0, {})):
             self.assertEqual(connections._run_cli(sql), 'a,b\n1,2\n')
         with open(Path(connections.TEMP_DIR) / 'cli-timings.csv', newline='') as trace:
             rows = list(csv.reader(trace))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][1], sql)
-        self.assertEqual([float(v) for v in rows[0][4:]], [3.0, 0.25, 1.5, 1.25])
+        self.assertEqual([float(v) for v in rows[0][4:8]], [3.0, 0.25, 1.5, 1.25])
 
     def test_profile_write_failure_does_not_fail_or_replay_completed_sql(self):
         def execute(*args, **kwargs):
             return self.output(kwargs['input'], '42\nRun Time (s): real 0.001 user 0 sys 0\n')
         with patch.object(connections, 'PROFILE_REFRESH', True), \
                 patch('builtins.open', side_effect=OSError('trace unavailable')), \
-                patch.object(connections.subprocess, 'run', side_effect=execute) as run, \
+                patch.object(connections, 'run_profiled_cli', side_effect=
+                             lambda args, program, markers, timeout: (execute(input=program), 3.0, {})) as run, \
                 self.assertLogs(connections.logger, level='WARNING'):
             self.assertEqual(connections._run_cli('SELECT 42'), '42\n')
         self.assertEqual(run.call_count, 1)
