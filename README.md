@@ -198,6 +198,10 @@ resource allocation. OpenIVM additionally runs a schema-only compiler helper
 limited to two CPUs and 4 GB. Remote SQL warehouse and managed MV pipeline
 compute allocations are independent; matching model concurrency does not make
 them an equal-resource SQL execution comparison.
+Batch timings include source synchronization and completed model writes.
+Enzyme's record-only incrementalization EXPLAIN sweep runs after the initial
+batch timer stops, against the existing MVs. Its separate client elapsed time
+is retained as `databricks_explain_s`; it does not replace or drop live models.
 
 `mount/results/<sf>/databricks-openivm/` contains the checkpoint, generated
 `sql-batch<N>.sql`, statement IDs and timings, bag-equivalence validation using

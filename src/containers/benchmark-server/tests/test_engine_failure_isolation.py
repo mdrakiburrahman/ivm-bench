@@ -95,6 +95,37 @@ class EngineFailureIsolationTest(unittest.TestCase):
 
 
 class DatabricksFailureDiagnosticsTest(unittest.TestCase):
+    def test_explain_observer_runs_after_initial_batch_timer_and_not_on_refresh(self):
+        for batch_num in (1, 2):
+            with self.subTest(batch_num=batch_num):
+                runner = EngineRunner.__new__(EngineRunner)
+                runner._engine = SimpleNamespace(name="databricks-enzyme")
+                runner._config = SimpleNamespace(scale_factor=10)
+                runner._result = EngineResult(engine="databricks-enzyme")
+                batch = runner._result.batches[batch_num - 1]
+                for name in ("_emit", "_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
+                             "_databricks_enzyme_warmup", "_ensure_cpu_measurement_status", "_export_query_plans",
+                             "_export_databricks_enzyme_metrics", "_collect_databricks_enzyme_flow_metrics",
+                             "_save_openivm_ops_chart", "_capture_storage_metrics"):
+                    setattr(runner, name, Mock())
+                runner._run_databricks_enzyme = Mock(return_value="run")
+
+                def observe(_sf):
+                    self.assertEqual(batch.duration_s, 10)
+                    self.assertEqual(batch.extra["wall_window_end_ms"], 110000)
+
+                runner._export_databricks_enzyme_explain = Mock(side_effect=observe)
+                with patch("services.engine_runner.time.time", side_effect=[100, 110, 110]), \
+                        patch("services.engine_runner.time.monotonic", side_effect=[200, 330]):
+                    runner._run_batch(batch_num)
+                self.assertEqual(batch.duration_s, 10)
+                self.assertEqual(batch.status, "completed")
+                if batch_num == 1:
+                    runner._export_databricks_enzyme_explain.assert_called_once_with(10)
+                    self.assertEqual(batch.extra["databricks_explain_s"], 130)
+                else:
+                    runner._export_databricks_enzyme_explain.assert_not_called()
+
     def setUp(self):
         self.run = {
             "started_at": "2026-10-13T19:40:00+00:00",

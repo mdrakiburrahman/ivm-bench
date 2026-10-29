@@ -915,6 +915,10 @@ class EngineRunner:
 
             if name == "databricks-enzyme":
                 if batch.status != "failed":
+                    if batch_num == 1:
+                        observer_started = time.monotonic()
+                        self._export_databricks_enzyme_explain(self._config.scale_factor)
+                        batch.extra["databricks_explain_s"] = time.monotonic() - observer_started
                     self._export_databricks_enzyme_metrics(batch_num)
                 # Failed refreshes need their planning/error events captured
                 # before teardown drops the materialized views and pipelines.
@@ -1387,8 +1391,8 @@ class EngineRunner:
             f"attempts={data.get('attempts')} elapsed_s={data.get('elapsed_s')}"
         )
 
-    def _databricks_enzyme_validate_incrementalizable(self, sf: int) -> None:
-        """Pre-flight diagnostic: EXPLAIN every model under INCREMENTAL STRICT.
+    def _export_databricks_enzyme_explain(self, sf: int) -> None:
+        """Post-batch diagnostic: EXPLAIN every model under INCREMENTAL STRICT.
 
         POSTs to dbt-server's
         ``/validate/databricks-enzyme/explain-create-materialized-view/<sf>``
@@ -1402,10 +1406,9 @@ class EngineRunner:
         per-model reason strings that feed the
         ``benchmark-heuristics.png`` incrementalization-coverage panel.
 
-        Called after ``init/<sf>`` succeeds (so the planner can resolve
-        ``tpcdi_src.*``) and before the dbt build. Cost is in batch 1's
-        timer to match the init/<sf>-in-timer convention used by every
-        other engine for initial source loading.
+        Called after the initial build and outside its batch timer. Existing
+        materialized views resolve dependencies; the observer must not create
+        or drop stub views at their names.
 
         Persists per-model artifacts to
         ``mount/query-plan/<sf>/databricks-enzyme/
@@ -1420,7 +1423,7 @@ class EngineRunner:
         """
         refresh_policy = os.environ.get("DATABRICKS_REFRESH_POLICY", "AUTO")
         self._emit(
-            f"[databricks-enzyme] Pre-flight diagnostic: EXPLAIN every model "
+            f"[databricks-enzyme] Post-batch diagnostic: EXPLAIN every model "
             f"under REFRESH POLICY INCREMENTAL STRICT (record-only, "
             f"actual run uses {refresh_policy}) sf={sf}"
         )
@@ -1428,6 +1431,7 @@ class EngineRunner:
             resp = requests.post(
                 f"{self._dbt_url}/validate/databricks-enzyme/"
                 f"explain-create-materialized-view/{sf}",
+                json={"existing_models": True},
                 timeout=1800,
             )
         except Exception as e:
@@ -1458,14 +1462,14 @@ class EngineRunner:
             sample = ", ".join(f.get("model", "?") for f in failures[:5])
             extra = "" if len(failures) <= 5 else f" (+{len(failures) - 5} more)"
             self._emit(
-                f"[databricks-enzyme] Pre-flight: {failed}/{total} models "
+                f"[databricks-enzyme] Diagnostic: {failed}/{total} models "
                 f"NOT incrementalizable under STRICT (actual policy: "
                 f"{refresh_policy}): {sample}{extra}. "
                 f"See mount/query-plan/{sf}/databricks-enzyme/"
                 f"explain-create-materialized-view/summary.json for reasons."
             )
         self._emit(
-            f"[databricks-enzyme] Pre-flight done: "
+            f"[databricks-enzyme] Diagnostic done: "
             f"{passed}/{total} incrementalizable, {failed}/{total} rejected under STRICT; "
             f"{len(data.get('skipped_ephemeral') or [])} ephemeral skipped; "
             f"elapsed_ms={data.get('elapsed_ms')}"
@@ -1649,13 +1653,6 @@ class EngineRunner:
                 f"skipped_upload={data.get('skipped_upload')}"
             )
 
-            # Pre-flight incrementalizability gate. Runs after init/<sf>
-            # so `tpcdi_src.*` exists for the planner to resolve, but
-            # BEFORE the dbt build so a failure short-circuits without
-            # any `CREATE MATERIALIZED VIEW` being emitted. Cost is in
-            # batch 1's timer (matches the init/<sf>-in-timer convention
-            # used by every other engine for initial source loading).
-            self._databricks_enzyme_validate_incrementalizable(sf)
         else:
             self._emit(
                 f"[databricks-enzyme] Syncing batch {batch_num} sources to "
