@@ -143,6 +143,7 @@ ENGINE_COMPUTE_SERVICES = {
     "duckdb-openivm": ("dbt-server",),
     "feldera": ("pipeline-manager",),
     "spark-openivm": ("spark-openivm", "mssql-metastore"),
+    "dbspnet": ("dbspnet-server",),
 }
 
 # Cloud-consuming engines: the heavy query compute is offloaded to a remote
