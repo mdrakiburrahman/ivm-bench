@@ -327,7 +327,7 @@ class Orchestrator:
             ("docker/docker-compose.spark-openivm-build.yml", "spark-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "spark-openivm", "databricks-enzyme", "databricks-openivm", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "dbspnet", "spark-openivm", "databricks-enzyme", "databricks-openivm", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:

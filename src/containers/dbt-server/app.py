@@ -18,6 +18,7 @@ from flask import Flask, g, request
 from handlers.chart import ChartHandler
 from handlers.container_stats import ContainerStatsHandler
 from handlers.databricks_enzyme import DatabricksEnzymeHandler
+from handlers.dbspnet import DbspNetHandler
 from handlers.delta_stats import DeltaStatsHandler
 from handlers.fabric import FabricHandler
 from handlers.feldera import FelderaHandler
@@ -75,6 +76,7 @@ def register_handlers(flask_app: Flask) -> None:
         FabricHandler(),
         RunsHandler(),
         FelderaHandler(),
+        DbspNetHandler(),
         ChartHandler(),
         LineageHandler(),
         SQLAnalysisHandler(),
