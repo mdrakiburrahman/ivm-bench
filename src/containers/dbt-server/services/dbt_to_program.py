@@ -2,10 +2,10 @@
 `+connectors` config) into a DbspNet program spec.
 
 This is the DbspNet integration's "compile-only bypass": rather than a custom dbt adapter,
-we read the model SQL files + `dbt_project.yml` connector config directly, resolve dbt
-`{{ ref() }}` / `{{ source() }}` and the one `dbt_utils.generate_surrogate_key` macro the
-project uses, topologically sort by dependency, and emit the JSON the DbspNet control
-service accepts at POST /compile and POST /deploy:
+we read the model SQL files + `dbt_project.yml` connector config directly, render each
+model's Jinja the way dbt would (`ref()`, `source()`, `env_var()`, control flow, and the one
+`dbt_utils.generate_surrogate_key` macro the project uses), topologically sort by dependency,
+and emit the JSON the DbspNet control service accepts at POST /compile and POST /deploy:
 
     {
       "program": ["CREATE TABLE ...", "CREATE VIEW ... AS ...", ...],   # dependency order
@@ -23,28 +23,51 @@ import os
 import re
 import sys
 
+import jinja2
 import yaml
 
 SURROGATE_NULL = "_dbt_utils_surrogate_key_null_"
 
 _REF = re.compile(r"\{\{\s*ref\(\s*'([^']+)'\s*\)\s*\}\}")
 _SOURCE = re.compile(r"\{\{\s*source\(\s*'[^']+'\s*,\s*'([^']+)'\s*\)\s*\}\}")
-_SURROGATE = re.compile(r"\{\{\s*dbt_utils\.generate_surrogate_key\(\s*\[([^\]]*)\]\s*\)\s*\}\}")
 
 
-def _surrogate_key(field_list_src):
-    fields = [f.strip().strip("'\"") for f in field_list_src.split(",") if f.strip()]
+def _surrogate_key(fields):
     parts = [f"coalesce(cast({f} as varchar), '{SURROGATE_NULL}')" for f in fields]
     joiner = " || '-' || "
     return "md5(cast(" + joiner.join(parts) + " as varchar))"
 
 
+class _DbtUtils:
+    @staticmethod
+    def generate_surrogate_key(fields):
+        return _surrogate_key(fields)
+
+
+def _env_var(name, default=None):
+    # dbt's env_var(): the variable's value, else the default, else a compile error.
+    value = os.environ.get(name, default)
+    if value is None:
+        raise jinja2.UndefinedError(f"env_var('{name}') is not set and has no default")
+    return value
+
+
+# keep_trailing_newline matches dbt's environment; StrictUndefined turns any construct
+# this context does not provide into an error instead of silently rendering it empty.
+_JINJA = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True)
+
+
 def render(sql):
-    """Resolve dbt refs/sources/macros to plain SQL identifiers/expressions."""
-    sql = _REF.sub(lambda m: m.group(1), sql)
-    sql = _SOURCE.sub(lambda m: m.group(1), sql)
-    sql = _SURROGATE.sub(lambda m: _surrogate_key(m.group(1)), sql)
-    return sql
+    """Render a model's Jinja to plain SQL, the way dbt would for this project: refs and
+    sources become bare relation names, env_var() reads this process's environment (dbt
+    runs in the same dbt-server container for the Feldera path), and control flow such as
+    `{% if env_var(...) %}` is evaluated."""
+    return _JINJA.from_string(sql).render(
+        ref=lambda name: name,
+        source=lambda _schema, table: table,
+        env_var=_env_var,
+        dbt_utils=_DbtUtils,
+    )
 
 
 def refs_of(raw_sql):
