@@ -432,8 +432,6 @@ def _record_node(run_id, uid, node, duration, status="success", message=""):
 
 def run(run_id, scale_factor, full_refresh, batch_num):
     started = time.monotonic()
-    manifest = None
-    checkpoint = {}
     timing = {}
     with _RUN_LOCK:
         init_progress(run_id)
@@ -460,10 +458,8 @@ def run(run_id, scale_factor, full_refresh, batch_num):
             timing["manifest_compile_s"] = time.monotonic() - manifest_started
             if not manifest or not ordered_models(manifest):
                 raise RuntimeError("Could not compile Databricks TPC-DI models")
-            checkpoint.pop("active_model", None)
             build_models(manifest, checkpoint, full_refresh=full_refresh, batch_num=batch_num)
             checkpoint.update(dirty=False, batch_num=batch_num)
-            checkpoint.pop("active_model", None)
             _save(path, checkpoint)
             with DB_LOCK:
                 conn = get_db()
@@ -506,10 +502,13 @@ def validate(batch_num):
     if checkpoint.get("dirty") or checkpoint["batch_num"] != batch_num:
         raise RuntimeError("Cannot validate an incomplete refresh")
     manifest = get_manifest("databricks-enzyme")
+    models = ordered_models(manifest) if manifest else []
+    if not models or {uid for uid, _ in models} != set(checkpoint["models"]):
+        raise RuntimeError("Validation model set is empty or differs from the initialized checkpoint")
     executor = SqlExecutor()
     results = []
     try:
-        for uid, node in ordered_models(manifest):
+        for uid, node in models:
             query = checkpoint["models"][uid]["query"]
             actual = "SELECT * FROM " + quote(relation(node))
             missing = executor.execute(f"SELECT COUNT(*) FROM (({query}) EXCEPT ALL ({actual}))")[0][0]

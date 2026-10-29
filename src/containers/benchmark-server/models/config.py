@@ -117,7 +117,7 @@ ENGINE_MAIN_SERVICES = {
     "databricks-enzyme": None,
     "fabric-openivm-jvm-35": None,
     "fabric-jvm-35": None,
-    "databricks-openivm": "openivm-sql-compiler",
+    "databricks-openivm": None,  # The schema-only compiler is a helper; execution is remote.
 }
 
 # Containers whose CPU contributes to the controlled local-system metric.

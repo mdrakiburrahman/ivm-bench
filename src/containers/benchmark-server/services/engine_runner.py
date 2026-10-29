@@ -731,12 +731,12 @@ class EngineRunner:
                 f"already_seeded={data.get('already_seeded')}"
             )
 
-        run_id = self._run_fabric_dbt(batch_num, full_refresh)
+        run_id = self._run_dbt_with_batch(batch_num, full_refresh)
         if batch_num == 1:
             self._write_last_sf(sf)
         return run_id
 
-    def _run_fabric_dbt(self, batch_num: int, full_refresh: bool) -> str:
+    def _run_dbt_with_batch(self, batch_num: int, full_refresh: bool) -> str:
         """POST /run/<engine> with batch_num (for the source macro), stream
         progress, check + save the result."""
         name = self._engine.name
@@ -1534,14 +1534,7 @@ class EngineRunner:
             if response.json().get("status") != "ok":
                 raise RuntimeError(f"Databricks OpenIVM source operation failed: {path}")
         self._result.batches[batch_num - 1].extra["source_load_s"] = time.monotonic() - source_started
-        response = requests.post(f"{self._dbt_url}/run/databricks-openivm",
-                                 json={"scale_factor": sf, "full_refresh": batch_num == 1, "batch_num": batch_num}, timeout=30)
-        response.raise_for_status()
-        run_id = response.json()["run_id"]
-        self._stream_dbt_progress(run_id, batch_num)
-        self._check_run_result(run_id, batch_num)
-        self._save_run_result(run_id, batch_num)
-        return run_id
+        return self._run_dbt_with_batch(batch_num, batch_num == 1)
 
     def _run_databricks_enzyme(self, batch_num: int) -> str:
         """Run databricks-enzyme: per-batch source sync, then dbt build.

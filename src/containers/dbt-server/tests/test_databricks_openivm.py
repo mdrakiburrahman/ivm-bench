@@ -51,6 +51,19 @@ class DatabricksOpenivmTest(unittest.TestCase):
         self.assertEqual(json.loads((backend.WORK_DIR / "validation-batch3.json").read_text()), result)
         executor.close.assert_called_once()
 
+    def test_validation_rejects_empty_missing_or_changed_model_coverage_before_sql(self):
+        backend._save(backend.WORK_DIR / "checkpoint.json", {
+            "batch_num": 3, "models": {"model.a": {"query": "SELECT id FROM events"},
+                                       "model.b": {"query": "SELECT id FROM events"}}})
+        for manifest in (None, {"nodes": {}}, self.manifest(),
+                         {"nodes": {"model.a": self.model("a"), "model.c": self.model("c")}}):
+            with self.subTest(manifest=manifest), \
+                    patch.object(backend, "get_manifest", return_value=manifest), \
+                    patch.object(backend, "SqlExecutor") as executor:
+                with self.assertRaisesRegex(RuntimeError, "model set"):
+                    backend.validate(3)
+                executor.assert_not_called()
+
     def test_validation_diagnostics_freeze_recomputations_and_keep_exact_samples(self):
         executor = self.executor()
         def execute(sql):

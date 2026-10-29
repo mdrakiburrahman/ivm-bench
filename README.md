@@ -193,6 +193,11 @@ session and reuses its CDF temporary views only for an identical source range.
 Source schemas and Delta versions are cached within a batch; a model's version
 is invalidated after its writes finish, before its children can start. Failed
 maintenance stops new work and waits for active writes before reporting failure.
+Both Databricks engines use the same local orchestration and source-loader
+resource allocation. OpenIVM additionally runs a schema-only compiler helper
+limited to two CPUs and 4 GB. Remote SQL warehouse and managed MV pipeline
+compute allocations are independent; matching model concurrency does not make
+them an equal-resource SQL execution comparison.
 
 `mount/results/<sf>/databricks-openivm/` contains the checkpoint, generated
 `sql-batch<N>.sql`, statement IDs and timings, bag-equivalence validation using
