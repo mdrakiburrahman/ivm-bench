@@ -94,7 +94,7 @@ def summarize(root):
         'CLI phase offsets are parent-observed output arrival times and include observer scheduling lag.\n'
         'Native CLI exports are cumulative; calls are deduplicated by timestamp, SQL and attempt.\n'
         'Fresh sessions per repetition; shared host caches are not evicted.\n'
-        'No slow observations are discarded. Two repetitions per variant are exploratory.\n')
+        'No slow observations are discarded. Repetition counts are recorded in summary.csv; small samples are exploratory.\n')
 
 
 if __name__ == '__main__':

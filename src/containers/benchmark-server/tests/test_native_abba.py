@@ -13,6 +13,14 @@ spec.loader.exec_module(runner)
 
 
 class NativeABBATest(unittest.TestCase):
+    def test_merged_pr_rerun_measures_the_new_head_once(self):
+        path = ROOT/'src/containers/benchmark-server/experiments/native-pr119-merged-sf100-sf10.json'
+        study = json.loads(path.read_text())['_attribution']
+        phases = runner.phases(study, 100)
+        self.assertEqual(len(phases), 2)
+        self.assertEqual([(p[2], p[3], p[4]) for p in phases], [('B', 10, True), ('B', 100, False)])
+        self.assertEqual({p[5] for p in phases}, {'c0669521c4777b3e951869ef77052f4287c68b6a'})
+
     def test_exact_sources_and_balanced_fresh_repetitions(self):
         study = {'native_control': 'a'*40, 'native_treatment': 'b'*40}
         phases = runner.phases(study, 100)

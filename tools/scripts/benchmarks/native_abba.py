@@ -97,10 +97,10 @@ def verify_results(destination, sf, engine, validate):
 
 def phases(study, sf):
     out = []
-    for variant in 'AB':
+    for variant in study.get('validate_variants', 'AB'):
         out.append((f'native-validate-{variant}', 'duckdb-openivm', variant, 10, True,
                     study['native_control' if variant == 'A' else 'native_treatment']))
-    for index, variant in enumerate('ABBA'):
+    for index, variant in enumerate(study.get('measurement_order', 'ABBA')):
         out.append((f'native-{variant}{1 if index < 2 else 2}', 'duckdb-openivm', variant, sf, False,
                     study['native_control' if variant == 'A' else 'native_treatment']))
     return out
@@ -117,7 +117,7 @@ def main():
         'bench_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
         'study': study, 'worker': platform.node(), 'cpu_count': os.cpu_count(),
         'meminfo': Path('/proc/meminfo').read_text().splitlines()[:3],
-        'order': 'ABBA per engine', 'phases': [],
+        'order': study.get('measurement_order', 'ABBA'), 'phases': [],
         'cold_warm_policy': 'Fresh engine state/session per repetition; no host page-cache eviction.',
     }
     reference_counts = {}

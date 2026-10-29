@@ -1,0 +1,48 @@
+{
+  "_design_notes": [
+    "One native SF100 rerun of PR119 after merging current main7e425376; exact tested candidate c0669521c4777b3e951869ef77052f4287c68b6a.",
+    "First validate the same candidate at SF10 using exact bag comparisons for all49models after every batch; then one fresh-state SF100 repetition with validation disabled, matching the original timing policy.",
+    "Same TPC-DI49-model workload, inserts100/1/0.01, no synthetic updates/deletes, resources and engine settings as original harness a20496a. Native CLI phase and I/O instrumentation is identical to paired run40695016907.",
+    "Only the candidate is measured; no contemporaneous main baseline or statistical regression claim. Earlier source pins are historical references.",
+    "Full SQL capture remains disabled; native refresh profiles, process phase/I/O samples, storage metrics, source counts and all raw observations are preserved."
+  ],
+  "baseline": {
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "engines": [
+      "duckdb-openivm"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "spark_tunables": {
+      "dbt_threads": 4
+    },
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": false,
+      "storage_metrics": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "native-abba-controller-template",
+      "scale_factor": 100,
+      "engines": [
+        "duckdb-openivm"
+      ]
+    }
+  ],
+  "_attribution": {
+    "native_treatment": "c0669521c4777b3e951869ef77052f4287c68b6a",
+    "validate_variants": "B",
+    "measurement_order": "B"
+  }
+}
