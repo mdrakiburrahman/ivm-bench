@@ -1,0 +1,41 @@
+{
+  "_design_notes": [
+    "Restore verified source 5c37b45f from run 40667200914 after reverting the bounded-local-state experiment 306b8b0e (SF100 40716787231 did not establish a gain). Native compiler, LPTS and effective benchmark settings stay unchanged.",
+    "Spark and Fabric OpenIVM, SF100, one repetition, standard three batches, inserts 100/1/0.01%, no updates/deletes, four dbt threads, serial; retain the verified WF, compile-cache and asynchronous-backup settings.",
+    "Validation, profiling, SQL logs, storage and Spark metrics are enabled. Validation is outside timed maintenance batches; retain background backup logs and dbt/engine/experiment times. Ordered-rank POCs are excluded."
+  ],
+  "baseline": {
+    "engines": [
+      "spark-openivm",
+      "fabric-openivm-jvm-35"
+    ],
+    "parallel": false,
+    "schedule": "serial",
+    "repeated_refresh": false,
+    "workload": "standard",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "spark_tunables": {
+      "dbt_threads": 4
+    },
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "wf-reviewed-sf100-validated",
+      "scale_factor": 100
+    }
+  ]
+}
