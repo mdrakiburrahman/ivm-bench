@@ -1,3 +1,3 @@
 {
-  "experiments_file": "src/containers/benchmark-server/experiments/duckdb-openivm-snapshot-sf100-sf10.json"
+  "experiments_file": "src/containers/benchmark-server/experiments/dbspnet.json"
 }
