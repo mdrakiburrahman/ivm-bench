@@ -210,6 +210,9 @@ extended TPC-DI comparison against Enzyme, with two compounded 1% refreshes and
 eight model workers for each engine.
 `sf10-databricks-openivm-enzyme.json` repeats that comparison at SF10.
 `sf100-databricks-openivm-enzyme.json` uses the same settings at SF100.
+`fig1-sf100-databricks-openivm.json` runs only Databricks OpenIVM with the
+Figure 1 standard TPC-DI batches (100%, 1%, 0.01%), eight model workers and
+exact validation, retaining individual model timings for comparison.
 SF3 matches the existing repeated-refresh smoke scale; SF1 produces an invalid
 native FINWIRE configuration (`minUpdateSize=2`, below PDGF's minimum of 3).
 
