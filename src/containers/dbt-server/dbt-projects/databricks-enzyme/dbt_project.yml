@@ -55,6 +55,10 @@ models:
       +schema: silver
     gold:
       +schema: gold
+      fact_market_history:
+        # SF10 produces 190M duplicate-expanded rows. Date partitions keep
+        # that highly compressed materialization from landing in one file.
+        +partition_by: "{{ ['sk_date_id'] if env_var('REPEATED_REFRESH', '0') == '1' else [] }}"
     work:
       +schema: work
       +materialized: ephemeral

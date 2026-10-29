@@ -69,7 +69,7 @@ on:
         default: "serial-host-parallel-cloud"
         type: string
       spark_dbt_threads:
-        description: "Cap spark/spark-openivm dbt build concurrency (SPARK_DBT_THREADS). Empty = engine default (30). Mirrors full.json's high-SF gimping."
+        description: "Cap Spark/Fabric dbt model concurrency (default 30). Enzyme uses databricks_dbt_threads in experiment JSON (default 8)."
         default: ""
         type: string
       engines:
@@ -154,8 +154,15 @@ jobs:
 
       - name: "🧪 Run storage collector unit tests"
         run: |
-          python3 -m unittest discover -s src/containers/dbt-server/tests -v
-          python3 -m unittest discover -s src/containers/benchmark-server/tests -v
+          set -euo pipefail
+          if ! python3 -m venv --system-site-packages .runtime/gci-tests; then
+            sudo apt-get update
+            sudo apt-get install -y python3-venv
+            python3 -m venv --system-site-packages .runtime/gci-tests
+          fi
+          .runtime/gci-tests/bin/python -m pip install -r src/containers/benchmark-server/requirements.txt PyYAML databricks-sdk
+          .runtime/gci-tests/bin/python -m unittest discover -s src/containers/dbt-server/tests -v
+          .runtime/gci-tests/bin/python -m unittest discover -s src/containers/benchmark-server/tests -v
 
       - name: "🧬 Resolve experiments file"
         env:

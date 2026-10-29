@@ -27,6 +27,9 @@
                       NOT valid Databricks SQL — the policy is fixed at
                       CREATE time.
 
+    +partition_by     default none
+                      Standard dbt partition columns, emitted only on CREATE.
+
     +mv_schedule      default none
                       e.g. "EVERY 1 HOUR" — when set, emitted as
                       `SCHEDULE <schedule>` in the CREATE statement.
@@ -54,6 +57,7 @@
        ALTER form. Order per docs: name, SCHEDULE, REFRESH POLICY, AS query. #}
     {%- set create_sql -%}
       CREATE MATERIALIZED VIEW {{ target_relation }}
+      {{ get_create_sql_partition_by(config.get('partition_by', [])) }}
       {% if schedule %}SCHEDULE {{ schedule }}{% endif %}
       {% if policy %}REFRESH POLICY {{ policy }}{% endif %}
       AS

@@ -1,0 +1,19 @@
+{
+  "baseline": {
+    "scale_factor": 10,
+    "repeated_refresh": true,
+    "workload": "standard",
+    "refresh_count": 20,
+    "refresh_pct": "1",
+    "engines": ["databricks-enzyme"],
+    "schedule": "serial",
+    "feature_flags": {
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {"label": "SF10 standard TPC-DI: Enzyme default-thread verification, 20 compounded 1% refreshes"}
+  ]
+}
