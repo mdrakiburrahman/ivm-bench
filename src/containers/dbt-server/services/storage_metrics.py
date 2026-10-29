@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
-LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "databricks-enzyme"}
+LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
 SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES
@@ -30,10 +30,13 @@ PROCESSED_ROOTS = {
     "duckdb": Path("/data/processed/duckdb"),
     "duckdb-openivm": Path("/data/processed/duckdb-openivm"),
     "feldera": Path("/data/processed/feldera"),
+    "dbspnet": Path("/data/processed/dbspnet"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
 }
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
-RAW_BACKED_ENGINES = {"spark", "feldera"}
+# DbspNet, like Feldera, reads its inputs straight from the shared raw Delta tables
+# and writes its outputs as Delta under /data/processed/dbspnet; its state is in memory.
+RAW_BACKED_ENGINES = {"spark", "feldera", "dbspnet"}
 RAW_REFERENCE_ENGINES = RAW_BACKED_ENGINES | {"databricks-enzyme"}
 DATABRICKS_BACKING_TABLE = re.compile(
     r"^__materialization_mat_"
