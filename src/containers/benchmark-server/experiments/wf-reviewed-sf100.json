@@ -1,6 +1,6 @@
 {
   "_design_notes": [
-    "Compare source 306b8b0e with validated run 40667200914 (source 5c37b45f): bounded local window-state decoding and grouped publication simplification. Native compiler and LPTS pins stay unchanged.",
+    "Restore verified source 5c37b45f from run 40667200914 after reverting the bounded-local-state experiment 306b8b0e (SF100 40716787231 did not establish a gain). Native compiler, LPTS and effective benchmark settings stay unchanged.",
     "Spark and Fabric OpenIVM, SF100, one repetition, standard three batches, inserts 100/1/0.01%, no updates/deletes, four dbt threads, serial; retain the verified WF, compile-cache and asynchronous-backup settings.",
     "Validation, profiling, SQL logs, storage and Spark metrics are enabled. Validation is outside timed maintenance batches; retain background backup logs and dbt/engine/experiment times. Ordered-rank POCs are excluded."
   ],
