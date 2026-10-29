@@ -205,10 +205,9 @@ loading, metadata SQL, compiler requests, and each model. Fields ending in
 On a validation mismatch, the report includes exact differing-row samples from
 two frozen recomputations, compared with the maintained result and each other.
 These diagnostics run outside the timer and do not override the original failure.
-Use `smoke-repeated-refresh-databricks-openivm.json` for the SF3 standard and
-extended TPC-DI comparison against Enzyme, with two compounded 1% refreshes and
-eight model workers for each engine.
-`sf10-databricks-openivm-enzyme.json` repeats that comparison at SF10.
+Use `sf10-databricks-openivm-enzyme.json` for the SF10 standard and extended
+TPC-DI comparison against Enzyme, with two compounded 1% refreshes and eight
+model workers for each engine.
 `sf100-databricks-openivm-enzyme.json` uses the same settings at SF100.
 `fig1-sf100-databricks-openivm.json` runs only Databricks OpenIVM with the
 Figure 1 standard TPC-DI batches (100%, 1%, 0.01%), eight model workers and
