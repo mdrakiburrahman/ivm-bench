@@ -1,0 +1,22 @@
+SELECT
+  price_catalog_id,
+  catalog_service_category_name_service_level_1,
+  catalog_service_name_service_level_2,
+  catalog_product_category_name_service_level_3,
+  catalog_product_name_service_level_4,
+  catalog_sku_name_service_level_5,
+  catalog_database_engine,
+  catalog_billable_resource_category,
+  catalog_subservice_name,
+  catalog_sql_tier_name,
+  TRY_CAST(NULLIF(catalog_size, '') AS INT) AS catalog_size,
+  catalog_type,
+  catalog_license_type,
+  TRY_CAST(NULLIF(catalog_price, '') AS REAL) AS catalog_price,
+  catalog_currency,
+  catalog_unit_of_measure,
+  TRY_CAST(NULLIF(catalog_consumption_multiplier, '') AS REAL) AS catalog_consumption_multiplier,
+  catalog_availability_region,
+  TRY_CAST(NULLIF(catalog_average_revenue_per_unit, '') AS REAL) AS catalog_average_revenue_per_unit,
+  catalog_description
+FROM ext_price_catalog

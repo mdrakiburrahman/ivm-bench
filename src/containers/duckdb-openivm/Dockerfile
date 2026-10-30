@@ -62,6 +62,7 @@ COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb
 COPY --from=builder /src/build/release/extension/openivm/cost_model_benchmark \
      /opt/duckdb-openivm/cost_model_benchmark
 COPY --from=builder /src/build/release/extension/icu/icu.duckdb_extension /opt/duckdb-openivm/icu.duckdb_extension
+COPY --from=builder /src/build/release/extension/json/json.duckdb_extension /opt/duckdb-openivm/json.duckdb_extension
 
 # The compiler-bench query corpus travels with the binary so the queries are
 # always the ones OPENIVM_COMMIT ships — no submodule in this repo to drift out

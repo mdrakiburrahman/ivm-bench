@@ -24,6 +24,15 @@
 
 Benchmarks Incremental View Maintenance capabilities on various Open Source engines with [the TPC-DI-based data model](https://www.tpc.org/tpcdi/) for **educational purposes**.
 
+The experimental [Extended TPC-DS workload](docs/extended-tpcds.md) adds a retail
+metadata extension, production-inspired calibration and controlled join skew.
+It includes a deterministic generator, 96 translated SQL models and a standalone
+DuckDB full-recomputation runner with cardinality checks. OAT integration is
+available for DuckDB and DuckDB-OpenIVM; incremental correctness is checked after
+each batch, with failures preserved in the results.
+The standalone benchmark supports insertion, updates, deletes, daily arrivals,
+repeated insertions and mixed-DML schedules, with shared replayable row images.
+
 ## Dev Setup
 
 The only requirement is Docker.

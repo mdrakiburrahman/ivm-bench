@@ -99,8 +99,9 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
         for batch_num in (1, 2):
             with self.subTest(batch_num=batch_num):
                 runner = EngineRunner.__new__(EngineRunner)
+                runner._config = SimpleNamespace(workload="standard")
                 runner._engine = SimpleNamespace(name="databricks-enzyme")
-                runner._config = SimpleNamespace(scale_factor=10)
+                runner._config = SimpleNamespace(workload="standard", scale_factor=10)
                 runner._result = EngineResult(engine="databricks-enzyme")
                 batch = runner._result.batches[batch_num - 1]
                 for name in ("_emit", "_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
@@ -148,6 +149,7 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
 
     def classifier(self, batch_num=2):
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._dbt_url = "http://dbt"
         runner._emit = Mock()
         runner._export_databricks_enzyme_pipeline_events = Mock(return_value=self.events)
@@ -182,7 +184,8 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.requests.post")
     def test_driver_disconnect_retries_refresh_without_reappending_sources(self, post, get, sleep):
         runner = EngineRunner.__new__(EngineRunner)
-        runner._config = SimpleNamespace(scale_factor=10)
+        runner._config = SimpleNamespace(workload="standard")
+        runner._config = SimpleNamespace(workload="standard", scale_factor=10)
         runner._dbt_url = "http://dbt"
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -272,7 +275,8 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.requests.post")
     def test_scale_up_retries_are_bounded_and_preserve_final_error(self, post, sleep):
         runner = EngineRunner.__new__(EngineRunner)
-        runner._config = SimpleNamespace(scale_factor=10)
+        runner._config = SimpleNamespace(workload="standard")
+        runner._config = SimpleNamespace(workload="standard", scale_factor=10)
         runner._dbt_url = "http://dbt"
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -298,7 +302,8 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.requests.post")
     def test_recovery_keeps_refresh_payload_and_archives_attempt(self, post, sleep):
         runner = EngineRunner.__new__(EngineRunner)
-        runner._config = SimpleNamespace(scale_factor=10)
+        runner._config = SimpleNamespace(workload="standard")
+        runner._config = SimpleNamespace(workload="standard", scale_factor=10)
         runner._dbt_url = "http://dbt"
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -326,6 +331,7 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.time.time", side_effect=[100, 103, 103])
     def test_failed_refresh_captures_events_and_retains_error_and_timing(self, _time):
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._engine = SimpleNamespace(name="databricks-enzyme")
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -366,6 +372,7 @@ class OpenIvmValidationHookTest(unittest.TestCase):
         import requests
 
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._engine = SimpleNamespace(name="databricks-openivm")
         runner._result = EngineResult(engine="databricks-openivm")
         runner._dbt_url = "http://dbt.invalid"
@@ -390,8 +397,9 @@ class OpenIvmValidationHookTest(unittest.TestCase):
     def runner(self, repo_dir, scale_factor):
         from services.engine_runner import EngineRunner
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._engine = SimpleNamespace(name="fabric-openivm-jvm-35")
-        runner._config = SimpleNamespace(repo_dir=repo_dir, scale_factor=scale_factor)
+        runner._config = SimpleNamespace(workload="standard", repo_dir=repo_dir, scale_factor=scale_factor)
         runner._dbt_url = "http://dbt.invalid"
         runner._emit = Mock()
         return runner
