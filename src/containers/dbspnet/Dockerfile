@@ -5,7 +5,7 @@
 # by overriding DBSPNET_COMMIT (and DBSPNET_REPO for a fork).
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG DBSPNET_REPO=https://github.com/clast-project/dbsp-net.git
-ARG DBSPNET_COMMIT=74ea062
+ARG DBSPNET_COMMIT=fca173e
 
 # git + certs for the clone.
 RUN apt-get update \
@@ -13,8 +13,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+# dbsp-net consumes engineered-wood from a submodule (until its next NuGet release); init it
+# non-recursively (its own parquet-testing submodule is test data). A no-op for older pins.
 RUN git clone "${DBSPNET_REPO}" . \
- && git checkout "${DBSPNET_COMMIT}"
+ && git checkout "${DBSPNET_COMMIT}" \
+ && git submodule update --init
 RUN dotnet publish src/DbspNet.Server/DbspNet.Server.csproj -c Release -o /app
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
