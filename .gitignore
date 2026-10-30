@@ -6,3 +6,6 @@
 mount/*
 __pycache__/
 .runtime/
+
+# CI engine coverage verdict (tools/scripts/github/check-engine-coverage.py)
+ci-results/

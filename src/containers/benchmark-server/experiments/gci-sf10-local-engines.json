@@ -1,0 +1,23 @@
+{
+  "baseline": {
+    "scale_factor": 10,
+    "workload": "standard",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "2",
+    "engines": ["spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "dbspnet"],
+    "schedule": "serial",
+    "spark_tunables": {"dbt_threads": 4},
+    "feature_flags": {
+      "compiler_bench": false,
+      "cost_model_bench": false,
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [{"label": "GCI SF10 standard TPC-DI: local engines"}]
+}

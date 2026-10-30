@@ -66,35 +66,39 @@ outside the timed batch window. Environment feature flags form the baseline;
 an explicit `feature_flags` value in the experiments JSON overrides that
 baseline for the corresponding row.
 
-### Choose the benchmark for a PR
+### GCI vs CI
 
-GCI runs when you open or update a PR. Set `experiments_file` in
-[`.github/gci.json`](.github/gci.json) to select a checked-in experiment file:
+| Workflow | When | What | Knobs |
+|---|---|---|---|
+| [`gci.yaml`](.github/workflows/gci.yaml) | Every non-draft PR | SF10 TPC-DI on every local engine ([`gci-sf10-local-engines.json`](src/containers/benchmark-server/experiments/gci-sf10-local-engines.json)) | None |
+| [`ci.yaml`](.github/workflows/ci.yaml) | After every merge to `main`, or ad hoc | Every engine ([`ci-sf10-all-engines.json`](src/containers/benchmark-server/experiments/ci-sf10-all-engines.json)), or any experiments file | All dispatch inputs |
 
-```json
-{
-  "experiments_file": "src/containers/benchmark-server/experiments/cost-model-bench.json"
-}
+Both fail unless every requested engine completes every batch. Run anything
+else, such as cloud engines or the cost-model sweep, through CI:
+
+```bash
+gh workflow run ci.yaml --ref <branch> \
+  -f experiments_file=src/containers/benchmark-server/experiments/cost-model-bench.json
 ```
 
 Use `cost-model-bench-ladder.json` for the full cost-model sweep, or another
-experiments JSON for a TPC-DI workload. The default empty string keeps the
-existing PR-triggered TPC-DI configuration. Manual GCI dispatches use their
-`experiments_file` input or per-knob inputs and do not inherit the PR selector.
+experiments JSON for a TPC-DI workload. Without `experiments_file`, CI
+synthesises one experiment from its per-knob inputs.
 
 To compare OpenIVM revisions, change both `ARG OPENIVM_COMMIT` defaults in
 [`src/containers/duckdb-openivm/Dockerfile`](src/containers/duckdb-openivm/Dockerfile)
-to the same commit SHA, select the experiment, and open a PR. Changing the pin
+to the same commit SHA, push a branch, and dispatch CI on it. Changing the pin
 invalidates the cached builder image. Each run uses one OpenIVM revision;
-use separate PRs or pushes to compare revisions. The revision must provide
+use separate branches or dispatches to compare revisions. The revision must provide
 `cost_model_benchmark` and support the selected arguments; DuckDB and the build
 tooling remain separately pinned in that Dockerfile.
 
-Cost-model CSVs are uploaded with the GCI artifacts under
+Cost-model CSVs are uploaded with the CI artifacts under
 `mount/cost-model-bench/<run-id>/<experiment-index>-<label>/`. Scale factors
-run sequentially, and the existing GCI job timeout and cancellation rules apply.
-A newer push to the same PR cancels its previous run, so wait for a run to finish
-before pushing the next revision if you need complete comparison results.
+run sequentially, and the CI job timeout and cancellation rules apply.
+A newer dispatch of the same branch and experiments file cancels the previous
+run (an active run on `main` is kept), so wait for a run to finish before
+dispatching the next revision if you need complete comparison results.
 
 ### Accumulated daily updates
 
@@ -259,8 +263,8 @@ preset explicitly requests 1 and labels that restriction.
 Serial local-engine runs receive the available host allocation; parallel runs
 divide it among engines. Spark and Feldera reserve part of their allocation for
 the dbt client. Cloud CPU totals are not inferred from local container limits.
-Repeated-refresh experiments are opt-in: normal GCI selection continues to use
-the existing three-batch benchmark.
+Repeated-refresh experiments are opt-in: the GCI and CI presets use the
+existing three-batch benchmark.
 
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden
