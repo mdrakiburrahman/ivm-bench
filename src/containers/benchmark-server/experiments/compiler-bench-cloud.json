@@ -3,7 +3,7 @@
     "compiler-bench on the cloud engines: databricks-enzyme + both fabric engines.",
     "",
     "Purpose: debug the cloud adapters remotely. Their code paths need live credentials,",
-    "so they cannot be exercised on a dev box. Dispatch GCI with",
+    "so they cannot be exercised on a dev box. Dispatch CI with",
     "  experiments_file=src/containers/benchmark-server/experiments/compiler-bench-cloud.json",
     "",
     "COST: limit is deliberately 25, not the full 2,505-query corpus. Every Databricks",

@@ -7,11 +7,15 @@
 # ---------------------------------------------------------------------------------------
 #
 
+set -eo pipefail
+
 DOCKER_VERSION="5:27.5.1-1~ubuntu.24.04~noble"
 TERRAFORM_VERSION="1.9.8"
 
 PACKAGES=""
 if ! command -v jq &> /dev/null; then PACKAGES="$PACKAGES jq"; fi
+# wslview opens the az login page in the browser on Windows.
+if ! command -v wslview &> /dev/null; then PACKAGES="$PACKAGES wslu"; fi
 if [ ! -z "$PACKAGES" ]; then
     echo "Packages $PACKAGES not found - installing..."
     sudo apt-get update 2>&1 > /dev/null
@@ -35,6 +39,7 @@ echo '{"max-concurrent-downloads": 32}' | sudo tee /etc/docker/daemon.json > /de
 echo "docker is installed, restarting..."
 sudo systemctl restart docker
 
+sudo usermod -aG docker "$(id -un)"
 sudo chmod 666 /var/run/docker.sock
 docker container ls
 docker ps -q | xargs -r docker kill
@@ -43,7 +48,7 @@ docker ps -q | xargs -r docker kill
 # This allows us to mount ~/.azure from WSL.
 #
 export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "/mnt/c" | tr '\n' ':' | sed 's/:$//')
-AZ_PATH=$(which az 2>/dev/null)
+AZ_PATH=$(which az 2>/dev/null || true)
 if [[ -z "$AZ_PATH" || "$AZ_PATH" == *"/mnt/c"* ]]; then
   echo "Native Linux Azure CLI not found, installing..."
   curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
@@ -53,17 +58,20 @@ else
   echo "Native Linux Azure CLI already installed at: $AZ_PATH"
 fi
 
-az account get-access-token --query "expiresOn" -o tsv >/dev/null 2>&1
-if [[ $? -ne 0 ]]; then
+if ! az account get-access-token --query "expiresOn" -o tsv >/dev/null 2>&1; then
     echo "az is not logged in, logging in..."
-    az login >/dev/null
+    # prompt=none lets the signed-in Windows browser complete the login with single sign-on, without clicks.
+    # Login experience v2 off skips the subscription picker that waits for input in a terminal.
+    #
+    BROWSER='bash -c "exec wslview \"${0/prompt=select_account/prompt=none}\"" %s' AZURE_CORE_LOGIN_EXPERIENCE_V2=off \
+        az login --tenant "72f988bf-86f1-41af-91ab-2d7cd011db47" --output none
 fi
 
 if ! [ -x "$(command -v terraform)" ]; then
   echo "terraform is not installed on your devbox, installing v${TERRAFORM_VERSION}..."
   sudo apt-get update -q
   sudo apt-get install -y gnupg software-properties-common curl
-  curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+  curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor --yes -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
   echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
     | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
   sudo apt-get update -q
@@ -87,8 +95,12 @@ else
 fi
 
 if ! gh auth status >/dev/null 2>&1; then
-    echo "gh is not logged in, running 'gh auth login'..."
-    gh auth login
+    if [ -t 0 ]; then
+        echo "gh is not logged in, running 'gh auth login'..."
+        gh auth login
+    else
+        echo "gh is not logged in and no terminal is attached, run 'gh auth login' yourself later."
+    fi
 else
     echo "GitHub CLI is already logged in as: $(gh api user --jq .login 2>/dev/null || echo unknown)"
 fi
