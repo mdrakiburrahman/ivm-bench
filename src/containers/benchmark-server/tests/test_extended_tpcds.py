@@ -28,6 +28,16 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         self.assertEqual(original.workload,'standard')
         self.assertIs(type(original.scale_factor),int)
 
+    def test_all_registered_engines_accept_sequential_extended_workload(self):
+        from models.config import ENGINE_PORTS
+        engines=list(ENGINE_PORTS)
+        e=self.experiment(engines=engines,schedule='serial',scale_factor=100)
+        self.assertEqual(e.engines,engines)
+        self.assertEqual(e.scale_factor,100)
+        self.assertIs(type(e.scale_factor),int)
+        with self.assertRaisesRegex(ValueError,'TPC-DI only'):
+            self.experiment(repeated_refresh=True)
+
     def test_days_batch_count_and_zero_insert_percentage(self):
         e = self.experiment(extended_tpcds={'mode':'days','days':6})
         self.assertEqual(e.batch_count,7)
@@ -56,7 +66,7 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
 
     def test_rejects_unsupported_engine_and_invalid_scale(self):
         with self.assertRaisesRegex(ValueError,'supports'):
-            self.experiment(engines=['spark'])
+            self.experiment(engines=['unknown-engine'])
         for sf in [0,-1,float('nan'),float('inf')]:
             with self.assertRaises(ValueError):self.experiment(scale_factor=sf)
         with self.assertRaisesRegex(ValueError,'integer'):

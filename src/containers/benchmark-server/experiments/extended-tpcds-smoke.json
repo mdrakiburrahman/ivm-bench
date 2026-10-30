@@ -9,7 +9,6 @@
       "label": "extended-tpcds sf0.01 native mixed DML",
       "workload": "extended-tpcds",
       "scale_factor": 0.01,
-      "engines": ["duckdb", "duckdb-openivm"],
       "schedule": "serial",
       "batch_1_pct": "100",
       "batch_2_pct": "1",
@@ -30,5 +29,11 @@
         "storage_metrics": false
       }
     }
-  ]
+  ],
+  "baseline": {
+    "engines": [
+      "duckdb",
+      "duckdb-openivm"
+    ]
+  }
 }

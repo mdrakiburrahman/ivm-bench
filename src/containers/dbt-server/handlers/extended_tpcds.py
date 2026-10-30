@@ -33,6 +33,12 @@ def cleanup(engine):
     try:
         from services.extended_tpcds import _LOCK, context
         from services.extended_tpcds_sql import SQL_ENGINES, cleanup as cleanup_sql
+        if engine == "feldera":
+            import requests, os
+            response = requests.delete(os.environ.get("FELDERA_URL", "http://pipeline-manager:8080")+"/v0/pipelines/tpcdi",timeout=120)
+            if response.status_code != 404:
+                response.raise_for_status()
+            return jsonify({"status":"ok"})
         if engine not in SQL_ENGINES:
             return jsonify({"status":"ok"})
         manifest_path, _, work_dir, _, options, _ = context(engine)

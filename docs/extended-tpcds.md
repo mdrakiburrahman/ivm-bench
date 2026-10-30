@@ -682,8 +682,11 @@ Databricks. It checks row-image checksums and before-images, preserves table
 identity, rejects replay and dirty checkpoints, and validates against independent
 source replay and full DAG recomputation. Databricks OpenIVM uses the existing
 compiler bridge; it does not create Enzyme materialized views. Remote engine
-acceptance is pending, so the experiment configuration continues to reject the
-new engines. Feldera and DBSP.NET integration is also pending.
+acceptance is pending. All registered engines can now be selected for acceptance.
+Feldera and DBSP.NET share typed Delta row-image replay, retain their deployed
+circuit across batches and write all 96 observable outputs. Unsupported target
+SQL is a compile failure, never a silently removed model or a recomputation
+fallback. Per-model SQL timings are unavailable for these whole-program engines.
 
 The PR's GCI selection is the existing small DuckDB-family mixed-DML acceptance
 experiment. Serial Extended TPC-DS runs stop on the first engine failure.
@@ -696,3 +699,14 @@ against DuckDB 1.2.1 with zero bag differences. Its inputs and source hashes are
 recorded in `validation/spark-sql-fixture-20261030.json`. This does not establish
 OpenIVM refresh, Delta replay or remote engine acceptance. The translation fixes
 cover null-on-error timestamp parsing and literal/dynamic interval expressions.
+
+CI now installs explicit test dependencies for the Fabric adapter and Delta replay,
+and runs the workload tests as well as the two server suites. Real Delta replay
+checks preserve table IDs and verify insertions, updates, deletions, invalid
+before-images and checksums. Both serial engine execution and the OAT sweep stop
+on an Extended TPC-DS failure; later experiments cannot advance to SF100.
+
+`experiments/extended-tpcds-sf100.json` records the requested final ten-engine run.
+It is a prepared configuration, not a completed or launched benchmark. Small
+remote acceptance remains required, including target SQL compilation on each
+streaming engine and refresh correctness on the pinned Spark WF implementation.

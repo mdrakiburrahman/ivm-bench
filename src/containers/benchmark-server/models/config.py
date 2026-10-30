@@ -268,13 +268,15 @@ class BenchmarkConfig:
             raise ValueError("batch_2_days must be between 0 and 364")
 
         if self.workload not in ("standard", "databricks", "extended-tpcds"):
-            raise ValueError("workload must be tpc-di or extended-tpcds")
+            raise ValueError("workload must be standard, databricks or extended-tpcds")
         sf = float(self.scale_factor)
         if not math.isfinite(sf) or sf <= 0 or (self.workload != "extended-tpcds" and not sf.is_integer()):
             raise ValueError("scale factor must be positive; TPC-DI requires an integer")
-        self.scale_factor = int(sf) if self.workload != "extended-tpcds" else sf
-        if self.workload == "extended-tpcds" and set(self.engines) - {"duckdb", "duckdb-openivm"}:
-            raise ValueError("Extended TPC-DS currently supports duckdb and duckdb-openivm")
+        self.scale_factor = int(sf) if sf.is_integer() else sf
+        if self.workload == "extended-tpcds" and set(self.engines) - ENGINE_PORTS.keys():
+            raise ValueError("Extended TPC-DS supports registered benchmark engines only")
+        if self.workload == "extended-tpcds" and self.repeated_refresh:
+            raise ValueError("Extended TPC-DS uses its own mutation schedule; repeated_refresh is TPC-DI only")
 
         if self.workload == "extended-tpcds":
             try:

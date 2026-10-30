@@ -152,7 +152,7 @@ jobs:
         with:
           clean: true
 
-      - name: "🧪 Run storage collector unit tests"
+      - name: "🧪 Run benchmark and workload tests"
         run: |
           set -euo pipefail
           if ! python3 -m venv --system-site-packages .runtime/gci-tests; then
@@ -160,9 +160,10 @@ jobs:
             sudo apt-get install -y python3-venv
             python3 -m venv --system-site-packages .runtime/gci-tests
           fi
-          .runtime/gci-tests/bin/python -m pip install -r src/containers/benchmark-server/requirements.txt PyYAML databricks-sdk
+          .runtime/gci-tests/bin/python -m pip install -r src/containers/benchmark-server/requirements.txt -r src/containers/dbt-server/requirements-test.txt
           .runtime/gci-tests/bin/python -m unittest discover -s src/containers/dbt-server/tests -v
           .runtime/gci-tests/bin/python -m unittest discover -s src/containers/benchmark-server/tests -v
+          .runtime/gci-tests/bin/python -m unittest discover -s src/workloads/extended-tpcds -p 'test_*.py' -v
 
       - name: "🧬 Resolve experiments file"
         env:

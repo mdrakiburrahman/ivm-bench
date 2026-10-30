@@ -106,10 +106,9 @@ class Orchestrator:
         self._oat_run_id: Optional[str] = None
         self._oat_started_at: Optional[str] = None
         self._oat_per_exp_dicts: List[dict] = []
-        # Set by _run_one_oat_experiment when it catches OpenIvmValidationError.
-        # _run_oat checks this after every experiment and aborts the sweep
-        # immediately — a single MV-correctness diff is unrecoverable.
-        self._oat_fatal_validation_error: Optional[str] = None
+        # Validation failures and all Extended TPC-DS failures stop the sweep.
+        # A failed small acceptance experiment must never advance to SF100.
+        self._oat_fatal_error: Optional[str] = None
         self._current_source_row_counts: Optional[Dict[str, Any]] = None
 
     @property
@@ -197,7 +196,7 @@ class Orchestrator:
             self._experiments = []
             self._oat_run_id = None
             self._oat_per_exp_dicts = []
-            self._oat_fatal_validation_error = None
+            self._oat_fatal_error = None
             self._benchmark_id = None
 
             if not os.path.exists(experiments_file):
@@ -1360,18 +1359,18 @@ class Orchestrator:
                 # (the MV definition or refresh path is broken). Abort the
                 # sweep immediately, marking the remaining experiments as
                 # skipped so results.csv / chart-oat.png still render cleanly.
-                if self._oat_fatal_validation_error is not None:
+                if self._oat_fatal_error is not None:
                     remaining = len(self._experiments) - (idx + 1)
                     self.emit("")
                     self.emit("=" * 78)
-                    self.emit("=== OAT SWEEP ABORTED — OpenIVM validation failure is FATAL ===")
-                    self.emit(f"  reason: {self._oat_fatal_validation_error}")
-                    self.emit(f"  experiment [{idx + 1}/{len(self._experiments)}] failed validation")
+                    self.emit("=== OAT SWEEP ABORTED — workload failure is FATAL ===")
+                    self.emit(f"  reason: {self._oat_fatal_error}")
+                    self.emit(f"  experiment [{idx + 1}/{len(self._experiments)}] failed")
                     self.emit(f"  skipping remaining {remaining} experiment(s)")
                     self.emit("=" * 78)
                     self._record_skipped_remaining(
                         from_idx=idx + 1,
-                        reason=f"fail-fast: experiment {idx} had OpenIVM validation failure",
+                        reason=f"fail-fast: experiment {idx} had a fatal workload failure",
                     )
                     # Refresh master outputs + per-exp chart so the on-disk
                     # state reflects the skips immediately — if the process
@@ -1384,7 +1383,7 @@ class Orchestrator:
                         completed_at=None,
                         total_duration_s=time.time() - oat_t0,
                         per_experiment_dicts=self._oat_per_exp_dicts,
-                        error=f"fatal OpenIVM validation failure: {self._oat_fatal_validation_error}",
+                        error=f"fatal workload failure: {self._oat_fatal_error}",
                     )
                     self._phase3_oat_chart(silent=True)
                     break
@@ -1397,9 +1396,9 @@ class Orchestrator:
                 1 for d in self._oat_per_exp_dicts if d.get("status") == "failed"
             )
             final_status = "failed" if failed_count > 0 else "completed"
-            if self._oat_fatal_validation_error is not None:
+            if self._oat_fatal_error is not None:
                 final_error = (
-                    f"fatal OpenIVM validation failure: {self._oat_fatal_validation_error}"
+                    f"fatal workload failure: {self._oat_fatal_error}"
                 )
             elif failed_count:
                 final_error = (
@@ -1589,13 +1588,15 @@ class Orchestrator:
             # after marking this experiment failed. _run_oat reads this state.
             status = "failed"
             error = str(e)
-            self._oat_fatal_validation_error = str(e)
+            self._oat_fatal_error = str(e)
             self.emit(f"  [oat] experiment FATALLY FAILED on OpenIVM validation: {e}")
             self.emit(f"  [oat] FAIL-FAST — aborting OAT sweep after this experiment")
             logger.exception("OAT experiment %d had fatal OpenIVM validation failure", exp_idx)
         except Exception as e:
             status = "failed"
             error = str(e)
+            if inputs.workload == "extended-tpcds":
+                self._oat_fatal_error = str(e)
             self.emit(f"  [oat] experiment FAILED: {e}")
             logger.exception("OAT experiment %d failed", exp_idx)
         finally:

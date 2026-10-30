@@ -991,7 +991,7 @@ class EngineRunner:
             path = os.path.join(results_dir,f"run-{name}-batch{batch_num}.json")
             # Preserve the established per-model chart envelope.
             artifact = {**data, "engine":name, "nodes":[{"name":model,"unique_id":"model.extended_tpcds."+model,
-                        "resource_type":"model", "status":"success", "execution_time_s":seconds} for model,seconds in data["model_sql_duration_s"].items()]}
+                        "resource_type":"model", "status":"success", "execution_time_s":seconds, "compiled_sql":data.get("model_queries",{}).get(model, "")} for model,seconds in data["model_sql_duration_s"].items()]}
             with open(path,"w") as handle:
                 json.dump(artifact,handle,indent=2)
             batch.status = "completed"

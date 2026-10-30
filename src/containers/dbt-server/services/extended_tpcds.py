@@ -193,13 +193,14 @@ def validate(connection, manifest, directory, batch_num, cohort):
 
 def context(engine, manifest_path=None, work_dir=None, binary=None, options=None):
     from services.extended_tpcds_sql import SQL_ENGINES
-    if engine not in ("duckdb", "duckdb-openivm", *SQL_ENGINES):
+    from services.extended_tpcds_streaming import STREAM_ENGINES
+    if engine not in ("duckdb", "duckdb-openivm", *SQL_ENGINES, *STREAM_ENGINES):
         raise ValueError("unsupported Extended TPC-DS engine")
     options = options or json.loads(os.environ["EXTENDED_TPCDS_OPTIONS"])
     manifest_path = Path(manifest_path or (Path("/data/raw/extended-tpcds") / os.environ["EXTENDED_TPCDS_CACHE_KEY"] / "plan/manifest.json"))
     manifest = json.loads(manifest_path.read_text())
     prefix = engine.upper().replace("-", "_")
-    work_dir = Path(work_dir or os.environ.get(prefix + "_WORK_DIR", "/data/logs/" + engine)) / "extended-tpcds"
+    work_dir = Path(work_dir or os.environ.get(prefix + "_WORK_DIR", "/data/processed/" + engine)) / "extended-tpcds"
     binary = binary or os.environ.get("DUCKDB_BIN" if engine == "duckdb" else "DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duckdb")
     return manifest_path, manifest, work_dir, binary, options, prefix
 
@@ -207,6 +208,10 @@ def context(engine, manifest_path=None, work_dir=None, binary=None, options=None
 def validate_batch(engine, batch_num, **kwargs):
     manifest_path, manifest, work_dir, binary, options, prefix = context(engine, **kwargs)
     from services.extended_tpcds_sql import SQL_ENGINES
+    from services.extended_tpcds_streaming import STREAM_ENGINES
+    if engine in STREAM_ENGINES:
+        from services.extended_tpcds_streaming import validate_batch as validate_stream_batch
+        return validate_stream_batch(engine, batch_num, manifest_path, work_dir, options)
     if engine in SQL_ENGINES:
         from services.extended_tpcds_sql import validate_batch as validate_sql_batch
         return validate_sql_batch(engine, batch_num, manifest_path, work_dir, options)
@@ -233,6 +238,15 @@ def run_batch(engine, batch_num, *, manifest_path=None, work_dir=None, binary=No
     if batch_num < 1 or batch_num > len(manifest["batches"]) + 1:
         raise ValueError("batch is outside the prepared plan")
     from services.extended_tpcds_sql import SQL_ENGINES
+    from services.extended_tpcds_streaming import STREAM_ENGINES
+    if engine in STREAM_ENGINES:
+        from services.extended_tpcds_streaming import run_batch as run_stream_batch
+        result = run_stream_batch(engine, batch_num, manifest_path, work_dir, options)
+        if validate_results:
+            result["validation"] = validate_batch(engine, batch_num, manifest_path=manifest_path, work_dir=work_dir.parent, options=options)
+            if result["validation"]["status"] != "passed":
+                result["status"] = "failed"
+        return result
     if engine in SQL_ENGINES:
         from services.extended_tpcds_sql import run_batch as run_sql_batch
         result = run_sql_batch(engine, batch_num, manifest_path, work_dir, options)

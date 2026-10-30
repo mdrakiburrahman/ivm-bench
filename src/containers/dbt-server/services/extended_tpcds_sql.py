@@ -4,6 +4,7 @@ The workload owns ordering, checkpoints and validation. Connections own dialect,
 remote file placement and engine materialization commands.
 """
 import json
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -248,13 +249,17 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
         raise ValueError('SQL engine checkpoint is dirty or does not match the requested batch/plan/options')
     connection = Connection(engine, manifest_path.parent, manifest, options, initialize=batch_num==1)
     try:
+        model_queries = queries(manifest, options, connection.namespace)
+        sql_identity = hashlib.sha256(json.dumps(model_queries,sort_keys=True).encode()).hexdigest()
+        if batch_num>1 and state.get('sql_identity') != sql_identity:
+            raise ValueError('model definitions changed after initialization')
+        state['sql_identity'] = sql_identity
         state['dirty'] = True
         checkpoint.write_text(json.dumps(state))
         started = time.monotonic()
         replay(connection, manifest, manifest_path.parent, batch_num)
         source_s = time.monotonic() - started
         started = time.monotonic()
-        model_queries = queries(manifest, options, connection.namespace)
         durations = (build_databricks_openivm(connection, model_queries, manifest, state, batch_num==1) if engine=='databricks-openivm' else build(connection, model_queries, state, initial=batch_num==1))
         model_s = time.monotonic() - started
         counts = {name:connection.execute('SELECT count(*) FROM '+identifier(name))[0][0] for name in model_queries}
@@ -264,6 +269,7 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
                   'duration_s':source_s+model_s, 'source_replay_wall_s_including_guards':source_s,
                   'model_wall_s_including_cli':model_s, 'model_sql_duration_s':durations, 'model_rows':counts,
                   'materializations':state['materializations'], 'classification_counts':{kind:sum(m['classification']==kind for m in state['materializations'].values()) for kind in {m['classification'] for m in state['materializations'].values()}},
+                  'model_queries':model_queries, 'sql_statements':connection.statements,
                   'source_storage':'delta', 'timing_semantics':'source replay and complete SQL commands; setup, row counts and validation excluded',
                   'configuration':manifest['source_configuration'], 'options':options}
         (work_dir/f'batch{batch_num}.json').write_text(json.dumps(result, indent=2))

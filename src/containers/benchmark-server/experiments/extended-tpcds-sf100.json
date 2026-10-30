@@ -1,0 +1,46 @@
+{
+  "baseline": {
+    "workload": "extended-tpcds",
+    "scale_factor": 100,
+    "engines": [
+      "duckdb",
+      "duckdb-openivm",
+      "spark",
+      "spark-openivm",
+      "databricks-enzyme",
+      "databricks-openivm",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35",
+      "feldera",
+      "dbspnet"
+    ],
+    "schedule": "serial",
+    "parallel": false,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "extended_tpcds": {
+      "profile": "native",
+      "mode": "insertion",
+      "report_date": "2002-12-31",
+      "batches": 3,
+      "statement_timeout_s": 3600,
+      "fallback_policy": "strict"
+    },
+    "feature_flags": {
+      "openivm_validate": true,
+      "storage_metrics": false,
+      "preserve_raw": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "Extended TPC-DS SF100, insertion 100/1/0.01, serial engines"
+    }
+  ]
+}

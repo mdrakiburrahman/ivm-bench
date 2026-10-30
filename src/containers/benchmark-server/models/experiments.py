@@ -296,6 +296,7 @@ class ExperimentInputs:
                 "INCREMENTAL STRICT, or FULL"
             )
         checked = BenchmarkConfig(scale_factor=self.scale_factor, workload=self.workload,
+                                  repeated_refresh=self.repeated_refresh, refresh_count=self.refresh_count, refresh_pct=self.refresh_pct,
                                   extended_tpcds=self.extended_tpcds, engines=self.engines,
                                   **{key:value for key,value in vars(self).items() if key.startswith("batch_")})
         self.scale_factor = checked.scale_factor
