@@ -5,6 +5,10 @@ services:
     ports:
       - "${DBT_SERVER_PORT:-5000}:5000"
     environment:
+      WORKLOAD: "${WORKLOAD:-standard}"
+      EXTENDED_TPCDS_OPTIONS: "${EXTENDED_TPCDS_OPTIONS:-}"
+      EXTENDED_TPCDS_CACHE_KEY: "${EXTENDED_TPCDS_CACHE_KEY:-unused}"
+      EXTENDED_TPCDS_WORKLOAD_DIR: /data/workloads/extended-tpcds
       STATE_DIR: /tmp/dbt-state
       STATS_DIR: /data/stats
       SCALE_FACTOR: ${SCALE_FACTOR:-3}
@@ -33,6 +37,8 @@ services:
       # benchmark-server. Read-only: results come back over HTTP so the
       # benchmark-server stays the only writer of artifact layout.
       - ../mount/compiler-bench:/data/compiler-bench:ro
+      - ../src/workloads/extended-tpcds:/data/workloads/extended-tpcds:ro
+      - ../mount/raw/${SCALE_FACTOR:-3}/extended-tpcds:/data/raw/extended-tpcds:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
       test: curl -sf http://localhost:5000/health || exit 1

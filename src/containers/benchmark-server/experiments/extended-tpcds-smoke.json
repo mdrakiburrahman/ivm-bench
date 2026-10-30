@@ -1,0 +1,34 @@
+{
+  "_design_notes": [
+    "Extended TPC-DS mixed-DML acceptance run: both engines replay the same row images.",
+    "All 96 models are observable and checked after every batch. Refresh errors and correctness failures fail the experiment.",
+    "Native DuckDB storage is used for both engines. Per-relation storage accounting is not yet supported for this workload."
+  ],
+  "experiments": [
+    {
+      "label": "extended-tpcds sf0.01 native mixed DML",
+      "workload": "extended-tpcds",
+      "scale_factor": 0.01,
+      "engines": ["duckdb", "duckdb-openivm"],
+      "schedule": "serial",
+      "batch_1_pct": "100",
+      "batch_2_pct": "1",
+      "batch_2_update_pct": "1",
+      "batch_2_delete_pct": "1",
+      "batch_3_pct": "1",
+      "batch_3_update_pct": "1",
+      "batch_3_delete_pct": "1",
+      "extended_tpcds": {
+        "profile": "native",
+        "mode": "mixed",
+        "report_date": "2002-12-31",
+        "batches": 3,
+        "fallback_policy": "table"
+      },
+      "feature_flags": {
+        "openivm_validate": true,
+        "storage_metrics": false
+      }
+    }
+  ]
+}

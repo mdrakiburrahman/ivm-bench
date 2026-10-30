@@ -1,7 +1,12 @@
 """Configuration models for benchmark orchestration."""
 
 import os
-from dataclasses import dataclass, field
+import hashlib
+import json
+import math
+from decimal import Decimal, InvalidOperation
+from datetime import date
+from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
 from models.refresh import refresh_batch_count, refresh_env, validate_refresh
@@ -103,6 +108,7 @@ ENGINE_PORTS = {
     "databricks-enzyme": 5006,
     "fabric-openivm-jvm-35": 5007,
     "fabric-jvm-35": 5008,
+    "databricks-openivm": 5010,
     "dbspnet": 5009,
 }
 
@@ -115,6 +121,7 @@ ENGINE_COMPOSE_FILES = {
     "databricks-enzyme": "docker/docker-compose.benchmark.databricks-enzyme.yml",
     "fabric-openivm-jvm-35": "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml",
     "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
+    "databricks-openivm": "docker/docker-compose.benchmark.databricks-openivm.yml",
     "dbspnet": "docker/docker-compose.benchmark.dbspnet.yml",
 }
 
@@ -131,6 +138,7 @@ ENGINE_MAIN_SERVICES = {
     "databricks-enzyme": None,
     "fabric-openivm-jvm-35": None,
     "fabric-jvm-35": None,
+    "databricks-openivm": None,  # The schema-only compiler is a helper; execution is remote.
     "dbspnet": "dbspnet-server",
 }
 
@@ -154,6 +162,7 @@ ENGINE_COMPUTE_SERVICES = {
 # contend for host CPU/RAM/disk) and runs cloud engines in one parallel wave.
 CLOUD_ENGINES = {
     "databricks-enzyme",
+    "databricks-openivm",
     "fabric-openivm-jvm-35",
     "fabric-jvm-35",
 }
@@ -165,9 +174,59 @@ def is_cloud_engine(name: str) -> bool:
 
 
 @dataclass
+class ExtendedTPCDSOptions:
+    profile: str = "native"
+    mode: str = "mixed"
+    seed: int = 17
+    report_date: str = "2002-12-31"
+    history_months: int = 12
+    batches: int = 3
+    days: int = 3
+    query_cohort: str = "all"
+    mutation_cohort: str = "all"
+    fallback_policy: str = "table"  # rejected CREATE MV may use an explicit table fallback
+    statement_timeout_s: float = 300.0
+
+    def __post_init__(self):
+        if self.profile not in ("native", "calibrated", "jcc_stress"):
+            raise ValueError("unknown Extended TPC-DS profile")
+        if self.mode not in ("insertion", "updates", "deletes", "days", "repeated_insertions", "mixed"):
+            raise ValueError("unknown Extended TPC-DS mode")
+        if any(type(value) is not int or value < 1 for value in (self.history_months, self.batches, self.days)):
+            raise ValueError("history, batches and days must be positive integers")
+        if type(self.seed) is not int:
+            raise ValueError("extension seed must be an integer")
+        date.fromisoformat(self.report_date)
+        if self.query_cohort not in ("all", "hot", "cold") or self.mutation_cohort not in ("all", "hot", "cold"):
+            raise ValueError("cohort must be all, hot or cold")
+        if self.fallback_policy not in ("table", "strict"):
+            raise ValueError("fallback policy must be table or strict")
+        if not math.isfinite(self.statement_timeout_s) or self.statement_timeout_s <= 0:
+            raise ValueError("statement timeout must be positive and finite")
+
+    @property
+    def batch_count(self):
+        return self.days + 1 if self.mode == "days" else self.batches
+
+    def steps(self, config):
+        return [{"insert_pct": getattr(config, f"batch_{min(number, 3)}_pct"),
+                 "update_pct": getattr(config, f"batch_{min(number, 3)}_update_pct"),
+                 "delete_pct": getattr(config, f"batch_{min(number, 3)}_delete_pct")}
+                for number in range(2, self.batch_count + 1)]
+
+
+def workload_cache_key(config):
+    payload = {"workload": config.workload, "scale_factor": config.scale_factor,
+               "options": asdict(config.extended_tpcds), "initial_pct": config.batch_1_pct,
+               "steps": config.extended_tpcds.steps(config)}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
+@dataclass
 class BenchmarkConfig:
     """Top-level benchmark configuration."""
-    scale_factor: int = 3
+    scale_factor: float = 3
+    extended_tpcds: ExtendedTPCDSOptions = field(default_factory=ExtendedTPCDSOptions)
     benchmark_runs: int = 1
     repeated_refresh: bool = False
     workload: str = "standard"
@@ -201,15 +260,40 @@ class BenchmarkConfig:
     repo_dir: str = "/repo"
 
     def __post_init__(self):
-        validate_refresh(self)
+        if self.workload != "extended-tpcds":
+            validate_refresh(self)
         self.benchmark_runs = max(1, int(self.benchmark_runs))
         self.batch_2_days = int(self.batch_2_days)
         if self.batch_2_days < 0 or self.batch_2_days > 364:
             raise ValueError("batch_2_days must be between 0 and 364")
 
+        if self.workload not in ("standard", "databricks", "extended-tpcds"):
+            raise ValueError("workload must be tpc-di or extended-tpcds")
+        sf = float(self.scale_factor)
+        if not math.isfinite(sf) or sf <= 0 or (self.workload != "extended-tpcds" and not sf.is_integer()):
+            raise ValueError("scale factor must be positive; TPC-DI requires an integer")
+        self.scale_factor = int(sf) if self.workload != "extended-tpcds" else sf
+        if self.workload == "extended-tpcds" and set(self.engines) - {"duckdb", "duckdb-openivm"}:
+            raise ValueError("Extended TPC-DS currently supports duckdb and duckdb-openivm")
+
+        if self.workload == "extended-tpcds":
+            try:
+                initial = Decimal(str(self.batch_1_pct))
+                if not initial.is_finite() or not 0 <= initial <= 100:
+                    raise ValueError("initial percentage must be finite and between 0 and 100")
+                for step in self.extended_tpcds.steps(self):
+                    insert, update, delete = [Decimal(str(step[key])) for key in ("insert_pct", "update_pct", "delete_pct")]
+                    if any(not value.is_finite() or not 0 <= value <= 100 for value in (insert,update,delete)) or update+delete > 100:
+                        raise ValueError("invalid mutation percentages")
+                    mode = self.extended_tpcds.mode
+                    if (mode in ("insertion","repeated_insertions") and (update or delete)) or (mode == "updates" and (insert or delete)) or (mode == "deletes" and (insert or update)) or (mode == "days" and insert):
+                        raise ValueError("batch percentages conflict with the selected mutation mode")
+            except InvalidOperation as error:
+                raise ValueError("mutation percentages must be numbers") from error
+
     @property
-    def batch_count(self) -> int:
-        return refresh_batch_count(self.repeated_refresh, self.refresh_count)
+    def batch_count(self):
+        return self.extended_tpcds.batch_count if self.workload == "extended-tpcds" else refresh_batch_count(self.repeated_refresh, self.refresh_count)
 
     def base_env(self) -> Dict[str, str]:
         """Environment variables shared across all compose invocations."""
@@ -231,6 +315,10 @@ class BenchmarkConfig:
             "SCALE_FACTOR": str(self.scale_factor),
             "DATAGEN_CPUS": str(datagen_cpus),
             "DATAGEN_HEAP": f"{datagen_heap_gb}g",
+            "WORKLOAD": self.workload,
+            "EXTENDED_TPCDS_OPTIONS": json.dumps(asdict(self.extended_tpcds)),
+            "EXTENDED_TPCDS_CACHE_KEY": workload_cache_key(self),
+            "EXTENDED_TPCDS_STEPS": json.dumps(self.extended_tpcds.steps(self)),
             "BENCHMARK_RUNS": str(self.benchmark_runs),
             "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),
             "BATCH_1_INSERT_PCT": self.batch_1_pct,

@@ -35,7 +35,7 @@ _BASE_TABLE_PAIRS = {
     "duckdb-openivm": "duckdb",
     "fabric-openivm-jvm-35": "fabric-jvm-35",
 }
-_RAW_REFERENCE_BASELINES = {"databricks-enzyme"}
+_RAW_REFERENCE_BASELINES = {"databricks-enzyme", "databricks-openivm"}
 
 RESULTS_CSV_FIELDS = (
     "oat_run_id",
@@ -56,6 +56,15 @@ RESULTS_CSV_FIELDS = (
     "skip_reason",
     "scale_factor",
     "batch_2_days",
+    "workload",
+    "workload_profile",
+    "workload_mode",
+    "query_cohort",
+    "mutation_cohort",
+    "plan_id",
+    "incremental_models",
+    "full_refresh_models",
+    "unsupported_mv_table_fallback_models",
     "batch_1_pct",
     "batch_2_pct",
     "batch_3_pct",
@@ -684,6 +693,10 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
             ) + 1)
             refresh_plan = source_row_counts.get("refresh_plan") or {}
             refresh_rounds = {r["batch_num"]: r for r in refresh_plan.get("rounds", [])}
+            if inputs.get("workload") == "extended-tpcds":
+                options = inputs.get("extended_tpcds") or {}
+                count = int(options.get("days", 3)) + 1 if options.get("mode") == "days" else int(options.get("batches", 3))
+                batch_numbers = range(1, count + 1)
             for batch_num in batch_numbers:
                 batch = _batch_dict(experiment, engine, batch_num)
                 batch_extra = batch.get("extra") or {}
@@ -728,6 +741,14 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                             "scale_factor", experiment.get("scale_factor", "")
                         ),
                         "batch_2_days": inputs.get("batch_2_days", ""),
+                        "workload_profile": (inputs.get("extended_tpcds") or {}).get("profile", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "workload_mode": (inputs.get("extended_tpcds") or {}).get("mode", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "query_cohort": (inputs.get("extended_tpcds") or {}).get("query_cohort", ""),
+                        "mutation_cohort": (inputs.get("extended_tpcds") or {}).get("mutation_cohort", ""),
+                        "plan_id": batch_extra.get("plan_id", ""),
+                        "incremental_models": (batch_extra.get("classification_counts") or {}).get("incremental", ""),
+                        "full_refresh_models": (batch_extra.get("classification_counts") or {}).get("full", ""),
+                        "unsupported_mv_table_fallback_models": (batch_extra.get("classification_counts") or {}).get("unsupported_mv_table_fallback", ""),
                         "batch_1_pct": inputs.get("batch_1_pct", ""),
                         "batch_2_pct": inputs.get("batch_2_pct", ""),
                         "batch_3_pct": inputs.get("batch_3_pct", ""),

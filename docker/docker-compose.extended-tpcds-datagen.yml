@@ -1,0 +1,11 @@
+services:
+  extended-tpcds-datagen:
+    build:
+      context: ../src/workloads/extended-tpcds
+    environment:
+      SCALE_FACTOR: "${SCALE_FACTOR}"
+      BATCH_1_PCT: "${BATCH_1_PCT}"
+      EXTENDED_TPCDS_OPTIONS: "${EXTENDED_TPCDS_OPTIONS}"
+      EXTENDED_TPCDS_STEPS: "${EXTENDED_TPCDS_STEPS}"
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR}/extended-tpcds/${EXTENDED_TPCDS_CACHE_KEY}:/data/output

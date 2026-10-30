@@ -176,3 +176,8 @@ spark.eventLog.dir=file:/data/metrics/spark-events
 spark.eventLog.rolling.enabled=true
 spark.eventLog.rolling.maxFileSize=128m
 spark.eventLog.logStageExecutorMetrics=true
+
+# Window maintenance paths from the pinned WF branch.
+spark.openivm.refresh.windowRunningIncremental.enabled=true
+spark.openivm.refresh.groupedWindowState.enabled=true
+spark.openivm.compile.classificationCache.enabled=true

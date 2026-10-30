@@ -233,6 +233,8 @@ class Orchestrator:
         config_json = json.dumps({
             "scale_factor": self._config.scale_factor,
             "benchmark_runs": self._config.benchmark_runs,
+            "workload": self._config.workload,
+            "extended_tpcds": self._config.base_env()["EXTENDED_TPCDS_OPTIONS"],
             "engines": self._config.engines,
             "parallel": self._config.parallel,
             "repeated_refresh": self._config.repeated_refresh,
@@ -327,7 +329,7 @@ class Orchestrator:
             ("docker/docker-compose.spark-openivm-build.yml", "spark-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "dbspnet", "spark-openivm", "databricks-enzyme", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "dbspnet", "spark-openivm", "databricks-enzyme", "databricks-openivm", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:
@@ -453,6 +455,7 @@ class Orchestrator:
         include_datagen: bool = True,
         compiler_bench: Optional[bool] = None,
         cost_model_bench: Optional[bool] = None,
+        extended_tpcds: bool = False,
     ) -> None:
         """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
 
@@ -469,7 +472,8 @@ class Orchestrator:
         callables = []
         if include_datagen:
             callables.append(self._run_datagen)
-        callables.append(self._build_batch_loader)
+        if self._config.workload != "extended-tpcds":
+            callables.append(self._build_batch_loader)
         # At phase 0 the per-experiment env is not applied yet, so the caller
         # passes the decision in from the experiments list; None means "read env".
         if compiler_bench is None:
@@ -482,9 +486,9 @@ class Orchestrator:
         # Read from the passed-in decision rather than the environment: at phase 0 the per-experiment
         # flags have not been applied yet, so an experiment enabling the sweep without also listing
         # duckdb-openivm would skip the build it depends on.
-        if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench:
+        if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench or extended_tpcds:
             callables.append(self._run_duckdb_openivm_build)
-        if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
+        if set(self._config.engines) & {"spark-openivm", "fabric-openivm-jvm-35", "databricks-openivm"}:
             callables.append(self._run_spark_openivm_build)
         if compiler_bench:
             callables.append(self._run_lpts_build)
@@ -497,7 +501,19 @@ class Orchestrator:
         self.emit("=== Phase 1: Complete ===")
 
     def _run_datagen(self) -> None:
-        """Run TPC-DI data generation (idempotent)."""
+        """Prepare the selected workload's shared source artifacts."""
+        if self._config.workload == "extended-tpcds":
+            repo = self._config.repo_dir
+            mgr = DockerManager(os.path.join(repo, "docker/docker-compose.extended-tpcds-datagen.yml"),
+                                project_name="extended-tpcds-datagen", env=self._config.base_env(), cwd=repo)
+            with self._heartbeat("extended-tpcds/prepare"):
+                mgr.build()
+                mgr.up(detach=False, timeout=7200)
+            code = mgr.get_exit_code("extended-tpcds-datagen")
+            if code != "0":
+                raise RuntimeError(f"Extended TPC-DS preparation failed ({code}): {mgr.logs()[-2000:]}")
+            mgr.down()
+            return
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
         mgr = DockerManager(
@@ -1038,7 +1054,7 @@ class Orchestrator:
         if self._config.schedule == "serial-host-parallel-cloud":
             self._run_serial_host_parallel_cloud()
         else:
-            if self._config.parallel:
+            if self._config.parallel and self._config.workload != "extended-tpcds":
                 self._init_parallel_staging(engine_configs)
 
             if self._config.parallel and len(engines) > 1:
@@ -1177,6 +1193,8 @@ class Orchestrator:
             self._result.engines[name] = result
             if result.status == "failed":
                 failed.append(name)
+                if self._config.workload == "extended-tpcds":
+                    raise RuntimeError(f"Extended TPC-DS engine {name} failed; remaining engines were not started")
         return failed
 
     def _run_engines_parallel(self, engine_configs: Dict) -> None:
@@ -1443,6 +1461,7 @@ class Orchestrator:
         # Stash original config + temporarily widen engines for the build phase.
         # We restore the per-experiment config inside the loop via _apply_experiment.
         original_engines = list(self._config.engines)
+        self._config.workload = next((e.workload for e in experiments if e.workload != "extended-tpcds"), "extended-tpcds")
         self._config.engines = union_engines
         try:
             self._teardown_existing()
@@ -1461,6 +1480,7 @@ class Orchestrator:
             # per-experiment env is applied later, in the loop.
             self._phase1_prep(
                 include_datagen=False,
+                extended_tpcds=any(inp.workload == "extended-tpcds" for inp in experiments),
                 compiler_bench=any(
                     inp.feature_flags.compiler_bench for inp in experiments
                 ),
@@ -1691,6 +1711,7 @@ class Orchestrator:
         self._config.refresh_pct = inputs.refresh_pct
         self._config.scale_factor = inputs.scale_factor
         self._config.batch_2_days = inputs.batch_2_days
+        self._config.extended_tpcds = inputs.extended_tpcds
         self._config.batch_1_pct = inputs.batch_1_pct
         self._config.batch_2_pct = inputs.batch_2_pct
         self._config.batch_3_pct = inputs.batch_3_pct

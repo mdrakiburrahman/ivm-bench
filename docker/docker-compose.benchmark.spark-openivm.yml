@@ -45,6 +45,7 @@ services:
       SPARK_SUBMIT_DEFAULT_PARALLELISM: "${SPARK_SUBMIT_DEFAULT_PARALLELISM:-}"
       SPARK_METRICS_CAPTURE: "${SPARK_METRICS_CAPTURE:-1}"
     volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/extended-tpcds:/data/raw/extended-tpcds:ro
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
       - ../mount/results/${SCALE_FACTOR:-3}/spark-openivm:/data/processed/spark-openivm
       - ../mount/metrics/${SCALE_FACTOR:-3}/spark-openivm/spark-events:/data/metrics/spark-events

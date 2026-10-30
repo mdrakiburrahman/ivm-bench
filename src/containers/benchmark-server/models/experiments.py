@@ -38,6 +38,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 from models.refresh import refresh_batch_count, refresh_env, validate_refresh
+from models.config import BenchmarkConfig, ExtendedTPCDSOptions
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +256,7 @@ class ExperimentInputs:
     refresh_pct: str = "1"
     # Legacy three-batch mode: positive values accumulate extended daily data.
     batch_2_days: int = 0
+    extended_tpcds: ExtendedTPCDSOptions = field(default_factory=ExtendedTPCDSOptions)
     batch_1_pct: str = "100"
     batch_2_pct: str = "1"
     batch_3_pct: str = "2"
@@ -276,7 +278,8 @@ class ExperimentInputs:
     label: Optional[str] = None
 
     def __post_init__(self):
-        validate_refresh(self)
+        if self.workload != "extended-tpcds":
+            validate_refresh(self)
         if self.databricks_dbt_threads is not None:
             threads = self.databricks_dbt_threads
             if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
@@ -292,6 +295,12 @@ class ExperimentInputs:
                 "databricks_refresh_policy must be AUTO, INCREMENTAL, "
                 "INCREMENTAL STRICT, or FULL"
             )
+        checked = BenchmarkConfig(scale_factor=self.scale_factor, workload=self.workload,
+                                  extended_tpcds=self.extended_tpcds, engines=self.engines,
+                                  **{key:value for key,value in vars(self).items() if key.startswith("batch_")})
+        self.scale_factor = checked.scale_factor
+        if self.workload == "extended-tpcds" and self.feature_flags.compiler_bench:
+            raise ValueError("Extended TPC-DS records its own model classification; compiler_bench selects TPC-C")
 
     # ------------------------------------------------------------------
     # Serialization
@@ -299,7 +308,7 @@ class ExperimentInputs:
 
     @property
     def batch_count(self) -> int:
-        return refresh_batch_count(self.repeated_refresh, self.refresh_count)
+        return self.extended_tpcds.batch_count if self.workload == "extended-tpcds" else refresh_batch_count(self.repeated_refresh, self.refresh_count)
 
     def to_compose_env(self) -> Dict[str, str]:
         """Project this experiment to the env-var map that compose / orchestrator consume."""
@@ -307,6 +316,8 @@ class ExperimentInputs:
             **refresh_env(self),
             "SCALE_FACTOR": str(self.scale_factor),
             "TPCDI_BATCH_2_DAYS": str(self.batch_2_days),
+            "WORKLOAD": self.workload,
+            "EXTENDED_TPCDS_OPTIONS": json.dumps(asdict(self.extended_tpcds)),
             "BATCH_1_PCT": str(self.batch_1_pct),
             "BATCH_2_PCT": str(self.batch_2_pct),
             "BATCH_3_PCT": str(self.batch_3_pct),
@@ -337,6 +348,7 @@ class ExperimentInputs:
             "refresh_pct": self.refresh_pct,
             "scale_factor": self.scale_factor,
             "batch_2_days": self.batch_2_days,
+            "extended_tpcds": asdict(self.extended_tpcds),
             "batch_1_pct": self.batch_1_pct,
             "batch_2_pct": self.batch_2_pct,
             "batch_3_pct": self.batch_3_pct,
@@ -363,6 +375,8 @@ class ExperimentInputs:
             "refresh_pct": self.refresh_pct,
             "scale_factor": self.scale_factor,
             "batch_2_days": self.batch_2_days,
+            "extended_tpcds_profile": self.extended_tpcds.profile,
+            "extended_tpcds_mode": self.extended_tpcds.mode,
             "batch_1_pct": self.batch_1_pct,
             "batch_2_pct": self.batch_2_pct,
             "batch_3_pct": self.batch_3_pct,
@@ -396,6 +410,8 @@ class ExperimentInputs:
             "refresh_pct": "refresh%",
             "scale_factor": "SF",
             "batch_2_days": "b2 days",
+            "extended_tpcds_profile": "Profile",
+            "extended_tpcds_mode": "Mode",
             "batch_1_pct": "b1%",
             "batch_2_pct": "b2%",
             "batch_3_pct": "b3%",
@@ -421,11 +437,15 @@ class ExperimentInputs:
     def from_dict(cls, d: Dict[str, Any], baseline: Optional["ExperimentInputs"] = None) -> "ExperimentInputs":
         """Build from a partial dict. Unspecified keys inherit ``baseline`` (or class defaults)."""
         base = baseline or cls()
+        workload = d.get("workload", base.workload)
+        if workload == "tpc-di":
+            workload = "standard"
+        options = ExtendedTPCDSOptions(**{**asdict(base.extended_tpcds), **(d.get("extended_tpcds") or {})})
 
         # Engines accept list-of-strings, "comma,separated" string, or absent.
         engines_raw = d.get("engines")
         if engines_raw is None:
-            engines = list(base.engines)
+            engines = ["duckdb", "duckdb-openivm"] if workload == "extended-tpcds" and base.workload != workload else list(base.engines)
         elif isinstance(engines_raw, str):
             engines = [e.strip() for e in engines_raw.split(",") if e.strip()]
         else:
@@ -494,7 +514,16 @@ class ExperimentInputs:
         # batch_N_pct accepts either the new explicit name or the legacy
         # batch_N_insert_pct alias. The OAT JSON canonicalises to batch_N_pct.
         def _pct(key: str, base_v: str) -> str:
+            if workload == "extended-tpcds" and key != "batch_1_pct" and options.mode in ("updates", "deletes", "days"):
+                base_v = "0"
             return str(d.get(key, d.get(key.replace("_pct", "_insert_pct"), base_v)))
+
+        def _mutation_pct(key, operation):
+            default = getattr(base, key)
+            if workload == "extended-tpcds" and (workload != base.workload or options.mode != base.extended_tpcds.mode):
+                if options.mode == {"update":"updates", "delete":"deletes"}[operation]:
+                    default = "1"
+            return str(d.get(key,default))
 
         # Scheduling: an explicit `schedule` wins; else the legacy `parallel`
         # bool maps to "parallel"/"serial"; else inherit the baseline's schedule.
@@ -507,18 +536,19 @@ class ExperimentInputs:
 
         return cls(
             repeated_refresh=_flag(d.get("repeated_refresh"), base.repeated_refresh),
-            workload=str(d.get("workload", base.workload)),
             refresh_count=d.get("refresh_count", base.refresh_count),
             refresh_pct=str(d.get("refresh_pct", base.refresh_pct)),
-            scale_factor=int(d.get("scale_factor", base.scale_factor)),
             batch_2_days=int(d.get("batch_2_days", base.batch_2_days)),
+            scale_factor=d.get("scale_factor", base.scale_factor),
+            workload=workload,
+            extended_tpcds=options,
             batch_1_pct=_pct("batch_1_pct", base.batch_1_pct),
             batch_2_pct=_pct("batch_2_pct", base.batch_2_pct),
             batch_3_pct=_pct("batch_3_pct", base.batch_3_pct),
-            batch_2_update_pct=str(d.get("batch_2_update_pct", base.batch_2_update_pct)),
-            batch_2_delete_pct=str(d.get("batch_2_delete_pct", base.batch_2_delete_pct)),
-            batch_3_update_pct=str(d.get("batch_3_update_pct", base.batch_3_update_pct)),
-            batch_3_delete_pct=str(d.get("batch_3_delete_pct", base.batch_3_delete_pct)),
+            batch_2_update_pct=_mutation_pct("batch_2_update_pct", "update"),
+            batch_2_delete_pct=_mutation_pct("batch_2_delete_pct", "delete"),
+            batch_3_update_pct=_mutation_pct("batch_3_update_pct", "update"),
+            batch_3_delete_pct=_mutation_pct("batch_3_delete_pct", "delete"),
             databricks_refresh_policy=str(
                 d.get("databricks_refresh_policy", base.databricks_refresh_policy)
             ),

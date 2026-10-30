@@ -189,7 +189,7 @@ class _DuckDBSession:
     #: trail its closing stdout marker by a hair.
     _STDERR_GRACE_S = 0.05
 
-    def __init__(self, binary: str, db_path: str, preamble: Sequence[str]) -> None:
+    def __init__(self, binary: str, db_path: str, preamble: Sequence[str], *, capture_sql_timing: bool = False) -> None:
         self._binary = binary
         self._db_path = db_path
         self._preamble = list(preamble)
@@ -197,6 +197,8 @@ class _DuckDBSession:
         self._stdout: "queue.Queue" = queue.Queue()
         self._stderr: "queue.Queue" = queue.Queue()
         self._seq = 0
+        self._capture_sql_timing = capture_sql_timing
+        self.last_sql_time_s = None
 
     def start(self) -> None:
         self.close()
@@ -222,6 +224,8 @@ class _DuckDBSession:
         # `.bail off` keeps one bad query from ending the session; markers plus the
         # error stream say what happened. JSON mode makes results parseable.
         self._write(".bail off\n.mode json\n")
+        if self._capture_sql_timing:
+            self._write(".timer on\n")
         for statement in self._preamble:
             self._write(statement.rstrip(";") + ";\n")
         # Preamble errors are tolerated (icu may be unavailable) and its output is
@@ -317,6 +321,19 @@ class _DuckDBSession:
                 out.append(line)
 
         time.sleep(self._STDERR_GRACE_S)
+        self.last_sql_time_s = None
+        if self._capture_sql_timing:
+            timings = []
+            clean = []
+            for line in out:
+                match = re.match(r"Run Time \(s\): real ([0-9.]+)", line)
+                if match:
+                    timings.append(float(match.group(1)))
+                else:
+                    clean.append(line)
+            # The first timing is the opening marker SELECT, outside the SQL.
+            self.last_sql_time_s = sum(timings[1:]) if len(timings) > 1 else None
+            out = clean
         error = self._take_stderr()
         if error and not tolerate_errors:
             if _is_fatal(error):

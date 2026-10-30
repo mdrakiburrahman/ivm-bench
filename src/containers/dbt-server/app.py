@@ -22,6 +22,7 @@ from handlers.dbspnet import DbspNetHandler
 from handlers.delta_stats import DeltaStatsHandler
 from handlers.fabric import FabricHandler
 from handlers.feldera import FelderaHandler
+from handlers.extended_tpcds import ExtendedTPCDSHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
 from handlers.duckdb_openivm import DuckDBOpenIVMHandler
@@ -70,6 +71,7 @@ def register_handlers(flask_app: Flask) -> None:
     """Register all route handlers."""
     handlers = [
         HealthHandler(),
+        ExtendedTPCDSHandler(),
         DuckDBOpenIVMHandler(),
         SparkOpenIVMHandler(),
         DatabricksEnzymeHandler(),

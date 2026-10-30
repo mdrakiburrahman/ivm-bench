@@ -1,8 +1,9 @@
 """Configuration loader — reads environment variables into BenchmarkConfig."""
 
 import os
+import json
 
-from models.config import BenchmarkConfig
+from models.config import BenchmarkConfig, ExtendedTPCDSOptions
 
 
 def _insert_pct(batch_num: int, default: str) -> str:
@@ -25,10 +26,11 @@ def load_config() -> BenchmarkConfig:
     """Build a BenchmarkConfig from environment variables."""
     return BenchmarkConfig(
         repeated_refresh=os.environ.get("REPEATED_REFRESH", "0") == "1",
-        workload=os.environ.get("TPCDI_WORKLOAD", "standard"),
         refresh_count=os.environ.get("REFRESH_COUNT", "20"),
         refresh_pct=os.environ.get("REFRESH_PCT", "1"),
-        scale_factor=int(os.environ.get("SCALE_FACTOR", "3")),
+        scale_factor=float(os.environ.get("SCALE_FACTOR", "3")),
+        workload=os.environ.get("WORKLOAD") if os.environ.get("WORKLOAD") == "extended-tpcds" else os.environ.get("TPCDI_WORKLOAD", "standard"),
+        extended_tpcds=ExtendedTPCDSOptions(**json.loads(os.environ.get("EXTENDED_TPCDS_OPTIONS", "{}"))),
         benchmark_runs=int(os.environ.get("BENCHMARK_RUNS", "1")),
         batch_2_days=int(os.environ.get("TPCDI_BATCH_2_DAYS", "0")),
         batch_1_pct=_insert_pct(1, "1"),
