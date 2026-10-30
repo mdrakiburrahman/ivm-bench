@@ -110,12 +110,7 @@ LEFT JOIN (
     policy_type
 ) AS m
   ON a.report_as_of_date = m.report_as_of_date
-  AND (
-    a.household_id = m.household_id
-    OR (
-      a.household_id IS NULL AND m.household_id IS NULL
-    )
-  )
+  AND a.household_id IS NOT DISTINCT FROM m.household_id
   AND a.channel = m.channel
   AND a.eligibility_status = m.eligibility_status
   AND a.household_key = m.household_key

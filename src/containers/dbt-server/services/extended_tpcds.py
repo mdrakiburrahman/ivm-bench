@@ -33,15 +33,21 @@ _LOCK = threading.Lock()
 class CliConnection:
     """Minimal DuckDB result/parameter interface over the existing CLI worker."""
     def __init__(self, binary, path, *, openivm=False, timeout_s=300, memory_limit=None, threads=None):
-        preamble = []
+        settings = ["SET max_temp_directory_size=" + quote(os.environ.get("EXTENDED_TPCDS_MAX_TEMP_DIRECTORY_SIZE", "4GB"))]
         if memory_limit:
-            preamble.append("SET memory_limit=" + quote(memory_limit))
+            settings.append("SET memory_limit=" + quote(memory_limit))
         if threads:
-            preamble.append(f"SET threads={int(threads)}")
-        self.session = _DuckDBSession(binary, str(path), preamble, capture_sql_timing=True)
+            settings.append(f"SET threads={int(threads)}")
+        temp_directory = os.environ.get("DUCKDB_OPENIVM_TEMP_DIR" if openivm else "DUCKDB_TEMP_DIR")
+        if temp_directory:
+            settings.append("SET temp_directory=" + quote(temp_directory))
+        self.session = _DuckDBSession(binary, str(path), [], capture_sql_timing=True)
         self.timeout_s = timeout_s
         try:
             self.session.start()
+            # Workload resource settings must fail closed, unlike the survey preamble.
+            for statement in settings:
+                self.execute(statement)
             for extension in ("json", "icu"):
                 path = os.environ.get("DUCKDB_" + extension.upper() + "_EXTENSION", f"/data/bin/duckdb-openivm/{extension}.duckdb_extension")
                 self.execute("LOAD " + (quote(path) if Path(path).is_file() else extension))

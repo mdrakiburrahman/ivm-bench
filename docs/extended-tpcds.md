@@ -175,6 +175,22 @@ export BENCHMARK_EXPERIMENTS_FILE="$PWD/src/containers/benchmark-server/experime
 bash src/.scripts/benchmark.sh
 ```
 
+For execution on a laptop, use `HOST_CORES=4 HOST_MEMORY=5 bash src/.scripts/benchmark.sh`.
+The serial engine containers then receive four CPUs and 5 GiB each, with a 4 GB
+DuckDB query budget during execution; OpenIVM validation uses the harness's
+existing smaller allocation. Preparation independently defaults to four CPUs,
+a 5 GiB container, a 4 GB DuckDB query budget and 4 GB of spill files. Larger
+preparation budgets can be set with `EXTENDED_TPCDS_CPUS`, `EXTENDED_TPCDS_MEM`,
+`EXTENDED_TPCDS_MEM_LIMIT` and `EXTENDED_TPCDS_MAX_TEMP_DIRECTORY_SIZE`. The last
+setting also bounds spill files in the CLI engines and their reference checks.
+Image compilation uses the Docker builder's separate resource allocation.
+The acceptance smoke requires materialized views (`fallback_policy: "strict"`).
+The [mode/profile experiment file](../src/containers/benchmark-server/experiments/extended-tpcds-modes.json)
+provides all six modes on the native profile and mixed DML on the calibrated and
+stress profiles, using the same OAT entry point. Days and repeated insertions
+include a fourth snapshot. Both query and mutation cohorts are `all` in these
+acceptance scenarios.
+
 The new `workload: "extended-tpcds"` selector keeps TPC-DI as the default. The
 `extended_tpcds` object controls profile, mode, seed, report date, history length,
 batches/days, independent query/mutation cohorts, statement timeout and fallback
@@ -216,24 +232,86 @@ classification counts. Variable batch counts are preserved in the result model,
 SQLite batch records and CSV. Source/model definitions and query binding are frozen
 for the run; changing them requires new engine state.
 
-Local checks exercised the actual CLI engines and Flask batch endpoints through
-the OAT engine dispatcher. Docker lifecycle and CPU sampling were replaced in
-that local transport check because Docker is unavailable on the development host;
-this is not a completed Docker Compose acceptance run. The DuckDB baseline passed
-all 96 model checks through three mixed-DML batches. Two available OpenIVM builds
-passed initial construction, but exposed distinct refresh problems:
+The pinned OpenIVM revision `91ae4040438cb1b0cf11c04b9f68a20cfadf9c48`
+passes native-profile SF 0.03 initial construction and two mixed-DML batches.
+All 96 models match a fresh full-DAG recomputation after every snapshot: 288
+comparisons, with all models classified incremental and no table fallbacks.
+The [native CLI evidence](../src/workloads/extended-tpcds/validation/engines-native-sf003.json)
+records the engine/generator revisions, plan identity, SQL identity, intermediate
+counts, timings and validation results. This run used four threads, 4 GB of query
+memory, a 300-second statement timeout and a 4 GB spill limit. An external laptop
+watchdog limited combined RSS to 5 GiB and swap growth to 512 MiB.
 
-- One build failed refreshing `dim_household`: generated refresh SQL referenced
-  `household_display_name` while the target stored `household_name`.
-- A newer window build refreshed successfully but lost 57 rows in
-  `int_customer_status_transaction` after the first mixed batch; the monthly
-  customer-status fact also differed. The validator rejected the result.
+Historical household joins use `IS NOT DISTINCT FROM` instead of an equivalent
+equality/null OR expression. The latter chose a blockwise nested-loop join and
+exceeded 300 seconds during SF 0.03 initial construction. The new form enables a
+hash join; the complete checked run took about 254 seconds. A regression compares
+all nine affected model bags against the original predicate with null and zero
+identifiers and duplicate inputs.
 
-These are failing acceptance results, not successful incremental validation.
-The [local engine evidence](../src/workloads/extended-tpcds/validation/engines-local.json)
-records the builds, classification and failures. A successful paired Docker/OAT
-acceptance still requires an OpenIVM revision that passes these cases and a Docker
-host. The harness preserves the failures for further diagnosis.
+The [SF 0.01 native CLI mode/profile matrix](../src/workloads/extended-tpcds/validation/engines-native-sf001-modes.json)
+passes 2,784 model comparisons across 29 snapshots: all six modes on native data,
+mixed DML on calibrated and stress data, and a paired DuckDB baseline for native
+mixed DML. Days and repeated insertions each cover four snapshots. Every OpenIVM
+snapshot classifies all 96 models as incremental. These checks use the actual
+Flask batch/validation endpoints with local path injection. Peak combined RSS
+was about 2.24 GiB, and system swap usage did not grow. The timings are diagnostic
+correctness-run artifacts, rather than controlled performance comparisons.
+The [preparation check](../src/workloads/extended-tpcds/validation/preparation-sf001.json)
+also exercises the actual preparation function, with the official cached TPC-DS
+extension, and verifies the query/thread/spill limits in all three connections.
+
+Docker lifecycle and controlled CPU sampling have not been exercised on the
+development laptop, where Docker is unavailable. The paired Docker/OAT smoke
+passed in [GCI run 39282195577](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/39282195577)
+for benchmark revision `99f1dc280b605da693597e901352c1577366f04d`.
+The [Docker/OAT evidence](../src/workloads/extended-tpcds/validation/engines-docker-sf001.json)
+records 576 passing model comparisons across three snapshots per engine; all
+OpenIVM models remain incremental, and Docker CPU counters were captured.
+The [earlier local engine evidence](../src/workloads/extended-tpcds/validation/engines-local.json)
+retains historical failures from older builds, before the required OpenIVM fixes.
+
+An [experimental standalone Spark probe](../src/workloads/extended-tpcds/validation/engines-spark-sf001.json)
+uses OpenIVM Spark `54859a47`, Spark 4.1.0 and Delta 4.2.0 with Spark's native
+compiler pin `8c5940a9`, built against matching DuckDB 1.5.4 headers/runtime.
+This is separate from OAT integration. All 96 initial models match DuckDB at
+native SF 0.01; 95 are classified incremental and the constant ingestion metadata
+view uses full refresh. During the first mixed-DML batch, 47 models match before
+`int_customer_status_transaction` loses 75 rows: 6,541 incremental rows versus
+6,616 expected rows. A fresh Spark query over the already-validated parent bags
+matches the reference exactly. SF 1 was not started after this correctness failure.
+The run used four cores, a 4 GiB driver heap and 300-second statement timeouts;
+peak combined RSS was about 3.82 GiB, without a resource-guard stop.
+
+The Spark probe fixes both sessions to UTC, normalizes Parquet timestamp loading,
+uses CalendarInterval compatibility and keeps Delta's automatic MERGE source
+materialization. Forcing materialization off fails when OpenIVM supplies cached
+delta inputs. A separate three-model reproduction passes all six initial/updated
+comparisons with automatic materialization. The newer native compiler `91ae4040`
+also requires Spark bridge support for its qualified/internal storage identifiers;
+it was not used for the recorded Spark initial-load acceptance. Spark mutation
+correctness and OAT integration remain open.
+
+A later [SF1 precision probe](https://github.com/mdrakiburrahman/openivm-spark/actions/runs/39592027122)
+isolated the monthly effective-unit snapshot and its 30 ancestors. All ancestors
+matched independent DuckDB references. The original `DOUBLE` sum produced 4, 0,
+0, 4 and 2 bag differences at Spark shuffle partition counts 1, 2, 3, 4 and 8;
+DuckDB's original query also changed integer results with thread count. Casting
+each contribution to `DECIMAL(28,10)` before summing gave zero differences for
+the candidate materialized view and all five Spark query layouts. This is an
+initial-snapshot diagnostic, not a complete SF1 or mutation-mode acceptance run.
+The [recorded evidence](../src/workloads/extended-tpcds/validation/monthly-precision-sf1.json)
+includes provenance and resource limits. Separate focused refresh regressions
+pass on Spark 3.5 and 4.1 in both CDF and intercept modes, including mixed DML and
+an empty refresh; see [run 39585653273](https://github.com/mdrakiburrahman/openivm-spark/actions/runs/39585653273).
+
+CI installs the test dependencies and runs all three test directories. To run the
+same tests locally, install `src/workloads/extended-tpcds/requirements-test.txt`,
+then use `python -m unittest discover -s DIRECTORY -v` for
+`src/containers/benchmark-server/tests`, `src/containers/dbt-server/tests`, and
+`src/workloads/extended-tpcds`. The tests include actual PNG exports for one- and
+five-snapshot reports; OAT timing tables and per-model plots retain later batches
+and compare DuckDB-OpenIVM with the DuckDB baseline.
 
 ## Workload structure
 
@@ -518,6 +596,13 @@ choose the greatest non-null reported units; channel/assessment lookups use
 explicit payload tie breakers. Preference normalization uses a
 retail-oriented regex, and offer buckets use retail categories. Casts translated
 from Spark use DuckDB `TRY_CAST` where the source's permissive cast returns null.
+The monthly engagement snapshot casts each fractional effective-unit contribution
+to `DECIMAL(28,10)` before summing, then rounds the exact sum half away from zero
+before converting it to an integer. Ten fractional digits match the floating-point
+comparison precision used by the benchmark; eighteen integer digits accommodate
+the generated capacities. This explicit precision prevents parallel floating-point
+reduction order from changing integer results at half-unit boundaries. It also
+preserves half-away-from-zero rounding on engines whose integer casts truncate.
 See [translation provenance](../src/workloads/extended-tpcds/translation.json).
 Other original latest-row orderings remain intact: conflicting payloads with equal
 ordering timestamps in additional metadata-arrival scenarios need an explicit tie
@@ -541,10 +626,10 @@ tables materialized and all ten independent count/quantity checks passed. The
 small-input suite also checks leading nulls, report-day observations, winner
 deletion, stable generation and hidden monthly grain. The mode tests compare all
 96 models after every batch, including empty initial state, complete deletion and
-repeated insertions. These checks establish a recomputation baseline. Incremental
-engine acceptance in milestone 4 remains failing for the tested OpenIVM builds.
-Milestone 5 has DuckDB-family OAT wiring; successful Docker acceptance, other
-engines and controlled performance/storage sweeps in milestone 6 remain open.
+repeated insertions. Native CLI acceptance now covers all six modes at SF 0.01 and
+mixed DML at SF 0.03, and the paired Docker/OAT smoke passed for the revision
+recorded above. Other engines and controlled performance/storage sweeps remain
+open.
 
 1. Implement TPC-DS normalization and the extension sources, with immutable raw
    data, stable lineage and achieved-statistics output. Resolve unsupported or

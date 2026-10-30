@@ -15,6 +15,11 @@ else:
 
 def prepare(directory, scale_factor, options, initial_pct, steps):
     directory = Path(directory)
+    resources = {
+        "memory_limit": os.environ.get("DUCKDB_MEM_LIMIT", "4GB"),
+        "threads": int(os.environ.get("DUCKDB_THREADS", "4")),
+        "max_temp_directory_size": os.environ.get("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", "4GB"),
+    }
     recipe = {"scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
               "steps": steps, "duckdb_generator_version": duckdb.__version__}
     metadata = directory / "preparation.json"
@@ -28,12 +33,12 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
     extension_path = directory / "extension.duckdb"
     if base_path.exists() or extension_path.exists():
         raise ValueError("incomplete source cache; choose a new output directory")
-    with duckdb.connect(str(base_path)) as connection:
+    with duckdb.connect(str(base_path), config=resources) as connection:
         connection.execute("SET custom_extension_repository='https://extensions.duckdb.org'")
         connection.execute("INSTALL tpcds")
         connection.execute("LOAD tpcds")
         connection.execute(f"CALL dsdgen(sf={float(scale_factor)})")
-    with duckdb.connect(str(extension_path)) as connection:
+    with duckdb.connect(str(extension_path), config=resources) as connection:
         connection.execute("ATTACH " + generate.quote(base_path) + " AS raw (READ_ONLY)")
         connection.execute("BEGIN")
         try:
@@ -46,7 +51,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
         except Exception:
             connection.execute("ROLLBACK")
             raise
-    with duckdb.connect() as connection:
+    with duckdb.connect(config=resources) as connection:
         connection.execute("ATTACH " + generate.quote(extension_path) + " AS canonical (READ_ONLY)")
         for table in [*mutations.sources(), "xt_run", "xt_engagements", "xt_customers", "xt_accounts"]:
             connection.execute(f"CREATE TABLE {table} AS SELECT * FROM canonical.main.{table}")

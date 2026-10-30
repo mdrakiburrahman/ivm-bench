@@ -76,6 +76,35 @@ class WorkloadTests(unittest.TestCase):
             self.assertEqual(result["model_rows"]["meta_ingestion"], 1)
             self.assertGreater(result["model_rows"]["int_engagement_observation_latest"], 0)
 
+    def test_null_safe_household_joins_preserve_original_model_bags(self):
+        with fixture() as connection:
+            configuration = generate.prepare(connection, "base", report_date=date(2002, 12, 31))
+            pipeline.build(connection)
+            # Null and zero identifiers must remain distinct, including duplicate inputs.
+            for suffix in ("28d", "7d", "daily"):
+                parent = "int_hist_unpivoted_" + suffix
+                connection.execute(f"UPDATE {parent} SET household_id=NULL WHERE household_key=(SELECT min(household_key) FROM {parent})")
+                connection.execute(f"INSERT INTO {parent} SELECT * REPLACE (0 AS household_id) FROM {parent} WHERE household_id IS NULL ORDER BY report_as_of_date LIMIT 1")
+                connection.execute(f"INSERT INTO {parent} SELECT * FROM {parent} WHERE household_id IS NULL ORDER BY report_as_of_date LIMIT 1")
+            self.assertGreater(connection.execute("SELECT count(*) FROM int_hist_unpivoted_28d WHERE household_id IS NULL").fetchone()[0], 0)
+            checked = []
+            predicate = "a.household_id IS NOT DISTINCT FROM m.household_id"
+            original = "(a.household_id = m.household_id OR (a.household_id IS NULL AND m.household_id IS NULL))"
+            for name in pipeline.mapping():
+                sql = pipeline.render_model(name, configuration)
+                if predicate not in sql:
+                    continue
+                connection.execute(f"CREATE OR REPLACE TABLE {name} AS {sql}")
+                reference = sql.replace(predicate, original)
+                difference = connection.execute(f"""SELECT count(*) FROM (
+                    (SELECT * FROM {name} EXCEPT ALL SELECT * FROM ({reference}))
+                    UNION ALL
+                    (SELECT * FROM ({reference}) EXCEPT ALL SELECT * FROM {name})
+                )""").fetchone()[0]
+                self.assertEqual(difference, 0, name)
+                checked.append(name)
+            self.assertEqual(len(checked), 9)
+
     def test_repeatable_metadata_and_input_identity(self):
         configs, digests = [], []
         for reverse in [False, True]:
@@ -163,6 +192,47 @@ class WorkloadTests(unittest.TestCase):
             result = pipeline.build(connection, pipeline.PILOT_TARGETS)
             pipeline.validate(connection, result["model_rows"])
             self.assertEqual(connection.execute("SELECT assessment_key FROM int_hist_active_28d WHERE engagement_registry_key=? AND report_as_of_date=DATE '2002-12-31'", [registry_key]).fetchone()[0], old_key)
+
+    def test_monthly_effective_units_round_half_away_from_zero(self):
+        with duckdb.connect() as connection:
+            connection.execute("""CREATE TABLE int_engagement_status_transaction AS
+                SELECT TIMESTAMP '2002-12-01' AS event_time,
+                       'engagement-' || household_key AS engagement_path,
+                       household_key, 1 AS account_offer_key, 1 AS account_usage_key,
+                       1 AS platform_key, 1 AS preference_key, 1 AS product_tier_key,
+                       1 AS product_version_key, 1 AS engagement_type_key, 1 AS mode_key,
+                       effective_units::DOUBLE AS effective_units
+                FROM (VALUES (1, 0.49), (2, 0.5), (3, -0.5), (4, 1.5),
+                             (5, -1.5), (6, NULL)) t(household_key, effective_units)""")
+            sql = pipeline.render_model("fact_engagement_status_monthly_snapshot",
+                                        {"report_date": "2002-12-31", "history_months": 12})
+            connection.execute("CREATE TABLE snapshot AS " + sql)
+            self.assertEqual(connection.execute(
+                "SELECT household_key,effective_units_count FROM snapshot ORDER BY household_key"
+            ).fetchall(), [(1, 0), (2, 1), (3, -1), (4, 2), (5, -2), (6, None)])
+
+    def test_monthly_fractional_units_use_fixed_precision_before_summing(self):
+        # These nearby DOUBLE values straddle a half-unit total depending on
+        # reduction order; at ten decimal places each contributes 0.0384615385.
+        values = [0.038461538461538464] * 12 + [0.03846153846153846]
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse), duckdb.connect(config={"memory_limit": "128MB", "threads": 1}) as connection:
+                connection.execute("""CREATE TABLE int_engagement_status_transaction AS
+                    SELECT TIMESTAMP '2002-12-01' AS event_time,
+                           'engagement-' || household_key || '-' || i AS engagement_path,
+                           household_key, 1 AS account_offer_key, 1 AS account_usage_key,
+                           1 AS platform_key, 1 AS preference_key, 1 AS product_tier_key,
+                           1 AS product_version_key, 1 AS engagement_type_key, 1 AS mode_key,
+                           units * sign AS effective_units
+                    FROM (SELECT unnest(?::DOUBLE[]) AS units, unnest(range(13)) AS i)
+                    CROSS JOIN (VALUES (1,1),(2,-1)) s(household_key,sign)""",
+                    [values[::-1] if reverse else values])
+                sql = pipeline.render_model("fact_engagement_status_monthly_snapshot",
+                                            {"report_date": "2002-12-31", "history_months": 12})
+                connection.execute("CREATE TABLE snapshot AS " + sql)
+                self.assertEqual(connection.execute(
+                    "SELECT household_key,effective_units_count FROM snapshot ORDER BY household_key"
+                ).fetchall(), [(1, 1), (2, -1)])
 
     def test_hidden_monthly_grain_preserves_equal_projected_rows(self):
         with fixture() as connection:

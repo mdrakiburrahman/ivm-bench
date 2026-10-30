@@ -30,9 +30,24 @@ class ExtendedServiceTests(unittest.TestCase):
 
     def test_failed_extension_load_closes_worker(self):
         with patch('services.extended_tpcds._DuckDBSession') as factory:
-            factory.return_value.execute.side_effect=QueryFailed('cannot load json')
+            def execute(sql, **kwargs):
+                if sql.startswith('LOAD '):
+                    raise QueryFailed('cannot load json')
+                return ''
+            factory.return_value.execute.side_effect=execute
             with self.assertRaisesRegex(QueryFailed,'cannot load'):
                 CliConnection('duckdb','state.duckdb')
+            factory.return_value.close.assert_called_once()
+
+    def test_invalid_resource_setting_fails_instead_of_running_unbounded(self):
+        with patch('services.extended_tpcds._DuckDBSession') as factory:
+            def execute(sql, **kwargs):
+                if sql.startswith('SET memory_limit='):
+                    raise QueryFailed('invalid memory limit')
+                return ''
+            factory.return_value.execute.side_effect=execute
+            with self.assertRaisesRegex(QueryFailed,'invalid memory limit'):
+                CliConnection('duckdb','state.duckdb',memory_limit='invalid')
             factory.return_value.close.assert_called_once()
 
     def test_http_keeps_validation_outside_execution_request(self):

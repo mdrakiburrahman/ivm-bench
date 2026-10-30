@@ -1,0 +1,107 @@
+{
+  "status": "passed_focused_precision_probe",
+  "scope": "SF1 initial monthly snapshot and its 30 ancestors only; not full-DAG or mutation-mode acceptance",
+  "run_url": "https://github.com/mdrakiburrahman/openivm-spark/actions/runs/39592027122",
+  "artifact": "extended-tpcds-spark-monthly-probe-39592027122",
+  "spark_experiment_commit": "61270a931a9b41995854e8619b32cf71b5266ab1",
+  "spark_candidate_parent": "98f133b01fbd95175fdca86a589c33762dbd71a0",
+  "benchmark_base_commit": "aa44dc36c15a5f25d97b889a3ad408debbef1c77",
+  "candidate_change": "SUM(CAST(effective_units AS DECIMAL(28,10))) replaces SUM(effective_units); integer half-away rounding is retained",
+  "native_artifact_run": 39226213916,
+  "native_extension_sha256": "ce6cccb23bd04b579bc8e019608c36f52e6bd8cc7b5f5d8a1aac88d7a65d84f1",
+  "execution": "Experimental standalone compiler adapter, Spark 4.1; not OAT integration",
+  "scale_factor": 1,
+  "profile": "native",
+  "seed": 17,
+  "report_date": "2002-12-31",
+  "history_months": 12,
+  "plan_id": "24fdc6d2172de3a9",
+  "validation": "Independent DuckDB 1.2.1 references; full bidirectional EXCEPT ALL; floating columns rounded to 10 places; monthly output integers compared exactly",
+  "ancestor_comparisons": {
+    "models": 30,
+    "differences": 0
+  },
+  "original_monthly_mv_differences": 2,
+  "decimal_monthly_mv_differences": 0,
+  "decimal_monthly_refresh_type": "WINDOW_PARTITION",
+  "unexpected_full_refreshes": 0,
+  "spark_query_probes": [
+    {
+      "shuffle_partitions": 1,
+      "original_double_differences": 4,
+      "decimal_differences": 0
+    },
+    {
+      "shuffle_partitions": 2,
+      "original_double_differences": 0,
+      "decimal_differences": 0
+    },
+    {
+      "shuffle_partitions": 3,
+      "original_double_differences": 0,
+      "decimal_differences": 0
+    },
+    {
+      "shuffle_partitions": 4,
+      "original_double_differences": 4,
+      "decimal_differences": 0
+    },
+    {
+      "shuffle_partitions": 8,
+      "original_double_differences": 2,
+      "decimal_differences": 0
+    }
+  ],
+  "duckdb_original_query_probes": [
+    {
+      "threads": 1,
+      "differences": 4
+    },
+    {
+      "threads": 2,
+      "differences": 2
+    },
+    {
+      "threads": 4,
+      "differences": 2
+    }
+  ],
+  "witness": {
+    "spark_and_duckdb_parent_bags_equal": true,
+    "parent_rows": 10,
+    "unrounded_spark_sums": [
+      144.49999999999997,
+      137.49999999999997
+    ],
+    "explanation": "Identical contribution bags can reduce to opposite sides of a half-unit boundary; integer ROUND amplifies floating-point error."
+  },
+  "limits": {
+    "container_memory_gib": 14,
+    "container_cpus": 4,
+    "java_heap_gib": 6,
+    "duckdb_memory_gb": 6,
+    "duckdb_threads": 4,
+    "statement_timeout_s": 300
+  },
+  "elapsed_s": 1581.583903053,
+  "peak_process_tree_rss_mib": 8465.85546875,
+  "refresh_regression": {
+    "run_url": "https://github.com/mdrakiburrahman/openivm-spark/actions/runs/39585653273",
+    "spark_targets": [
+      "3.5",
+      "4.1"
+    ],
+    "modes": [
+      "CDF",
+      "intercept"
+    ],
+    "cases": [
+      "positive and negative fractional totals",
+      "NULL total",
+      "mixed insert/update/delete refresh",
+      "empty refresh"
+    ],
+    "tests_passed": 4,
+    "full_refresh_fallback": false
+  }
+}
