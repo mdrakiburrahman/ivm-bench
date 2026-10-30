@@ -718,3 +718,7 @@ comparisons, zero differences**, with Spark 3.5.7, DuckDB 2.0.0 and sqlglot
 versions, source hashes and per-model rows/SQL hashes are retained in
 `validation/spark-sql-mixed-fixture-20261030.json`. It is a local SQL translation
 check; it does not establish OpenIVM or remote engine acceptance.
+
+The shared SQL path currently executes one model command at a time and reports
+`model_concurrency: 1`; warehouse/Spark task parallelism is separate. Sessions
+explicitly use UTC, matching the source timestamps and frozen report clock.

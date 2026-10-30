@@ -35,6 +35,7 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
             credentials=open_connection.call_args.args[0].credentials
             self.assertEqual(credentials.livy_url,'http://spark:8998')
             self.assertEqual(credentials.statement_timeout,123)
+            handle.cursor.return_value.execute.assert_any_call("SET TIME ZONE 'UTC'")
             self.assertEqual(connection.execute('SELECT 1'),[])
             connection.close()
             handle.close.assert_called_once()

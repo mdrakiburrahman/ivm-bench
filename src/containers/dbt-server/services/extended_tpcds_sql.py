@@ -95,6 +95,7 @@ class Connection:
             dbt_connection = DbtConnection(type='fabricspark', name='extended-tpcds', credentials=credentials)
             self.handle = FabricSparkConnectionManager.open(dbt_connection).handle
             self.catalog = None
+        self.execute("SET TIME ZONE 'UTC'")
         if initialize:
             self.execute('CREATE SCHEMA ' + identifier(self.namespace))
         self.use(self.namespace)
@@ -266,7 +267,7 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
         state.update(batch_num=batch_num, dirty=False, namespace=connection.namespace)
         checkpoint.write_text(json.dumps(state, indent=2))
         result = {'status':'completed', 'engine':engine, 'batch_num':batch_num, 'plan_id':manifest['plan_id'],
-                  'duration_s':source_s+model_s, 'source_replay_wall_s_including_guards':source_s,
+                  'duration_s':source_s+model_s, 'model_concurrency':1, 'source_replay_wall_s_including_guards':source_s,
                   'model_wall_s_including_cli':model_s, 'model_sql_duration_s':durations, 'model_rows':counts,
                   'materializations':state['materializations'], 'classification_counts':{kind:sum(m['classification']==kind for m in state['materializations'].values()) for kind in {m['classification'] for m in state['materializations'].values()}},
                   'model_queries':model_queries, 'sql_statements':connection.statements,
