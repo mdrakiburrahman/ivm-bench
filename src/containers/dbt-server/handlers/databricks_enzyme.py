@@ -24,20 +24,19 @@ The benchmark-server calls these around each dbt build:
         Capture Delta history / Enzyme refresh stats for the batch's MVs.
 
   - POST /validate/databricks-enzyme/explain-create-materialized-view/<sf>
-        Pre-flight incrementalizability gate. Runs EXPLAIN CREATE
+        Incrementalizability diagnostic. Runs EXPLAIN CREATE
         MATERIALIZED VIEW ... REFRESH POLICY INCREMENTAL STRICT AS
         <compiled_sql> for every model in the databricks-enzyme dbt
         project. Returns 200 if every model is incrementalizable, 422
-        if any model fails. Called by the benchmark-server BEFORE the
-        batch-1 timer starts so failures fail the engine without
-        polluting timing data.
+        if any model fails. The benchmark calls it after batch 1, outside
+        the timer, with existing_models=true to preserve the live MVs.
 
 The standard /run/<engine> route handles the dbt build itself.
 """
 
 import logging
 
-from flask import Blueprint, Flask, jsonify
+from flask import Blueprint, Flask, jsonify, request
 
 from handlers.base import BaseHandler
 from services import databricks_enzyme_sources
@@ -45,6 +44,27 @@ from services import databricks_enzyme_sources
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("databricks_enzyme", __name__)
+
+
+@bp.route("/validate/databricks-openivm/<int:batch_num>", methods=["POST"])
+def validate_openivm(batch_num):
+    from services import databricks_openivm
+    try:
+        payload = databricks_openivm.validate(batch_num)
+        return jsonify(payload), 200 if payload["status"] == "ok" else 422
+    except Exception as exc:
+        logger.exception("Databricks OpenIVM validation failed")
+        return jsonify(status="error", error=str(exc)), 500
+
+
+@bp.route("/metrics/databricks-openivm/<int:batch_num>", methods=["POST"])
+def openivm_photon_metrics(batch_num):
+    from services import databricks_openivm
+    try:
+        return jsonify(databricks_openivm.photon_metrics(batch_num)), 200
+    except Exception as exc:
+        logger.exception("Databricks Photon metrics unavailable")
+        return jsonify(status="unavailable", error=str(exc)), 200
 
 
 @bp.route("/sources/databricks-enzyme/init/<int:sf>", methods=["POST"])
@@ -154,7 +174,7 @@ def metrics(batch_num: int):
     methods=["POST"],
 )
 def explain_create_materialized_view(sf: int):
-    """Pre-flight incrementalizability gate.
+    """Incrementalizability diagnostic for existing MVs or pre-build stubs.
 
     Runs `EXPLAIN CREATE MATERIALIZED VIEW ... REFRESH POLICY INCREMENTAL
     STRICT AS <compiled_sql>` for every non-ephemeral model in the
@@ -164,13 +184,16 @@ def explain_create_materialized_view(sf: int):
       - 422 {status: "error", ...}  at least one model is NOT
       - 500 {status: "error", ...}  infrastructure/compile failure
 
-    The benchmark-server calls this AFTER `init/<sf>` and BEFORE the
-    batch-1 timer starts.
+    The benchmark observer supplies existing_models=true after batch 1, so
+    dependency resolution uses the real MVs and never replaces them with stubs.
     """
     from services import databricks_enzyme_explain
 
+    existing_models = (request.get_json(silent=True) or {}).get("existing_models", False)
+    if not isinstance(existing_models, bool):
+        return jsonify(status="error", error="existing_models must be a boolean"), 400
     try:
-        result = databricks_enzyme_explain.explain_all_models(sf)
+        result = databricks_enzyme_explain.explain_all_models(sf, existing_models=existing_models)
     except Exception as e:
         logger.exception(
             "[databricks-enzyme] explain-create-materialized-view sf=%d failed",

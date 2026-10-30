@@ -51,6 +51,10 @@ def _inject_fabric_resolved(env: dict, *, claim_fresh: bool = False) -> None:
 
 def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, batch_num: int = 1):
     """Execute a dbt build for the given engine and track results."""
+    if engine == "databricks-openivm":
+        from services import databricks_openivm
+        databricks_openivm.run(run_id, scale_factor, full_refresh, batch_num)
+        return
     project_dir = os.path.join(PROJECTS_DIR, engine)
     if not os.path.isdir(project_dir):
         _fail_run(run_id, f"No dbt project for engine '{engine}'")
