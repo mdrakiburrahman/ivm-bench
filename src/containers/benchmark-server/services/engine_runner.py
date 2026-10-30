@@ -182,6 +182,9 @@ class EngineRunner:
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
+        if engine_config.name == "databricks-openivm":
+            # Enzyme and OpenIVM may run together in one experiment wave.
+            engine_env["DATABRICKS_EXPERIMENT_ID"] = str(time.time_ns() // 1000)
 
         if engine_config.staging_dir and engine_config.staging_dir != "staging":
             # Parallel mode: create compose overrides for staging isolation
@@ -605,7 +608,7 @@ class EngineRunner:
 
         No-op for any other engine.
         """
-        if self._engine.name != "databricks-enzyme":
+        if self._engine.name not in ("databricks-enzyme", "databricks-openivm"):
             return
         try:
             resp = requests.post(
@@ -728,12 +731,12 @@ class EngineRunner:
                 f"already_seeded={data.get('already_seeded')}"
             )
 
-        run_id = self._run_fabric_dbt(batch_num, full_refresh)
+        run_id = self._run_dbt_with_batch(batch_num, full_refresh)
         if batch_num == 1:
             self._write_last_sf(sf)
         return run_id
 
-    def _run_fabric_dbt(self, batch_num: int, full_refresh: bool) -> str:
+    def _run_dbt_with_batch(self, batch_num: int, full_refresh: bool) -> str:
         """POST /run/<engine> with batch_num (for the source macro), stream
         progress, check + save the result."""
         name = self._engine.name
@@ -829,7 +832,7 @@ class EngineRunner:
                 self._batch_loader_append(batch_num)
                 self._capture_delta_stats(batch_num)
 
-            if name == "databricks-enzyme":
+            if name in ("databricks-enzyme", "databricks-openivm"):
                 self._databricks_enzyme_warmup(batch_num)
 
             if not is_cloud_engine(name) and name != "feldera":
@@ -860,6 +863,8 @@ class EngineRunner:
                 run_id = self._run_spark_openivm(batch_num)
             elif name == "databricks-enzyme":
                 run_id = self._run_databricks_enzyme(batch_num)
+            elif name == "databricks-openivm":
+                run_id = self._run_databricks_openivm(batch_num)
             elif name in ("fabric-openivm-jvm-35", "fabric-jvm-35"):
                 run_id = self._run_fabric(batch_num)
             else:
@@ -897,6 +902,20 @@ class EngineRunner:
                     if os.environ.get("OPENIVM_QUERY_LOG", "0") == "1":
                         self._export_spark_openivm_query_log(run_id, batch_num)
 
+            if name == "databricks-openivm" and run_id and batch.status != "failed":
+                try:
+                    resp = requests.post(f"{self._dbt_url}/metrics/databricks-openivm/{batch_num}", timeout=300)
+                    resp.raise_for_status()
+                    batch.extra["databricks_photon_metrics"] = resp.json()
+                except Exception as exc:
+                    batch.extra["databricks_photon_metrics"] = {"status": "unavailable", "error": str(exc)}
+                if os.environ.get("OPENIVM_VALIDATE", "0") != "0":
+                    resp = requests.post(f"{self._dbt_url}/validate/databricks-openivm/{batch_num}", timeout=7200)
+                    batch.extra["openivm_validation"] = resp.json()
+                    resp.raise_for_status()
+                    if batch.extra["openivm_validation"].get("status") != "ok":
+                        raise RuntimeError("Databricks OpenIVM correctness validation failed")
+
             if (
                 name in ("databricks-enzyme", "spark", "spark-openivm")
                 and run_id
@@ -906,6 +925,10 @@ class EngineRunner:
 
             if name == "databricks-enzyme":
                 if batch.status != "failed":
+                    if batch_num == 1:
+                        observer_started = time.monotonic()
+                        self._export_databricks_enzyme_explain(self._config.scale_factor)
+                        batch.extra["databricks_explain_s"] = time.monotonic() - observer_started
                     self._export_databricks_enzyme_metrics(batch_num)
                 # Failed refreshes need their planning/error events captured
                 # before teardown drops the materialized views and pipelines.
@@ -1450,8 +1473,8 @@ class EngineRunner:
             f"attempts={data.get('attempts')} elapsed_s={data.get('elapsed_s')}"
         )
 
-    def _databricks_enzyme_validate_incrementalizable(self, sf: int) -> None:
-        """Pre-flight diagnostic: EXPLAIN every model under INCREMENTAL STRICT.
+    def _export_databricks_enzyme_explain(self, sf: int) -> None:
+        """Post-batch diagnostic: EXPLAIN every model under INCREMENTAL STRICT.
 
         POSTs to dbt-server's
         ``/validate/databricks-enzyme/explain-create-materialized-view/<sf>``
@@ -1465,10 +1488,9 @@ class EngineRunner:
         per-model reason strings that feed the
         ``benchmark-heuristics.png`` incrementalization-coverage panel.
 
-        Called after ``init/<sf>`` succeeds (so the planner can resolve
-        ``tpcdi_src.*``) and before the dbt build. Cost is in batch 1's
-        timer to match the init/<sf>-in-timer convention used by every
-        other engine for initial source loading.
+        Called after the initial build and outside its batch timer. Existing
+        materialized views resolve dependencies; the observer must not create
+        or drop stub views at their names.
 
         Persists per-model artifacts to
         ``mount/query-plan/<sf>/databricks-enzyme/
@@ -1483,7 +1505,7 @@ class EngineRunner:
         """
         refresh_policy = os.environ.get("DATABRICKS_REFRESH_POLICY", "AUTO")
         self._emit(
-            f"[databricks-enzyme] Pre-flight diagnostic: EXPLAIN every model "
+            f"[databricks-enzyme] Post-batch diagnostic: EXPLAIN every model "
             f"under REFRESH POLICY INCREMENTAL STRICT (record-only, "
             f"actual run uses {refresh_policy}) sf={sf}"
         )
@@ -1491,6 +1513,7 @@ class EngineRunner:
             resp = requests.post(
                 f"{self._dbt_url}/validate/databricks-enzyme/"
                 f"explain-create-materialized-view/{sf}",
+                json={"existing_models": True},
                 timeout=1800,
             )
         except Exception as e:
@@ -1521,14 +1544,14 @@ class EngineRunner:
             sample = ", ".join(f.get("model", "?") for f in failures[:5])
             extra = "" if len(failures) <= 5 else f" (+{len(failures) - 5} more)"
             self._emit(
-                f"[databricks-enzyme] Pre-flight: {failed}/{total} models "
+                f"[databricks-enzyme] Diagnostic: {failed}/{total} models "
                 f"NOT incrementalizable under STRICT (actual policy: "
                 f"{refresh_policy}): {sample}{extra}. "
                 f"See mount/query-plan/{sf}/databricks-enzyme/"
                 f"explain-create-materialized-view/summary.json for reasons."
             )
         self._emit(
-            f"[databricks-enzyme] Pre-flight done: "
+            f"[databricks-enzyme] Diagnostic done: "
             f"{passed}/{total} incrementalizable, {failed}/{total} rejected under STRICT; "
             f"{len(data.get('skipped_ephemeral') or [])} ephemeral skipped; "
             f"elapsed_ms={data.get('elapsed_ms')}"
@@ -1584,6 +1607,20 @@ class EngineRunner:
             f"[databricks-enzyme] EXPLAIN artifacts written: "
             f"{base_dir} ({len(plans)} models)"
         )
+
+    def _run_databricks_openivm(self, batch_num: int) -> str:
+        """Load sources once, append once per round, then run generated SQL."""
+        sf = self._config.scale_factor
+        paths = (["cleanup-schema", f"init/{sf}"] if batch_num == 1
+                 else [f"append/{batch_num}/{sf}"])
+        source_started = time.monotonic()
+        for path in paths:
+            response = requests.post(f"{self._dbt_url}/sources/databricks-enzyme/{path}", timeout=7200)
+            response.raise_for_status()
+            if response.json().get("status") != "ok":
+                raise RuntimeError(f"Databricks OpenIVM source operation failed: {path}")
+        self._result.batches[batch_num - 1].extra["source_load_s"] = time.monotonic() - source_started
+        return self._run_dbt_with_batch(batch_num, batch_num == 1)
 
     def _run_databricks_enzyme(self, batch_num: int) -> str:
         """Run databricks-enzyme: per-batch source sync, then dbt build.
@@ -1698,13 +1735,6 @@ class EngineRunner:
                 f"skipped_upload={data.get('skipped_upload')}"
             )
 
-            # Pre-flight incrementalizability gate. Runs after init/<sf>
-            # so `tpcdi_src.*` exists for the planner to resolve, but
-            # BEFORE the dbt build so a failure short-circuits without
-            # any `CREATE MATERIALIZED VIEW` being emitted. Cost is in
-            # batch 1's timer (matches the init/<sf>-in-timer convention
-            # used by every other engine for initial source loading).
-            self._databricks_enzyme_validate_incrementalizable(sf)
         else:
             self._emit(
                 f"[databricks-enzyme] Syncing batch {batch_num} sources to "
@@ -3049,7 +3079,7 @@ class EngineRunner:
         self, name: str, batch_num: int, batch, out_path: str
     ) -> None:
         try:
-            default_timeout = 1820 if name == "databricks-enzyme" else 110
+            default_timeout = 1820 if name in ("databricks-enzyme", "databricks-openivm") else 110
             configured_timeout = os.environ.get(
                 "STORAGE_COLLECTION_TIMEOUT_S", ""
             ).strip()

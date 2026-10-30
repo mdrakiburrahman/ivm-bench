@@ -103,6 +103,7 @@ ENGINE_PORTS = {
     "databricks-enzyme": 5006,
     "fabric-openivm-jvm-35": 5007,
     "fabric-jvm-35": 5008,
+    "databricks-openivm": 5010,
     "dbspnet": 5009,
 }
 
@@ -115,6 +116,7 @@ ENGINE_COMPOSE_FILES = {
     "databricks-enzyme": "docker/docker-compose.benchmark.databricks-enzyme.yml",
     "fabric-openivm-jvm-35": "docker/docker-compose.benchmark.fabric-openivm-jvm-35.yml",
     "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
+    "databricks-openivm": "docker/docker-compose.benchmark.databricks-openivm.yml",
     "dbspnet": "docker/docker-compose.benchmark.dbspnet.yml",
 }
 
@@ -131,6 +133,7 @@ ENGINE_MAIN_SERVICES = {
     "databricks-enzyme": None,
     "fabric-openivm-jvm-35": None,
     "fabric-jvm-35": None,
+    "databricks-openivm": None,  # The schema-only compiler is a helper; execution is remote.
     "dbspnet": "dbspnet-server",
 }
 
@@ -154,6 +157,7 @@ ENGINE_COMPUTE_SERVICES = {
 # contend for host CPU/RAM/disk) and runs cloud engines in one parallel wave.
 CLOUD_ENGINES = {
     "databricks-enzyme",
+    "databricks-openivm",
     "fabric-openivm-jvm-35",
     "fabric-jvm-35",
 }

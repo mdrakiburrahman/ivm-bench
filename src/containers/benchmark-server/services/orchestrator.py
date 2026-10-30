@@ -327,7 +327,7 @@ class Orchestrator:
             ("docker/docker-compose.spark-openivm-build.yml", "spark-openivm-build"),
         ]
         # Engine-specific project names
-        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "dbspnet", "spark-openivm", "databricks-enzyme", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
+        for engine in ["spark", "duckdb", "duckdb-openivm", "feldera", "dbspnet", "spark-openivm", "databricks-enzyme", "databricks-openivm", "fabric-openivm-jvm-35", "fabric-jvm-35"]:
             from models.config import ENGINE_COMPOSE_FILES
             cf = ENGINE_COMPOSE_FILES.get(engine)
             if cf:
@@ -484,7 +484,7 @@ class Orchestrator:
         # duckdb-openivm would skip the build it depends on.
         if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench:
             callables.append(self._run_duckdb_openivm_build)
-        if "spark-openivm" in self._config.engines or "fabric-openivm-jvm-35" in self._config.engines:
+        if set(self._config.engines) & {"spark-openivm", "fabric-openivm-jvm-35", "databricks-openivm"}:
             callables.append(self._run_spark_openivm_build)
         if compiler_bench:
             callables.append(self._run_lpts_build)

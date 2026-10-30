@@ -1,4 +1,4 @@
-"""databricks-enzyme pre-flight incrementalizability gate.
+"""Databricks Enzyme incrementalizability diagnostics.
 
 Validates every dbt model in the `databricks-enzyme` project by sending
 
@@ -9,23 +9,13 @@ Validates every dbt model in the `databricks-enzyme` project by sending
 to the Databricks Serverless SQL warehouse. The planner returns either a
 plan (model is structurally incrementalizable) or throws
 `MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE: <reason>` (model is NOT). We
-capture both and surface a single pass/fail verdict for the experiment.
+capture both for the diagnostic report.
 
-Designed to run AFTER `init_sources(sf)` and BEFORE batch 1's timer so:
-- failures fail the engine without polluting timing data, and
-- artifacts under `mount/query-plan/<sf>/databricks-enzyme/
-  explain-create-materialized-view/` give an at-a-glance view of which
-  queries the planner accepted vs rejected.
-
-Cross-model resolution: Silver references bronze, gold references both.
-At pre-flight time only `exp_<ts>_data.*` (the per-experiment source
-table schema) exists. So we walk the dbt DAG in
-topological order and after a successful EXPLAIN, `CREATE OR REPLACE
-VIEW` the model's compiled SQL at its *real* target name. Regular views
-are metadata-only (no compute), and downstream EXPLAINs can then resolve
-their FROM clauses. All stub views are explicitly DROPped at the end so
-the immediately-following dbt build's `CREATE MATERIALIZED VIEW` can
-land cleanly.
+The benchmark runs this after initial materialization, outside its timer,
+with existing_models=True. Dependencies resolve to real MVs; no model
+objects are replaced or dropped. Pre-build API callers retain the default
+mode, which creates temporary stub views in dependency order and removes
+them afterward. EXPLAIN targets always use a separate sandbox schema.
 """
 
 from __future__ import annotations
@@ -242,8 +232,11 @@ def _register_stub_view(model: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def explain_all_models(sf: int) -> Dict[str, Any]:
-    """Pre-flight gate: EXPLAIN every dbt model under INCREMENTAL STRICT.
+def explain_all_models(sf: int, *, existing_models: bool = False) -> Dict[str, Any]:
+    """EXPLAIN every model, using either existing MVs or pre-build stub views.
+
+    Post-build observers use existing_models=True so real model objects are
+    never replaced or dropped. The default preserves the pre-build API.
 
     Returns a dict with:
       status: "ok" | "error"
@@ -323,14 +316,15 @@ def explain_all_models(sf: int) -> Dict[str, Any]:
             else:
                 entry["plan"] = plan or ""
                 entry["error"] = None
-                try:
-                    _register_stub_view(model)
-                    stubs.append((model["schema"], model["name"]))
-                except Exception as exc:
-                    logger.warning(
-                        "[databricks-enzyme] stub VIEW registration failed for %s: %s",
-                        entry["model"], exc,
-                    )
+                if not existing_models:
+                    try:
+                        _register_stub_view(model)
+                        stubs.append((model["schema"], model["name"]))
+                    except Exception as exc:
+                        logger.warning(
+                            "[databricks-enzyme] stub VIEW registration failed for %s: %s",
+                            entry["model"], exc,
+                        )
             plans.append(entry)
     finally:
         _drop_stub_views(stubs)
