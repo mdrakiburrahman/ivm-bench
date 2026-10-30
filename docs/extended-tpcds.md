@@ -710,3 +710,11 @@ on an Extended TPC-DS failure; later experiments cannot advance to SF100.
 It is a prepared configuration, not a completed or launched benchmark. Small
 remote acceptance remains required, including target SQL compilation on each
 streaming engine and refresh correctness on the pinned Spark WF implementation.
+
+The reproducible `verify_spark.py --mode mixed --output <new-file>` check also
+passes all 96 queries after initial loading and two mixed DML batches: **288 bag
+comparisons, zero differences**, with Spark 3.5.7, DuckDB 2.0.0 and sqlglot
+30.25.0. This run has 96/61/60 nonempty models across the three snapshots. Exact
+versions, source hashes and per-model rows/SQL hashes are retained in
+`validation/spark-sql-mixed-fixture-20261030.json`. It is a local SQL translation
+check; it does not establish OpenIVM or remote engine acceptance.
