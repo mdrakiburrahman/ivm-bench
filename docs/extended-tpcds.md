@@ -672,10 +672,17 @@ PR #84 now includes the current benchmark harness, including repeated TPC-DI
 refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors
 remain `standard` and `databricks`; `extended-tpcds` selects this workload.
 Native OpenIVM is pinned to main revision `19762672440969f318aca61d7971166759349838`.
-The Spark/Fabric builder uses WF revision `41e97c48f510355b192f151727f356661fd53128`
-with running-window state, grouped-window state and classification caching enabled.
-The separate extended-TPC-DS Spark fixes have not yet been combined with that WF
-revision; engine acceptance must establish compatibility before large runs.
+The Spark/Fabric builder uses integration revision
+`3bc70b0396463d28184e03065f9b81377dfa548f` on
+`bench/extended-tpcds-wf-20261030`, combining WF revision `41e97c48` with
+the TPC-DS refresh fixes from Spark PR #85 (`abff19f9`). Running-window state,
+grouped-window state and classification caching are enabled. PR #85 is merged
+as `243d13f5`; **WF PR #62 is still unmerged. Do not merge this benchmark PR
+until its WF dependency lands and the integration pin is replaced.**
+The combined source passes 125 rewriter tests, 142 dialect tests, four compiler
+identity checks and Spark 3.5 extension compilation locally. These checks do not
+replace remote engine acceptance, which must establish compatibility before
+large runs.
 
 A shared SQL-engine replay path is under development for Spark, Fabric and
 Databricks. It checks row-image checksums and before-images, preserves table
