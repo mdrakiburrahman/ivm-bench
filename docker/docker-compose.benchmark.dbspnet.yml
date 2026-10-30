@@ -20,9 +20,13 @@ services:
       context: ../src/containers/dbspnet
       args:
         DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/clast-project/dbsp-net.git}"
-        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-a02772b}"
+        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-b5a7c8e}"
     cpus: ${DBSPNET_CPUS:-32}
     mem_limit: ${DBSPNET_MEM:-120g}
+    environment:
+      # Data-parallel program across this many workers, matching Feldera's `workers: 12`
+      # (dbt-projects/feldera/profiles.yml). Set 1 for the serial engine.
+      DBSPNET_WORKERS: "${DBSPNET_WORKERS:-12}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
       - ../mount/results/${SCALE_FACTOR:-3}/dbspnet:/data/processed/dbspnet
