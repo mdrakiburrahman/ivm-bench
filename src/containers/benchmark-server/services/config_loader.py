@@ -2,6 +2,8 @@
 
 import os
 import json
+from dataclasses import fields
+from pathlib import Path
 
 from models.config import BenchmarkConfig, ExtendedTPCDSOptions
 
@@ -24,7 +26,7 @@ def _load_schedule() -> str:
 
 def load_config() -> BenchmarkConfig:
     """Build a BenchmarkConfig from environment variables."""
-    return BenchmarkConfig(
+    values = dict(
         repeated_refresh=os.environ.get("REPEATED_REFRESH", "0") == "1",
         refresh_count=os.environ.get("REFRESH_COUNT", "20"),
         refresh_pct=os.environ.get("REFRESH_PCT", "1"),
@@ -51,3 +53,17 @@ def load_config() -> BenchmarkConfig:
         host_memory_gb=int(os.environ["HOST_MEMORY"]) if os.environ.get("HOST_MEMORY") else None,
         repo_dir=os.environ.get("REPO_DIR", "/repo"),
     )
+
+    # An OAT file owns workload, scale and batch settings. Validate its first
+    # experiment before constructing a TPC-DI bootstrap configuration; otherwise
+    # a fractional Extended TPC-DS scale fails before the sweep can even start.
+    experiments_file = os.environ.get("BENCHMARK_EXPERIMENTS_FILE")
+    if experiments_file:
+        from models.experiments import parse_experiments_json
+        experiments = parse_experiments_json(Path(experiments_file).read_text())
+        if not experiments:
+            raise ValueError("experiments JSON has no experiments")
+        first = experiments[0]
+        values.update({field.name:getattr(first,field.name) for field in fields(BenchmarkConfig)
+                       if hasattr(first,field.name)})
+    return BenchmarkConfig(**values)

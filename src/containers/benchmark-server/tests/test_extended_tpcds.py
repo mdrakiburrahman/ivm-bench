@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -37,6 +38,22 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         self.assertIs(type(e.scale_factor),int)
         with self.assertRaisesRegex(ValueError,'TPC-DI only'):
             self.experiment(repeated_refresh=True)
+
+    def test_oat_bootstrap_reads_fractional_scale_and_batch_knobs_before_validation(self):
+        from services.config_loader import load_config
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'experiment.json'
+            path.write_text(json.dumps({'experiments':[{'workload':'extended-tpcds','scale_factor':.01,'engines':['duckdb'],'batch_2_pct':'0','batch_3_pct':'0','batch_2_update_pct':'1','batch_3_update_pct':'1','extended_tpcds':{'mode':'updates'}}]}))
+            with patch.dict(os.environ,{'SCALE_FACTOR':'.01','BENCHMARK_EXPERIMENTS_FILE':str(path),'ENGINES':'spark','WORKLOAD':'standard','TPCDI_WORKLOAD':'standard'}):
+                config=load_config()
+            self.assertEqual(config.workload,'extended-tpcds')
+            self.assertEqual(config.scale_factor,.01)
+            self.assertEqual(config.engines,['duckdb'])
+            self.assertEqual(config.batch_2_pct,'0')
+            self.assertEqual(config.batch_2_update_pct,'1')
+        with patch.dict(os.environ,{'SCALE_FACTOR':'.01','BENCHMARK_EXPERIMENTS_FILE':'','WORKLOAD':'standard','TPCDI_WORKLOAD':'standard'}):
+            with self.assertRaisesRegex(ValueError,'integer'):
+                load_config()
 
     def test_days_batch_count_and_zero_insert_percentage(self):
         e = self.experiment(extended_tpcds={'mode':'days','days':6})

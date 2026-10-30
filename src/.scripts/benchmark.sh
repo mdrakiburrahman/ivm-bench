@@ -176,6 +176,15 @@ if [[ "$HEALTH_OK" != "1" ]]; then
   exit 1
 fi
 
+# Start explicitly so configuration errors reach CI before opening the SSE stream.
+if ! curl -sS --fail-with-body --request POST "http://localhost:9000/benchmark"; then
+  echo "=== FAILURE — benchmark-server rejected the experiment ==="
+  docker compose -f "$COMPOSE_FILE" logs benchmark-server
+  docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+  exit 1
+fi
+
+echo ""
 echo "=== benchmark-server is healthy — streaming progress ==="
 echo ""
 
