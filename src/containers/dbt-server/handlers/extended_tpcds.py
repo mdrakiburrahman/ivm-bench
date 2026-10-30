@@ -27,6 +27,21 @@ def validate(engine, batch_num):
         logging.exception("Extended TPC-DS validation failed")
         return jsonify({"status":"failed", "error":str(error)}), 500
 
+
+@bp.route("/workloads/extended-tpcds/<engine>/cleanup", methods=["POST"])
+def cleanup(engine):
+    try:
+        from services.extended_tpcds import _LOCK, context
+        from services.extended_tpcds_sql import SQL_ENGINES, cleanup as cleanup_sql
+        if engine not in SQL_ENGINES:
+            return jsonify({"status":"ok"})
+        manifest_path, _, work_dir, _, options, _ = context(engine)
+        with _LOCK:
+            return jsonify(cleanup_sql(engine, manifest_path, work_dir, options))
+    except Exception as error:
+        logging.exception("Extended TPC-DS cleanup failed")
+        return jsonify({"status":"failed", "error":str(error)}), 500
+
 class ExtendedTPCDSHandler(BaseHandler):
     def register(self, app: Flask) -> None:
         app.register_blueprint(bp)

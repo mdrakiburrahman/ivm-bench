@@ -57,7 +57,7 @@ class EngineFailureIsolationTest(unittest.TestCase):
         engine_runner.side_effect = [failed_runner, successful_runner]
 
         orchestrator = Orchestrator.__new__(Orchestrator)
-        orchestrator._config = SimpleNamespace(engines=["failed", "successful"])
+        orchestrator._config = SimpleNamespace(workload="standard", engines=["failed", "successful"])
         orchestrator._result = BenchmarkResult()
         orchestrator._benchmark_id = "test"
 

@@ -116,4 +116,22 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         self.assertEqual(batch.extra['engine_result']['validation']['differences'],{'m':3})
 
 
+    def test_serial_extended_workload_stops_on_first_engine_failure(self):
+        from services.orchestrator import Orchestrator
+        from models.result import BenchmarkResult, EngineResult
+        from types import SimpleNamespace
+        orchestrator = Orchestrator.__new__(Orchestrator)
+        orchestrator._config = BenchmarkConfig(workload='extended-tpcds',scale_factor=.01,engines=['duckdb','duckdb-openivm'])
+        orchestrator._result = BenchmarkResult()
+        orchestrator._benchmark_id = None
+        orchestrator.emit = Mock()
+        failed = EngineResult(engine='duckdb',status='failed',error='source load failed')
+        with patch('services.orchestrator.EngineRunner') as runner:
+            runner.return_value.run.return_value = failed
+            with self.assertRaisesRegex(RuntimeError,'remaining engines were not started'):
+                orchestrator._run_engines_serial({'duckdb':Mock(),'duckdb-openivm':Mock()})
+            self.assertEqual(runner.call_count,1)
+        self.assertIs(orchestrator._result.engines['duckdb'],failed)
+
+
 if __name__=='__main__':unittest.main()

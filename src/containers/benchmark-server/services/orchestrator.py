@@ -1193,6 +1193,8 @@ class Orchestrator:
             self._result.engines[name] = result
             if result.status == "failed":
                 failed.append(name)
+                if self._config.workload == "extended-tpcds":
+                    raise RuntimeError(f"Extended TPC-DS engine {name} failed; remaining engines were not started")
         return failed
 
     def _run_engines_parallel(self, engine_configs: Dict) -> None:

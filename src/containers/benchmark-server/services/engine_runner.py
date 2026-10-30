@@ -402,6 +402,7 @@ class EngineRunner:
                 ("stop_stats", self._stop_stats),
                 ("collect_feldera_debug", self._collect_feldera_debug),
                 ("capture_logs", self._capture_logs),
+                ("extended_tpcds_cleanup", self._cleanup_extended_tpcds),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
                 ("fabric_cleanup", self._fabric_cleanup),
                 ("engine_mgr.down", self._engine_mgr.down),
@@ -956,6 +957,12 @@ class EngineRunner:
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
 
+    def _cleanup_extended_tpcds(self):
+        if self._config.workload != "extended-tpcds":
+            return
+        response = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{self._engine.name}/cleanup", timeout=1800)
+        response.raise_for_status()
+
     def _run_extended_tpcds_batch(self, batch_num):
         name = self._engine.name
         batch = self._result.batches[batch_num-1]
@@ -971,7 +978,7 @@ class EngineRunner:
             self._finish_cpu_measurement(batch_num)
             batch.extra.update({"workload":"extended-tpcds", "plan_id":data["plan_id"],
                                 "classification_counts":data["classification_counts"],
-                                "engine_result":data, "source_storage":"duckdb_native",
+                                "engine_result":data, "source_storage":data.get("source_storage", "duckdb_native"),
                                 "storage_metrics":{"status":"not_supported", "errors":["Extended TPC-DS native storage accounting is not integrated"]}})
             if os.environ.get("OPENIVM_VALIDATE", "1") != "0":
                 validation = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{name}/validate/{batch_num}", timeout=86400)

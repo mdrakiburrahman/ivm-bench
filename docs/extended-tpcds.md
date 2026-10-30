@@ -665,3 +665,34 @@ open.
   and [seed output baseline](https://github.com/mdrakiburrahman/dbt-insights/blob/54711257f95d561e00305be33272daba87988da1/scripts/expected-output.json).
   The production profile was collected in August 2026; the reproducible seed
   project uses a frozen report date of 2025-11-03.
+
+## All-engine integration work (2026-10-30)
+
+PR #84 now includes the current benchmark harness, including repeated TPC-DI
+refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors
+remain `standard` and `databricks`; `extended-tpcds` selects this workload.
+Native OpenIVM is pinned to main revision `19762672440969f318aca61d7971166759349838`.
+The Spark/Fabric builder uses WF revision `41e97c48f510355b192f151727f356661fd53128`
+with running-window state, grouped-window state and classification caching enabled.
+The separate extended-TPC-DS Spark fixes have not yet been combined with that WF
+revision; engine acceptance must establish compatibility before large runs.
+
+A shared SQL-engine replay path is under development for Spark, Fabric and
+Databricks. It checks row-image checksums and before-images, preserves table
+identity, rejects replay and dirty checkpoints, and validates against independent
+source replay and full DAG recomputation. Databricks OpenIVM uses the existing
+compiler bridge; it does not create Enzyme materialized views. Remote engine
+acceptance is pending, so the experiment configuration continues to reject the
+new engines. Feldera and DBSP.NET integration is also pending.
+
+The PR's GCI selection is the existing small DuckDB-family mixed-DML acceptance
+experiment. Serial Extended TPC-DS runs stop on the first engine failure.
+No SF100 run is authorized to start until all requested engine integrations have
+been completed and checked on small data. The eventual run is one repetition,
+initial 100%, then insertion-only 1% and 0.01%, with engines run one at a time.
+
+The small local Spark 3.5.7 initial-snapshot SQL check passes all 96 models
+against DuckDB 1.2.1 with zero bag differences. Its inputs and source hashes are
+recorded in `validation/spark-sql-fixture-20261030.json`. This does not establish
+OpenIVM refresh, Delta replay or remote engine acceptance. The translation fixes
+cover null-on-error timestamp parsing and literal/dynamic interval expressions.
