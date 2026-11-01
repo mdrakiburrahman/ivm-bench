@@ -25,6 +25,8 @@ class PreparationTests(unittest.TestCase):
             self.assertEqual(connect.call_count,3)
             for call in connect.call_args_list:
                 self.assertEqual(call.kwargs['config'],limits)
+                self.assertTrue(call.args, "preparation tables must be disk-backed to permit eviction")
+                self.assertNotEqual(call.args[0], ':memory:')
 
 
 if __name__ == '__main__':

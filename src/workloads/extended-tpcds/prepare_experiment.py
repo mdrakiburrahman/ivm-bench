@@ -51,7 +51,9 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
         except Exception:
             connection.execute("ROLLBACK")
             raise
-    with duckdb.connect(config=resources) as connection:
+    # Persistent working tables can be evicted while COPY sorts the row images.
+    # An in-memory database keeps the complete source copy inside the RAM cap.
+    with duckdb.connect(str(directory / "planning.duckdb"), config=resources) as connection:
         connection.execute("ATTACH " + generate.quote(extension_path) + " AS canonical (READ_ONLY)")
         for table in [*mutations.sources(), "xt_run", "xt_engagements", "xt_customers", "xt_accounts"]:
             connection.execute(f"CREATE TABLE {table} AS SELECT * FROM canonical.main.{table}")
