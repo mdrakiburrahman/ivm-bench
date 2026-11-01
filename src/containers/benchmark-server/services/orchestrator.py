@@ -1183,17 +1183,20 @@ class Orchestrator:
                 # The runner has already cleaned up (compose-down + log capture
                 # in its finally). Preserve its partial result (batch
                 # statuses, durations, error) — don't build a stripped
-                # replacement — then re-raise so the OAT loop fails fast.
+                # replacement. TPC-DS acceptance still checks the other engines;
+                # other workloads retain validation fail-fast behavior.
                 er = runner.result
                 er.status = "failed"
                 er.error = str(e)
                 self._result.engines[name] = er
+                if self._config.workload == "extended-tpcds":
+                    failed.append(name)
+                    self.emit(f"  [{name}] validation failed; continuing with remaining engines")
+                    continue
                 raise
             self._result.engines[name] = result
             if result.status == "failed":
                 failed.append(name)
-                if self._config.workload == "extended-tpcds":
-                    raise RuntimeError(f"Extended TPC-DS engine {name} failed; remaining engines were not started")
         return failed
 
     def _run_engines_parallel(self, engine_configs: Dict) -> None:

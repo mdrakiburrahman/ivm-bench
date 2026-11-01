@@ -696,7 +696,9 @@ SQL is a compile failure, never a silently removed model or a recomputation
 fallback. Per-model SQL timings are unavailable for these whole-program engines.
 
 The PR's GCI selection is the existing small DuckDB-family mixed-DML acceptance
-experiment. Serial Extended TPC-DS runs stop on the first engine failure.
+experiment. Serial Extended TPC-DS runs retain failed engine results and continue
+with the next engine, including after a validation failure. The experiment still
+fails if any engine fails.
 No SF100 run is authorized to start until all requested engine integrations have
 been completed and checked on small data. The eventual run is one repetition,
 initial 100%, then insertion-only 1% and 0.01%, with engines run one at a time.
@@ -710,8 +712,14 @@ cover null-on-error timestamp parsing and literal/dynamic interval expressions.
 CI now installs explicit test dependencies for the Fabric adapter and Delta replay,
 and runs the workload tests as well as the two server suites. Real Delta replay
 checks preserve table IDs and verify insertions, updates, deletions, invalid
-before-images and checksums. Both serial engine execution and the OAT sweep stop
-on an Extended TPC-DS failure; later experiments cannot advance to SF100.
+before-images and checksums. Serial engine execution continues after failures;
+the OAT sweep stops after the failed experiment, so later experiments cannot
+advance to SF100. Shared data-preparation failure stops the experiment before
+any engines start. The preparation container defaults to a 32 GB DuckDB memory
+limit and 64 GB spill limit, configurable through
+`EXTENDED_TPCDS_PREPARE_MEMORY_LIMIT` and `EXTENDED_TPCDS_PREPARE_SPILL_LIMIT`;
+`EXTENDED_TPCDS_PREPARE_THREADS` defaults to four. These are
+preparation limits, separate from the timed engines' resource allocations.
 
 `experiments/extended-tpcds-sf100.json` records the requested final ten-engine run.
 It is a prepared configuration, not a completed or launched benchmark. Small

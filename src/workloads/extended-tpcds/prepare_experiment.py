@@ -33,6 +33,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
     extension_path = directory / "extension.duckdb"
     if base_path.exists() or extension_path.exists():
         raise ValueError("incomplete source cache; choose a new output directory")
+    print("Extended TPC-DS preparation resources: " + json.dumps(resources), flush=True)
     with duckdb.connect(str(base_path), config=resources) as connection:
         connection.execute("SET custom_extension_repository='https://extensions.duckdb.org'")
         connection.execute("INSTALL tpcds")

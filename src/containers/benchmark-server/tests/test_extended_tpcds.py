@@ -143,22 +143,56 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         self.assertEqual(batch.extra['engine_result']['validation']['differences'],{'m':3})
 
 
-    def test_serial_extended_workload_stops_on_first_engine_failure(self):
+    def test_serial_extended_workload_keeps_failures_and_checks_remaining_engines(self):
         from services.orchestrator import Orchestrator
         from models.result import BenchmarkResult, EngineResult
-        from types import SimpleNamespace
+        for validation_error in (False, True):
+            with self.subTest(validation_error=validation_error):
+                orchestrator = Orchestrator.__new__(Orchestrator)
+                orchestrator._config = BenchmarkConfig(workload='extended-tpcds', scale_factor=.01,
+                                                        engines=['duckdb', 'duckdb-openivm'], schedule='serial')
+                orchestrator._result = BenchmarkResult()
+                orchestrator._benchmark_id = None
+                orchestrator.emit = Mock()
+                failed = EngineResult(engine='duckdb', status='failed', error='source load failed')
+                failed.batches[0].extra['validation'] = {'differences': {'model': 3}}
+                passed = EngineResult(engine='duckdb-openivm', status='completed')
+                first = Mock(result=failed)
+                if validation_error:
+                    first.run.side_effect = OpenIvmValidationError('validation mismatch')
+                else:
+                    first.run.return_value = failed
+                second = Mock()
+                second.run.return_value = passed
+                configs = {'duckdb': Mock(), 'duckdb-openivm': Mock()}
+                with patch('services.orchestrator.EngineRunner', side_effect=[first, second]) as runner, \
+                     patch('services.orchestrator.compute_engine_configs', return_value=configs):
+                    with self.assertRaisesRegex(RuntimeError, 'Engines failed: duckdb'):
+                        orchestrator._phase2_benchmark()
+                    self.assertEqual(runner.call_count, 2)
+                    second.run.assert_called_once_with()
+                self.assertIs(orchestrator._result.engines['duckdb'], failed)
+                self.assertEqual(failed.status, 'failed')
+                self.assertEqual(failed.batches[0].extra['validation']['differences'], {'model': 3})
+                if validation_error:
+                    self.assertEqual(failed.error, 'validation mismatch')
+                self.assertIs(orchestrator._result.engines['duckdb-openivm'], passed)
+
+    def test_standard_workload_still_stops_on_validation_failure(self):
+        from services.orchestrator import Orchestrator
+        from models.result import BenchmarkResult, EngineResult
         orchestrator = Orchestrator.__new__(Orchestrator)
-        orchestrator._config = BenchmarkConfig(workload='extended-tpcds',scale_factor=.01,engines=['duckdb','duckdb-openivm'])
+        orchestrator._config = BenchmarkConfig(engines=['duckdb-openivm', 'duckdb'], schedule='serial')
         orchestrator._result = BenchmarkResult()
         orchestrator._benchmark_id = None
-        orchestrator.emit = Mock()
-        failed = EngineResult(engine='duckdb',status='failed',error='source load failed')
-        with patch('services.orchestrator.EngineRunner') as runner:
-            runner.return_value.run.return_value = failed
-            with self.assertRaisesRegex(RuntimeError,'remaining engines were not started'):
-                orchestrator._run_engines_serial({'duckdb':Mock(),'duckdb-openivm':Mock()})
-            self.assertEqual(runner.call_count,1)
-        self.assertIs(orchestrator._result.engines['duckdb'],failed)
+        failed = EngineResult(engine='duckdb-openivm', status='failed')
+        first = Mock(result=failed)
+        first.run.side_effect = OpenIvmValidationError('validation mismatch')
+        with patch('services.orchestrator.EngineRunner', return_value=first) as runner:
+            with self.assertRaisesRegex(OpenIvmValidationError, 'validation mismatch'):
+                orchestrator._run_engines_serial({'duckdb-openivm': Mock(), 'duckdb': Mock()})
+            self.assertEqual(runner.call_count, 1)
+        self.assertIs(orchestrator._result.engines['duckdb-openivm'], failed)
 
 
 if __name__=='__main__':unittest.main()
