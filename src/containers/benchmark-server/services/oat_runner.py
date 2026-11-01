@@ -25,17 +25,17 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from models.experiments import ExperimentInputs
+from models.refresh import refresh_batch_count
 from models.result import BenchmarkResult
 
 logger = logging.getLogger(__name__)
 
-_BATCH_NUMBERS = (1, 2, 3)
 _BASE_TABLE_PAIRS = {
     "spark-openivm": "spark",
     "duckdb-openivm": "duckdb",
     "fabric-openivm-jvm-35": "fabric-jvm-35",
 }
-_RAW_REFERENCE_BASELINES = {"databricks-enzyme"}
+_RAW_REFERENCE_BASELINES = {"databricks-enzyme", "databricks-openivm"}
 
 RESULTS_CSV_FIELDS = (
     "oat_run_id",
@@ -65,6 +65,13 @@ RESULTS_CSV_FIELDS = (
     "batch_3_delete_pct",
     "databricks_refresh_policy",
     "source_rows",
+    "generated_source_rows",
+    "repeated_refresh",
+    "workload",
+    "refresh_count",
+    "refresh_pct",
+    "source_rows_before",
+    "source_rows_after",
     "schedule",
     "parallel",
     "openivm_validate",
@@ -78,6 +85,7 @@ RESULTS_CSV_FIELDS = (
     "spark_shuffle_partitions",
     "spark_default_parallelism",
     "spark_dbt_threads",
+    "databricks_dbt_threads",
     "engine",
     "batch_num",
     "batch_status",
@@ -179,8 +187,13 @@ def disk_cleanup_after_experiment(
 
     targets: List[str] = [os.path.join(mount, "raw", sf)]
     keep_events = os.environ.get("SPARK_METRICS_KEEP_EVENTS", "0") == "1"
+    # PRESERVE_RESULTS=1 keeps each engine's Delta output tables under
+    # mount/results/<sf>/<engine>/ after the run so they can be diffed for
+    # correctness (see src/.scripts/compare_outputs.py). Off by default.
+    preserve_results = os.environ.get("PRESERVE_RESULTS", "0") == "1"
     for engine in engines_list:
-        targets.append(os.path.join(mount, "results", sf, engine))
+        if not preserve_results:
+            targets.append(os.path.join(mount, "results", sf, engine))
         targets.append(os.path.join(mount, "logs", sf, engine))
         if engine in ("spark", "spark-openivm") and not keep_events:
             targets.append(os.path.join(mount, "metrics", sf, engine, "spark-events"))
@@ -460,7 +473,7 @@ def build_per_experiment_dict(
     dbt_run_files: Dict[str, List[str]] = {}
     for engine in inputs.engines:
         files: List[str] = []
-        for batch_num in (1, 2, 3):
+        for batch_num in range(1, inputs.batch_count + 1):
             files.append(os.path.join(
                 "mount", "results", str(inputs.scale_factor), "dbt-server",
                 f"run-{engine}-batch{batch_num}.json",
@@ -666,7 +679,12 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
             engines_data = {}
         engines = list(dict.fromkeys([*configured_engines, *engines_data.keys()]))
         for engine in engines:
-            for batch_num in _BATCH_NUMBERS:
+            batch_numbers = range(1, refresh_batch_count(
+                inputs.get("repeated_refresh", False), inputs.get("refresh_count", 20)
+            ) + 1)
+            refresh_plan = source_row_counts.get("refresh_plan") or {}
+            refresh_rounds = {r["batch_num"]: r for r in refresh_plan.get("rounds", [])}
+            for batch_num in batch_numbers:
                 batch = _batch_dict(experiment, engine, batch_num)
                 batch_extra = batch.get("extra") or {}
                 if not isinstance(batch_extra, dict):
@@ -723,6 +741,21 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                         "source_rows": source_batches.get(
                             str(batch_num), {}
                         ).get("total_rows", ""),
+                        "generated_source_rows": source_row_counts.get(
+                            "generated_batches", source_batches
+                        ).get(str(batch_num), {}).get("total_rows", ""),
+                        "repeated_refresh": inputs.get("repeated_refresh", False),
+                        "workload": inputs.get("workload", ""),
+                        "refresh_count": inputs.get("refresh_count", ""),
+                        "refresh_pct": inputs.get("refresh_pct", ""),
+                        "source_rows_before": (
+                            0 if batch_num == 1 and refresh_plan else
+                            refresh_rounds.get(batch_num, {}).get("before_rows", "")
+                        ),
+                        "source_rows_after": (
+                            refresh_plan.get("initial_rows", "") if batch_num == 1 and refresh_plan else
+                            refresh_rounds.get(batch_num, {}).get("resulting_rows", "")
+                        ),
                         "schedule": inputs.get("schedule", ""),
                         "parallel": inputs.get("parallel", ""),
                         "openivm_validate": flags.get("openivm_validate", ""),
@@ -742,6 +775,7 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                             "default_parallelism", ""
                         ),
                         "spark_dbt_threads": tunables.get("dbt_threads", ""),
+                        "databricks_dbt_threads": inputs.get("databricks_dbt_threads") or "",
                         "engine": engine,
                         "batch_num": batch_num,
                         "batch_status": batch.get("status", ""),

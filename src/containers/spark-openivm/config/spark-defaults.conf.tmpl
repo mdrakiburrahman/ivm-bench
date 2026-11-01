@@ -17,7 +17,7 @@ spark.openivm.changeFeed.mode=cdf
 # VIEW writes per-step rows into the RocksDB `refresh_profile` column family
 # (see RefreshProfileCatalog), readable via `SHOW OPENIVM REFRESH PROFILE`.
 # The flag is parameterized off OPENIVM_PROFILE_REFRESH (set in benchmark.sh
-# / gci.yaml; translated to a boolean by entrypoint.sh).
+# / ci.yaml; translated to a boolean by entrypoint.sh).
 spark.openivm.profile.refresh=${OPENIVM_PROFILE_REFRESH_BOOL}
 
 # Query-log telemetry — when enabled, every CREATE/REFRESH MATERIALIZED VIEW

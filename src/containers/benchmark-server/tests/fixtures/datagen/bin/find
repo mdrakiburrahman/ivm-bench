@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Emulate GNU find's -printf on macOS for the generator's progress check."""
+
+from pathlib import Path
+import sys
+
+for path in Path(sys.argv[1]).rglob("*"):
+    if path.is_file():
+        print(path.stat().st_mtime)

@@ -1,0 +1,30 @@
+{
+  "baseline": {
+    "scale_factor": 100,
+    "repeated_refresh": true,
+    "refresh_count": 2,
+    "refresh_pct": "1",
+    "engines": [
+      "databricks-openivm",
+      "databricks-enzyme"
+    ],
+    "databricks_dbt_threads": 8,
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": true,
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "SF100 Databricks OpenIVM vs Enzyme: standard TPC-DI",
+      "workload": "standard"
+    },
+    {
+      "label": "SF100 Databricks OpenIVM vs Enzyme: extended TPC-DI",
+      "workload": "databricks"
+    }
+  ]
+}

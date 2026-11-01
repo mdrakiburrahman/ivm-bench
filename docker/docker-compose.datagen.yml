@@ -9,6 +9,8 @@ services:
     environment:
       DIGEN_PATH: /data/digen
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
+      REPEATED_REFRESH: "${REPEATED_REFRESH:-0}"
+      DIGEN_INCREMENTAL_BATCHES: "${DIGEN_INCREMENTAL_BATCHES:-2}"
       DIGEN_TIMEOUT: "${DIGEN_TIMEOUT:-7200}"
 
   spark-digen-delta:
@@ -26,10 +28,15 @@ services:
       - ../mount/datagen-cache/${SCALE_FACTOR:-3}/digen:/data/digen:ro
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/delta
     environment:
-      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx80g -Xms80g -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
+      JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx${DATAGEN_HEAP:-80g} -Xms${DATAGEN_HEAP:-80g} -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
       DIGEN_PATH: /data/digen
       DELTA_PATH: /data/delta
       TPCDI_BATCH_2_DAYS: "${TPCDI_BATCH_2_DAYS:-0}"
+      REPEATED_REFRESH: "${REPEATED_REFRESH:-0}"
+      TPCDI_WORKLOAD: "${TPCDI_WORKLOAD:-standard}"
+      REFRESH_COUNT: "${REFRESH_COUNT:-20}"
+      REFRESH_PCT: "${REFRESH_PCT:-1}"
+      DIGEN_INCREMENTAL_BATCHES: "${DIGEN_INCREMENTAL_BATCHES:-2}"
       BATCH_1_INSERT_PCT: "${BATCH_1_INSERT_PCT:-}"
       BATCH_2_INSERT_PCT: "${BATCH_2_INSERT_PCT:-}"
       BATCH_3_INSERT_PCT: "${BATCH_3_INSERT_PCT:-}"

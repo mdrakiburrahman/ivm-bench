@@ -35,6 +35,13 @@ def generated_batch_dirs(raw_delta_dir: str, batch_num: int):
 
 def batch_cache_root(cache_root: str, scale_factor: int, batch_num: int) -> str:
     """Return the cache root for one distinct generated source batch."""
+    if os.environ.get("REPEATED_REFRESH", "0") == "1":
+        workload = os.environ.get("TPCDI_WORKLOAD", "standard")
+        count = int(os.environ.get("REFRESH_COUNT", "20"))
+        from decimal import Decimal
+        pct = format(Decimal(os.environ.get("REFRESH_PCT", "1")).normalize(), "f")
+        return (f"{cache_root.rstrip('/')}/sf={scale_factor}/repeated_"
+                f"{workload}_n={count}_pct={pct}/batch{batch_num}")
     days = int(os.environ.get("TPCDI_BATCH_2_DAYS", "0"))
     if days > 0:
         batch = "batch1_augmented" if batch_num == 1 else f"batch{batch_num}_augmented_days={days}"

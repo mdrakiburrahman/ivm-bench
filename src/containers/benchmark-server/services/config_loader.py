@@ -24,6 +24,10 @@ def _load_schedule() -> str:
 def load_config() -> BenchmarkConfig:
     """Build a BenchmarkConfig from environment variables."""
     return BenchmarkConfig(
+        repeated_refresh=os.environ.get("REPEATED_REFRESH", "0") == "1",
+        workload=os.environ.get("TPCDI_WORKLOAD", "standard"),
+        refresh_count=os.environ.get("REFRESH_COUNT", "20"),
+        refresh_pct=os.environ.get("REFRESH_PCT", "1"),
         scale_factor=int(os.environ.get("SCALE_FACTOR", "3")),
         benchmark_runs=int(os.environ.get("BENCHMARK_RUNS", "1")),
         batch_2_days=int(os.environ.get("TPCDI_BATCH_2_DAYS", "0")),

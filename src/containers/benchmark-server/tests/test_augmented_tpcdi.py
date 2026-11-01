@@ -103,14 +103,14 @@ class AugmentedTpcdiTest(unittest.TestCase):
         self.assertEqual(policies["incremental"], ["INCREMENTAL"] * 5)
 
     def test_databricks_policy_is_not_a_duplicate_workflow_input(self):
-        workflow = (REPO / ".github" / "workflows" / "gci.yaml").read_text(
+        workflow = (REPO / ".github" / "workflows" / "ci.yaml").read_text(
             encoding="utf-8"
         )
 
         self.assertNotIn("inputs.databricks_refresh_policy", workflow)
         self.assertIn("inputs.experiments_file || 'inline'", workflow)
         dispatch_inputs = re.search(
-            r"(?ms)^  workflow_dispatch:\n    inputs:\n(.*?)(?=^\S)", workflow,
+            r"(?ms)^  workflow_dispatch:\n    inputs:\n(.*?)(?=^\S|^  \S)", workflow,
         ).group(1)
         self.assertLessEqual(
             len(re.findall(r"(?m)^      [a-zA-Z0-9_]+:", dispatch_inputs)),

@@ -35,9 +35,10 @@ ENGINE_COLORS = {
     "databricks-enzyme": "#c0392b",
     "fabric-jvm-35": "#8e44ad",
     "fabric-openivm-jvm-35": "#16a085",
+    "dbspnet": "#2c3e50",
 }
 
-ENGINE_ORDER = ["duckdb", "spark", "duckdb-openivm", "spark-openivm", "feldera", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35"]
+ENGINE_ORDER = ["duckdb", "spark", "duckdb-openivm", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35"]
 
 BATCH_COLORS = {1: "#3498db", 2: "#e67e22", 3: "#2ecc71"}
 
@@ -105,6 +106,8 @@ def generate_chart_png(
     b3pct: str = "",
     engine_resources: Optional[dict] = None,
     stats_dir: Optional[str] = None,
+    repeated_refresh: bool = False,
+    refresh_pct: str = "1",
 ) -> Optional[bytes]:
     """Generate the scale-factor PNG chart.
 
@@ -151,14 +154,15 @@ def generate_chart_png(
 
     # --- Load delta-stats ---
     delta_stats = {}
-    for batch in [1, 2, 3]:
-        for pattern in [f"delta-stats-batch{batch}.json",
-                        f"delta-stats-*-batch{batch}.json"]:
-            for stats_file in _glob.glob(os.path.join(state_dir, pattern)):
-                with open(stats_file) as f:
-                    sdata = json.load(f)
-                if batch not in delta_stats:
-                    delta_stats[batch] = sdata.get("tables", [])
+    for stats_file in sorted(_glob.glob(os.path.join(state_dir, "delta-stats-*batch*.json"))):
+        match = re.search(r"batch(\d+)\.json$", os.path.basename(stats_file))
+        if not match:
+            continue
+        batch = int(match.group(1))
+        with open(stats_file) as f:
+            sdata = json.load(f)
+        if batch not in delta_stats:
+            delta_stats[batch] = sdata.get("tables", [])
 
     # --- Load container stats for time series ---
     container_stats = {}
@@ -189,7 +193,13 @@ def generate_chart_png(
     if not has_bar_chart and not has_exec_times:
         return None
 
-    batches = sorted(set(r["batch_num"] for r in records)) if records else [1, 2, 3]
+    batches = {r["batch_num"] for r in records} | set(delta_stats)
+    if has_bar_chart:
+        batches.update(
+            b["batch_num"] for engine in benchmark_data["engines"].values()
+            for b in engine.get("batches", [])
+        )
+    batches = sorted(batches) if batches else [1, 2, 3]
     n_batches = len(batches)
 
     # Prepare exec-time lookup
@@ -335,9 +345,12 @@ def generate_chart_png(
             ax.set_yticks(y_positions)
             ax.set_yticklabels(table_names, fontsize=8)
             ax.invert_yaxis()
-            pct = batch_pcts.get(batch, "?")
+            if repeated_refresh:
+                batch_label = "initial load" if batch == 1 else f"{refresh_pct}% of current source rows"
+            else:
+                batch_label = f"{batch_pcts.get(batch, '?')}%"
             ax.set_title(
-                f"Batch {batch} \u2014 {sum(size_vals):.2f} GB \u2014 {pct}%",
+                f"Batch {batch} \u2014 {sum(size_vals):.2f} GB \u2014 {batch_label}",
                 fontsize=11,
             )
             ax.xaxis.set_major_formatter(plt.FuncFormatter(
@@ -481,6 +494,8 @@ def generate_chart_png(
         for b in batches if batch_pcts.get(b)
     ]
     pct_label = f" ({', '.join(pct_parts)})" if pct_parts else ""
+    if repeated_refresh:
+        pct_label = f" (initial load; refresh={refresh_pct}% of current source rows, compounded)"
     fig.suptitle(
         f"dbt Model Execution Time by Engine (SF={sf}{pct_label})",
         fontsize=14, y=0.995,
@@ -575,18 +590,18 @@ def _collect_openivm_views(
     return set(), None
 
 
-def _collect_feldera_status(state_dir: str) -> Tuple[bool, Optional[str]]:
-    """Did feldera's incremental batch (batch>=2) finish successfully?
+def _collect_feldera_status(state_dir: str, engine: str = "feldera") -> Tuple[bool, Optional[str]]:
+    """Did an incremental-DBSP engine's batch (batch>=2) finish successfully?
 
-    Feldera writes one run-feldera-batch<N>.json per batch with a
+    feldera / dbspnet each write one run-<engine>-batch<N>.json per batch with a
     per-model `nodes` list and per-node `status`. There is no top-level
     `status` field; the batch is considered successful if every node
-    finished with `status=='success'` (which is feldera's contract:
-    every dbt model maps to a dataflow operator in the running DBSP
-    circuit — if any failed the pipeline would not have advanced).
+    finished with `status=='success'` (the DBSP contract: every dbt model
+    maps to a dataflow operator in the running circuit — if any failed the
+    pipeline would not have advanced).
     """
     for batch in (2, 3):
-        fp = os.path.join(state_dir, f"run-feldera-batch{batch}.json")
+        fp = os.path.join(state_dir, f"run-{engine}-batch{batch}.json")
         if not os.path.exists(fp):
             continue
         try:
@@ -740,17 +755,17 @@ def _collect_incrementalization(
                         "ok": False, "reason": "no IVM profile available",
                     }
 
-        elif engine == "feldera":
-            ok, src_name = _collect_feldera_status(state_dir)
+        elif engine in ("feldera", "dbspnet"):
+            ok, src_name = _collect_feldera_status(state_dir, engine)
             if ok:
                 source = f"{src_name} (DBSP contract: all SQL → incremental circuit)"
                 for name in models:
                     per_model[name] = {"ok": True, "reason": ""}
             else:
-                source = "run-feldera-batch>=2 missing/non-ok"
+                source = f"run-{engine}-batch>=2 missing/non-ok"
                 for name in models:
                     per_model[name] = {
-                        "ok": False, "reason": "feldera incremental batch did not complete",
+                        "ok": False, "reason": f"{engine} incremental batch did not complete",
                     }
 
         else:
@@ -1250,6 +1265,8 @@ def chart():
         b2pct=b2pct,
         b3pct=b3pct,
         stats_dir=stats_dir,
+        repeated_refresh=os.environ.get("REPEATED_REFRESH", "0") == "1",
+        refresh_pct=os.environ.get("REFRESH_PCT", "1"),
     )
     if png_data is None:
         return jsonify({"error": "No result files found"}), 404

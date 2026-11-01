@@ -1,7 +1,7 @@
 """Cloud/managed engine adapters: databricks-enzyme, feldera, fabric.
 
 Split from engines.py because these need live credentials to exercise, so they
-are validated by a GCI run rather than on a dev box.
+are validated by a CI run rather than on a dev box.
 """
 
 from __future__ import annotations

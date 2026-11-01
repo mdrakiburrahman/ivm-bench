@@ -41,6 +41,22 @@ class CloudSourceCacheTest(unittest.TestCase):
         self.assertEqual(twenty_five, "cache/sf=100/batch2_pct=25")
         self.assertNotEqual(five, twenty_five)
 
+    def test_repeated_cache_identity_includes_workload_round_count_and_percentage(self):
+        with patch.dict(os.environ, {"REPEATED_REFRESH": "1", "TPCDI_WORKLOAD": "standard",
+                                     "REFRESH_COUNT": "20", "REFRESH_PCT": "1.0"}):
+            first = batch_cache_root("cache", 3, 1)
+            fourth = batch_cache_root("cache", 3, 4)
+        with patch.dict(os.environ, {"REPEATED_REFRESH": "1", "TPCDI_WORKLOAD": "databricks",
+                                     "REFRESH_COUNT": "20", "REFRESH_PCT": "1"}):
+            extended = batch_cache_root("cache", 3, 4)
+        with patch.dict(os.environ, {"REPEATED_REFRESH": "1", "TPCDI_WORKLOAD": "standard",
+                                     "REFRESH_COUNT": "10", "REFRESH_PCT": "2"}):
+            other = batch_cache_root("cache", 3, 4)
+        self.assertEqual(fourth, "cache/sf=3/repeated_standard_n=20_pct=1/batch4")
+        self.assertNotEqual(first, fourth)
+        self.assertNotEqual(fourth, extended)
+        self.assertNotEqual(fourth, other)
+
     def test_cache_identity_includes_augmented_window(self):
         with patch.dict(os.environ, {
             "BATCH_1_INSERT_PCT": "100",

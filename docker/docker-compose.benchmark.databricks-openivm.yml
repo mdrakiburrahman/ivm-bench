@@ -1,0 +1,29 @@
+services:
+  openivm-sql-compiler:
+    build:
+      context: ../src/containers/openivm-sql-compiler
+    cpus: 2
+    mem_limit: 4g
+    volumes:
+      - ../mount/bin/spark-openivm:/opt/spark-openivm:ro
+    healthcheck:
+      test: python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8998/health')"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+  dbt-server:
+    extends:
+      file: docker-compose.benchmark.databricks-enzyme.yml
+      service: dbt-server
+    depends_on:
+      openivm-sql-compiler:
+        condition: service_healthy
+    cpus: ${DBT_SERVER_CPUS:-4}
+    mem_limit: ${DBT_SERVER_MEM:-8g}
+    environment:
+      OPENIVM_SQL_COMPILER_URL: http://openivm-sql-compiler:8998
+      DATABRICKS_OPENIVM_WORK_DIR: /data/processed/databricks-openivm
+    volumes:
+      - ../mount/results/${SCALE_FACTOR:-3}/databricks-openivm:/data/processed/databricks-openivm
+      - ../mount/stats/${SCALE_FACTOR:-3}/databricks-openivm:/data/stats

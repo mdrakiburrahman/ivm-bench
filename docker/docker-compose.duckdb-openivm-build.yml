@@ -1,7 +1,16 @@
 services:
+  duckdb-openivm-toolchain:
+    profiles: [toolchain]
+    image: duckdb-openivm-toolchain:ubuntu22.04-gcc13
+    build:
+      context: ../src/containers/duckdb-openivm
+      target: toolchain
+
   duckdb-openivm-builder:
     build:
       context: ../src/containers/duckdb-openivm
+      cache_from:
+        - duckdb-openivm-toolchain:ubuntu22.04-gcc13
       args:
         UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
         DUCKDB_OPENIVM_DOCKERFILE_HASH: "${DUCKDB_OPENIVM_DOCKERFILE_HASH:-}"

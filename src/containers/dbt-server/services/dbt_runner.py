@@ -5,6 +5,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 
 from services.db import DB_LOCK, get_db
@@ -50,6 +51,10 @@ def _inject_fabric_resolved(env: dict, *, claim_fresh: bool = False) -> None:
 
 def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, batch_num: int = 1):
     """Execute a dbt build for the given engine and track results."""
+    if engine == "databricks-openivm":
+        from services import databricks_openivm
+        databricks_openivm.run(run_id, scale_factor, full_refresh, batch_num)
+        return
     project_dir = os.path.join(PROJECTS_DIR, engine)
     if not os.path.isdir(project_dir):
         _fail_run(run_id, f"No dbt project for engine '{engine}'")
@@ -104,7 +109,8 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
         env["FABRIC_DBT_TIMINGS_PATH"] = f"{stats_path}/fabric-timings-batch{batch_num}-{run_id}.jsonl"
 
     start_ts = time.monotonic()
-    stderr_buf = []
+    stderr_buf = deque(maxlen=50)
+    stdout_buf = deque(maxlen=50)
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -118,17 +124,22 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
         t_err.start()
 
         for line in proc.stdout:
+            try:
+                message = json.loads(line).get("info", {}).get("msg", line)
+            except (ValueError, AttributeError):
+                message = line
+            stdout_buf.append(message)
             parse_log_line(run_id, line)
 
         proc.wait(timeout=7200)
         t_err.join(timeout=5)
         elapsed = time.monotonic() - start_ts
+        diagnostics = "\n".join(stdout_buf)[-8000:] + "\n" + "".join(stderr_buf)[-2000:]
 
         if proc.returncode not in (0, 2):
-            stderr_tail = "".join(stderr_buf[-50:])
             _fail_run(
                 run_id,
-                f"dbt exited {proc.returncode}:\n{stderr_tail[-2000:]}",
+                f"dbt exited {proc.returncode}:\n{diagnostics}",
                 elapsed,
             )
             _parse_results(run_id, project_dir)
@@ -139,11 +150,10 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
         if proc.returncode == 2 and (
             parsed["nodes"] == 0 or parsed["errors"] > 0
         ):
-            stderr_tail = "".join(stderr_buf[-50:])
             _fail_run(
                 run_id,
                 f"dbt exited 2 with {parsed['errors']} node errors "
-                f"and {parsed['nodes']} parsed nodes:\n{stderr_tail[-2000:]}",
+                f"and {parsed['nodes']} parsed nodes:\n{diagnostics}",
                 elapsed,
             )
             cleanup_progress(run_id)

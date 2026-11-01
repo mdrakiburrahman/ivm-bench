@@ -23,7 +23,7 @@
     "    bash src/.scripts/benchmark.sh",
     "",
     "This file runs the smoke experiment only. The full ladder lives in",
-    "cost-model-bench-ladder.json, because GCI has no way to select one experiment from a",
+    "cost-model-bench-ladder.json, because CI has no way to select one experiment from a",
     "file and the ladder is hours of runner time."
   ],
   "baseline": {
