@@ -276,6 +276,17 @@ _conn_lock = threading.Lock()
 _conn = None
 
 
+def open_connection(timeout_s=None):
+    """Open an independent SQL session with the shared authentication settings."""
+    options = {} if timeout_s is None else {"_socket_timeout": max(1.0, float(timeout_s))}
+    return dbsql.connect(
+        server_hostname=_server_hostname(),
+        http_path=_http_path(),
+        credentials_provider=_credentials_provider,
+        **options,
+    )
+
+
 def _get_connection():
     global _conn
     with _conn_lock:
@@ -284,11 +295,7 @@ def _get_connection():
                 "[databricks-enzyme] opening Databricks SQL connection host=%s",
                 _server_hostname(),
             )
-            _conn = dbsql.connect(
-                server_hostname=_server_hostname(),
-                http_path=_http_path(),
-                credentials_provider=_credentials_provider,
-            )
+            _conn = open_connection()
         return _conn
 
 
@@ -328,12 +335,7 @@ def execute_isolated(sql_text: str, timeout_s: float = 20.0) -> Optional[pd.Data
     closing the isolated connection also gives timed-out probes no state to
     leak into later benchmark operations.
     """
-    conn = dbsql.connect(
-        server_hostname=_server_hostname(),
-        http_path=_http_path(),
-        credentials_provider=_credentials_provider,
-        _socket_timeout=max(1.0, float(timeout_s)),
-    )
+    conn = open_connection(timeout_s)
     cursor = conn.cursor()
     try:
         cursor.execute(sql_text)

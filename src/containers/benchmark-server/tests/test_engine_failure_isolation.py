@@ -95,6 +95,37 @@ class EngineFailureIsolationTest(unittest.TestCase):
 
 
 class DatabricksFailureDiagnosticsTest(unittest.TestCase):
+    def test_explain_observer_runs_after_initial_batch_timer_and_not_on_refresh(self):
+        for batch_num in (1, 2):
+            with self.subTest(batch_num=batch_num):
+                runner = EngineRunner.__new__(EngineRunner)
+                runner._engine = SimpleNamespace(name="databricks-enzyme")
+                runner._config = SimpleNamespace(scale_factor=10)
+                runner._result = EngineResult(engine="databricks-enzyme")
+                batch = runner._result.batches[batch_num - 1]
+                for name in ("_emit", "_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
+                             "_databricks_enzyme_warmup", "_ensure_cpu_measurement_status", "_export_query_plans",
+                             "_export_databricks_enzyme_metrics", "_collect_databricks_enzyme_flow_metrics",
+                             "_save_openivm_ops_chart", "_capture_storage_metrics"):
+                    setattr(runner, name, Mock())
+                runner._run_databricks_enzyme = Mock(return_value="run")
+
+                def observe(_sf):
+                    self.assertEqual(batch.duration_s, 10)
+                    self.assertEqual(batch.extra["wall_window_end_ms"], 110000)
+
+                runner._export_databricks_enzyme_explain = Mock(side_effect=observe)
+                with patch("services.engine_runner.time.time", side_effect=[100, 110, 110]), \
+                        patch("services.engine_runner.time.monotonic", side_effect=[200, 330]):
+                    runner._run_batch(batch_num)
+                self.assertEqual(batch.duration_s, 10)
+                self.assertEqual(batch.status, "completed")
+                if batch_num == 1:
+                    runner._export_databricks_enzyme_explain.assert_called_once_with(10)
+                    self.assertEqual(batch.extra["databricks_explain_s"], 130)
+                else:
+                    runner._export_databricks_enzyme_explain.assert_not_called()
+
     def setUp(self):
         self.run = {
             "started_at": "2026-10-13T19:40:00+00:00",
@@ -331,6 +362,31 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
 
 
 class OpenIvmValidationHookTest(unittest.TestCase):
+    def test_databricks_failed_validation_payload_survives_http_error(self):
+        import requests
+
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._engine = SimpleNamespace(name="databricks-openivm")
+        runner._result = EngineResult(engine="databricks-openivm")
+        runner._dbt_url = "http://dbt.invalid"
+        for name in ("_emit", "_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
+                     "_databricks_enzyme_warmup", "_ensure_cpu_measurement_status"):
+            setattr(runner, name, Mock())
+        runner._run_databricks_openivm = Mock(return_value="run")
+        payload = {"status": "error", "models": [{"model": "trade_volume_stats", "missing_rows": 1,
+                                                   "extra_rows": 0, "diagnostics": {"sample": "retained"}}]}
+        validation = Mock()
+        validation.json.return_value = payload
+        validation.raise_for_status.side_effect = requests.HTTPError("422 validation failed")
+        with patch("services.engine_runner.requests.post", side_effect=[Mock(), validation]), \
+                patch.dict("os.environ", {"OPENIVM_VALIDATE": "1"}):
+            with self.assertRaisesRegex(requests.HTTPError, "422 validation failed"):
+                runner._run_batch(3)
+        batch = runner._result.batches[2]
+        self.assertEqual(batch.status, "failed")
+        self.assertEqual(batch.extra["openivm_validation"], payload)
+        runner._persist_batch_result.assert_called_with(3, batch)
+
     def runner(self, repo_dir, scale_factor):
         from services.engine_runner import EngineRunner
         runner = EngineRunner.__new__(EngineRunner)

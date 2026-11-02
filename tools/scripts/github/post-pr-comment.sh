@@ -1,107 +1,69 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# post-pr-comment.sh — Posts benchmark results as a PR comment via GitHub API.
+# post-pr-comment.sh — Publishes the benchmark verdict to the job summary and,
+# when PR_NUMBER is set, as a PR comment.
+#
+# ✅ only when the benchmark step succeeded AND check-engine-coverage.py found
+# every requested engine completed every batch. Anything else is ❌.
 #
 # Required env vars:
-#   GITHUB_TOKEN       — GitHub token with pull-requests:write
-#   GITHUB_REPOSITORY  — owner/repo
-#   PR_NUMBER          — Pull request number
-#   SCALE_FACTOR       — TPC-DI scale factor
-#   GITHUB_SERVER_URL  — e.g. https://github.com
-#   GITHUB_RUN_ID      — Workflow run ID (for artifact link)
+#   GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_RUN_ID
 #
 # Optional env vars:
-#   BENCHMARK_RUNS, BATCH_N_INSERT_PCT, BATCH_N_*_PCT, ENGINES, PARALLEL,
-#   STORAGE_METRICS
+#   PR_NUMBER             — PR to comment on (no comment when empty)
+#   GITHUB_TOKEN          — token with pull-requests:write (needed with PR_NUMBER)
+#   BENCHMARK_OUTCOME     — outcome of the benchmark step (success/failure/...)
+#   ENGINE_COVERAGE_FILE  — verdict JSON (default ci-results/engine-coverage.json);
+#                           its Markdown report sits next to it with a .md suffix
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
-RESULTS_FILE="mount/results/${SCALE_FACTOR}/dbt-server/benchmark-results.json"
+COVERAGE_FILE="${ENGINE_COVERAGE_FILE:-ci-results/engine-coverage.json}"
+COVERAGE_MD="${COVERAGE_FILE%.json}.md"
 MARKER="<!-- gci-benchmark-results -->"
+RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-if [[ ! -f "$RESULTS_FILE" ]]; then
-  echo "WARNING: $RESULTS_FILE not found — benchmark may have failed. Posting failure notice."
-  BODY="${MARKER}
-## 🏁 Benchmark Results
-
-> **⚠️ No results available** — benchmark did not produce output.
-
-📦 [View workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+if [[ ! -f "$COVERAGE_FILE" || ! -f "$COVERAGE_MD" ]]; then
+  STATUS_LINE="❌ **Benchmark failed: engine coverage was not checked**"
+  REPORT="> No engine coverage report — the run stopped before the coverage check."
 else
-  STATUS=$(jq -r '.status // "unknown"' "$RESULTS_FILE")
-  TOTAL=$(jq -r '.total_duration_s // 0' "$RESULTS_FILE")
-  BENCHMARK_RUNS_RESULT=$(jq -r '.repetition_count // 1' "$RESULTS_FILE")
-
-  fmt_duration() {
-    local secs="$1"
-    local int_secs
-    int_secs=$(printf '%.0f' "$secs")
-    local h m s
-    h=$((int_secs / 3600))
-    m=$(( (int_secs % 3600) / 60 ))
-    s=$((int_secs % 60))
-    printf '%02d:%02d:%02d' "$h" "$m" "$s"
-  }
-
-  # Build the results table
-  TABLE=""
-  MAX_LEN=0
-  for name in $(jq -r '.engines | keys[]' "$RESULTS_FILE"); do
-    (( ${#name} > MAX_LEN )) && MAX_LEN=${#name}
-  done
-
-  PAD=$((MAX_LEN + 2))
-  TABLE+="$(printf "%-${PAD}s 1           2           3" "")\n"
-
-  for name in $(jq -r '.engines | keys[]' "$RESULTS_FILE"); do
-    LABEL="$(echo "${name:0:1}" | tr '[:lower:]' '[:upper:]')${name:1}:"
-    B1=$(jq -r ".engines[\"$name\"].batches[0].duration_s // 0" "$RESULTS_FILE")
-    B2=$(jq -r ".engines[\"$name\"].batches[1].duration_s // 0" "$RESULTS_FILE")
-    B3=$(jq -r ".engines[\"$name\"].batches[2].duration_s // 0" "$RESULTS_FILE")
-    TABLE+="$(printf "%-${PAD}s %s -> %s -> %s" "$LABEL" "$(fmt_duration "$B1")" "$(fmt_duration "$B2")" "$(fmt_duration "$B3")")\n"
-  done
-
-  TOTAL_FMT=$(fmt_duration "$TOTAL")
-
-  if [[ "$STATUS" == "completed" ]]; then
-    STATUS_ICON="✅"
-    STATUS_TEXT="All benchmarks completed successfully"
+  REPORT="$(cat "$COVERAGE_MD")"
+  if [[ -n "${BENCHMARK_OUTCOME:-}" && "${BENCHMARK_OUTCOME}" != "success" ]]; then
+    STATUS_LINE="❌ **Benchmark failed: benchmark step ${BENCHMARK_OUTCOME}**"
+  elif jq -e '.passed == true' "$COVERAGE_FILE" > /dev/null 2>&1; then
+    STATUS_LINE="✅ **Every engine completed every batch**"
   else
-    STATUS_ICON="❌"
-    STATUS_TEXT="Benchmark finished with status: ${STATUS}"
+    STATUS_LINE="❌ **Benchmark failed: not every engine completed every batch**"
   fi
+fi
 
-  BODY="${MARKER}
+BODY="${MARKER}
 ## 🏁 Benchmark Results
 
-${STATUS_ICON} **${STATUS_TEXT}**
+${STATUS_LINE}
 
-| Parameter | Value |
-|---|---|
-| Scale Factor | \`${SCALE_FACTOR}\` |
-| Benchmark Runs | \`${BENCHMARK_RUNS_RESULT}\` |
-| Insert Batches | \`${BATCH_1_INSERT_PCT:-${BATCH_1_PCT:-?}}%\` / \`${BATCH_2_INSERT_PCT:-${BATCH_2_PCT:-?}}%\` / \`${BATCH_3_INSERT_PCT:-${BATCH_3_PCT:-?}}%\` |
-| Batch 2 Mutations | update \`${BATCH_2_UPDATE_PCT:-0}%\`, delete \`${BATCH_2_DELETE_PCT:-0}%\` |
-| Batch 3 Mutations | update \`${BATCH_3_UPDATE_PCT:-0}%\`, delete \`${BATCH_3_DELETE_PCT:-0}%\` |
-| Engines | \`${ENGINES:-all}\` |
-| Parallel | \`${PARALLEL:-0}\` |
-| Storage Metrics | \`${STORAGE_METRICS:-1}\` |
-| Total | \`${TOTAL_FMT}\` |
+${REPORT}
 
-\`\`\`
-$(echo -e "$TABLE")
-\`\`\`
+📦 [View workflow run & artifacts](${RUN_URL})"
 
-📦 [View workflow run & artifacts](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
+fi
+
+if [[ -z "${PR_NUMBER:-}" ]]; then
+  echo "No PR_NUMBER; results are in the job summary only."
+  exit 0
 fi
 
 # Post a new comment each run
 echo "Creating PR comment..."
-curl -sf \
+if curl -sf \
   -X POST \
   -H "Authorization: token ${GITHUB_TOKEN}" \
   -H "Accept: application/vnd.github.v3+json" \
   "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-  -d "$(jq -n --arg body "$BODY" '{body: $body}')" > /dev/null || echo "WARNING: Failed to create PR comment"
-
-echo "PR comment posted successfully."
+  -d "$(jq -n --arg body "$BODY" '{body: $body}')" > /dev/null; then
+  echo "PR comment posted successfully."
+else
+  echo "WARNING: Failed to create PR comment"
+fi

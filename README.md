@@ -66,35 +66,39 @@ outside the timed batch window. Environment feature flags form the baseline;
 an explicit `feature_flags` value in the experiments JSON overrides that
 baseline for the corresponding row.
 
-### Choose the benchmark for a PR
+### GCI vs CI
 
-GCI runs when you open or update a PR. Set `experiments_file` in
-[`.github/gci.json`](.github/gci.json) to select a checked-in experiment file:
+| Workflow | When | What | Knobs |
+|---|---|---|---|
+| [`gci.yaml`](.github/workflows/gci.yaml) | Every non-draft PR | SF10 TPC-DI on every local engine ([`gci-sf10-local-engines.json`](src/containers/benchmark-server/experiments/gci-sf10-local-engines.json)) | None |
+| [`ci.yaml`](.github/workflows/ci.yaml) | After every merge to `main`, or ad hoc | Every engine ([`ci-sf10-all-engines.json`](src/containers/benchmark-server/experiments/ci-sf10-all-engines.json)), or any experiments file | All dispatch inputs |
 
-```json
-{
-  "experiments_file": "src/containers/benchmark-server/experiments/cost-model-bench.json"
-}
+Both fail unless every requested engine completes every batch. Run anything
+else, such as cloud engines or the cost-model sweep, through CI:
+
+```bash
+gh workflow run ci.yaml --ref <branch> \
+  -f experiments_file=src/containers/benchmark-server/experiments/cost-model-bench.json
 ```
 
 Use `cost-model-bench-ladder.json` for the full cost-model sweep, or another
-experiments JSON for a TPC-DI workload. The default empty string keeps the
-existing PR-triggered TPC-DI configuration. Manual GCI dispatches use their
-`experiments_file` input or per-knob inputs and do not inherit the PR selector.
+experiments JSON for a TPC-DI workload. Without `experiments_file`, CI
+synthesises one experiment from its per-knob inputs.
 
 To compare OpenIVM revisions, change both `ARG OPENIVM_COMMIT` defaults in
 [`src/containers/duckdb-openivm/Dockerfile`](src/containers/duckdb-openivm/Dockerfile)
-to the same commit SHA, select the experiment, and open a PR. Changing the pin
+to the same commit SHA, push a branch, and dispatch CI on it. Changing the pin
 invalidates the cached builder image. Each run uses one OpenIVM revision;
-use separate PRs or pushes to compare revisions. The revision must provide
+use separate branches or dispatches to compare revisions. The revision must provide
 `cost_model_benchmark` and support the selected arguments; DuckDB and the build
 tooling remain separately pinned in that Dockerfile.
 
-Cost-model CSVs are uploaded with the GCI artifacts under
+Cost-model CSVs are uploaded with the CI artifacts under
 `mount/cost-model-bench/<run-id>/<experiment-index>-<label>/`. Scale factors
-run sequentially, and the existing GCI job timeout and cancellation rules apply.
-A newer push to the same PR cancels its previous run, so wait for a run to finish
-before pushing the next revision if you need complete comparison results.
+run sequentially, and the CI job timeout and cancellation rules apply.
+A newer dispatch of the same branch and experiments file cancels the previous
+run (an active run on `main` is kept), so wait for a run to finish before
+dispatching the next revision if you need complete comparison results.
 
 ### Accumulated daily updates
 
@@ -172,6 +176,58 @@ the reported refresh duration. Failed attempts and pipeline events are saved.
 Recovery uses the existing retry limit (two retries by default), excludes
 initialization, and does not retry SQL errors or OOM without scaling evidence.
 
+The opt-in `databricks-openivm` engine uses OpenIVM's compiler and Spark SQL
+rewriter with the same dbt model SQL as `databricks-enzyme`. A local compiler
+container sees schemas only; the Databricks SQL warehouse optimizes and executes
+the generated SQL. Model results and maintenance state are managed Delta tables
+with CDF, exposed through views that hide OpenIVM bookkeeping columns. The
+backend records OpenIVM's effective refresh classification, including full
+recompute where OpenIVM Spark requires it.
+
+Each model remembers the Delta versions it has consumed. Refreshes read exact
+CDF intervals in dependency order, including updates and deletes from upstream
+models. Interrupted multi-statement refreshes mark the checkpoint dirty and
+fail instead of replaying partially applied maintenance. The benchmark retains
+the initial state and appends each source batch once. Enzyme and OpenIVM use
+separate experiment schemas, and cleanup drops their respective schemas.
+
+OpenIVM schedules ready models in dependency order with up to eight workers,
+matching Enzyme's default model concurrency. Each worker owns a separate SQL
+session and reuses its CDF temporary views only for an identical source range.
+Source schemas and Delta versions are cached within a batch; a model's version
+is invalidated after its writes finish, before its children can start. Failed
+maintenance stops new work and waits for active writes before reporting failure.
+Both Databricks engines use the same local orchestration and source-loader
+resource allocation. OpenIVM additionally runs a schema-only compiler helper
+limited to two CPUs and 4 GB. Remote SQL warehouse and managed MV pipeline
+compute allocations are independent; matching model concurrency does not make
+them an equal-resource SQL execution comparison.
+Batch timings include source synchronization and completed model writes.
+Enzyme's record-only incrementalization EXPLAIN sweep runs after the initial
+batch timer stops, against the existing MVs. Its separate client elapsed time
+is retained as `databricks_explain_s`; it does not replace or drop live models.
+
+`mount/results/<sf>/databricks-openivm/` contains the checkpoint, generated
+`sql-batch<N>.sql`, statement IDs and timings, bag-equivalence validation using
+`EXCEPT ALL` in both directions, and observed Photon/task time from query
+history. Photon metrics are collected outside the benchmark timer; missing
+metrics are reported as partial rather than proof of native execution.
+The batch result also retains validation details and client timings for source
+loading, metadata SQL, compiler requests, and each model. Fields ending in
+`work_s` sum spans across concurrent workers; they are not elapsed batch time.
+On a validation mismatch, the report includes exact differing-row samples from
+two frozen recomputations, compared with the maintained result and each other.
+These diagnostics run outside the timer and do not override the original failure.
+Use `sf10-databricks-openivm-enzyme.json` for the SF10 standard and extended
+TPC-DI comparison against Enzyme, with two compounded 1% refreshes and eight
+model workers for each engine.
+`sf100-databricks-openivm-enzyme.json` uses the same settings at SF100.
+`fig1-sf100-databricks-openivm.json` runs only Databricks OpenIVM with the
+Figure 1 standard TPC-DI batches (100%, 1%, 0.01%), eight model workers and
+exact validation, retaining individual model timings for comparison.
+SF3 matches the existing repeated-refresh smoke scale; SF1 produces an invalid
+native FINWIRE configuration (`minUpdateSize=2`, below PDGF's minimum of 3).
+
 `refresh-plan.json` records generator sizing and initial, before, inserted, and
 resulting counts for every source table and round. The server logs these counts
 and archives them in `source-row-counts.json`; `results.csv` includes every
@@ -191,7 +247,7 @@ Model concurrency is distinct from execution threads within an engine:
 | --- | ---: | --- |
 | Spark / Spark OpenIVM | 30 | Local Spark uses `local[*]`; default shuffle partitions and parallelism are 16. |
 | Fabric / Fabric OpenIVM | 30 | Remote Fabric Spark; local container limits describe the orchestration client. |
-| Databricks Enzyme | 8 | Managed Databricks compute; local container limits describe the orchestration client. |
+| Databricks Enzyme / Databricks OpenIVM | 8 | Managed Databricks compute; local container limits describe the orchestration client. |
 | DuckDB / DuckDB OpenIVM | Serial model execution | SQL threads use the allocated CPU count; engine memory is capped at 80% of the container allocation. |
 | Feldera | 1 | 12 execution workers; maximum RSS is 95% of the container allocation. |
 
@@ -199,7 +255,7 @@ Model concurrency is distinct from execution threads within an engine:
 all-engine repeated preset and the existing augmented/sweep presets set it to
 4; `full.json` sets it to 4 at SF100. These limits do not change Enzyme's default.
 Use the separate optional `databricks_dbt_threads` experiment field to override
-Enzyme concurrency, for example `"databricks_dbt_threads": 1` for diagnostics.
+Databricks model concurrency, for example `"databricks_dbt_threads": 1` for diagnostics.
 The overrides are recorded separately in `results.csv`; blank means the engine
 default. The focused Enzyme verification preset inherits 8; its diagnostic
 preset explicitly requests 1 and labels that restriction.
@@ -207,8 +263,8 @@ preset explicitly requests 1 and labels that restriction.
 Serial local-engine runs receive the available host allocation; parallel runs
 divide it among engines. Spark and Feldera reserve part of their allocation for
 the dbt client. Cloud CPU totals are not inferred from local container limits.
-Repeated-refresh experiments are opt-in: normal GCI selection continues to use
-the existing three-batch benchmark.
+Repeated-refresh experiments are opt-in: the GCI and CI presets use the
+existing three-batch benchmark.
 
 Storage totals describe durable bytes owned by the active engine experiment:
 `visible_output` is user-facing materialized output, `helper_data` is hidden

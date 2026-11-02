@@ -1,0 +1,24 @@
+{
+  "baseline": {
+    "scale_factor": 100,
+    "workload": "standard",
+    "repeated_refresh": false,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "engines": ["databricks-openivm"],
+    "databricks_dbt_threads": 8,
+    "schedule": "serial",
+    "feature_flags": {
+      "openivm_validate": true,
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "Figure 1 SF100: Databricks OpenIVM, standard TPC-DI"
+    }
+  ]
+}

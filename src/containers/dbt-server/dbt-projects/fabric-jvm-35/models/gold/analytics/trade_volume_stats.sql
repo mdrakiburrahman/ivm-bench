@@ -9,12 +9,13 @@ WITH security_stats AS (
         COUNT(DISTINCT CAST(t.create_timestamp AS DATE)) AS active_days,
         SUM(CAST(t.quantity AS BIGINT)) AS total_volume,
         ROUND(SUM(CAST(t.trade_price AS DOUBLE) * CAST(t.quantity AS DOUBLE)), 6) AS total_notional,
-        ROUND(AVG(CAST(t.trade_price AS DOUBLE)), 6) AS avg_price,
+        -- Fixed-point sums keep half-way averages independent of aggregation order.
+        ROUND(CAST(SUM(CAST(ROUND(t.trade_price, 4) AS DECIMAL(38, 4))) AS DOUBLE) / NULLIF(COUNT(t.trade_price), 0), 6) AS avg_price,
         ROUND(STDDEV(CAST(t.trade_price AS DOUBLE)), 6) AS price_stddev,
         MIN(t.trade_price) AS min_price,
         MAX(t.trade_price) AS max_price,
-        ROUND(AVG(CAST(t.fee AS DOUBLE)), 6) AS avg_fee,
-        ROUND(AVG(CAST(t.commission AS DOUBLE)), 6) AS avg_commission,
+        ROUND(CAST(SUM(CAST(ROUND(t.fee, 4) AS DECIMAL(38, 4))) AS DOUBLE) / NULLIF(COUNT(t.fee), 0), 6) AS avg_fee,
+        ROUND(CAST(SUM(CAST(ROUND(t.commission, 4) AS DECIMAL(38, 4))) AS DOUBLE) / NULLIF(COUNT(t.commission), 0), 6) AS avg_commission,
         ROUND(SUM(CAST(t.fee AS DOUBLE) + CAST(t.commission AS DOUBLE)), 6) AS total_cost
     FROM {{ ref('fact_trade') }} t
     JOIN {{ ref('dim_security') }} s
