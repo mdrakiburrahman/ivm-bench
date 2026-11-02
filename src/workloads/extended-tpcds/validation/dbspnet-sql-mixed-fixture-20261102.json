@@ -1,6 +1,6 @@
 {
   "scope": "Tiny synthetic fixture through the real DBSP.NET HTTP server, Delta input/output connectors and persistent incremental circuit. Initial loading followed by two mixed batches (20% insert, 30% update, 20% delete). This is correctness evidence, not SF1 acceptance or a performance comparison.",
-  "engine_commit": "61179dcc71d212b69b0fe79bdff95396adb8dd1e",
+  "engine_commit": "c43626e8a6cc07d3c5567808eb019bfdcbc00d7c",
   "engine_pr": "https://github.com/clast-project/dbsp-net/pull/1",
   "runtime": ".NET 10.0.403 SDK; macOS ARM64; one worker; DuckDB 2.0.0 reference; Delta deletion vectors honored by delta_scan",
   "models_checked": 288,
@@ -111,7 +111,7 @@
   "snapshots": [
     {
       "batch": 1,
-      "duration_s": 5.263027750188485,
+      "duration_s": 2.5469678749796003,
       "validation": {
         "status": "passed",
         "models_checked": 96,
@@ -218,7 +218,7 @@
     },
     {
       "batch": 2,
-      "duration_s": 4.381606416776776,
+      "duration_s": 1.5699092489667237,
       "validation": {
         "status": "passed",
         "models_checked": 96,
@@ -325,7 +325,7 @@
     },
     {
       "batch": 3,
-      "duration_s": 0.8414853331632912,
+      "duration_s": 0.7679739170707762,
       "validation": {
         "status": "passed",
         "models_checked": 96,
@@ -431,7 +431,7 @@
       }
     }
   ],
-  "sql_tests_passed": 2131,
+  "sql_tests_passed": 2156,
   "compatibility_checks": {
     "reference": "DuckDB 2.0.0",
     "json_number_cases": 1211,
@@ -446,5 +446,10 @@
       86,
       87
     ]
+  },
+  "regressions": {
+    "strict_cast_overflow": "throws; TRY_CAST returns NULL",
+    "ignore_nulls_frames": "implicit and partial frames rejected; explicit whole partition required",
+    "json_result_storage": "retains exact UTF-8 payload bytes"
   }
 }
