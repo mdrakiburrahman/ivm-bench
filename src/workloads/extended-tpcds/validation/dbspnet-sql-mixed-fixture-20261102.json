@@ -1,6 +1,6 @@
 {
   "scope": "Tiny synthetic fixture through the real DBSP.NET HTTP server, Delta input/output connectors and persistent incremental circuit. Initial loading followed by two mixed batches (20% insert, 30% update, 20% delete). This is correctness evidence, not SF1 acceptance or a performance comparison.",
-  "engine_commit": "ac705ea4e80642ae1e610a7aa7d46f0ebf742944",
+  "engine_commit": "61179dcc71d212b69b0fe79bdff95396adb8dd1e",
   "engine_pr": "https://github.com/clast-project/dbsp-net/pull/1",
   "runtime": ".NET 10.0.403 SDK; macOS ARM64; one worker; DuckDB 2.0.0 reference; Delta deletion vectors honored by delta_scan",
   "models_checked": 288,
@@ -111,7 +111,7 @@
   "snapshots": [
     {
       "batch": 1,
-      "duration_s": 2.713397250045091,
+      "duration_s": 5.263027750188485,
       "validation": {
         "status": "passed",
         "models_checked": 96,
@@ -218,7 +218,7 @@
     },
     {
       "batch": 2,
-      "duration_s": 5.69167112512514,
+      "duration_s": 4.381606416776776,
       "validation": {
         "status": "passed",
         "models_checked": 96,
@@ -325,7 +325,7 @@
     },
     {
       "batch": 3,
-      "duration_s": 2.3058531668502837,
+      "duration_s": 0.8414853331632912,
       "validation": {
         "status": "passed",
         "models_checked": 96,
@@ -431,5 +431,20 @@
       }
     }
   ],
-  "sql_tests_passed": 2086
+  "sql_tests_passed": 2131,
+  "compatibility_checks": {
+    "reference": "DuckDB 2.0.0",
+    "json_number_cases": 1211,
+    "json_number_mismatches": 0,
+    "integer_text_cases": 1020,
+    "integer_text_target_types": [
+      "INTEGER",
+      "BIGINT"
+    ],
+    "integer_text_mismatches": 0,
+    "random_seeds": [
+      86,
+      87
+    ]
+  }
 }
