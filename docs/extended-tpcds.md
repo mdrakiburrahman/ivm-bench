@@ -753,7 +753,7 @@ integer options remain integers. The Spark timestamp shim is separate from WF in
 [upstream PR #92](https://github.com/mdrakiburrahman/openivm-spark/pull/92).
 
 DBSP.NET is temporarily pinned through `ila/dbsp-net` to
-`6c9ca027585b08391b95a3017987c5692e3a03a6`, based on upstream main. It depends on
+`ac705ea4e80642ae1e610a7aa7d46f0ebf742944`, based on upstream main. It depends on
 [upstream PR #1](https://github.com/clast-project/dbsp-net/pull/1); repin to the
 merged source before landing. It adds null-on-error casts, compact date parsing,
 JSON member extraction, and whole-partition null-skipping FIRST/LAST windows.
@@ -764,7 +764,7 @@ fractional zeros so generated hash keys agree with the reference.
 A tiny real HTTP-server/Delta-connector acceptance test retains one circuit
 across initial loading and two mixed batches (20% insertion, 30% update,
 20% deletion). All **288/288 model bag comparisons pass**, with floats rounded
-to ten decimal places. The engine's 2,055 SQL tests pass. Evidence and source
+to ten decimal places. The engine's 2,086 SQL tests pass. Evidence and source
 hashes are in `validation/dbspnet-sql-mixed-fixture-20261102.json`. These are
 correctness checks, not SF1 acceptance or performance results.
 
