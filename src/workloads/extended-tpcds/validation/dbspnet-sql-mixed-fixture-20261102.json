@@ -451,5 +451,17 @@
     "strict_cast_overflow": "throws; TRY_CAST returns NULL",
     "ignore_nulls_frames": "implicit and partial frames rejected; explicit whole partition required",
     "json_result_storage": "retains exact UTF-8 payload bytes"
+  },
+  "followup_verification": {
+    "engine_commit": "ad068790ff7abdfafea20d62747493ea58c75a5e",
+    "change": "Reuse immutable compact-date format array",
+    "targeted_date_tests_passed": 3,
+    "allocation_probe": {
+      "before_bytes_per_successful_parse": 104,
+      "after_bytes_per_successful_parse": 64,
+      "measured_calls": 100000,
+      "warmup_calls": 2000
+    },
+    "full_suite_and_mixed_replay_revision": "c43626e8a6cc07d3c5567808eb019bfdcbc00d7c"
   }
 }

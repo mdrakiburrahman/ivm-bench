@@ -6,7 +6,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 # Temporary dependency: clast-project/dbsp-net#1; repin after upstream merge.
 ARG DBSPNET_REPO=https://github.com/ila/dbsp-net.git
-ARG DBSPNET_COMMIT=c43626e8a6cc07d3c5567808eb019bfdcbc00d7c
+ARG DBSPNET_COMMIT=ad068790ff7abdfafea20d62747493ea58c75a5e
 
 # git + certs for the clone.
 RUN apt-get update \
