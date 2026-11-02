@@ -463,5 +463,13 @@
       "warmup_calls": 2000
     },
     "full_suite_and_mixed_replay_revision": "c43626e8a6cc07d3c5567808eb019bfdcbc00d7c"
+  },
+  "cleanup_verification": {
+    "engine_commit": "e256f5c435dcc8bb5ed5ea088137a3234234c51f",
+    "change": "Share decimal formatting and checked integer conversion between compilers; consolidate overlapping strict/safe overflow test matrices",
+    "sql_tests_passed": 2151,
+    "duplicate_test_cases_removed": 5,
+    "overflow_cases_checking_both_strict_and_safe_casts": 20,
+    "mixed_replay_revision": "c43626e8a6cc07d3c5567808eb019bfdcbc00d7c"
   }
 }
