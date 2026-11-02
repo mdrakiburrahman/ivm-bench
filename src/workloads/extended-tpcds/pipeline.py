@@ -72,7 +72,7 @@ def build(connection, targets=None, cohort="all"):
         connection.execute("ROLLBACK")
         raise
     # These scans are validation artifacts and are outside the recorded build time.
-    counts = {name: connection.execute(f"SELECT count(*) FROM {name}").fetchone()[0] for name in models}
+    counts = {name: connection.execute(f"SELECT count(*) FROM {name}").fetchall()[0][0] for name in models}
     return {"mode": "full_recomputation", "configuration": config, "cohort": cohort,
             "binding_scope": "eligible_engagement_family", "model_rows": counts,
             "model_duration_s": durations, "total_model_duration_s": sum(durations.values())}

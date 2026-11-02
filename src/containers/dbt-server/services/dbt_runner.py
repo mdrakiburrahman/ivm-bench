@@ -15,6 +15,23 @@ from services.source_cache import batch_cache_root, incremental_staging_tables
 PROJECTS_DIR = "/app/dbt-projects"
 
 
+def load_profile(engine: str, env: dict | None = None) -> dict:
+    """Render parsed YAML values with dbt's native typing and quoting rules."""
+    import yaml
+    from dbt.clients.jinja import get_rendered
+    from dbt_common.utils.dict import deep_map_render
+
+    environment = os.environ if env is None else env
+    context = {"env_var": lambda key, default=None: environment.get(key, default)}
+    with open(os.path.join(PROJECTS_DIR, engine, "profiles.yml")) as handle:
+        profile = yaml.safe_load(handle)
+    rendered = deep_map_render(
+        lambda value, _: get_rendered(value, context, native=True) if isinstance(value, str) else value,
+        profile,
+    )
+    return rendered["tpcdi"]["outputs"][engine]
+
+
 def _inject_fabric_resolved(env: dict, *, claim_fresh: bool = False) -> None:
     """Inject the per-run resolved Fabric IDs (compute lakehouse/env + shared
     cache lakehouse) written by ``fabric.provision_run`` so the profile's

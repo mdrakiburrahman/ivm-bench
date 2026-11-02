@@ -673,9 +673,10 @@ refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors
 remain `standard` and `databricks`; `extended-tpcds` selects this workload.
 Native OpenIVM is pinned to main revision `19762672440969f318aca61d7971166759349838`.
 The Spark/Fabric builder uses integration revision
-`3bc70b0396463d28184e03065f9b81377dfa548f` on
+`0fcada8c7e2ab7bc3d8442e9c291ad6ef0843aaa` on
 `bench/extended-tpcds-wf-20261030`, combining WF revision `41e97c48` with
-the TPC-DS refresh fixes from Spark PR #85 (`abff19f9`). Running-window state,
+the TPC-DS refresh fixes from Spark PR #85 (`abff19f9`) and the formatted
+TRY_TO_TIMESTAMP shim from unmerged Spark PR #92. Running-window state,
 grouped-window state and classification caching are enabled. PR #85 is merged
 as `243d13f5`; **WF PR #62 is still unmerged. Do not merge this benchmark PR
 until its WF dependency lands and the integration pin is replaced.**
@@ -737,3 +738,38 @@ check; it does not establish OpenIVM or remote engine acceptance.
 The shared SQL path currently executes one model command at a time and reports
 `model_concurrency: 1`; warehouse/Spark task parallelism is separate. Sessions
 explicitly use UTC, matching the source timestamps and frozen report clock.
+
+
+### Compatibility fixes and local DBSP.NET acceptance (2026-11-02)
+
+The first completed SF1 all-engine attempt, Actions run `41297031179`, passed
+DuckDB, native OpenIVM and Spark: 288/288 model comparisons per engine. All ten
+engines were attempted. Seven failed; this remains incomplete remote acceptance.
+
+The shared SQL replay now normalizes inferred Parquet TIMESTAMP_NTZ columns to
+TIMESTAMP_LTZ under UTC. Profile loading parses YAML before rendering individual
+values with dbt native types: Fabric's nested JSON remains a string and Feldera's
+integer options remain integers. The Spark timestamp shim is separate from WF in
+[upstream PR #92](https://github.com/mdrakiburrahman/openivm-spark/pull/92).
+
+DBSP.NET is temporarily pinned through `ila/dbsp-net` to
+`6c9ca027585b08391b95a3017987c5692e3a03a6`, based on upstream main. It depends on
+[upstream PR #1](https://github.com/clast-project/dbsp-net/pull/1); repin to the
+merged source before landing. It adds null-on-error casts, compact date parsing,
+JSON member extraction, and whole-partition null-skipping FIRST/LAST windows.
+The SQL bridge lowers constant relations through one immutable singleton input,
+retaining all 96 observable model outputs. Timestamp strings omit insignificant
+fractional zeros so generated hash keys agree with the reference.
+
+A tiny real HTTP-server/Delta-connector acceptance test retains one circuit
+across initial loading and two mixed batches (20% insertion, 30% update,
+20% deletion). All **288/288 model bag comparisons pass**, with floats rounded
+to ten decimal places. The engine's 2,055 SQL tests pass. Evidence and source
+hashes are in `validation/dbspnet-sql-mixed-fixture-20261102.json`. These are
+correctness checks, not SF1 acceptance or performance results.
+
+Streaming validation and source guards use DuckDB's Delta reader, including
+output deletion vectors. Reading active Parquet files directly includes
+logically deleted rows and gives false validation failures. The Delta extension
+is installed in the dbt image. Cloud compatibility fixes still require remote
+acceptance; no SF100 run has started.

@@ -9,10 +9,8 @@ import os
 import time
 from pathlib import Path
 
-import jinja2
 import sqlglot
 from sqlglot import exp
-import yaml
 
 from services.compiler_bench.engines import _verify_probe
 
@@ -58,6 +56,7 @@ def translate(sql, relations=None):
 class Connection:
     def __init__(self, engine, directory, manifest, options, *, initialize=False):
         self.engine = engine
+        self.schemas = manifest.get('schemas', {})
         self.timeout = options['statement_timeout_s']
         self.schema = 'xt_' + manifest['plan_id'] + '_' + engine.replace('-', '_') + '_' + str(os.environ.get('DATABRICKS_EXPERIMENT_ID') or os.environ.get('FABRIC_RUN_ID') or 'local').replace('-', '_')
         self.remote_root = str(directory)
@@ -77,7 +76,7 @@ class Connection:
             from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
             from dbt.adapters.fabricspark.connections import FabricSparkConnectionManager
             from dbt.adapters.contracts.connection import Connection as DbtConnection
-            from services.dbt_runner import _inject_fabric_resolved, PROJECTS_DIR
+            from services.dbt_runner import _inject_fabric_resolved, load_profile
             if engine.startswith('fabric-'):
                 from services import fabric
                 if initialize:
@@ -86,9 +85,7 @@ class Connection:
                 self.remote_root = fabric.onelake_abfss('Files/extended-tpcds/' + manifest['plan_id'] + '/plan', fabric.resolve_cache_lakehouse())
             env = os.environ.copy()
             _inject_fabric_resolved(env)
-            profile = Path(PROJECTS_DIR) / engine / 'profiles.yml'
-            rendered = jinja2.Environment(undefined=jinja2.StrictUndefined).from_string(profile.read_text()).render(env_var=lambda key, default=None: env.get(key, default))
-            values = yaml.safe_load(rendered)['tpcdi']['outputs'][engine]
+            values = load_profile(engine, env)
             values = {k:v for k,v in values.items() if k not in ('type','threads')}
             values.update(statement_timeout=int(self.timeout), reuse_session=True)
             credentials = FabricSparkCredentials.from_dict(values)
@@ -123,10 +120,17 @@ class Connection:
             record['duration_s'] = time.monotonic() - start
             self.statements.append(record)
 
-    def parquet(self, image):
+    def parquet(self, image, table):
         # Paths come from the checksum-verified local manifest, never SQL text.
         path = self.remote_root.rstrip('/') + '/' + image['path']
-        return 'parquet.`' + path.replace('`','``') + '`'
+        relation = 'parquet.`' + path.replace('`','``') + '`'
+        # DuckDB's unzoned Parquet timestamps infer as Spark TIMESTAMP_NTZ.
+        # The workload clock is UTC; normalize the representation on every read
+        # so sources, mutation guards and references use the supported LTZ type.
+        columns = [f'CAST({identifier(name)} AS TIMESTAMP_LTZ) AS {identifier(name)}'
+                   if kind.startswith('TIMESTAMP') else identifier(name)
+                   for name, kind in self.schemas[table].items()]
+        return '(SELECT ' + ', '.join(columns) + ' FROM ' + relation + ')'
 
     def close(self):
         self.handle.close()
@@ -145,7 +149,7 @@ def replay(connection, manifest, directory, batch_num):
             properties = "'delta.enableChangeDataFeed'='true'"
             if connection.engine.startswith("databricks-"):
                 properties += ", 'delta.enableRowTracking'='true'"
-            connection.execute(f"CREATE TABLE {identifier(table)} USING DELTA TBLPROPERTIES ({properties}) AS SELECT * FROM {connection.parquet(image)}")
+            connection.execute(f"CREATE TABLE {identifier(table)} USING DELTA TBLPROPERTIES ({properties}) AS SELECT * FROM {connection.parquet(image, table)}")
         return
     for operation in manifest['batches'][batch_num-2]['operations']:
         table = operation['table']
@@ -154,17 +158,17 @@ def replay(connection, manifest, directory, batch_num):
         target = identifier(table)
         before, after = operation['before'], operation['after']
         if before:
-            expected = connection.parquet(before)
+            expected = connection.parquet(before, table)
             actual = f'SELECT * FROM {target} WHERE _source_row_id IN (SELECT _source_row_id FROM {expected})'
             mismatch = connection.execute(f'SELECT count(*) FROM ((SELECT * FROM {expected} EXCEPT ALL {actual}) UNION ALL ({actual} EXCEPT ALL SELECT * FROM {expected}))')[0][0]
             if mismatch:
                 raise ValueError('before-image mismatch: ' + table)
         if operation['kind'] == 'delete':
-            connection.execute(f'DELETE FROM {target} WHERE _source_row_id IN (SELECT _source_row_id FROM {connection.parquet(before)})')
+            connection.execute(f'DELETE FROM {target} WHERE _source_row_id IN (SELECT _source_row_id FROM {connection.parquet(before, table)})')
         elif operation['kind'] == 'update':
-            connection.execute(f'MERGE INTO {target} t USING {connection.parquet(after)} a ON t._source_row_id=a._source_row_id WHEN MATCHED THEN UPDATE SET *')
+            connection.execute(f'MERGE INTO {target} t USING {connection.parquet(after, table)} a ON t._source_row_id=a._source_row_id WHEN MATCHED THEN UPDATE SET *')
         elif operation['kind'] == 'insert':
-            connection.execute(f'INSERT INTO {target} SELECT * FROM {connection.parquet(after)}')
+            connection.execute(f'INSERT INTO {target} SELECT * FROM {connection.parquet(after, table)}')
         else:
             raise ValueError('unknown source operation')
         duplicates = connection.execute(f'SELECT count(*)-count(DISTINCT _source_row_id) FROM {target}')[0][0]

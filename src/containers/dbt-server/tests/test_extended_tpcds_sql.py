@@ -40,6 +40,41 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
             connection.close()
             handle.close.assert_called_once()
 
+    def test_fabric_profile_is_parsed_before_rendering_quoted_environment_json(self):
+        from services import dbt_runner
+        root = Path(__file__).parents[1]/'dbt-projects'
+        with patch.object(dbt_runner, 'PROJECTS_DIR', str(root)):
+            for engine in ('fabric-jvm-35', 'fabric-openivm-jvm-35'):
+                with self.subTest(engine=engine):
+                    values = dbt_runner.load_profile(engine, {'FABRIC_ENVIRONMENT_ID': 'env-id',
+                                                              'FABRIC_LAKEHOUSE_ID': 'lake-id'})
+                    self.assertEqual(values['spark_config']['conf']['spark.fabric.environmentDetails'],
+                                     '{"id": "env-id"}')
+                    self.assertEqual(values['lakehouseid'], 'lake-id')
+                    self.assertIsInstance(values['threads'], int)
+
+    def test_feldera_profile_retains_native_resource_types(self):
+        from services import dbt_runner
+        root = Path(__file__).parents[1]/'dbt-projects'
+        with patch.object(dbt_runner, 'PROJECTS_DIR', str(root)):
+            for limit in ('0', '8192'):
+                values = dbt_runner.load_profile('feldera', {'FELDERA_MAX_RSS_MB': limit})
+                self.assertEqual(values['max_rss_mb'], int(limit))
+                self.assertIsInstance(values['workers'], int)
+                self.assertIsInstance(values['timeout'], int)
+                self.assertIs(values['dev_tweaks']['adaptive_joins'], True)
+
+    def test_parquet_timestamps_use_utc_ltz_without_changing_non_timestamp_fields(self):
+        connection = module.Connection.__new__(module.Connection)
+        connection.remote_root = '/plan'
+        connection.schemas = {'events': {'_source_row_id': 'VARCHAR', 'ts': 'TIMESTAMP', 'day': 'DATE'}}
+        actual = connection.parquet({'path': 'initial/events.parquet'}, 'events')
+        self.assertIn('CAST(`ts` AS TIMESTAMP_LTZ) AS `ts`', actual)
+        self.assertIn('`_source_row_id`', actual)
+        self.assertIn('`day`', actual)
+        self.assertNotIn('CAST(`day`', actual)
+        self.assertIn('parquet.`/plan/initial/events.parquet`', actual)
+
     def test_timestamp_and_dynamic_interval_translation(self):
         sql = "SELECT TRY_STRPTIME(d,'%Y%m%d'), DATE '2002-12-31' + INTERVAL (-(365)) DAY, d + INTERVAL (-lag.n) DAY"
         actual = module.translate(sql)

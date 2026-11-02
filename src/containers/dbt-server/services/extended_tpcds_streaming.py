@@ -21,6 +21,12 @@ from sqlglot.dialects.duckdb import DuckDB
 STREAM_ENGINES = ('feldera','dbspnet')
 
 
+class DbspNetDialect(DuckDB):
+    class Generator(DuckDB.Generator):
+        def jsonextractscalar_sql(self, expression):
+            return self.func('JSON_EXTRACT_STRING', expression.this, expression.expression)
+
+
 class FelderaDialect(DuckDB):
     class Generator(DuckDB.Generator):
         def trycast_sql(self, expression):
@@ -47,14 +53,40 @@ class FelderaDialect(DuckDB):
 
 def render(sql, engine):
     tree=sqlglot.parse_one(sql,read='duckdb')
-    if engine=='dbspnet':
-        return tree.sql(dialect='duckdb')
+    if engine == 'dbspnet':
+        from sqlglot.optimizer.simplify import simplify
+        # Cohort bindings are constants: prune their inactive OR branch before
+        # DBSP.NET resolves nested membership predicates.
+        for predicate in tree.find_all(exp.Where):
+            predicate.set('this', simplify(predicate.this))
+        for kind, unit in ((exp.Year, 'YEAR'), (exp.Month, 'MONTH'), (exp.Day, 'DAY')):
+            for part in list(tree.find_all(kind)):
+                part.replace(exp.Extract(this=exp.Var(this=unit), expression=part.this.copy()))
+        for values in list(tree.find_all(exp.Values)):
+            columns = values.alias_column_names
+            if not columns or any(len(row.expressions) != len(columns) for row in values.expressions):
+                raise ValueError('DBSP.NET VALUES requires explicit column aliases')
+            rows = [exp.Select(expressions=[exp.alias_(value.copy(), name, quoted=True)
+                                           for value, name in zip(row.expressions, columns)])
+                    for row in values.expressions]
+            query = rows[0]
+            for row in rows[1:]:
+                query = exp.Union(this=query, expression=row, distinct=False)
+            values.replace(exp.Subquery(this=query, alias=exp.TableAlias(this=values.args['alias'].this.copy())))
+        # DBSP.NET requires FROM. One immutable helper row gives constant
+        # projections and UNION arms the SQL singleton-relation semantics.
+        for select in tree.find_all(exp.Select):
+            if select.args.get('from_') is None:
+                select.set('from_', exp.From(this=exp.to_table('__xt_unit')))
+        for number, subquery in enumerate(tree.find_all(exp.Subquery)):
+            if isinstance(subquery.parent, (exp.From, exp.Join)) and not subquery.alias:
+                subquery.set('alias', exp.TableAlias(this=exp.to_identifier(f'__xt_subquery_{number}')))
     for cast in tree.find_all(exp.DataType):
         if cast.this==exp.DataType.Type.TIMESTAMPTZ:
             # The only zoned workload value is the frozen report-date clock at UTC.
             cast.set('this',exp.DataType.Type.TIMESTAMP)
     for function in list(tree.find_all(exp.Anonymous)):
-        if function.name.upper()=='TRY_STRPTIME':
+        if engine!='dbspnet' and function.name.upper()=='TRY_STRPTIME':
             source,pattern=function.expressions
             if pattern.this!='%Y%m%d':
                 raise ValueError('unsupported timestamp format in workload')
@@ -63,7 +95,7 @@ def render(sql, engine):
         value=interval.this
         if not isinstance(value,exp.Literal):
             interval.replace(exp.Mul(this=value.copy(),expression=exp.Interval(this=exp.Literal.string('1'),unit=interval.args['unit'].copy())))
-    return tree.sql(dialect=FelderaDialect)
+    return tree.sql(dialect=DbspNetDialect, identify=True) if engine=='dbspnet' else tree.sql(dialect=FelderaDialect)
 
 
 def program(manifest, work_dir, engine):
@@ -72,6 +104,9 @@ def program(manifest, work_dir, engine):
     for name, fields in manifest['schemas'].items():
         sql.append('CREATE TABLE '+name+' ('+', '.join('"'+c+'" '+t for c,t in fields.items())+')')
         inputs.append({'table':name, 'uri':str(work_dir/'sources'/name), 'mode':'snapshot_and_follow'})
+    if engine == 'dbspnet':
+        sql.append('CREATE TABLE __xt_unit (one INTEGER NOT NULL)')
+        inputs.append({'table':'__xt_unit', 'uri':str(work_dir/'sources/__xt_unit'), 'mode':'snapshot_and_follow'})
     for name in pipeline.selected_models():
         body=pipeline.render_model(name,manifest['source_configuration'],manifest['_query_cohort'])
         # The target compiler must accept the whole DAG; no models are pruned.
@@ -86,12 +121,10 @@ def _reader(path):
 
 
 def _source(connection, path):
-    table=DeltaTable(str(path))
-    files=table.file_uris()
-    if files:
-        connection.read_parquet(files).create_view('xt_source',replace=True)
-    else:
-        connection.register('xt_source',table.to_pyarrow_table())
+    from services.extended_tpcds import quote
+    # Delta deletion vectors tombstone rows within active Parquet files.
+    connection.execute('LOAD delta')
+    connection.execute('CREATE OR REPLACE VIEW xt_source AS SELECT * FROM delta_scan(' + quote(path) + ')')
 
 
 def replay(manifest, directory, work_dir, batch_num):
@@ -150,10 +183,8 @@ def deploy(spec, engine):
     from dbt.adapters.feldera.pipeline_manager import PipelineStateManager
     from feldera.rest.feldera_client import FelderaClient
     from services.extended_tpcds import quote
-    from jinja2 import Environment
-    import yaml
-    profile=Path('/app/dbt-projects/feldera/profiles.yml')
-    options=yaml.safe_load(Environment().from_string(profile.read_text()).render(env_var=lambda k,d=None:os.environ.get(k,d)))['tpcdi']['outputs']['feldera']
+    from services.dbt_runner import load_profile
+    options=load_profile('feldera')
     manager=PipelineStateManager()
     for statement,binding in zip(spec['program'],spec['inputs']):
         connector=[{'name':binding['table']+'_input','transport':{'name':'delta_table_input','config':{'uri':binding['uri'],'mode':'snapshot_and_follow','transaction_mode':'always','num_parsers':8}}}]
@@ -191,6 +222,9 @@ def run_batch(engine,batch_num,manifest_path,work_dir,options):
             raise RuntimeError('could not pause Feldera before source mutation')
     started=time.monotonic()
     replay(manifest,manifest_path.parent,work_dir,batch_num)
+    if engine == 'dbspnet' and batch_num == 1:
+        write_deltalake(str(work_dir/'sources/__xt_unit'),
+                       pa.table({'one':pa.array([1], type=pa.int32())}), mode='error')
     source_s=time.monotonic()-started
     (work_dir/'program.json').write_text(json.dumps(spec,indent=2))
     compilation=deploy(spec,engine) if batch_num==1 else {}

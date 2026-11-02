@@ -57,7 +57,7 @@ RUN cd /app/dbt-projects/fabric-openivm-jvm-35 && dbt deps --profiles-dir . 2>/d
 RUN cd /app/dbt-projects/fabric-jvm-35 && dbt deps --profiles-dir . 2>/dev/null || true
 
 # Preinstall DuckDB extensions to avoid runtime download
-RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL ducklake; INSTALL sqlite'); c.close()"
+RUN python -c "import duckdb; c = duckdb.connect(); c.execute('INSTALL ducklake; INSTALL sqlite; INSTALL delta'); c.close()"
 
 EXPOSE 5000
 

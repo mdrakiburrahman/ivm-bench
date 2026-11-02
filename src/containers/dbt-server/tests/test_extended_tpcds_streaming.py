@@ -73,11 +73,42 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
         self.assertIn("REGEXP_REPLACE(x, 'a', 'b')",actual)
         self.assertNotIn('TRY_STRPTIME',actual)
 
+    def test_dbsp_sql_uses_supported_json_function_and_quoted_reserved_columns(self):
+        actual = module.render("SELECT date, json_extract_string(j, '$.CustomerPath'), x + INTERVAL (-n) DAY FROM events", 'dbspnet')
+        self.assertIn('"date"', actual)
+        self.assertIn('JSON_EXTRACT_STRING("j",', actual)
+        self.assertNotIn('->>', actual)
+        self.assertIn("INTERVAL '1' DAY", actual)
+        self.assertNotIn('INTERVAL (', actual)
+
+    def test_dbsp_constant_lowering_preserves_rows_with_empty_or_nonempty_sources(self):
+        with module.duckdb.connect() as c:
+            c.execute('CREATE TABLE __xt_unit(one INTEGER); INSERT INTO __xt_unit VALUES (1)')
+            c.execute('CREATE TABLE events(value INTEGER)')
+            query = "SELECT 'default' AS label UNION ALL SELECT CAST(value AS VARCHAR) FROM events"
+            for insert in (False, True):
+                if insert:
+                    c.execute('INSERT INTO events VALUES (2), (NULL), (2)')
+                expected = c.execute(query).fetchall()
+                actual = c.execute(module.render(query, 'dbspnet')).fetchall()
+                self.assertCountEqual(actual, expected)
+
+    def test_dbsp_values_and_constant_cohorts_preserve_bag_semantics(self):
+        with module.duckdb.connect() as c:
+            c.execute('CREATE TABLE __xt_unit(one INTEGER); INSERT INTO __xt_unit VALUES (1)')
+            c.execute('CREATE TABLE events(value INTEGER); INSERT INTO events VALUES (1), (2), (2), (NULL)')
+            queries = ["SELECT * FROM (VALUES (1, 'a'), (1, 'a'), (NULL, 'b')) AS v(n, label)"]
+            for cohort in ('all', 'hot', 'cold'):
+                queries.append(f"SELECT value FROM events WHERE ('{cohort}' = 'all' OR value IN (SELECT value FROM events WHERE value = 2))")
+            for query in queries:
+                self.assertCountEqual(c.execute(module.render(query, 'dbspnet')).fetchall(),
+                                      c.execute(query).fetchall())
+
     def test_all_models_are_outputs_and_compile_failure_cannot_drop_models(self):
         manifest={'schemas':{'events':{'_source_row_id':'VARCHAR'}},'source_configuration':{'report_date':'2002-12-31','history_months':12},'_query_cohort':'all'}
         spec=module.program(manifest,Path('/data/processed/dbspnet/extended-tpcds'),'dbspnet')
         self.assertEqual(len(spec['outputs']),96)
-        self.assertEqual(len(spec['program']),97)
+        self.assertEqual(len(spec['program']),98)
         self.assertTrue(all(o['mode']=='truncate' for o in spec['outputs']))
         # TRY_CAST remains explicit: unsupported syntax must fail at compile,
         # not acquire throwing-cast semantics from a dialect conversion.
