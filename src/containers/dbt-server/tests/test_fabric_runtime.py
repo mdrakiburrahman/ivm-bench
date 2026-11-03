@@ -21,6 +21,16 @@ class FabricRuntimePinTest(unittest.TestCase):
         ]}
         self.request.side_effect = [self.initial, Mock(status_code=200), self.updated]
 
+    def test_schema_creation_payload_is_opt_in(self):
+        self.request.side_effect = None
+        self.request.return_value = Mock(status_code=201, text='ok')
+        self.request.return_value.json.return_value = {'id':'lake'}
+        fabric._create_item('lakehouses', 'ordinary')
+        self.assertEqual(self.request.call_args.kwargs['json'], {'displayName':'ordinary'})
+        fabric._create_item('lakehouses', 'workload', creation_payload={'enableSchemas':True})
+        self.assertEqual(self.request.call_args.kwargs['json'],
+                         {'displayName':'workload', 'creationPayload':{'enableSchemas':True}})
+
     def test_pin_uses_stable_contract_and_verifies_properties(self):
         fabric._stage_spark_compute(self.properties)
         args, kwargs = self.request.call_args_list[1]

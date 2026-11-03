@@ -673,10 +673,11 @@ refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors
 remain `standard` and `databricks`; `extended-tpcds` selects this workload.
 Native OpenIVM is pinned to main revision `19762672440969f318aca61d7971166759349838`.
 The Spark/Fabric builder uses integration revision
-`0fcada8c7e2ab7bc3d8442e9c291ad6ef0843aaa` on
+`3ac3a55f4f27a791cd0710e80aef53fc3addfdee` on
 `bench/extended-tpcds-wf-20261030`, combining WF revision `41e97c48` with
 the TPC-DS refresh fixes from Spark PR #85 (`abff19f9`) and the formatted
-TRY_TO_TIMESTAMP shim from unmerged Spark PR #92. Running-window state,
+timestamp shim from merged Spark PR #92 and interval-cast fix from unmerged
+Spark PR #94. Running-window state,
 grouped-window state and classification caching are enabled. PR #85 is merged
 as `243d13f5`; **WF PR #62 is still unmerged. Do not merge this benchmark PR
 until its WF dependency lands and the integration pin is replaced.**
@@ -774,3 +775,29 @@ output deletion vectors. Reading active Parquet files directly includes
 logically deleted rows and gives false validation failures. The Delta extension
 is installed in the dbt image. Cloud compatibility fixes still require remote
 acceptance; no SF100 run has started.
+
+### SF1 failure follow-up (2026-11-03)
+
+The next all-engine SF1 run,
+[41460852579](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41460852579),
+again passed all 288 comparisons each for DuckDB, DuckDB OpenIVM and Spark.
+The six other engines except DBSP.NET are being retested with these fixes:
+
+- Feldera SQL quotes all identifiers, including reserved calendar columns.
+- Spark-family model timestamp casts match the shared UTC/LTZ source representation,
+  avoiding unsupported TIMESTAMP_NTZ types in the native compiler.
+- Fabric compute lakehouses explicitly enable schemas; model and reference schemas
+  are qualified by that run's compute lakehouse. Existing TPC-DI provisioning keeps
+  its previous default. See the [Fabric creation API](https://learn.microsoft.com/en-us/rest/api/fabric/lakehouse/items/create-lakehouse).
+- Databricks model writes explicitly target the same catalog/schema as their reads.
+  This change still needs remote verification for Enzyme's missing staging relation;
+  it is not yet a confirmed root-cause resolution.
+- The Spark compiler removes redundant numeric truncation inside integer casts,
+  which Spark otherwise resolves as a date function. The interval-only fix is
+  [Spark PR #94](https://github.com/mdrakiburrahman/openivm-spark/pull/94), separate
+  from the WF work. The combined benchmark branch includes this fix.
+
+DBSP.NET's SF1 initial-load memory failure is tracked separately in
+[DBSP.NET issue #2](https://github.com/clast-project/dbsp-net/issues/2), with exact
+revisions, reproduction steps and telemetry. This follow-up does not modify or
+rerun DBSP.NET. No SF100 acceptance or performance claim follows from these fixes.

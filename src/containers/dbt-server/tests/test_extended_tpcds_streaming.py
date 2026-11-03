@@ -67,11 +67,20 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
     def test_feldera_translation_preserves_null_on_error_and_global_regex(self):
         sql="SELECT TRY_CAST(x AS INTEGER), TRY_STRPTIME(d,'%Y%m%d'), json_extract_string(j,'$.CustomerPath'), regexp_replace(x,'a','b','g')"
         actual=module.render(sql,'feldera')
-        self.assertIn('SAFE_CAST(x AS INT)',actual)
-        self.assertIn("PARSE_DATE('%Y%m%d', d)",actual)
-        self.assertIn("PARSE_JSON(j)['CustomerPath']",actual)
-        self.assertIn("REGEXP_REPLACE(x, 'a', 'b')",actual)
+        self.assertIn('SAFE_CAST("x" AS INT)',actual)
+        self.assertIn('PARSE_DATE(\'%Y%m%d\', "d")',actual)
+        self.assertIn('PARSE_JSON("j")[\'CustomerPath\']',actual)
+        self.assertIn('REGEXP_REPLACE("x", \'a\', \'b\')',actual)
         self.assertNotIn('TRY_STRPTIME',actual)
+
+    def test_feldera_quotes_reserved_columns_and_preserves_bag_results(self):
+        query = 'SELECT date, year, month, day FROM events'
+        actual = module.render(query, 'feldera')
+        self.assertEqual(actual, 'SELECT "date", "year", "month", "day" FROM "events"')
+        with module.duckdb.connect() as c:
+            c.execute('CREATE TABLE events(date DATE, year INTEGER, month INTEGER, day INTEGER)')
+            c.execute("INSERT INTO events VALUES ('2002-12-31', 2002, 12, 31), (NULL, NULL, NULL, NULL)")
+            self.assertCountEqual(c.execute(actual).fetchall(), c.execute(query).fetchall())
 
     def test_dbsp_sql_uses_supported_json_function_and_quoted_reserved_columns(self):
         actual = module.render("SELECT date, json_extract_string(j, '$.CustomerPath'), x + INTERVAL (-n) DAY FROM events", 'dbspnet')

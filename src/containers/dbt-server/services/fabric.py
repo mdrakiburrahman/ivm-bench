@@ -348,16 +348,19 @@ def _lro_poll(location: str, timeout_s: int = 900, interval_s: int = 10) -> None
     raise RuntimeError("Fabric operation timed out")
 
 
-def _create_item(item_type: str, name: str) -> str:
+def _create_item(item_type: str, name: str, *, creation_payload: dict | None = None) -> str:
     """Create a workspace item (``lakehouses`` | ``environments``); return its id.
 
     Handles the sync (201) and async LRO (202 + Location poll) responses; the id
     is resolved by re-listing by displayName (robust across both paths)."""
+    payload = {"displayName": name}
+    if creation_payload is not None:
+        payload["creationPayload"] = creation_payload
     r = _fabric_req(
         "POST",
         f"{_workspace_base()}/{item_type}",
         headers=_fabric_json_headers(),
-        json={"displayName": name},
+        json=payload,
         timeout=180,
     )
     if r.status_code in (200, 201):
@@ -465,7 +468,7 @@ def sweep_stale_resources(max_age_s: Optional[int] = None) -> dict:
     return {"status": "ok", "deleted": deleted, "max_age_s": max_age}
 
 
-def provision_run(openivm: bool) -> dict:
+def provision_run(openivm: bool, *, enable_schemas: bool = False) -> dict:
     """Batch-1 provisioning: sweep orphans -> resolve the shared cache lakehouse
     -> create a FRESH compute lakehouse + environment named ``<BASE_NAME>_<RUN_ID>``
     -> (openivm) publish the JAR + Spark config into that environment; (baseline)
@@ -476,7 +479,8 @@ def provision_run(openivm: bool) -> dict:
     swept = sweep_stale_resources()
     cache_id = resolve_cache_lakehouse()
     name = f"{BASE_NAME}_{RUN_ID}"
-    lakehouse_id = _create_item("lakehouses", name)
+    lakehouse_id = (_create_item("lakehouses", name, creation_payload={"enableSchemas": True})
+                    if enable_schemas else _create_item("lakehouses", name))
     environment_id = _create_item("environments", name)
     resolved = {
         "run_id": RUN_ID,

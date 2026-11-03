@@ -83,6 +83,34 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
         self.assertIn("(-lag.n) * INTERVAL '1' DAY",actual)
         self.assertNotIn('TRY_STRPTIME',actual)
 
+    def test_timestamp_casts_match_utc_sources_and_survive_compiler_remapping(self):
+        from services.databricks_openivm import remap_sql
+        sql = "SELECT CAST(TRY_STRPTIME(d, '%Y%m%d') AS TIMESTAMP) AS ts FROM events"
+        actual = module.translate(sql)
+        self.assertIn('AS TIMESTAMP)', actual)
+        compiled = remap_sql(actual, {}, for_compiler=True)
+        self.assertNotIn('TIMESTAMP_NTZ', compiled)
+
+    def test_fabric_uses_schema_enabled_lakehouse_and_qualified_namespace(self):
+        from services import dbt_runner, fabric
+        project_root = Path(__file__).parents[1]/'dbt-projects'
+        def resolved(env):
+            env.update(FABRIC_LAKEHOUSE_NAME='compute_lake', FABRIC_LAKEHOUSE_ID='11111111-1111-1111-1111-111111111111',
+                       FABRIC_ENVIRONMENT_ID='22222222-2222-2222-2222-222222222222')
+        with patch.object(dbt_runner, 'PROJECTS_DIR', str(project_root)), \
+             patch.object(dbt_runner, '_inject_fabric_resolved', side_effect=resolved), \
+             patch.object(fabric, 'provision_run') as provision, \
+             patch.object(fabric, 'resolve_cache_lakehouse', return_value='cache'), \
+             patch.object(fabric, '_azcopy'), patch.object(fabric, 'onelake_abfss', return_value='abfss://plan'), \
+             patch('dbt.adapters.fabricspark.connections.FabricSparkConnectionManager.open') as open_connection:
+            open_connection.return_value.handle.cursor.return_value.description = None
+            c = module.Connection('fabric-jvm-35', Path('/plan'), {'plan_id':'p'},
+                                  {'statement_timeout_s':123}, initialize=True)
+            provision.assert_called_once_with(openivm=False, enable_schemas=True)
+            self.assertEqual(c.catalog, 'compute_lake')
+            self.assertTrue(c.namespace.startswith('compute_lake.xt_p_'))
+            c.handle.cursor.return_value.execute.assert_any_call('CREATE SCHEMA '+module.identifier(c.namespace))
+
     def test_baseline_refresh_preserves_table_identity_and_enables_cdf(self):
         c = Mock(engine='spark')
         state = {}
@@ -94,17 +122,19 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
 
     def test_enzyme_and_spark_openivm_use_their_own_materialization_commands(self):
         for engine in ('spark-openivm','fabric-openivm-jvm-35','databricks-enzyme'):
-            c=Mock(engine=engine)
+            c=Mock(engine=engine, namespace='cat.xt')
             module.build(c,{'m':'SELECT 1'},{},initial=True)
             create=c.execute.call_args.args[0]
             self.assertIn('CREATE MATERIALIZED VIEW',create)
             self.assertEqual('REFRESH POLICY AUTO' in create,engine=='databricks-enzyme')
+            if engine=='databricks-enzyme':
+                self.assertIn('CREATE MATERIALIZED VIEW `cat`.`xt`.`m`', create)
             module.build(c,{'m':'SELECT 1'},{})
-            self.assertEqual(c.execute.call_args.args[0],'REFRESH MATERIALIZED VIEW `m`')
+            self.assertEqual(c.execute.call_args.args[0], 'REFRESH MATERIALIZED VIEW '+('`cat`.`xt`.`m`' if engine=='databricks-enzyme' else '`m`'))
 
     def test_databricks_openivm_cannot_use_enzyme_materialization(self):
         with self.assertRaisesRegex(ValueError,'compiled SQL'):
-            module.build(Mock(engine='databricks-openivm'),{'m':'SELECT 1'},{},initial=True)
+            module.build(Mock(engine='databricks-openivm', namespace='cat.xt'),{'m':'SELECT 1'},{},initial=True)
 
     def test_dirty_or_replayed_batch_is_rejected_before_connecting(self):
         with tempfile.TemporaryDirectory() as tmp:

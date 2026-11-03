@@ -95,7 +95,7 @@ def render(sql, engine):
         value=interval.this
         if not isinstance(value,exp.Literal):
             interval.replace(exp.Mul(this=value.copy(),expression=exp.Interval(this=exp.Literal.string('1'),unit=interval.args['unit'].copy())))
-    return tree.sql(dialect=DbspNetDialect, identify=True) if engine=='dbspnet' else tree.sql(dialect=FelderaDialect)
+    return tree.sql(dialect=DbspNetDialect, identify=True) if engine=='dbspnet' else tree.sql(dialect=FelderaDialect, identify=True)
 
 
 def program(manifest, work_dir, engine):

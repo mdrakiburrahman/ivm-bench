@@ -4,6 +4,7 @@ The workload owns ordering, checkpoints and validation. Connections own dialect,
 remote file placement and engine materialization commands.
 """
 import json
+import logging
 import hashlib
 import os
 import time
@@ -42,6 +43,11 @@ def translate(sql, relations=None):
             if not isinstance(pattern, exp.Literal) or pattern.this != '%Y%m%d':
                 raise ValueError('unsupported workload timestamp format')
             function.replace(exp.Anonymous(this='TRY_TO_TIMESTAMP', expressions=[source.copy(), exp.Literal.string('yyyyMMdd')]))
+    for kind in tree.find_all(exp.DataType):
+        if kind.this in (exp.DataType.Type.TIMESTAMP, exp.DataType.Type.TIMESTAMPNTZ):
+            # The workload uses one UTC clock and LTZ source timestamps. Keep
+            # casts on that same representation instead of emitting Spark NTZ.
+            kind.set('this', exp.DataType.Type.TIMESTAMPTZ)
     # Scope-aware traversal keeps CTE names and aliases local to their query.
     from sqlglot.optimizer.scope import traverse_scope
     for scope in traverse_scope(tree):
@@ -80,7 +86,7 @@ class Connection:
             if engine.startswith('fabric-'):
                 from services import fabric
                 if initialize:
-                    fabric.provision_run(openivm='openivm' in engine)
+                    fabric.provision_run(openivm='openivm' in engine, enable_schemas=True)
                     fabric._azcopy(directory, 'Files/extended-tpcds/' + manifest['plan_id'] + '/plan', fabric.resolve_cache_lakehouse())
                 self.remote_root = fabric.onelake_abfss('Files/extended-tpcds/' + manifest['plan_id'] + '/plan', fabric.resolve_cache_lakehouse())
             env = os.environ.copy()
@@ -91,7 +97,7 @@ class Connection:
             credentials = FabricSparkCredentials.from_dict(values)
             dbt_connection = DbtConnection(type='fabricspark', name='extended-tpcds', credentials=credentials)
             self.handle = FabricSparkConnectionManager.open(dbt_connection).handle
-            self.catalog = None
+            self.catalog = values['lakehouse'] if engine.startswith('fabric-') else None
         self.execute("SET TIME ZONE 'UTC'")
         if initialize:
             self.execute('CREATE SCHEMA ' + identifier(self.namespace))
@@ -115,6 +121,7 @@ class Connection:
             return rows
         except Exception as error:
             record['error'] = str(error)
+            logging.exception('Extended TPC-DS %s SQL failed: %s', self.engine, sql)
             raise
         finally:
             record['duration_s'] = time.monotonic() - start
@@ -188,7 +195,7 @@ def build(connection, model_queries, state, *, initial=False, reference=False):
     durations = {}
     for name, query in model_queries.items():
         started = time.monotonic()
-        target = identifier(name)
+        target = identifier(connection.namespace+'.'+name) if connection.engine.startswith('databricks-') and not reference else identifier(name)
         maintained = not reference and ('openivm' in connection.engine or connection.engine == 'databricks-enzyme')
         if maintained:
             if connection.engine == 'databricks-openivm':
