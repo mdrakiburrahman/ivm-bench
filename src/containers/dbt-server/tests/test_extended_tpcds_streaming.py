@@ -82,6 +82,17 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
             c.execute("INSERT INTO events VALUES ('2002-12-31', 2002, 12, 31), (NULL, NULL, NULL, NULL)")
             self.assertCountEqual(c.execute(actual).fetchall(), c.execute(query).fetchall())
 
+    def test_feldera_places_null_treatment_outside_window_arguments(self):
+        query = 'SELECT FIRST_VALUE(v IGNORE NULLS) OVER (PARTITION BY k ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM events'
+        actual = module.render(query, 'feldera')
+        self.assertIn('FIRST_VALUE("v") IGNORE NULLS OVER', actual)
+        self.assertNotIn('"v" IGNORE NULLS)', actual)
+        with module.duckdb.connect() as c:
+            c.execute('CREATE TABLE events(k INT, t INT, v INT)')
+            c.execute('INSERT INTO events VALUES (1, 1, NULL), (1, 2, 7), (1, 3, 9)')
+            duck_sql = module.sqlglot.parse_one(actual).sql(dialect='duckdb')
+            self.assertCountEqual(c.execute(duck_sql).fetchall(), c.execute(query).fetchall())
+
     def test_dbsp_sql_uses_supported_json_function_and_quoted_reserved_columns(self):
         actual = module.render("SELECT date, json_extract_string(j, '$.CustomerPath'), x + INTERVAL (-n) DAY FROM events", 'dbspnet')
         self.assertIn('"date"', actual)

@@ -118,6 +118,16 @@ class DatabricksOpenivmTest(unittest.TestCase):
         self.assertNotIn("`", result)
         self.assertIn("'cat.exp.events'", result)
 
+    def test_compiler_uses_shared_string_position_spelling_and_argument_order(self):
+        import duckdb
+        query = "SELECT LOCATE('/order-lines/', entity_path) FROM (VALUES ('x/order-lines/1'), ('none'), (NULL)) t(entity_path)"
+        compiled = backend.remap_sql(query, {}, for_compiler=True)
+        self.assertIn("INSTR(entity_path, '/order-lines/')", compiled)
+        self.assertNotIn('LOCATE(', compiled)
+        with duckdb.connect() as c:
+            self.assertEqual(c.execute(compiled).fetchall(), [(2,), (0,), (None,)])
+        self.assertIn('LOCATE(', backend.remap_sql(query, {}))
+
     def test_compiler_preserves_window_null_treatment_in_bridge_syntax(self):
         import duckdb
 

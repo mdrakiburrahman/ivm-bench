@@ -108,6 +108,7 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
                                   {'statement_timeout_s':123}, initialize=True)
             provision.assert_called_once_with(openivm=False, enable_schemas=True)
             self.assertEqual(c.catalog, 'compute_lake')
+            self.assertEqual(open_connection.call_args.args[0].credentials.schema, 'dbo')
             self.assertTrue(c.namespace.startswith('compute_lake.xt_p_'))
             c.handle.cursor.return_value.execute.assert_any_call('CREATE SCHEMA '+module.identifier(c.namespace))
 
@@ -135,6 +136,26 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
     def test_databricks_openivm_cannot_use_enzyme_materialization(self):
         with self.assertRaisesRegex(ValueError,'compiled SQL'):
             module.build(Mock(engine='databricks-openivm', namespace='cat.xt'),{'m':'SELECT 1'},{},initial=True)
+
+    def test_failed_build_keeps_original_error_and_catalog_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            manifest = root/'manifest.json'
+            manifest.write_text(json.dumps({'plan_id':'p'}))
+            connection = Mock(namespace='cat.xt', statements=[])
+            connection.execute.return_value = [['xt', 'stg_customer_policy_history', False]]
+            failure = RuntimeError('missing staging relation')
+            with patch.object(module, 'Connection', return_value=connection), \
+                 patch.object(module, 'queries', return_value={'m':'SELECT 1'}), \
+                 patch.object(module, 'replay'), patch.object(module, 'build', side_effect=failure), \
+                 self.assertLogs(level='ERROR') as logs:
+                with self.assertRaises(RuntimeError) as caught:
+                    module.run_batch('databricks-enzyme', 1, manifest, root, {})
+            self.assertIs(caught.exception, failure)
+            connection.execute.assert_called_once_with('SHOW TABLES IN `cat`.`xt`')
+            self.assertIn('stg_customer_policy_history', '\n'.join(logs.output))
+            self.assertTrue(json.loads((root/'sql-checkpoint.json').read_text())['dirty'])
+            connection.close.assert_called_once()
 
     def test_dirty_or_replayed_batch_is_rejected_before_connecting(self):
         with tempfile.TemporaryDirectory() as tmp:

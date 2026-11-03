@@ -269,6 +269,22 @@ def _archive_failure_forensics(
         except OSError as e:
             emit(f"  [oat-archive] WARN failed to archive {src} → {dst}: {e}")
 
+    # Keep the SQL timeline/checkpoints from partial workload builds, but never
+    # recursively copy the large Delta source/output directories beside them.
+    for engine in engines:
+        source = os.path.join(mount, "results", sf, engine, "extended-tpcds")
+        if not os.path.isdir(source):
+            continue
+        destination = os.path.join(archive_dir, f"{engine}-extended-tpcds")
+        try:
+            for name in os.listdir(source):
+                path = os.path.join(source, name)
+                if name.endswith(".json") and os.path.isfile(path):
+                    os.makedirs(destination, exist_ok=True)
+                    shutil.copy2(path, os.path.join(destination, name))
+        except OSError as error:
+            emit(f"  [oat-archive] WARN failed to archive {source}: {error}")
+
     # dbt-server JSON (small but worth bundling for self-contained forensics).
     dbt_src = os.path.join(mount, "results", sf, "dbt-server")
     if os.path.exists(dbt_src):

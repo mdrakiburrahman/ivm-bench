@@ -36,6 +36,15 @@ class _CompilerDialect(Databricks):
     """Keep the window null-treatment syntax understood by the Spark bridge."""
 
     class Generator(Databricks.Generator):
+        TRANSFORMS = {
+            **Databricks.Generator.TRANSFORMS,
+            # The two-argument spelling is shared by Spark and DuckDB; LOCATE
+            # cannot bind in the native compiler. Keep explicit-start calls on
+            # their existing path rather than changing their edge semantics.
+            exp.StrPosition: lambda self, e: self.func('INSTR', e.this, e.args['substr'])
+            if e.args.get('position') is None else Databricks.Generator.TRANSFORMS[exp.StrPosition](self, e),
+        }
+
         def ignorenulls_sql(self, expression):
             if isinstance(expression.this, (exp.FirstValue, exp.LastValue)):
                 return self.func(expression.this.sql_name(), expression.this.this, exp.true())

@@ -94,6 +94,10 @@ class Connection:
             values = load_profile(engine, env)
             values = {k:v for k,v in values.items() if k not in ('type','threads')}
             values.update(statement_timeout=int(self.timeout), reuse_session=True)
+            if engine.startswith('fabric-'):
+                # Bootstrap in the existing default schema before creating the
+                # isolated workload namespace on this schema-enabled lakehouse.
+                values['schema'] = 'dbo'
             credentials = FabricSparkCredentials.from_dict(values)
             dbt_connection = DbtConnection(type='fabricspark', name='extended-tpcds', credentials=credentials)
             self.handle = FabricSparkConnectionManager.open(dbt_connection).handle
@@ -286,6 +290,15 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
                   'configuration':manifest['source_configuration'], 'options':options}
         (work_dir/f'batch{batch_num}.json').write_text(json.dumps(result, indent=2))
         return result
+    except Exception:
+        # Keep catalog evidence for partial builds without replacing the
+        # original failure or retrying an already-dirty batch.
+        try:
+            tables = connection.execute('SHOW TABLES IN '+identifier(connection.namespace))
+            logging.error('Extended TPC-DS %s catalog after failure: %s', engine, tables)
+        except Exception:
+            logging.exception('Could not inspect the failed workload namespace')
+        raise
     finally:
         (work_dir/f'sql-batch{batch_num}.json').write_text(json.dumps(connection.statements, indent=2))
         connection.close()

@@ -29,6 +29,8 @@ class DbspNetDialect(DuckDB):
 
 class FelderaDialect(DuckDB):
     class Generator(DuckDB.Generator):
+        IGNORE_NULLS_IN_FUNC = False
+
         def trycast_sql(self, expression):
             return f"SAFE_CAST({self.sql(expression, 'this')} AS {self.sql(expression, 'to')})"
 

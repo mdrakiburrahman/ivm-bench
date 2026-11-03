@@ -676,8 +676,8 @@ The Spark/Fabric builder uses integration revision
 `3ac3a55f4f27a791cd0710e80aef53fc3addfdee` on
 `bench/extended-tpcds-wf-20261030`, combining WF revision `41e97c48` with
 the TPC-DS refresh fixes from Spark PR #85 (`abff19f9`) and the formatted
-timestamp shim from merged Spark PR #92 and interval-cast fix from unmerged
-Spark PR #94. Running-window state,
+timestamp shim from merged Spark PR #92 and interval-cast fix from merged
+Spark PR #94 (`b5193724`). Running-window state,
 grouped-window state and classification caching are enabled. PR #85 is merged
 as `243d13f5`; **WF PR #62 is still unmerged. Do not merge this benchmark PR
 until its WF dependency lands and the integration pin is replaced.**
@@ -801,3 +801,20 @@ DBSP.NET's SF1 initial-load memory failure is tracked separately in
 [DBSP.NET issue #2](https://github.com/clast-project/dbsp-net/issues/2), with exact
 revisions, reproduction steps and telemetry. This follow-up does not modify or
 rerun DBSP.NET. No SF100 acceptance or performance claim follows from these fixes.
+
+The six-engine rerun
+[41620221812](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41620221812)
+completed: Spark OpenIVM passed all 288/288 model comparisons. Its interval
+failure is resolved at SF1. Five other engines failed during initial setup/build:
+Feldera needs trailing window null-treatment syntax, Databricks OpenIVM's compiler
+input used unsupported `LOCATE`, Fabric's adapter requires an existing bootstrap
+schema distinct from the lakehouse name, and Enzyme still cannot resolve
+`stg_customer_policy_history` after fully qualified writes.
+
+The next benchmark fixes use Feldera's trailing `IGNORE NULLS`, connect Fabric
+through `dbo` before creating the isolated workload schemas, and emit two-argument
+`INSTR` in compiler input without changing Databricks execution SQL. Failed SQL
+builds retain their catalog listing and shallow JSON SQL timeline/checkpoints in
+forensic artifacts, without copying their Delta data. Enzyme remains unresolved;
+the next run collects this evidence rather than treating qualified writes as a
+proven fix. Engine code and DBSP.NET are unchanged by this follow-up.
