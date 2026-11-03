@@ -776,45 +776,43 @@ logically deleted rows and gives false validation failures. The Delta extension
 is installed in the dbt image. Cloud compatibility fixes still require remote
 acceptance; no SF100 run has started.
 
-### SF1 failure follow-up (2026-11-03)
+### Current SF1 acceptance and remaining fixes (2026-11-03)
 
-The next all-engine SF1 run,
-[41460852579](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41460852579),
-again passed all 288 comparisons each for DuckDB, DuckDB OpenIVM and Spark.
-The six other engines except DBSP.NET are being retested with these fixes:
-
-- Feldera SQL quotes all identifiers, including reserved calendar columns.
-- Spark-family model timestamp casts match the shared UTC/LTZ source representation,
-  avoiding unsupported TIMESTAMP_NTZ types in the native compiler.
-- Fabric compute lakehouses explicitly enable schemas; model and reference schemas
-  are qualified by that run's compute lakehouse. Existing TPC-DI provisioning keeps
-  its previous default. See the [Fabric creation API](https://learn.microsoft.com/en-us/rest/api/fabric/lakehouse/items/create-lakehouse).
-- Databricks model writes explicitly target the same catalog/schema as their reads.
-  This change still needs remote verification for Enzyme's missing staging relation;
-  it is not yet a confirmed root-cause resolution.
-- The Spark compiler removes redundant numeric truncation inside integer casts,
-  which Spark otherwise resolves as a date function. The interval-only fix is
-  [Spark PR #94](https://github.com/mdrakiburrahman/openivm-spark/pull/94), separate
-  from the WF work. The combined benchmark branch includes this fix.
-
+Run [41653390398](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41653390398)
+validated Databricks OpenIVM: all 288/288 comparisons passed. This brings the
+confirmed SF1 engines to DuckDB, DuckDB OpenIVM, Spark, Spark OpenIVM and
+Databricks OpenIVM. Spark OpenIVM's 288/288 pass is recorded in
+[41620221812](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41620221812).
 DBSP.NET's SF1 initial-load memory failure is tracked separately in
-[DBSP.NET issue #2](https://github.com/clast-project/dbsp-net/issues/2), with exact
-revisions, reproduction steps and telemetry. This follow-up does not modify or
-rerun DBSP.NET. No SF100 acceptance or performance claim follows from these fixes.
+[issue #2](https://github.com/clast-project/dbsp-net/issues/2), with pinned
+reproduction steps and telemetry. DBSP.NET remains excluded from this follow-up.
 
-The six-engine rerun
-[41620221812](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41620221812)
-completed: Spark OpenIVM passed all 288/288 model comparisons. Its interval
-failure is resolved at SF1. Five other engines failed during initial setup/build:
-Feldera needs trailing window null-treatment syntax, Databricks OpenIVM's compiler
-input used unsupported `LOCATE`, Fabric's adapter requires an existing bootstrap
-schema distinct from the lakehouse name, and Enzyme still cannot resolve
-`stg_customer_policy_history` after fully qualified writes.
+- Fabric's 96 initial outputs all matched, but its Livy adapter returned count
+  cells as strings. Treat validation, before-image and duplicate counts as
+  integers: `"0"` must pass, while nonzero counts still fail. Row-count artifacts
+  also retain numeric values. Its refreshes still require a successful rerun.
+- Fabric OpenIVM now sets the existing managed-table root to the compute
+  lakehouse's `Tables/<workload-schema>` path and enables the catalog's existing
+  case-preservation setting. This aligns named CTAS, registration and Delta
+  identity checks; it does not ignore duplicate-object errors or drop outputs.
+- Feldera's unsupported whole-partition `FIRST_VALUE IGNORE NULLS` is lowered to
+  ordinary `FIRST_VALUE` with an `IS NULL` ordering prefix. Original ordering is
+  retained among nonnull rows and all-null groups still produce NULL. Null order
+  is explicit. Prefix frames are rejected rather than rewritten incorrectly.
+  This preserves window semantics, but the distinct per-channel orders may
+  require separate window operators and their costs remain part of the engine's
+  measured work. Mixed insert/update/delete differential tests cover all three
+  channel windows. Feldera itself is unchanged.
+- Enzyme's SQL timeline proves its early staging MVs were created successfully,
+  then disappeared from the catalog: in this run the absent objects were all
+  older than roughly 21 minutes. The benchmark now closes independent DB-API
+  cursors after every statement, matching the working Databricks OpenIVM
+  executor, while retaining the borrowed Livy connection wrapper. The cursor
+  resource leak is fixed; its relationship to MV deletion still needs the remote
+  rerun. Failed Enzyme builds also query this namespace's recent creation/deletion
+  audit records; missing audit privileges cannot replace the original error.
+  Enzyme itself is unchanged.
 
-The next benchmark fixes use Feldera's trailing `IGNORE NULLS`, connect Fabric
-through `dbo` before creating the isolated workload schemas, and emit two-argument
-`INSTR` in compiler input without changing Databricks execution SQL. Failed SQL
-builds retain their catalog listing and shallow JSON SQL timeline/checkpoints in
-forensic artifacts, without copying their Delta data. Enzyme remains unresolved;
-the next run collects this evidence rather than treating qualified writes as a
-proven fix. Engine code and DBSP.NET are unchanged by this follow-up.
+Local checks: 253 dbt-server tests pass, including statement cleanup, numeric
+count guards, denied-audit handling and differential window tests. The four-engine
+SF1 rerun, rather than these local checks, must establish remote acceptance.

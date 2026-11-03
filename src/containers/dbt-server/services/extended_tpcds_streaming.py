@@ -31,6 +31,12 @@ class FelderaDialect(DuckDB):
     class Generator(DuckDB.Generator):
         IGNORE_NULLS_IN_FUNC = False
 
+        def ordered_sql(self, expression):
+            # Keep source null ordering explicit across engine defaults.
+            ordered = expression.copy()
+            ordered.set('nulls_first', False)
+            return super().ordered_sql(ordered) + (' NULLS FIRST' if expression.args.get('nulls_first') else ' NULLS LAST')
+
         def trycast_sql(self, expression):
             return f"SAFE_CAST({self.sql(expression, 'this')} AS {self.sql(expression, 'to')})"
 
@@ -55,6 +61,24 @@ class FelderaDialect(DuckDB):
 
 def render(sql, engine):
     tree=sqlglot.parse_one(sql,read='duckdb')
+    if engine == 'feldera':
+        for window in tree.find_all(exp.Window):
+            nulls = window.this
+            if not isinstance(nulls, exp.IgnoreNulls) or not isinstance(nulls.this, exp.FirstValue):
+                continue
+            frame = window.args.get('spec')
+            if frame is None or frame.args.get('exclude') or any(frame.args.get(k) != v for k, v in {
+                'start':'UNBOUNDED', 'start_side':'PRECEDING',
+                'end':'UNBOUNDED', 'end_side':'FOLLOWING',
+            }.items()):
+                raise ValueError('Feldera FIRST_VALUE IGNORE NULLS requires a whole-partition frame')
+            # With the complete partition as the frame, sorting null values last
+            # selects the same first nonnull row while retaining the original
+            # order among nonnull rows. All-null partitions still return NULL.
+            order = window.args.get('order')
+            nonnull_first = exp.Ordered(this=exp.Is(this=nulls.this.this.copy(), expression=exp.Null()))
+            window.set('order', exp.Order(expressions=[nonnull_first, *([] if order is None else [e.copy() for e in order.expressions])]))
+            window.set('this', nulls.this.copy())
     if engine == 'dbspnet':
         from sqlglot.optimizer.simplify import simplify
         # Cohort bindings are constants: prune their inactive OR branch before

@@ -106,6 +106,12 @@ class Connection:
         if initialize:
             self.execute('CREATE SCHEMA ' + identifier(self.namespace))
         self.use(self.namespace)
+        if engine == 'fabric-openivm-jvm-35':
+            # Fabric owns the catalog location under Tables/<schema>. The
+            # unqualified MV commands must write that same managed Delta path.
+            from services import fabric
+            self.execute('SET spark.openivm.managedTablesRoot='+fabric.onelake_abfss('Tables/'+self.schema))
+            self.execute('SET spark.openivm.catalogPreservesColumnCase=true')
 
     @property
     def namespace(self):
@@ -119,8 +125,14 @@ class Connection:
         record = {'sql':sql, 'status':'failed'}
         try:
             cursor = self.handle.cursor()
-            cursor.execute(sql)
-            rows = [list(r) for r in cursor.fetchall()] if cursor.description else []
+            try:
+                cursor.execute(sql)
+                rows = [list(r) for r in cursor.fetchall()] if cursor.description else []
+            finally:
+                # The Livy adapter returns its connection wrapper as the cursor;
+                # only independent DB-API cursors are owned by this statement.
+                if cursor is not self.handle:
+                    cursor.close()
             record['status'] = 'completed'
             return rows
         except Exception as error:
@@ -130,6 +142,24 @@ class Connection:
         finally:
             record['duration_s'] = time.monotonic() - start
             self.statements.append(record)
+
+    def diagnose_failure(self):
+        diagnostics = {'catalog': 'SHOW TABLES IN '+identifier(self.namespace)}
+        if self.engine == 'databricks-enzyme':
+            namespace = self.namespace.replace("'", "''")
+            diagnostics['deletion audit'] = (
+                "SELECT CAST(event_time AS STRING), service_name, action_name, user_identity.email, "
+                "request_params['full_name_arg'], user_agent FROM system.access.audit "
+                "WHERE event_date >= date_sub(current_date(), 1) "
+                "AND event_time >= current_timestamp() - INTERVAL 2 HOURS "
+                f"AND contains(to_json(request_params), '{namespace}') "
+                "AND lower(action_name) RLIKE 'delete|drop|create' ORDER BY event_time"
+            )
+        for label, sql in diagnostics.items():
+            try:
+                logging.error('Extended TPC-DS %s %s after failure: %s', self.engine, label, self.execute(sql))
+            except Exception:
+                logging.exception('Could not inspect workload %s', label)
 
     def parquet(self, image, table):
         # Paths come from the checksum-verified local manifest, never SQL text.
@@ -171,7 +201,7 @@ def replay(connection, manifest, directory, batch_num):
         if before:
             expected = connection.parquet(before, table)
             actual = f'SELECT * FROM {target} WHERE _source_row_id IN (SELECT _source_row_id FROM {expected})'
-            mismatch = connection.execute(f'SELECT count(*) FROM ((SELECT * FROM {expected} EXCEPT ALL {actual}) UNION ALL ({actual} EXCEPT ALL SELECT * FROM {expected}))')[0][0]
+            mismatch = int(connection.execute(f'SELECT count(*) FROM ((SELECT * FROM {expected} EXCEPT ALL {actual}) UNION ALL ({actual} EXCEPT ALL SELECT * FROM {expected}))')[0][0])
             if mismatch:
                 raise ValueError('before-image mismatch: ' + table)
         if operation['kind'] == 'delete':
@@ -182,7 +212,7 @@ def replay(connection, manifest, directory, batch_num):
             connection.execute(f'INSERT INTO {target} SELECT * FROM {connection.parquet(after, table)}')
         else:
             raise ValueError('unknown source operation')
-        duplicates = connection.execute(f'SELECT count(*)-count(DISTINCT _source_row_id) FROM {target}')[0][0]
+        duplicates = int(connection.execute(f'SELECT count(*)-count(DISTINCT _source_row_id) FROM {target}')[0][0])
         if duplicates:
             raise ValueError('duplicate source IDs: ' + table)
 
@@ -278,7 +308,7 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
         started = time.monotonic()
         durations = (build_databricks_openivm(connection, model_queries, manifest, state, batch_num==1) if engine=='databricks-openivm' else build(connection, model_queries, state, initial=batch_num==1))
         model_s = time.monotonic() - started
-        counts = {name:connection.execute('SELECT count(*) FROM '+identifier(name))[0][0] for name in model_queries}
+        counts = {name:int(connection.execute('SELECT count(*) FROM '+identifier(name))[0][0]) for name in model_queries}
         state.update(batch_num=batch_num, dirty=False, namespace=connection.namespace)
         checkpoint.write_text(json.dumps(state, indent=2))
         result = {'status':'completed', 'engine':engine, 'batch_num':batch_num, 'plan_id':manifest['plan_id'],
@@ -291,13 +321,8 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
         (work_dir/f'batch{batch_num}.json').write_text(json.dumps(result, indent=2))
         return result
     except Exception:
-        # Keep catalog evidence for partial builds without replacing the
-        # original failure or retrying an already-dirty batch.
-        try:
-            tables = connection.execute('SHOW TABLES IN '+identifier(connection.namespace))
-            logging.error('Extended TPC-DS %s catalog after failure: %s', engine, tables)
-        except Exception:
-            logging.exception('Could not inspect the failed workload namespace')
+        # Diagnostics cannot replace the original error or replay a dirty batch.
+        connection.diagnose_failure()
         raise
     finally:
         (work_dir/f'sql-batch{batch_num}.json').write_text(json.dumps(connection.statements, indent=2))
@@ -324,7 +349,7 @@ def validate_batch(engine, batch_num, manifest_path, work_dir, options):
             expected = identifier(reference+'.'+name)
             columns = [(r[0],r[1]) for r in connection.execute('DESCRIBE '+actual) if r[0] and not str(r[0]).startswith('#')]
             probe = _verify_probe(actual, 'SELECT * FROM '+expected, columns)
-            checks[name] = connection.execute(probe)[0][0]
+            checks[name] = int(connection.execute(probe)[0][0])
         return {'status':'passed' if not any(checks.values()) else 'failed', 'models_checked':len(checks),
                 'differences':checks, 'comparison':'independent source replay and full DAG recomputation; EXCEPT ALL; floats rounded to 10 decimals'}
     finally:

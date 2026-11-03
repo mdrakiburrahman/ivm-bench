@@ -1,9 +1,11 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import sys
 sys.path.insert(0, str(Path(__file__).parents[1]))
+os.environ['EXTENDED_TPCDS_WORKLOAD_DIR'] = str(Path(__file__).parents[3]/'workloads/extended-tpcds')
 import unittest
 from unittest.mock import Mock, patch
 
@@ -97,20 +99,95 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
         def resolved(env):
             env.update(FABRIC_LAKEHOUSE_NAME='compute_lake', FABRIC_LAKEHOUSE_ID='11111111-1111-1111-1111-111111111111',
                        FABRIC_ENVIRONMENT_ID='22222222-2222-2222-2222-222222222222')
-        with patch.object(dbt_runner, 'PROJECTS_DIR', str(project_root)), \
-             patch.object(dbt_runner, '_inject_fabric_resolved', side_effect=resolved), \
-             patch.object(fabric, 'provision_run') as provision, \
-             patch.object(fabric, 'resolve_cache_lakehouse', return_value='cache'), \
-             patch.object(fabric, '_azcopy'), patch.object(fabric, 'onelake_abfss', return_value='abfss://plan'), \
-             patch('dbt.adapters.fabricspark.connections.FabricSparkConnectionManager.open') as open_connection:
-            open_connection.return_value.handle.cursor.return_value.description = None
-            c = module.Connection('fabric-jvm-35', Path('/plan'), {'plan_id':'p'},
-                                  {'statement_timeout_s':123}, initialize=True)
-            provision.assert_called_once_with(openivm=False, enable_schemas=True)
-            self.assertEqual(c.catalog, 'compute_lake')
-            self.assertEqual(open_connection.call_args.args[0].credentials.schema, 'dbo')
-            self.assertTrue(c.namespace.startswith('compute_lake.xt_p_'))
-            c.handle.cursor.return_value.execute.assert_any_call('CREATE SCHEMA '+module.identifier(c.namespace))
+        for engine in ('fabric-jvm-35', 'fabric-openivm-jvm-35'):
+            with self.subTest(engine=engine), \
+                 patch.object(dbt_runner, 'PROJECTS_DIR', str(project_root)), \
+                 patch.object(dbt_runner, '_inject_fabric_resolved', side_effect=resolved), \
+                 patch.object(fabric, 'provision_run') as provision, \
+                 patch.object(fabric, 'resolve_cache_lakehouse', return_value='cache'), \
+                 patch.object(fabric, '_azcopy'), \
+                 patch.object(fabric, 'onelake_abfss', side_effect=lambda path, lakehouse_id=None: 'abfss://'+(lakehouse_id or 'compute')+'/'+path), \
+                 patch('dbt.adapters.fabricspark.connections.FabricSparkConnectionManager.open') as open_connection:
+                open_connection.return_value.handle.cursor.return_value.description = None
+                c = module.Connection(engine, Path('/plan'), {'plan_id':'p'},
+                                      {'statement_timeout_s':123}, initialize=True)
+                provision.assert_called_once_with(openivm='openivm' in engine, enable_schemas=True)
+                self.assertEqual(c.catalog, 'compute_lake')
+                self.assertEqual(open_connection.call_args.args[0].credentials.schema, 'dbo')
+                self.assertTrue(c.namespace.startswith('compute_lake.xt_p_'))
+                calls = c.handle.cursor.return_value.execute
+                calls.assert_any_call('CREATE SCHEMA '+module.identifier(c.namespace))
+                if 'openivm' in engine:
+                    calls.assert_any_call('SET spark.openivm.managedTablesRoot=abfss://compute/Tables/'+c.schema)
+                    calls.assert_any_call('SET spark.openivm.catalogPreservesColumnCase=true')
+                else:
+                    self.assertFalse(any('managedTablesRoot' in c.args[0] for c in calls.call_args_list))
+
+    def test_statement_closes_owned_cursor_on_success_and_error_but_keeps_livy_session(self):
+        for borrowed, failure in ((False, False), (False, True), (True, False)):
+            with self.subTest(borrowed=borrowed, failure=failure):
+                c = module.Connection.__new__(module.Connection)
+                c.engine = 'databricks-enzyme'
+                c.statements = []
+                c.handle = Mock()
+                cursor = c.handle if borrowed else Mock()
+                c.handle.cursor.return_value = cursor
+                cursor.description = [('n',)]
+                cursor.fetchall.return_value = [[1]]
+                if failure:
+                    cursor.execute.side_effect = ValueError('SQL failed')
+                    with self.assertLogs(level='ERROR'), self.assertRaisesRegex(ValueError, 'SQL failed'):
+                        c.execute('SELECT 1')
+                else:
+                    self.assertEqual(c.execute('SELECT 1'), [[1]])
+                if borrowed:
+                    c.handle.close.assert_not_called()
+                else:
+                    cursor.close.assert_called_once()
+                    c.handle.close.assert_not_called()
+
+    def test_replay_normalizes_guard_counts_and_still_rejects_mismatches(self):
+        from services.extended_tpcds import mutations
+        for before_count, duplicate_count in (('0','0'), ('1','0'), ('0','1')):
+            with self.subTest(before=before_count, duplicates=duplicate_count), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                images = []
+                for name in ('before', 'after'):
+                    path = root/(name+'.parquet')
+                    path.write_bytes(name.encode())
+                    images.append({'path':path.name, 'sha256':mutations.file_checksum(path)})
+                manifest = {'schemas':{'events':{}}, 'batches':[{'operations':[{
+                    'kind':'update', 'table':'events', 'before':images[0], 'after':images[1]}]}]}
+                c = Mock()
+                c.parquet.return_value = '(SELECT 1 AS _source_row_id)'
+                c.execute.side_effect = [[[before_count]], [], [[duplicate_count]]]
+                if before_count != '0':
+                    with self.assertRaisesRegex(ValueError, 'before-image mismatch'):
+                        module.replay(c, manifest, root, 2)
+                    self.assertEqual(c.execute.call_count, 1)
+                elif duplicate_count != '0':
+                    with self.assertRaisesRegex(ValueError, 'duplicate source IDs'):
+                        module.replay(c, manifest, root, 2)
+                else:
+                    module.replay(c, manifest, root, 2)
+                    self.assertTrue(c.execute.call_args_list[1].args[0].startswith('MERGE INTO'))
+
+    def test_validation_normalizes_numeric_strings_without_hiding_nonzero_counts(self):
+        for difference in ('0', '2', 0):
+            with self.subTest(difference=difference), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                manifest = root/'manifest.json'
+                manifest.write_text(json.dumps({'plan_id':'p'}))
+                (root/'sql-checkpoint.json').write_text(json.dumps({
+                    'dirty':False, 'batch_num':1, 'plan_id':'p', 'namespace':'lake.xt'}))
+                c = Mock(namespace='lake.xt')
+                c.execute.side_effect = lambda sql: [['v','int']] if sql.startswith('DESCRIBE ') else (
+                    [[difference]] if sql.startswith('SELECT ') else [])
+                with patch.object(module, 'Connection', return_value=c), patch.object(module, 'replay'), \
+                     patch.object(module, 'queries', return_value={'m':'SELECT 1 AS v'}), patch.object(module, 'build'):
+                    result = module.validate_batch('fabric-jvm-35', 1, manifest, root, {})
+                self.assertEqual(result['differences'], {'m':int(difference)})
+                self.assertEqual(result['status'], 'passed' if int(difference)==0 else 'failed')
 
     def test_baseline_refresh_preserves_table_identity_and_enables_cdf(self):
         c = Mock(engine='spark')
@@ -142,7 +219,9 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
             root = Path(folder)
             manifest = root/'manifest.json'
             manifest.write_text(json.dumps({'plan_id':'p'}))
-            connection = Mock(namespace='cat.xt', statements=[])
+            connection = Mock(engine='databricks-enzyme', namespace='cat.xt', statements=[])
+            diagnose = module.Connection.diagnose_failure
+            connection.diagnose_failure.side_effect = lambda: diagnose(connection)
             connection.execute.return_value = [['xt', 'stg_customer_policy_history', False]]
             failure = RuntimeError('missing staging relation')
             with patch.object(module, 'Connection', return_value=connection), \
@@ -152,10 +231,20 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as caught:
                     module.run_batch('databricks-enzyme', 1, manifest, root, {})
             self.assertIs(caught.exception, failure)
-            connection.execute.assert_called_once_with('SHOW TABLES IN `cat`.`xt`')
+            connection.execute.assert_any_call('SHOW TABLES IN `cat`.`xt`')
+            self.assertIn('system.access.audit', connection.execute.call_args.args[0])
             self.assertIn('stg_customer_policy_history', '\n'.join(logs.output))
             self.assertTrue(json.loads((root/'sql-checkpoint.json').read_text())['dirty'])
             connection.close.assert_called_once()
+
+    def test_denied_audit_access_does_not_replace_failure_diagnostics(self):
+        c = module.Connection.__new__(module.Connection)
+        c.engine, c.catalog, c.schema = 'databricks-enzyme', 'cat', 'xt'
+        c.execute = Mock(side_effect=[[['xt','m',False]], PermissionError('audit denied')])
+        with self.assertLogs(level='ERROR') as logs:
+            c.diagnose_failure()
+        self.assertEqual(c.execute.call_count, 2)
+        self.assertIn('audit denied', '\n'.join(logs.output))
 
     def test_dirty_or_replayed_batch_is_rejected_before_connecting(self):
         with tempfile.TemporaryDirectory() as tmp:
