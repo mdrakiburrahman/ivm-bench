@@ -2,6 +2,8 @@
 
 import json
 import os
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
@@ -11,6 +13,14 @@ if __package__:
 else:
     import generate
     import mutations
+
+
+@contextmanager
+def stage(name):
+    started = time.monotonic()
+    print(f"Preparation started: {name}", flush=True)
+    yield
+    print(f"Preparation completed: {name} ({time.monotonic() - started:.1f}s)", flush=True)
 
 
 def prepare(directory, scale_factor, options, initial_pct, steps):
@@ -34,12 +44,12 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
     if base_path.exists() or extension_path.exists():
         raise ValueError("incomplete source cache; choose a new output directory")
     print("Extended TPC-DS preparation resources: " + json.dumps(resources), flush=True)
-    with duckdb.connect(str(base_path), config=resources) as connection:
+    with stage("base TPC-DS generation"), duckdb.connect(str(base_path), config=resources) as connection:
         connection.execute("SET custom_extension_repository='https://extensions.duckdb.org'")
         connection.execute("INSTALL tpcds")
         connection.execute("LOAD tpcds")
         connection.execute(f"CALL dsdgen(sf={float(scale_factor)})")
-    with duckdb.connect(str(extension_path), config=resources) as connection:
+    with stage("extended history generation and statistics"), duckdb.connect(str(extension_path), config=resources) as connection:
         connection.execute("ATTACH " + generate.quote(base_path) + " AS raw (READ_ONLY)")
         connection.execute("BEGIN")
         try:
@@ -57,10 +67,12 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
     with duckdb.connect(str(directory / "planning.duckdb"), config=resources) as connection:
         connection.execute("ATTACH " + generate.quote(extension_path) + " AS canonical (READ_ONLY)")
         for table in [*mutations.sources(), "xt_run", "xt_engagements", "xt_customers", "xt_accounts"]:
-            connection.execute(f"CREATE TABLE {table} AS SELECT * FROM canonical.main.{table}")
-        manifest = mutations.plan(connection, directory / "plan", mode=options["mode"],
-                                  initial_pct=initial_pct, steps=steps, days=options["days"],
-                                  seed=options["seed"], mutation_cohort=options["mutation_cohort"])
+            with stage(f"copy source {table}"):
+                connection.execute(f"CREATE TABLE {table} AS SELECT * FROM canonical.main.{table}")
+        with stage("refresh planning and sorted exports"):
+            manifest = mutations.plan(connection, directory / "plan", mode=options["mode"],
+                                      initial_pct=initial_pct, steps=steps, days=options["days"],
+                                      seed=options["seed"], mutation_cohort=options["mutation_cohort"])
     result = {"recipe": recipe, "configuration": config, "achieved": achieved,
               "plan_id": manifest["plan_id"], "batches": len(manifest["batches"]) + 1}
     metadata.write_text(json.dumps(result, indent=2) + "\n")

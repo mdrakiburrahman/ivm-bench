@@ -16,6 +16,34 @@ from services.oat_runner import generate_results_csv
 
 
 class ExtendedTPCDSConfigTests(unittest.TestCase):
+    def test_preparation_streams_progress_and_stops_containers_on_timeout(self):
+        from contextlib import nullcontext
+        from services.orchestrator import Orchestrator
+        from subprocess import TimeoutExpired
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                orchestrator = Orchestrator.__new__(Orchestrator)
+                orchestrator._config = BenchmarkConfig(workload='extended-tpcds', scale_factor=25,
+                                                        engines=['duckdb'])
+                orchestrator.emit = Mock()
+                orchestrator._heartbeat = Mock(return_value=nullcontext())
+                manager = Mock()
+                manager.get_exit_code.return_value = '0'
+                def prepare(**kwargs):
+                    self.assertGreaterEqual(kwargs['timeout'], 86400)
+                    kwargs['stream_callback']('Preparation started: base TPC-DS generation')
+                    if fails:
+                        raise TimeoutExpired('docker compose', kwargs['timeout'])
+                manager.up.side_effect = prepare
+                with patch('services.orchestrator.DockerManager', return_value=manager):
+                    if fails:
+                        with self.assertRaises(TimeoutExpired):
+                            orchestrator._run_datagen()
+                    else:
+                        orchestrator._run_datagen()
+                orchestrator.emit.assert_called_once_with('Preparation started: base TPC-DS generation')
+                manager.down.assert_called_once_with()
+
     def experiment(self, **overrides):
         return parse_experiments_json(json.dumps({'experiments':[{'workload':'extended-tpcds','scale_factor':.01,**overrides}]}))[0]
 

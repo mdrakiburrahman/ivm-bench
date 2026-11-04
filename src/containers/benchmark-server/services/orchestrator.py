@@ -505,13 +505,15 @@ class Orchestrator:
             repo = self._config.repo_dir
             mgr = DockerManager(os.path.join(repo, "docker/docker-compose.extended-tpcds-datagen.yml"),
                                 project_name="extended-tpcds-datagen", env=self._config.base_env(), cwd=repo)
-            with self._heartbeat("extended-tpcds/prepare"):
-                mgr.build()
-                mgr.up(detach=False, timeout=7200)
-            code = mgr.get_exit_code("extended-tpcds-datagen")
-            if code != "0":
-                raise RuntimeError(f"Extended TPC-DS preparation failed ({code}): {mgr.logs()[-2000:]}")
-            mgr.down()
+            try:
+                with self._heartbeat("extended-tpcds/prepare"):
+                    mgr.build()
+                    mgr.up(detach=False, timeout=86400, stream_callback=self.emit)
+                code = mgr.get_exit_code("extended-tpcds-datagen")
+                if code != "0":
+                    raise RuntimeError(f"Extended TPC-DS preparation failed ({code}): {mgr.logs()[-2000:]}")
+            finally:
+                mgr.down()
             return
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
