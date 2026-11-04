@@ -7,7 +7,7 @@ dbt-duckdb>=1.9
 dbt-databricks~=1.11
 databricks-sql-connector>=4.0
 databricks-sdk>=0.40
-duckdb>=1.5.2
+duckdb==2.0.0
 deltalake>=0.18
 dbt-feldera @ git+https://github.com/mdrakiburrahman/feldera.git@41548878813d750a25f531280517b96ede7b56a1#subdirectory=python/dbt-feldera
 sqlglot>=26.0
