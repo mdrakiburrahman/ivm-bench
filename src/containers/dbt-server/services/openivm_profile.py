@@ -11,6 +11,7 @@ OPENIVM_BIN = os.environ.get("DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duc
 MEM_LIMIT = os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB")
 TEMP_DIR = Path(os.environ.get("DUCKDB_OPENIVM_TEMP_DIR", str(WORK_DIR / "_tmp")))
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
+DIAGNOSTIC_VIEW = os.environ.get("OPENIVM_DIAGNOSTIC_VIEW", "")
 
 
 def _sql_literal(value: str) -> str:
@@ -50,6 +51,65 @@ def _copy_query_to_csv(query: str, output_path: Path) -> None:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"OpenIVM profile export failed:\n{proc.stdout[-4000:]}")
+
+
+def _explain_merge(sql: str) -> str:
+    """Explain archived SQL against the current lake state without running the MERGE."""
+    meta_path = WORK_DIR / "openivm.ducklake"
+    data_path = WORK_DIR / "data"
+    preamble = [
+        ".bail on", ".timer off",
+        f"SET memory_limit={_sql_literal(MEM_LIMIT)};",
+        f"SET temp_directory={_sql_literal(str(TEMP_DIR))};",
+    ]
+    if THREADS:
+        preamble.append(f"SET threads={int(THREADS)};")
+    preamble.append("LOAD openivm;")
+    if meta_path.exists():
+        preamble += [
+            "INSTALL icu; LOAD icu;", "INSTALL ducklake; LOAD ducklake;",
+            f"ATTACH {_sql_literal('ducklake:sqlite:' + str(meta_path))} AS ducklake "
+            f"(DATA_PATH {_sql_literal(str(data_path))}, data_inlining_row_limit 0);",
+        ]
+    preamble.append("EXPLAIN (FORMAT JSON) " + sql.strip().rstrip(";") + ";")
+    proc = subprocess.run(
+        [OPENIVM_BIN, str(WORK_DIR / "openivm.duckdb")],
+        input="\n".join(preamble) + "\n", text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=3600,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"OpenIVM MERGE EXPLAIN failed:\n{proc.stdout[-4000:]}")
+    return proc.stdout
+
+
+def _diagnostic_merge(tmp_dir: Path) -> dict | None:
+    if not DIAGNOSTIC_VIEW:
+        return None
+    parts = DIAGNOSTIC_VIEW.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise ValueError("OPENIVM_DIAGNOSTIC_VIEW must be catalog.schema.view")
+    catalog, schema, name = map(_sql_literal, parts)
+    path = tmp_dir / "compiled.csv"
+    _copy_query_to_csv(
+        "SELECT s.stmt_order, s.sql FROM openivm_compiled_statements s "
+        "JOIN openivm_compiled_programs p USING (view_name, operation, version) "
+        f"WHERE p.view_catalog={catalog} AND p.view_schema={schema} "
+        f"AND p.view_sql_name={name} AND p.operation='refresh' "
+        "AND p.version=(SELECT MAX(version) FROM openivm_compiled_programs "
+        "WHERE view_name=p.view_name AND operation='refresh') ORDER BY s.stmt_order",
+        path,
+    )
+    with path.open(newline="") as source:
+        statements = list(csv.DictReader(source))
+    merge = next((row["sql"] for row in statements if "MERGE INTO" in row["sql"].upper()), None)
+    if merge is None:
+        raise RuntimeError(f"No archived MERGE found for {DIAGNOSTIC_VIEW}")
+    return {
+        "view": DIAGNOSTIC_VIEW,
+        "statements": statements,
+        "merge_plan_after_refresh": _explain_merge(merge),
+        "plan_note": "EXPLAIN is run after refresh; delta cardinalities may differ from execution time.",
+    }
 
 
 def export_profile(run_id: str, batch_num: int) -> dict:
@@ -123,4 +183,5 @@ def export_profile(run_id: str, batch_num: int) -> dict:
                 "by_step": by_step_path.read_text(),
                 "by_view_step": by_view_step_path.read_text(),
             },
+            "diagnostic": _diagnostic_merge(tmp_dir) if batch_num > 1 else None,
         }

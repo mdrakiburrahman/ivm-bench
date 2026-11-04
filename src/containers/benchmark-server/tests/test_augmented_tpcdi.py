@@ -47,6 +47,16 @@ def normalized_sql(sql):
 
 
 class AugmentedTpcdiTest(unittest.TestCase):
+    def test_openivm_pipeline_and_diagnostic_are_explicit_experiment_knobs(self):
+        experiment = parse_experiments_json(json.dumps({"experiments": [{
+            "openivm_diagnostic_view": "ducklake.silver.watches",
+            "feature_flags": {"openivm_refresh_pipeline": True},
+        }]}))[0]
+        env = experiment.to_compose_env()
+        self.assertEqual(env["OPENIVM_REFRESH_PIPELINE"], "1")
+        self.assertEqual(env["OPENIVM_DIAGNOSTIC_VIEW"], "ducklake.silver.watches")
+        self.assertEqual(experiment.to_dict()["openivm_diagnostic_view"], "ducklake.silver.watches")
+
     def test_databricks_refresh_policy_works_for_standard_tpcdi(self):
         experiment = parse_experiments_json(json.dumps({
             "experiments": [{

@@ -48,6 +48,7 @@ from models.refresh import refresh_batch_count, refresh_env, validate_refresh
 class FeatureFlags:
     openivm_validate: bool = False
     openivm_profile_refresh: bool = True
+    openivm_refresh_pipeline: bool = False
     openivm_query_log: bool = True
     storage_metrics: bool = True
     preserve_raw: bool = False  # no-op inside OAT mode (per-experiment cleanup)
@@ -77,6 +78,9 @@ class FeatureFlags:
             openivm_profile_refresh=flag(
                 "OPENIVM_PROFILE_REFRESH", defaults.openivm_profile_refresh
             ),
+            openivm_refresh_pipeline=flag(
+                "OPENIVM_REFRESH_PIPELINE", defaults.openivm_refresh_pipeline
+            ),
             openivm_query_log=flag("OPENIVM_QUERY_LOG", defaults.openivm_query_log),
             storage_metrics=flag("STORAGE_METRICS", defaults.storage_metrics),
             preserve_raw=flag("PRESERVE_RAW", defaults.preserve_raw),
@@ -91,6 +95,7 @@ class FeatureFlags:
         return {
             "OPENIVM_VALIDATE": "1" if self.openivm_validate else "0",
             "OPENIVM_PROFILE_REFRESH": "1" if self.openivm_profile_refresh else "0",
+            "OPENIVM_REFRESH_PIPELINE": "1" if self.openivm_refresh_pipeline else "0",
             "OPENIVM_QUERY_LOG": "1" if self.openivm_query_log else "0",
             "STORAGE_METRICS": "1" if self.storage_metrics else "0",
             "PRESERVE_RAW": "1" if self.preserve_raw else "0",
@@ -264,6 +269,7 @@ class ExperimentInputs:
     batch_3_delete_pct: str = "0"
     databricks_refresh_policy: str = "AUTO"
     databricks_dbt_threads: Optional[int] = None
+    openivm_diagnostic_view: str = ""
     engines: List[str] = field(default_factory=lambda: ["spark", "spark-openivm"])
     parallel: bool = False
     # "serial" | "parallel" | "serial-host-parallel-cloud". Legacy `parallel:true`
@@ -285,6 +291,10 @@ class ExperimentInputs:
         if self.batch_2_days < 0 or self.batch_2_days > 364:
             raise ValueError("batch_2_days must be between 0 and 364")
         self.databricks_refresh_policy = self.databricks_refresh_policy.strip().upper()
+        if self.openivm_diagnostic_view and len(self.openivm_diagnostic_view.split(".")) != 3:
+            raise ValueError("openivm_diagnostic_view must be catalog.schema.view")
+        if self.openivm_diagnostic_view and not self.feature_flags.openivm_profile_refresh:
+            raise ValueError("openivm_diagnostic_view requires openivm_profile_refresh")
         if self.databricks_refresh_policy not in {
             "AUTO", "INCREMENTAL", "INCREMENTAL STRICT", "FULL",
         }:
@@ -318,6 +328,7 @@ class ExperimentInputs:
             "DATABRICKS_DBT_THREADS": (
                 str(self.databricks_dbt_threads) if self.databricks_dbt_threads is not None else ""
             ),
+            "OPENIVM_DIAGNOSTIC_VIEW": self.openivm_diagnostic_view,
             "PARALLEL": "1" if self.schedule == "parallel" else "0",
             "SCHEDULE": self.schedule,
             "ENGINES": ",".join(self.engines),
@@ -346,6 +357,7 @@ class ExperimentInputs:
             "batch_3_delete_pct": self.batch_3_delete_pct,
             "databricks_refresh_policy": self.databricks_refresh_policy,
             "databricks_dbt_threads": self.databricks_dbt_threads,
+            "openivm_diagnostic_view": self.openivm_diagnostic_view,
             "engines": list(self.engines),
             "parallel": self.parallel,
             "schedule": self.schedule,
@@ -372,6 +384,7 @@ class ExperimentInputs:
             "batch_3_delete_pct": self.batch_3_delete_pct,
             "databricks_refresh_policy": self.databricks_refresh_policy,
             "databricks_dbt_threads": self.databricks_dbt_threads,
+            "openivm_diagnostic_view": self.openivm_diagnostic_view,
             "engines": ",".join(self.engines),
             "parallel": int(self.parallel),
             "schedule": self.schedule,
@@ -405,6 +418,7 @@ class ExperimentInputs:
             "batch_3_delete_pct": "b3d%",
             "databricks_refresh_policy": "DB policy",
             "databricks_dbt_threads": "DB threads override",
+            "openivm_diagnostic_view": "OpenIVM diagnostic view",
             "engines": "engines",
             "parallel": "parallel",
             "schedule": "schedule",
@@ -448,6 +462,7 @@ class ExperimentInputs:
         ff = FeatureFlags(
             openivm_validate=_flag(ff_d.get("openivm_validate"), base.feature_flags.openivm_validate),
             openivm_profile_refresh=_flag(ff_d.get("openivm_profile_refresh"), base.feature_flags.openivm_profile_refresh),
+            openivm_refresh_pipeline=_flag(ff_d.get("openivm_refresh_pipeline"), base.feature_flags.openivm_refresh_pipeline),
             openivm_query_log=_flag(ff_d.get("openivm_query_log"), base.feature_flags.openivm_query_log),
             storage_metrics=_flag(ff_d.get("storage_metrics"), base.feature_flags.storage_metrics),
             preserve_raw=_flag(ff_d.get("preserve_raw"), base.feature_flags.preserve_raw),
@@ -523,6 +538,7 @@ class ExperimentInputs:
                 d.get("databricks_refresh_policy", base.databricks_refresh_policy)
             ),
             databricks_dbt_threads=d.get("databricks_dbt_threads", base.databricks_dbt_threads),
+            openivm_diagnostic_view=str(d.get("openivm_diagnostic_view", base.openivm_diagnostic_view)),
             engines=engines,
             parallel=(schedule == "parallel"),
             schedule=schedule,
