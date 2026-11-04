@@ -73,6 +73,36 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
         self.assertIn('REGEXP_REPLACE("x", \'a\', \'b\')',actual)
         self.assertNotIn('TRY_STRPTIME',actual)
 
+    def test_feldera_position_preserves_argument_order_unicode_and_nulls(self):
+        query = 'SELECT STRPOS(haystack, needle) FROM strings'
+        rendered = module.render(query, 'feldera')
+        self.assertIn('POSITION("needle" IN "haystack")', rendered)
+        self.assertNotIn('STRPOS(', rendered)
+        with module.duckdb.connect() as c:
+            c.execute('CREATE TABLE strings(haystack VARCHAR, needle VARCHAR)')
+            c.executemany('INSERT INTO strings VALUES (?, ?)', [
+                ('x/order-lines/a', '/order-lines/'), ('none', '/order-lines/'),
+                ('☃é/order-lines/a', '/order-lines/'), ('same', 'same'),
+                ('a', ''), ('', 'a'), (None, 'a'), ('a', None), (None, None)])
+            self.assertCountEqual(c.execute(rendered).fetchall(), c.execute(query).fetchall())
+
+    def test_feldera_order_line_model_preserves_distinct_counts_and_path_filters(self):
+        from services.extended_tpcds import pipeline
+        query = pipeline.render_model('int_engagement_order_line_counts', {'report_date':'2002-12-31', 'history_months':12})
+        rendered = module.render(query, 'feldera')
+        self.assertNotIn('STRPOS(', rendered)
+        with module.duckdb.connect() as c:
+            c.execute('CREATE TABLE stg_entity_registry(entity_path VARCHAR, rn INT, entity_type VARCHAR)')
+            c.executemany('INSERT INTO stg_entity_registry VALUES (?, ?, ?)', [
+                ('/a/order-lines/x',1,'order_lines'), ('/a/order-lines/x',1,'order_lines'),
+                ('/a/order-lines/y',1,'order_lines'), ('/a/order-lines/test',1,'order_lines'),
+                ('/☃/order-lines/é',1,'order_lines'), ('/order-lines/z',1,'order_lines'),
+                ('invalid',1,'order_lines'), (None,1,'order_lines'),
+                ('/a/order-lines/z',2,'order_lines'), ('/a/order-lines/z',1,'other')])
+            expected = [('/a',2), ('/☃',1)]
+            self.assertCountEqual(c.execute(query).fetchall(), expected)
+            self.assertCountEqual(c.execute(rendered).fetchall(), expected)
+
     def test_feldera_quotes_reserved_columns_and_preserves_bag_results(self):
         query = 'SELECT date, year, month, day FROM events'
         actual = module.render(query, 'feldera')

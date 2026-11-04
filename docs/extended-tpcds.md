@@ -776,13 +776,21 @@ logically deleted rows and gives false validation failures. The Delta extension
 is installed in the dbt image. Cloud compatibility fixes still require remote
 acceptance; no SF100 run has started.
 
-### Current SF1 acceptance and remaining fixes (2026-11-03)
+### Current SF1 acceptance and remaining fixes (2026-11-04)
 
-Run [41653390398](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41653390398)
-validated Databricks OpenIVM: all 288/288 comparisons passed. This brings the
-confirmed SF1 engines to DuckDB, DuckDB OpenIVM, Spark, Spark OpenIVM and
-Databricks OpenIVM. Spark OpenIVM's 288/288 pass is recorded in
+Run [41705650350](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41705650350)
+validated Fabric, Fabric OpenIVM and Enzyme: **288/288 comparisons per engine**
+across all three batches. Eight engines now have confirmed SF1 passes: DuckDB,
+DuckDB OpenIVM, Spark, Spark OpenIVM, Databricks OpenIVM, Fabric, Fabric OpenIVM
+and Enzyme. Databricks OpenIVM passed in
+[41653390398](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41653390398);
+Spark OpenIVM passed in
 [41620221812](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/41620221812).
+Feldera alone still requires acceptance: its compiler progressed past the window
+rewrite and rejected the DuckDB-specific `STRPOS` spelling. The renderer now uses
+Feldera's documented `POSITION(needle IN haystack)` form, preserving argument
+order, Unicode indexing, missing-match zero and NULL behavior. Scalar and complete
+order-line-model differential tests pass. Feldera engine code is unchanged.
 DBSP.NET's SF1 initial-load memory failure is tracked separately in
 [issue #2](https://github.com/clast-project/dbsp-net/issues/2), with pinned
 reproduction steps and telemetry. DBSP.NET remains excluded from this follow-up.
@@ -790,7 +798,7 @@ reproduction steps and telemetry. DBSP.NET remains excluded from this follow-up.
 - Fabric's 96 initial outputs all matched, but its Livy adapter returned count
   cells as strings. Treat validation, before-image and duplicate counts as
   integers: `"0"` must pass, while nonzero counts still fail. Row-count artifacts
-  also retain numeric values. Its refreshes still require a successful rerun.
+  also retain numeric values. All three batches now pass validation.
 - Fabric OpenIVM now sets the existing managed-table root to the compute
   lakehouse's `Tables/<workload-schema>` path and enables the catalog's existing
   case-preservation setting. This aligns named CTAS, registration and Delta
@@ -808,11 +816,12 @@ reproduction steps and telemetry. DBSP.NET remains excluded from this follow-up.
   older than roughly 21 minutes. The benchmark now closes independent DB-API
   cursors after every statement, matching the working Databricks OpenIVM
   executor, while retaining the borrowed Livy connection wrapper. The cursor
-  resource leak is fixed; its relationship to MV deletion still needs the remote
-  rerun. Failed Enzyme builds also query this namespace's recent creation/deletion
+  resource leak is fixed, and all 96 MVs remained available through three batches
+  and 288 passing comparisons. Failed Enzyme builds still query this namespace's recent creation/deletion
   audit records; missing audit privileges cannot replace the original error.
   Enzyme itself is unchanged.
 
 Local checks: 253 dbt-server tests pass, including statement cleanup, numeric
-count guards, denied-audit handling and differential window tests. The four-engine
-SF1 rerun, rather than these local checks, must establish remote acceptance.
+count guards, denied-audit handling and differential window tests. The latest
+Feldera position fix passes all 15 streaming tests, including two new regressions.
+Its remaining SF1 rerun must establish remote acceptance; SF100 has not started.

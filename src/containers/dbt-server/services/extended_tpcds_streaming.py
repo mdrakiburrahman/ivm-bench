@@ -17,6 +17,7 @@ import requests
 import sqlglot
 from sqlglot import exp
 from sqlglot.dialects.duckdb import DuckDB
+from sqlglot.dialects.dialect import strposition_sql
 
 STREAM_ENGINES = ('feldera','dbspnet')
 
@@ -36,6 +37,9 @@ class FelderaDialect(DuckDB):
             ordered = expression.copy()
             ordered.set('nulls_first', False)
             return super().ordered_sql(ordered) + (' NULLS FIRST' if expression.args.get('nulls_first') else ' NULLS LAST')
+
+        def strposition_sql(self, expression):
+            return strposition_sql(self, expression, func_name='POSITION')
 
         def trycast_sql(self, expression):
             return f"SAFE_CAST({self.sql(expression, 'this')} AS {self.sql(expression, 'to')})"
