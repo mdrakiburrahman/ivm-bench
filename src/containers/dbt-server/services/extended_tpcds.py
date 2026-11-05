@@ -33,7 +33,7 @@ _LOCK = threading.Lock()
 class CliConnection:
     """Minimal DuckDB result/parameter interface over the existing CLI worker."""
     def __init__(self, binary, path, *, openivm=False, timeout_s=300, memory_limit=None, threads=None):
-        settings = ["SET max_temp_directory_size=" + quote(os.environ.get("EXTENDED_TPCDS_MAX_TEMP_DIRECTORY_SIZE", "4GB"))]
+        settings = ["SET max_temp_directory_size=" + quote(os.environ.get("EXTENDED_TPCDS_MAX_TEMP_DIRECTORY_SIZE", "64GB"))]
         if memory_limit:
             settings.append("SET memory_limit=" + quote(memory_limit))
         if threads:

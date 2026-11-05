@@ -38,7 +38,7 @@
   },
   "experiments": [
     {
-      "label": "Extended TPC-DS SF25, insertion 100/1/0.01, eight validated engines serially"
+      "label": "Extended TPC-DS SF25, insertion 100/1/0.01, serial engines"
     }
   ]
 }
