@@ -141,12 +141,18 @@ COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.
 COPY --from=openivm-builder /artifacts/libstdc++.so.6 /native/libstdc++.so.6
 COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /native/libgcc_s.so.1
 ENV OPENIVM_NATIVE_DIR=/native
+ENV OPENIVM_EXTENSION_PATH=/native/openivm.duckdb_extension
+ENV OPENIVM_CLI_PATH=/native/duckdb
+ENV OPENIVM_CLI_LD_LIBRARY_PATH=/native
 ENV OPENIVM_SPARK_TARGET=spark-3.5
 
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
 # orchestrator's plain `docker compose build` invocation, so we accept a
 # slower cold cache here — sbt will re-fetch deps when the builder image changes.
-RUN sbt -batch 'ivmCompiler/testOnly org.openivm.spark.compiler.LptsSparkDialectSpec' ivmExtension/assembly && \
+RUN sbt -batch \
+    'ivmCompiler/testOnly org.openivm.spark.compiler.LptsSparkDialectSpec' \
+    'ivmCompiler/testOnly org.openivm.spark.compiler.OpenIvmCompilerSpec -- -z "translate the joined TPC-DI offset window initial load"' \
+    ivmExtension/assembly && \
     find /src/spark-ext -name 'ivmExtension-*-assembly.jar' -path '*/scala-2.12/*' -exec cp {} /tmp/openivm-extension.jar \;
 
 # Sanity check.

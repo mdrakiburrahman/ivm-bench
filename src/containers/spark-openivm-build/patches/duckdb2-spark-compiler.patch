@@ -340,12 +340,12 @@ index 7aa2e50..889d532 100644
 +  }
 +
 diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
-index a1ab2e6..23fc029 100644
+index a1ab2e6..060732b 100644
 --- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
 +++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
 @@ -9,0 +10 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 +import org.apache.spark.sql.{Row, SparkSession}
-@@ -254,0 +256,55 @@ class OpenIvmCompilerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
+@@ -254,0 +256,68 @@ class OpenIvmCompilerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
 +  it should "translate native struct access and LAG SQL for Spark initial load" in {
 +    val result = sharedCompiler.compile(
 +      CompileRequest(
@@ -398,6 +398,19 @@ index a1ab2e6..23fc029 100644
 +        spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema).createOrReplaceTempView(name)
 +      }
 +      noException should be thrownBy spark.sql(sql).queryExecution.analyzed
++      val leadSql = LptsSparkDialect.translate(
++        "SELECT lead(th_dts, CAST(2 AS BIGINT)) OVER (ORDER BY th_dts) FROM brokerage_trade_history"
++      )
++      noException should be thrownBy spark.sql(leadSql).queryExecution.analyzed
++      val monthSql = LptsSparkDialect.translate(
++        "SELECT CAST(DATE '2015-01-31' + system.main.add(system.main.to_months(1), system.main.to_days(0)) AS DATE)"
++      )
++      spark.sql(monthSql).collect()(0).getDate(0).toLocalDate shouldBe LocalDate.parse("2015-02-28")
++      val microsSql = LptsSparkDialect.translate(
++        "SELECT CAST(TIMESTAMP '2020-01-01 00:00:00.000001' - " +
++          "system.main.add(system.main.to_months(0), system.main.to_microseconds(1)) AS STRING)"
++      )
++      spark.sql(microsSql).collect()(0).getString(0) shouldBe "2020-01-01 00:00:00"
 +    } finally spark.stop()
 +  }
 +
