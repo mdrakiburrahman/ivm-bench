@@ -12,20 +12,23 @@ index e9dfb59..0ef05a9 100644
              if (!src.exists())
                sys.error(s"OPENIVM_NATIVE_DIR set but missing native binary: $src")
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
-index 9e9b616..a1f7d50 100644
+index 9e9b616..79b4020 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
-@@ -144,7 +144,8 @@ object LptsSparkDialect {
+@@ -144,7 +144,11 @@ object LptsSparkDialect {
                              rewriteTimestampWithTimeZone(
                                rewriteSparkFunctionInlinings(
                                  rewriteToTimestampDoubleCast(
 -                                  rewriteNowTimestamp(rewriteLikeOperators(rewriteQuotedCastTypes(sql)))
-+                                  rewriteNowTimestamp(rewriteLikeOperators(rewriteQuotedCastTypes(
-+                                    SparkFunctionShimSql.rewriteQualifiedSystemIntervals(sql))))
++                                  rewriteNowTimestamp(
++                                    rewriteLikeOperators(
++                                      rewriteQuotedCastTypes(SparkFunctionShimSql.rewriteQualifiedSystemIntervals(sql))
++                                    )
++                                  )
                                  )
                                )
                              )
-@@ -264,87 +265,9 @@ object LptsSparkDialect {
+@@ -264,87 +268,9 @@ object LptsSparkDialect {
      }
    }
  
@@ -117,10 +120,10 @@ index 9e9b616..a1f7d50 100644
    // ── Individual passes ────────────────────────────────────────────────────────
  
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
-index 727217f..842ff07 100644
+index 727217f..ae1f29f 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
-@@ -34,6 +34,54 @@ private[compiler] object SparkFunctionShimSql {
+@@ -34,6 +34,61 @@ private[compiler] object SparkFunctionShimSql {
    private val OneArgToDateLiteral      = "'%Y-%m-%d'"
    private val OneArgToTimestampLiteral = "'%Y-%m-%d %H:%M:%S'"
  
@@ -135,7 +138,8 @@ index 727217f..842ff07 100644
 +    */
 +  private[compiler] def rewriteQualifiedSystemIntervals(sql: String): String =
 +    rewriteOutsideProtected(sql, protectDoubleQuotes = false) { i =>
-+      val boundary = i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
++      val boundary =
++        i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
 +      if (!boundary) None
 +      else {
 +        val add = QualifiedSystemAdd.matcher(sql).region(i, sql.length)
@@ -156,19 +160,25 @@ index 727217f..842ff07 100644
 +      }
 +    }
 +
-+  private val TemporalUnitCall = """(?i)to_(microseconds|milliseconds|seconds|minutes|hours|days|months|years)""".r.pattern
++  private val TemporalUnitCall =
++    """(?i)to_(microseconds|milliseconds|seconds|minutes|hours|days|months|years)""".r.pattern
 +
 +  private[compiler] def rewriteTemporalUnitConstructors(sql: String): String =
 +    rewriteOutsideProtected(sql, protectBackticks = true) { i =>
-+      val boundary = i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
++      val boundary =
++        i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
 +      if (!boundary) None
 +      else {
 +        val unit = TemporalUnitCall.matcher(sql).region(i, sql.length)
 +        if (!unit.lookingAt()) None
-+        else parseFunctionCall(sql, unit.end()).filter(_.topLevelCommaCount == 0).map { call =>
-+          val arg = rewriteTemporalUnitConstructors(call.args(sql)).trim
-+          (call.closeParen + 1, s"(($arg) * INTERVAL 1 ${unit.group(1).dropRight(1).toUpperCase(java.util.Locale.ROOT)})")
-+        }
++        else
++          parseFunctionCall(sql, unit.end()).filter(_.topLevelCommaCount == 0).map { call =>
++            val arg = rewriteTemporalUnitConstructors(call.args(sql)).trim
++            (
++              call.closeParen + 1,
++              s"(($arg) * INTERVAL 1 ${unit.group(1).dropRight(1).toUpperCase(java.util.Locale.ROOT)})"
++            )
++          }
 +      }
 +    }
 +
