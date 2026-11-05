@@ -19,6 +19,24 @@ from test_workload import fixture
 
 
 class MutationTests(unittest.TestCase):
+    def test_export_compression_preserves_types_nulls_duplicates_and_order(self):
+        with tempfile.TemporaryDirectory() as folder, duckdb.connect() as connection:
+            root = Path(folder)
+            connection.execute("""CREATE TABLE input AS SELECT * FROM (VALUES
+                ('b', 12.34::DECIMAL(10,2), TIMESTAMP '2002-12-31 12:34:56.123456', TRUE, 'café'),
+                ('a', 12.34::DECIMAL(10,2), TIMESTAMP '2002-12-31 12:34:56.123456', TRUE, 'café'),
+                ('c', NULL, NULL, NULL, NULL)
+            ) t(_source_row_id, amount, event_time, flag, payload)""")
+            image = mutations.export_rows(connection, 'SELECT * FROM input', root / 'rows.parquet', root)
+            expected = connection.execute('SELECT * FROM input ORDER BY _source_row_id').fetchall()
+            expected_types = connection.description
+            actual = connection.execute('SELECT * FROM read_parquet(?)', [str(root / image['path'])]).fetchall()
+            self.assertEqual(actual, expected)
+            self.assertEqual(connection.description, expected_types)
+            self.assertEqual(image['rows'], 3)
+            self.assertEqual(image['sha256'], mutations.file_checksum(root / image['path']))
+            self.assertEqual(connection.execute('SELECT DISTINCT compression FROM parquet_metadata(?)', [str(root / image['path'])]).fetchall(), [('ZSTD',)])
+
     def test_read_only_insert_plans_match_mutable_plans_without_changing_sources(self):
         for mode in ('insertion', 'repeated_insertions'):
             for initial, cohort in [('0', 'all'), ('50', 'hot'), ('100', 'cold')]:

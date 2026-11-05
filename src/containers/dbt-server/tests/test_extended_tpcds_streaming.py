@@ -19,7 +19,7 @@ spec.loader.exec_module(module)
 class ExtendedTPCDSStreamingTest(unittest.TestCase):
     def image(self,root,name,ids,values):
         path=root/(name+'.parquet')
-        module.pq.write_table(module.pa.table({'_source_row_id':ids,'value':values}),path)
+        module.pq.write_table(module.pa.table({'_source_row_id':ids,'value':values}),path,compression='zstd')
         return {'path':path.name,'rows':len(ids),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
 
     def test_real_delta_replay_preserves_identity_and_retracts_updates_and_deletes(self):

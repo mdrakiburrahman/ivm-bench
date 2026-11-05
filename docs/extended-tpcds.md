@@ -86,6 +86,8 @@ images from those immutable views without copying histories or event pools into
 working tables. Update/delete modes retain mutable planning tables. After export,
 preparation removes its three scratch databases before starting an engine; the
 Parquet plan, checksums, source statistics and configuration remain available.
+Parquet images use Zstandard level 1 compression and retain the same typed
+columns and physical row-ID ordering; readers receive the original source values.
 This changes preparation storage, not source row counts, keys, values, or model SQL.
 At SF25 the native profile still represents about 2.16 billion source rows, so
 SF25 must not be interpreted as a 25 GB cap on this extended workload.

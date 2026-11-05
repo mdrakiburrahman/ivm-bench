@@ -30,7 +30,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
         "threads": int(os.environ.get("DUCKDB_THREADS", "4")),
         "max_temp_directory_size": os.environ.get("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", "4GB"),
     }
-    recipe = {"preparation_version": 2, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
+    recipe = {"preparation_version": 3, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
               "steps": steps, "duckdb_generator_version": duckdb.__version__}
     metadata = directory / "preparation.json"
     if metadata.is_file():
