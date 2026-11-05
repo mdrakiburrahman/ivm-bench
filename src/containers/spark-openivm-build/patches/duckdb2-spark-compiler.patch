@@ -106,10 +106,10 @@ index 9e9b616..3ddca32 100644
 +  private[compiler] def rewriteToTemporalUnit(sql: String): String =
 +    SparkFunctionShimSql.rewriteTemporalUnitConstructors(sql)
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
-index 727217f..238a0df 100644
+index 727217f..3127687 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
-@@ -36,0 +37,97 @@ private[compiler] object SparkFunctionShimSql {
+@@ -36,0 +37,111 @@ private[compiler] object SparkFunctionShimSql {
 +  private val QualifiedSystemAdd =
 +    """(?i)(?:"system"|`system`|system)\s*\.\s*(?:"main"|`main`|main)\s*\.\s*(?:"add"|`add`|add)""".r.pattern
 +  private val QualifiedSystemInterval =
@@ -172,10 +172,24 @@ index 727217f..238a0df 100644
 +            ) None
 +            else
 +              parseFunctionCall(sql, overEnd).flatMap { window =>
-+                val frame = Seq("ROWS", "RANGE", "GROUPS")
-+                  .flatMap(findTopLevelKeyword(sql, window.openParen + 1, window.closeParen, _))
-+                  .sorted
-+                  .headOption
++                var cursor = window.openParen + 1
++                var frame  = Option.empty[Int]
++                while (cursor < window.closeParen && frame.isEmpty) {
++                  val next = Seq("ROWS", "RANGE", "GROUPS")
++                    .flatMap(unit => findTopLevelKeyword(sql, cursor, window.closeParen, unit).map(_ -> unit))
++                    .sortBy(_._1)
++                    .headOption
++                  next match {
++                    case Some((start, unit)) =>
++                      val after = skipTriviaForward(sql, start + unit.length, window.closeParen)
++                      val beginsFrame = after < window.closeParen &&
++                        (Seq("BETWEEN", "UNBOUNDED", "CURRENT").exists(startsWithKeyword(sql, after, _)) ||
++                          sql.charAt(after).isDigit)
++                      if (beginsFrame) frame = Some(start)
++                      else cursor = start + unit.length
++                    case None => cursor = window.closeParen
++                  }
++                }
 +                frame.map { start =>
 +                  val prefix = sql.substring(i, start).reverse.dropWhile(_.isWhitespace).reverse
 +                  (window.closeParen + 1, prefix + ")")
@@ -208,12 +222,12 @@ index 727217f..238a0df 100644
 +    }
 +
 diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
-index 7aa2e50..cf05285 100644
+index 7aa2e50..d4f87b9 100644
 --- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
 +++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
 @@ -4,0 +5 @@ import org.scalatest.matchers.should.Matchers
 +import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
-@@ -12,0 +14,48 @@ class LptsSparkDialectSpec extends AnyFunSpec with Matchers {
+@@ -12,0 +14,58 @@ class LptsSparkDialectSpec extends AnyFunSpec with Matchers {
 +  describe("DuckDB 2.0 qualified interval functions") {
 +    it("translates the initial-load interval expression without catalog-qualified functions") {
 +      val sql = """SELECT ts - "system".main."add"("system".main."add"(
@@ -259,6 +273,16 @@ index 7aa2e50..cf05285 100644
 +      translated.toUpperCase(java.util.Locale.ROOT) should not include "RANGE BETWEEN"
 +      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
 +      LptsSparkDialect.translate(translated) shouldBe translated
++    }
++
++    it("keeps an ORDER BY column named rows while removing a real frame") {
++      val sql        = "SELECT lag(x) OVER (ORDER BY rows ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t"
++      val translated = LptsSparkDialect.translate(sql)
++      translated should include("ORDER BY rows)")
++      translated.toUpperCase(java.util.Locale.ROOT) should not include "ROWS BETWEEN"
++      LptsSparkDialect.translate("SELECT lag(x) OVER (ORDER BY rows) FROM t") shouldBe
++        "SELECT lag(x) OVER (ORDER BY rows) FROM t"
++      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
 +    }
 +  }
 +
