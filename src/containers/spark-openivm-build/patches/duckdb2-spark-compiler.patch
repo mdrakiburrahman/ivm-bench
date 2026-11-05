@@ -2,36 +2,21 @@ diff --git a/spark-ext/build.sbt b/spark-ext/build.sbt
 index e9dfb59..0ef05a9 100644
 --- a/spark-ext/build.sbt
 +++ b/spark-ext/build.sbt
-@@ -99,7 +99,7 @@ lazy val ivmExtension = (project in file("ivm-extension"))
-         case Some(dir) =>
-           val outDir = (Compile / resourceManaged).value / "openivm-native"
-           IO.createDirectory(outDir)
+@@ -102 +102 @@ lazy val ivmExtension = (project in file("ivm-extension"))
 -          Seq("duckdb", "openivm.duckdb_extension").flatMap { name =>
 +          Seq("duckdb", "openivm.duckdb_extension", "libstdc++.so.6", "libgcc_s.so.1").flatMap { name =>
-             val src = file(dir) / name
-             if (!src.exists())
-               sys.error(s"OPENIVM_NATIVE_DIR set but missing native binary: $src")
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
 index 9e9b616..79b4020 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
-@@ -144,7 +144,11 @@ object LptsSparkDialect {
-                             rewriteTimestampWithTimeZone(
-                               rewriteSparkFunctionInlinings(
-                                 rewriteToTimestampDoubleCast(
+@@ -147 +147,5 @@ object LptsSparkDialect {
 -                                  rewriteNowTimestamp(rewriteLikeOperators(rewriteQuotedCastTypes(sql)))
 +                                  rewriteNowTimestamp(
 +                                    rewriteLikeOperators(
 +                                      rewriteQuotedCastTypes(SparkFunctionShimSql.rewriteQualifiedSystemIntervals(sql))
 +                                    )
 +                                  )
-                                 )
-                               )
-                             )
-@@ -264,87 +268,9 @@ object LptsSparkDialect {
-     }
-   }
- 
+@@ -267,81 +271,3 @@ object LptsSparkDialect {
 -  /** Rewrites DuckDB's `to_<unit>(N)` interval constructors to Spark's
 -    * `INTERVAL N <UNIT>` syntax. openivm emits these forms when a user view
 -    * body uses `INTERVAL N <unit>` and the LPTS pipeline serializes the
@@ -116,17 +101,11 @@ index 9e9b616..79b4020 100644
 +  /** Rewrites DuckDB interval constructors using the shared quote-aware SQL scanner. */
 +  private[compiler] def rewriteToTemporalUnit(sql: String): String =
 +    SparkFunctionShimSql.rewriteTemporalUnitConstructors(sql)
- 
-   // ── Individual passes ────────────────────────────────────────────────────────
- 
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
 index 727217f..ae1f29f 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
-@@ -34,6 +34,61 @@ private[compiler] object SparkFunctionShimSql {
-   private val OneArgToDateLiteral      = "'%Y-%m-%d'"
-   private val OneArgToTimestampLiteral = "'%Y-%m-%d %H:%M:%S'"
- 
+@@ -36,0 +37,55 @@ private[compiler] object SparkFunctionShimSql {
 +  private val QualifiedSystemAdd =
 +    """(?i)(?:"system"|`system`|system)\s*\.\s*(?:"main"|`main`|main)\s*\.\s*(?:"add"|`add`|add)""".r.pattern
 +  private val QualifiedSystemInterval =
@@ -182,17 +161,13 @@ index 727217f..ae1f29f 100644
 +      }
 +    }
 +
-   private val sparkFunctionRenameRules: Map[String, RenameRule] = Map(
-     "to_date" -> RenameRule(
-       Map(
 diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
-index 7aa2e50..30e0fad 100644
+index 7aa2e50..dbcaa28 100644
 --- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
 +++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
-@@ -10,6 +10,30 @@ import org.scalatest.matchers.should.Matchers
-   */
- class LptsSparkDialectSpec extends AnyFunSpec with Matchers {
- 
+@@ -4,0 +5 @@ import org.scalatest.matchers.should.Matchers
++import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
+@@ -12,0 +14,25 @@ class LptsSparkDialectSpec extends AnyFunSpec with Matchers {
 +  describe("DuckDB 2.0 qualified interval functions") {
 +    it("translates the initial-load interval expression without catalog-qualified functions") {
 +      val sql = """SELECT ts - "system".main."add"("system".main."add"(
@@ -204,6 +179,7 @@ index 7aa2e50..30e0fad 100644
 +      translated should include("INTERVAL 1 MICROSECOND")
 +      translated should not include "system"
 +      translated should not include "add("
++      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
 +      LptsSparkDialect.translate(translated) shouldBe translated
 +    }
 +
@@ -217,48 +193,21 @@ index 7aa2e50..30e0fad 100644
 +    }
 +  }
 +
-   describe("rewriteQuotedCastTypes") {
-     it("normalizes quoted CAST and TRY_CAST types through nested expressions") {
-       val sql = """SELECT CAST(coalesce(TRY_CAST(x AS "DATE"), CAST(NULL AS `DATE`)) AS "DATE"),
 diff --git a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 index 4e380d5..c1cd4a5 100644
 --- a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 +++ b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
-@@ -125,7 +125,7 @@ private[commands] object OpenIvmCompilers {
-       OpenIvmCompiler.build(
-         extensionPath = extPath,
-         cliPath = cliPath,
+@@ -128 +128 @@ private[commands] object OpenIvmCompilers {
 -        nativeLibraryPath = cliLibraryPath
 +        nativeLibraryPath = cliLibraryPath.orElse(Option(new java.io.File(cliPath).getParent))
-       )
-     }
-   }
-@@ -159,6 +159,8 @@ private[commands] object OpenIvmCompilers {
- 
-     extract("/openivm-native/openivm.duckdb_extension", ext)
-     extract("/openivm-native/duckdb", cli)
+@@ -161,0 +162,2 @@ private[commands] object OpenIvmCompilers {
 +    extract("/openivm-native/libstdc++.so.6", new java.io.File(localDir, "libstdc++.so.6"))
 +    extract("/openivm-native/libgcc_s.so.1", new java.io.File(localDir, "libgcc_s.so.1"))
-     cli.setExecutable(true, /* ownerOnly = */ false)
-     (ext.getAbsolutePath, cli.getAbsolutePath)
-   }
-@@ -2925,6 +2927,8 @@ case class CreateMaterializedViewCommand(
-         )
-       catch {
-         case e: org.openivm.spark.compiler.OpenIvmCompileException =>
+@@ -2927,0 +2930,2 @@ case class CreateMaterializedViewCommand(
 +          val compileCause = Option(e.getMessage).getOrElse(e.toString).replace('\n', ' ').take(512)
 +          profile.timeStep("create_compile_failure", s"cause=$compileCause") { () }
-           val compileFailedClassification =
-             authoritativeFullRefreshClassification(
-               compileRefreshTypeName = "COMPILE_FAILED",
-@@ -3103,6 +3107,10 @@ case class CreateMaterializedViewCommand(
-     val classifyReason           = classification.reason
-     val effectiveRefreshTypeName = classification.refreshTypeName
-     val emitsCascadeViewDelta    = classification.emitsCascadeViewDelta
+@@ -3105,0 +3110,4 @@ case class CreateMaterializedViewCommand(
 +    profile.timeStep(
 +      "create_compiler_verdict",
 +      s"compiled=${classification.compileRefreshTypeName};effective=$effectiveRefreshTypeName;reason=$classifyReason"
 +    ) { () }
-     OpenIvmExecutionSpan.recordActiveRefreshClassification(
-       compileRefreshType = Some(classification.compileRefreshTypeName),
-       effectiveRefreshType = Some(effectiveRefreshTypeName),

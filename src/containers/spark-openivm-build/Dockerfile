@@ -127,8 +127,10 @@ RUN git init . && \
 # translator must lower qualified interval calls, and Fabric needs the native
 # compiler's C++ runtime alongside the bundled CLI and extension.
 COPY patches/duckdb2-spark-compiler.patch /tmp/duckdb2-spark-compiler.patch
-RUN git apply --check /tmp/duckdb2-spark-compiler.patch && \
-    git apply /tmp/duckdb2-spark-compiler.patch
+# The patch targets the exact OPENIVM_SPARK_COMMIT above; zero-context format
+# keeps the vendored diff free of whitespace-only context lines.
+RUN git apply --unidiff-zero --check /tmp/duckdb2-spark-compiler.patch && \
+    git apply --unidiff-zero /tmp/duckdb2-spark-compiler.patch
 
 WORKDIR /src/spark-ext
 
