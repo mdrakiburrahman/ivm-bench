@@ -262,6 +262,26 @@ index 7aa2e50..cf05285 100644
 +    }
 +  }
 +
+diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
+index a1ab2e6..fdad678 100644
+--- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
++++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
+@@ -254,0 +255,15 @@ class OpenIvmCompilerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
++  it should "translate native struct access and LAG SQL for Spark initial load" in {
++    val result = sharedCompiler.compile(
++      CompileRequest(
++        viewName = "mv_struct_lag",
++        viewSql =
++          "SELECT id, payload.name AS name, LAG(ts) OVER (PARTITION BY id ORDER BY ts) AS prior FROM struct_src",
++        sources = Map("struct_src" -> StructType.fromDDL("id INT, payload STRUCT<name: STRING>, ts TIMESTAMP"))
++      )
++    )
++    val sql = LptsSparkDialect.translate(result.initialLoadSql)
++    sql.toLowerCase(java.util.Locale.ROOT) should not include "system.main"
++    sql.toUpperCase(java.util.Locale.ROOT) should not include "LAG(TS) OVER (PARTITION BY ID ORDER BY TS ROWS"
++    noException should be thrownBy org.apache.spark.sql.catalyst.parser.CatalystSqlParser.parsePlan(sql)
++  }
++
 diff --git a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 index 4e380d5..c1cd4a5 100644
 --- a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
