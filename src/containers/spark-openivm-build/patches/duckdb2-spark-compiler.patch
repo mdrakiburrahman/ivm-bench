@@ -211,7 +211,7 @@ index 7aa2e50..30e0fad 100644
      it("normalizes quoted CAST and TRY_CAST types through nested expressions") {
        val sql = """SELECT CAST(coalesce(TRY_CAST(x AS "DATE"), CAST(NULL AS `DATE`)) AS "DATE"),
 diff --git a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
-index 4e380d5..89f98eb 100644
+index 4e380d5..c1cd4a5 100644
 --- a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 +++ b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 @@ -125,7 +125,7 @@ private[commands] object OpenIvmCompilers {
@@ -232,3 +232,23 @@ index 4e380d5..89f98eb 100644
      cli.setExecutable(true, /* ownerOnly = */ false)
      (ext.getAbsolutePath, cli.getAbsolutePath)
    }
+@@ -2925,6 +2927,8 @@ case class CreateMaterializedViewCommand(
+         )
+       catch {
+         case e: org.openivm.spark.compiler.OpenIvmCompileException =>
++          val compileCause = Option(e.getMessage).getOrElse(e.toString).replace('\n', ' ').take(512)
++          profile.timeStep("create_compile_failure", s"cause=$compileCause") { () }
+           val compileFailedClassification =
+             authoritativeFullRefreshClassification(
+               compileRefreshTypeName = "COMPILE_FAILED",
+@@ -3103,6 +3107,10 @@ case class CreateMaterializedViewCommand(
+     val classifyReason           = classification.reason
+     val effectiveRefreshTypeName = classification.refreshTypeName
+     val emitsCascadeViewDelta    = classification.emitsCascadeViewDelta
++    profile.timeStep(
++      "create_compiler_verdict",
++      s"compiled=${classification.compileRefreshTypeName};effective=$effectiveRefreshTypeName;reason=$classifyReason"
++    ) { () }
+     OpenIvmExecutionSpan.recordActiveRefreshClassification(
+       compileRefreshType = Some(classification.compileRefreshTypeName),
+       effectiveRefreshType = Some(effectiveRefreshTypeName),
