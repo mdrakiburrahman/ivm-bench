@@ -123,6 +123,13 @@ RUN git init . && \
     git fetch --depth 1 origin "${OPENIVM_SPARK_COMMIT}" && \
     git checkout -q FETCH_HEAD
 
+# Keep this DuckDB 2.0 compatibility fix with the benchmark pin. The Spark
+# translator must lower qualified interval calls, and Fabric needs the native
+# compiler's C++ runtime alongside the bundled CLI and extension.
+COPY patches/duckdb2-spark-compiler.patch /tmp/duckdb2-spark-compiler.patch
+RUN git apply --check /tmp/duckdb2-spark-compiler.patch && \
+    git apply /tmp/duckdb2-spark-compiler.patch
+
 WORKDIR /src/spark-ext
 
 ENV SBT_OPTS="-Xmx4g -XX:+UseG1GC"
@@ -137,11 +144,13 @@ ENV OPENIVM_SPARK_TARGET=spark-3.5
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
 # orchestrator's plain `docker compose build` invocation, so we accept a
 # slower cold cache here — sbt will re-fetch deps when the builder image changes.
-RUN sbt -batch ivmExtension/assembly && \
+RUN sbt -batch 'ivmCompiler/testOnly org.openivm.spark.compiler.LptsSparkDialectSpec' ivmExtension/assembly && \
     find /src/spark-ext -name 'ivmExtension-*-assembly.jar' -path '*/scala-2.12/*' -exec cp {} /tmp/openivm-extension.jar \;
 
 # Sanity check.
-RUN test -s /tmp/openivm-extension.jar
+RUN test -s /tmp/openivm-extension.jar && \
+    jar tf /tmp/openivm-extension.jar | grep -Fq openivm-native/libstdc++.so.6 && \
+    jar tf /tmp/openivm-extension.jar | grep -Fq openivm-native/libgcc_s.so.1
 
 # -----------------------------------------------------------------------------
 # Stage 3: final runtime image.

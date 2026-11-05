@@ -1,0 +1,234 @@
+diff --git a/spark-ext/build.sbt b/spark-ext/build.sbt
+index e9dfb59..0ef05a9 100644
+--- a/spark-ext/build.sbt
++++ b/spark-ext/build.sbt
+@@ -99,7 +99,7 @@ lazy val ivmExtension = (project in file("ivm-extension"))
+         case Some(dir) =>
+           val outDir = (Compile / resourceManaged).value / "openivm-native"
+           IO.createDirectory(outDir)
+-          Seq("duckdb", "openivm.duckdb_extension").flatMap { name =>
++          Seq("duckdb", "openivm.duckdb_extension", "libstdc++.so.6", "libgcc_s.so.1").flatMap { name =>
+             val src = file(dir) / name
+             if (!src.exists())
+               sys.error(s"OPENIVM_NATIVE_DIR set but missing native binary: $src")
+diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
+index 9e9b616..a1f7d50 100644
+--- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
++++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
+@@ -144,7 +144,8 @@ object LptsSparkDialect {
+                             rewriteTimestampWithTimeZone(
+                               rewriteSparkFunctionInlinings(
+                                 rewriteToTimestampDoubleCast(
+-                                  rewriteNowTimestamp(rewriteLikeOperators(rewriteQuotedCastTypes(sql)))
++                                  rewriteNowTimestamp(rewriteLikeOperators(rewriteQuotedCastTypes(
++                                    SparkFunctionShimSql.rewriteQualifiedSystemIntervals(sql))))
+                                 )
+                               )
+                             )
+@@ -264,87 +265,9 @@ object LptsSparkDialect {
+     }
+   }
+ 
+-  /** Rewrites DuckDB's `to_<unit>(N)` interval constructors to Spark's
+-    * `INTERVAL N <UNIT>` syntax. openivm emits these forms when a user view
+-    * body uses `INTERVAL N <unit>` and the LPTS pipeline serializes the
+-    * bound AST in DuckDB's preferred form (e.g. `INTERVAL 1 MILLISECOND`
+-    * round-trips as `to_milliseconds(CAST(1 AS DOUBLE))`).
+-    *
+-    * Supported units (matching DuckDB's interval-helper functions):
+-    *   - to_milliseconds(N)  → INTERVAL N MILLISECOND
+-    *   - to_seconds(N)       → INTERVAL N SECOND
+-    *   - to_minutes(N)       → INTERVAL N MINUTE
+-    *   - to_hours(N)         → INTERVAL N HOUR
+-    *   - to_days(N)          → INTERVAL N DAY
+-    *   - to_months(N)        → INTERVAL N MONTH
+-    *   - to_years(N)         → INTERVAL N YEAR
+-    *
+-    * The argument can be any expression with balanced parentheses (e.g.
+-    * `1`, `CAST(1 AS DOUBLE)`, `<column>`). Spark's `INTERVAL <expr> <UNIT>`
+-    * accepts any numeric expression as long as the value can be evaluated to
+-    * a numeric constant — for column refs, the user should use multiplication
+-    * `<col> * INTERVAL 1 MILLISECOND` instead, but the LPTS-emitted form
+-    * never uses column args here, just CAST'd literals.
+-    */
+-  private[compiler] def rewriteToTemporalUnit(sql: String): String = {
+-    val unitMap = Seq(
+-      "milliseconds" -> "MILLISECOND",
+-      "seconds"      -> "SECOND",
+-      "minutes"      -> "MINUTE",
+-      "hours"        -> "HOUR",
+-      "days"         -> "DAY",
+-      "months"       -> "MONTH",
+-      "years"        -> "YEAR"
+-    )
+-    // Helper: extract the balanced-paren argument starting at `start` (which
+-    // should be the opening `(` index). Returns the argument substring and
+-    // the index just past the closing `)`, or (None, -1) if unbalanced.
+-    def extractBalancedArg(s: String, openIdx: Int): (Option[String], Int) = {
+-      if (openIdx >= s.length || s.charAt(openIdx) != '(') return (None, -1)
+-      var depth    = 1
+-      var i        = openIdx + 1
+-      val argStart = i
+-      while (i < s.length && depth > 0) {
+-        s.charAt(i) match {
+-          case '(' => depth += 1
+-          case ')' => depth -= 1
+-          case _   => ()
+-        }
+-        if (depth > 0) i += 1
+-      }
+-      if (depth != 0) (None, -1)
+-      else (Some(s.substring(argStart, i)), i + 1)
+-    }
+-    var s = sql
+-    for ((fn, unit) <- unitMap) {
+-      val callRe  = ("(?i)\\bto_" + fn + "\\s*(?=\\()").r
+-      var changed = true
+-      while (changed) {
+-        changed = false
+-        callRe.findFirstMatchIn(s) match {
+-          case None =>
+-            ()
+-          case Some(m) =>
+-            val (argOpt, endIdx) = extractBalancedArg(s, m.end)
+-            argOpt match {
+-              case Some(arg) =>
+-                val before = s.substring(0, m.start)
+-                val after  = s.substring(endIdx)
+-                // Use Spark's `<expr> * INTERVAL 1 <UNIT>` form because Spark
+-                // 3.5's `INTERVAL <expr> <UNIT>` requires the expression to be
+-                // a literal — openivm/lpts emits `to_milliseconds(CAST(1 AS
+-                // DOUBLE))` for `INTERVAL 1 MILLISECOND`, so the arg is rarely
+-                // a bare literal.
+-                val argTrim = arg.trim
+-                s = s"${before}(($argTrim) * INTERVAL 1 $unit)$after"
+-                changed = true
+-              case None => ()
+-            }
+-        }
+-      }
+-    }
+-    s
+-  }
++  /** Rewrites DuckDB interval constructors using the shared quote-aware SQL scanner. */
++  private[compiler] def rewriteToTemporalUnit(sql: String): String =
++    SparkFunctionShimSql.rewriteTemporalUnitConstructors(sql)
+ 
+   // ── Individual passes ────────────────────────────────────────────────────────
+ 
+diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
+index 727217f..842ff07 100644
+--- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
++++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
+@@ -34,6 +34,54 @@ private[compiler] object SparkFunctionShimSql {
+   private val OneArgToDateLiteral      = "'%Y-%m-%d'"
+   private val OneArgToTimestampLiteral = "'%Y-%m-%d %H:%M:%S'"
+ 
++  private val QualifiedSystemAdd =
++    """(?i)(?:"system"|`system`|system)\s*\.\s*(?:"main"|`main`|main)\s*\.\s*(?:"add"|`add`|add)""".r.pattern
++  private val QualifiedSystemInterval =
++    """(?i)(?:"system"|`system`|system)\s*\.\s*(?:"main"|`main`|main)\s*\.\s*(?:"(to_(?:microseconds|milliseconds|seconds|minutes|hours|days|months|years))"|`(to_(?:microseconds|milliseconds|seconds|minutes|hours|days|months|years))`|(to_(?:microseconds|milliseconds|seconds|minutes|hours|days|months|years)))""".r.pattern
++
++  /** DuckDB 2.0 serializes interval arithmetic as system.main.add(interval,
++    * interval) and system.main.to_<unit>(n). Restore ordinary SQL expressions
++    * before Spark dialect rewrites; preserve strings, comments and identifiers.
++    */
++  private[compiler] def rewriteQualifiedSystemIntervals(sql: String): String =
++    rewriteOutsideProtected(sql, protectDoubleQuotes = false) { i =>
++      val boundary = i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
++      if (!boundary) None
++      else {
++        val add = QualifiedSystemAdd.matcher(sql).region(i, sql.length)
++        if (add.lookingAt()) {
++          parseFunctionCall(sql, add.end()).filter(_.topLevelCommaCount == 1).flatMap { call =>
++            splitTopLevelArgs(sql, call).collect { case Seq(left, right) =>
++              val lhs = rewriteQualifiedSystemIntervals(sql.substring(left._1, left._2).trim)
++              val rhs = rewriteQualifiedSystemIntervals(sql.substring(right._1, right._2).trim)
++              (call.closeParen + 1, s"(($lhs) + ($rhs))")
++            }
++          }
++        } else {
++          val unit = QualifiedSystemInterval.matcher(sql).region(i, sql.length)
++          if (unit.lookingAt() && parseFunctionCall(sql, unit.end()).isDefined)
++            Some(unit.end() -> Seq(unit.group(1), unit.group(2), unit.group(3)).find(_ != null).get)
++          else None
++        }
++      }
++    }
++
++  private val TemporalUnitCall = """(?i)to_(microseconds|milliseconds|seconds|minutes|hours|days|months|years)""".r.pattern
++
++  private[compiler] def rewriteTemporalUnitConstructors(sql: String): String =
++    rewriteOutsideProtected(sql, protectBackticks = true) { i =>
++      val boundary = i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
++      if (!boundary) None
++      else {
++        val unit = TemporalUnitCall.matcher(sql).region(i, sql.length)
++        if (!unit.lookingAt()) None
++        else parseFunctionCall(sql, unit.end()).filter(_.topLevelCommaCount == 0).map { call =>
++          val arg = rewriteTemporalUnitConstructors(call.args(sql)).trim
++          (call.closeParen + 1, s"(($arg) * INTERVAL 1 ${unit.group(1).dropRight(1).toUpperCase(java.util.Locale.ROOT)})")
++        }
++      }
++    }
++
+   private val sparkFunctionRenameRules: Map[String, RenameRule] = Map(
+     "to_date" -> RenameRule(
+       Map(
+diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
+index 7aa2e50..30e0fad 100644
+--- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
++++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
+@@ -10,6 +10,30 @@ import org.scalatest.matchers.should.Matchers
+   */
+ class LptsSparkDialectSpec extends AnyFunSpec with Matchers {
+ 
++  describe("DuckDB 2.0 qualified interval functions") {
++    it("translates the initial-load interval expression without catalog-qualified functions") {
++      val sql = """SELECT ts - "system".main."add"("system".main."add"(
++        |"system".main.to_months(0), "system".main.to_days(0)),
++        |"system".main.to_microseconds(CAST(1000 AS BIGINT))) AS shifted FROM t""".stripMargin
++      val translated = LptsSparkDialect.translate(sql)
++      translated should include("INTERVAL 1 MONTH")
++      translated should include("INTERVAL 1 DAY")
++      translated should include("INTERVAL 1 MICROSECOND")
++      translated should not include "system"
++      translated should not include "add("
++      LptsSparkDialect.translate(translated) shouldBe translated
++    }
++
++    it("leaves quoted identifiers, strings, and comments alone") {
++      val sql = """SELECT 'system.main.add(1, 2)', "system.main.add", x
++        |-- system.main.add(1, 2)
++        |/* system.main.to_days(1) */ FROM t""".stripMargin
++      LptsSparkDialect.translate(sql) should include("'system.main.add(1, 2)'")
++      LptsSparkDialect.translate(sql) should include("/* system.main.to_days(1) */")
++      LptsSparkDialect.translate(sql) should include("\"system.main.add\"")
++    }
++  }
++
+   describe("rewriteQuotedCastTypes") {
+     it("normalizes quoted CAST and TRY_CAST types through nested expressions") {
+       val sql = """SELECT CAST(coalesce(TRY_CAST(x AS "DATE"), CAST(NULL AS `DATE`)) AS "DATE"),
+diff --git a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
+index 4e380d5..89f98eb 100644
+--- a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
++++ b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
+@@ -125,7 +125,7 @@ private[commands] object OpenIvmCompilers {
+       OpenIvmCompiler.build(
+         extensionPath = extPath,
+         cliPath = cliPath,
+-        nativeLibraryPath = cliLibraryPath
++        nativeLibraryPath = cliLibraryPath.orElse(Option(new java.io.File(cliPath).getParent))
+       )
+     }
+   }
+@@ -159,6 +159,8 @@ private[commands] object OpenIvmCompilers {
+ 
+     extract("/openivm-native/openivm.duckdb_extension", ext)
+     extract("/openivm-native/duckdb", cli)
++    extract("/openivm-native/libstdc++.so.6", new java.io.File(localDir, "libstdc++.so.6"))
++    extract("/openivm-native/libgcc_s.so.1", new java.io.File(localDir, "libgcc_s.so.1"))
+     cli.setExecutable(true, /* ownerOnly = */ false)
+     (ext.getAbsolutePath, cli.getAbsolutePath)
+   }
