@@ -86,8 +86,14 @@ images from those immutable views without copying histories or event pools into
 working tables. Update/delete modes retain mutable planning tables. After export,
 preparation removes its three scratch databases before starting an engine; the
 Parquet plan, checksums, source statistics and configuration remain available.
+Shared preparation tables use integer account/item keys and reconstruct long
+paths in views. Engagement ranking sorts binary hashes and integer row handles;
+hash collisions use the original full-path tie-breaker. Exact identity checks
+compare adjacent sorted binary keys instead of allocating a global distinct set.
 Parquet images use Zstandard level 1 compression and retain the same typed
-columns and physical row-ID ordering; readers receive the original source values.
+columns and source values. Physical file order is unspecified: event ordering is
+defined by the original timestamps and SQL ordering columns, and refresh batches
+remain unchanged. Export no longer globally sorts wide rows by their MD5 IDs.
 This changes preparation storage, not source row counts, keys, values, or model SQL.
 At SF25 the native profile still represents about 2.16 billion source rows, so
 SF25 must not be interpreted as a 25 GB cap on this extended workload.

@@ -103,7 +103,7 @@ def file_checksum(path):
 
 
 def export_rows(connection, sql, path, root):
-    connection.execute(f"COPY ({sql} ORDER BY _source_row_id) TO {quote(path)} (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 1)")
+    connection.execute(f"COPY ({sql}) TO {quote(path)} (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 1)")
     rows = connection.execute(f"SELECT count(*) FROM read_parquet({quote(path)})").fetchone()[0]
     return {"path": str(path.relative_to(root)), "rows": rows,
             "sha256": file_checksum(path)}

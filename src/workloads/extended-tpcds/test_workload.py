@@ -1,6 +1,9 @@
 """Execute the workload over small TPC-DS-shaped inputs, without downloads."""
 
 import json
+import hashlib
+import math
+import tempfile
 import unittest
 from decimal import Decimal
 from datetime import date
@@ -39,6 +42,40 @@ def fixture():
 
 
 class WorkloadTests(unittest.TestCase):
+    def test_binary_key_count_with_small_budget_retains_null_and_duplicate_semantics(self):
+        with tempfile.TemporaryDirectory() as folder, duckdb.connect(config={
+            'memory_limit':'64MB', 'threads':1, 'temp_directory':folder,
+            'max_temp_directory_size':'1GB',
+        }) as connection:
+            counts = generate.key_counts(connection, """SELECT md5(n::VARCHAR)::UUID AS key
+                FROM range(2000000) t(n) UNION ALL SELECT md5('0')::UUID
+                UNION ALL SELECT md5('1')::UUID UNION ALL SELECT NULL::UUID""")
+            self.assertEqual(counts, (2000003, 2000000))
+
+    def test_compact_engagements_match_original_ranking_including_hash_collisions(self):
+        for profile, collide in [('native',False), ('calibrated',False), ('native',True)]:
+            with self.subTest(profile=profile, collide=collide), fixture() as connection:
+                if collide:
+                    def test_md5(value):
+                        return '0'*32 if value.startswith('17:/accounts/') else hashlib.md5(value.encode()).hexdigest()
+                    connection.create_function('test_md5', test_md5, ['VARCHAR'], 'VARCHAR')
+                    connection.execute('CREATE MACRO md5(value) AS test_md5(value)')
+                config = generate.prepare(connection, 'base', profile=profile, report_date=date(2002,12,31))
+                reference = connection.execute("""SELECT *, row_number() OVER (
+                    ORDER BY md5('17:' || engagement_path), engagement_path) AS engagement_number
+                    FROM (SELECT engagement_path, engagement_registry_key, account_id, customer_path,
+                        household_id, household_cohort, item_id,
+                        min(purchase_line_id) AS origin_purchase_line_id,
+                        min(event_time) AS first_event, max(event_time) AS last_event, count(*) AS purchase_lines
+                        FROM xt_purchase GROUP BY ALL) e
+                    ORDER BY engagement_number""").fetchall()
+                eligible = (math.ceil(len(reference)*config['calibration_target_values']['purchase_relationship_metadata_fraction'])
+                            if profile=='calibrated' else len(reference))
+                expected = [(*row, row[-1]<=eligible) for row in reference]
+                actual = connection.execute('SELECT * FROM xt_engagements ORDER BY engagement_number').fetchall()
+                self.assertEqual(actual, expected)
+                self.assertEqual(connection.execute("SELECT count(*) FROM information_schema.columns WHERE table_name='xt_engagement_keys' AND column_name IN ('engagement_path','engagement_registry_key','account_id','customer_path')").fetchone()[0], 0)
+
     def test_source_projections_preserve_tables_keys_and_statistics(self):
         for profile in ('native', 'calibrated', 'jcc_stress'):
             with self.subTest(profile=profile), fixture() as tables, fixture() as views:

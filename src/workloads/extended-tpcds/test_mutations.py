@@ -19,7 +19,7 @@ from test_workload import fixture
 
 
 class MutationTests(unittest.TestCase):
-    def test_export_compression_preserves_types_nulls_duplicates_and_order(self):
+    def test_export_compression_preserves_types_nulls_and_duplicates(self):
         with tempfile.TemporaryDirectory() as folder, duckdb.connect() as connection:
             root = Path(folder)
             connection.execute("""CREATE TABLE input AS SELECT * FROM (VALUES
@@ -30,7 +30,7 @@ class MutationTests(unittest.TestCase):
             image = mutations.export_rows(connection, 'SELECT * FROM input', root / 'rows.parquet', root)
             expected = connection.execute('SELECT * FROM input ORDER BY _source_row_id').fetchall()
             expected_types = connection.description
-            actual = connection.execute('SELECT * FROM read_parquet(?)', [str(root / image['path'])]).fetchall()
+            actual = connection.execute('SELECT * FROM read_parquet(?) ORDER BY _source_row_id', [str(root / image['path'])]).fetchall()
             self.assertEqual(actual, expected)
             self.assertEqual(connection.description, expected_types)
             self.assertEqual(image['rows'], 3)

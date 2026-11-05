@@ -16,6 +16,13 @@ def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def key_counts(connection, query):
+    """Count rows and distinct non-null keys using a spillable fixed-width sort."""
+    return connection.execute(f"""SELECT count(*), count(*) FILTER (
+        WHERE key IS NOT NULL AND (previous IS NULL OR key<>previous))
+        FROM (SELECT key, lag(key) OVER (ORDER BY key) AS previous FROM ({query}) keys) ordered""").fetchone()
+
+
 def prepare(connection, base_schema, profile="native", seed=17, report_date=None,
             history_months=12, accounts_per_customer=2, metadata_versions=2,
             base_scale_factor=None, base_generator=None, source_views=False):
@@ -84,28 +91,62 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
               FROM (SELECT c_customer_id AS customer_id FROM {base_schema}.customer
                     UNION SELECT 'unknown')) c""")
     execute(f"""CREATE TABLE xt_accounts AS
-        SELECT c.*, 'account:' || lower(customer_id) || ':' || slot::VARCHAR AS account_id
+        SELECT c.*, 'account:' || lower(customer_id) || ':' || slot::VARCHAR AS account_id,
+               (customer_number-1)*{accounts_per_customer}+slot AS _account_number
         FROM xt_customers c CROSS JOIN range({accounts_per_customer}) s(slot)""")
+    execute(f"""CREATE TABLE xt_items AS
+        SELECT item_id, row_number() OVER (ORDER BY item_id) AS _item_number
+        FROM (SELECT coalesce(i_item_id,'unknown') AS item_id FROM {base_schema}.item UNION SELECT 'unknown') items""")
     slot = f"floor({random_fraction('p.channel || p.order_id')} * {accounts_per_customer})::INTEGER"
-    execute(f"""CREATE TABLE xt_purchase AS
-        SELECT p.*, a.account_id, a.customer_path, a.household_id, a.household_cohort,
-               '/accounts/' || a.account_id || '/engagements/' || lower(p.item_id) AS engagement_path,
-               md5(a.account_id || ':' || lower(p.item_id)) AS engagement_registry_key
+    execute(f"""CREATE TABLE xt_purchase_keys AS
+        SELECT p.*, a._account_number, i._item_number
         FROM normalized_purchase p
         JOIN xt_accounts a ON p.customer_id=a.customer_id AND a.account_id='account:' || lower(p.customer_id) || ':' || {slot}
+        JOIN xt_items i ON p.item_id=i.item_id
         WHERE NOT p.missing_date""")
-    execute(f"""CREATE TABLE xt_engagements AS
-        SELECT *, row_number() OVER (ORDER BY md5({quote(seed)} || ':' || engagement_path), engagement_path) AS engagement_number
-        FROM (SELECT engagement_path, engagement_registry_key, account_id, customer_path, household_id, household_cohort,
-                     item_id, min(purchase_line_id) AS origin_purchase_line_id, min(event_time) AS first_event,
+    execute("""CREATE VIEW xt_purchase AS
+        SELECT p.* EXCLUDE (_account_number,_item_number),
+               a.account_id, a.customer_path, a.household_id, a.household_cohort,
+               '/accounts/' || a.account_id || '/engagements/' || lower(p.item_id) AS engagement_path,
+               md5(a.account_id || ':' || lower(p.item_id)) AS engagement_registry_key
+        FROM xt_purchase_keys p JOIN xt_accounts a USING (_account_number)""")
+    execute("""CREATE TABLE xt_engagement_keys AS
+        SELECT row_number() OVER () AS _engagement_key, *
+        FROM (SELECT _account_number, _item_number,
+                     min(purchase_line_id) AS origin_purchase_line_id, min(event_time) AS first_event,
                      max(event_time) AS last_event, count(*) AS purchase_lines
-              FROM xt_purchase GROUP BY ALL) e""")
+              FROM xt_purchase_keys GROUP BY _account_number,_item_number) e""")
+    # Sort only a binary hash and an integer row handle, not the wide entity.
+    # UUID ordering matches lower-case MD5 hex ordering. Resolve actual hash
+    # collisions with the original full-path tie-breaker before publishing ranks.
+    path = "'/accounts/' || a.account_id || '/engagements/' || lower(i.item_id)"
+    rank_input = f"""FROM xt_engagement_keys e
+        JOIN xt_accounts a USING (_account_number) JOIN xt_items i USING (_item_number)"""
+    execute(f"""CREATE TABLE xt_engagement_order AS
+        SELECT _engagement_key, row_number() OVER w AS engagement_number,
+               key=lag(key) OVER w AS hash_collision
+        FROM (SELECT _engagement_key, md5({quote(seed)} || ':' || {path})::UUID AS key {rank_input}) keys
+        WINDOW w AS (ORDER BY key)""")
+    if connection.execute("SELECT count(*) FROM xt_engagement_order WHERE hash_collision").fetchone()[0]:
+        execute(f"""CREATE OR REPLACE TABLE xt_engagement_order AS
+            SELECT _engagement_key,
+                   row_number() OVER (ORDER BY md5({quote(seed)} || ':' || {path}), {path}) AS engagement_number
+            {rank_input}""")
+    execute("ALTER TABLE xt_engagement_keys ADD COLUMN engagement_number BIGINT")
+    execute("""UPDATE xt_engagement_keys SET engagement_number=r.engagement_number
+        FROM xt_engagement_order r WHERE xt_engagement_keys._engagement_key=r._engagement_key""")
+    execute("DROP TABLE xt_engagement_order")
     references = json.loads((HERE / "profiles.json").read_text())
     targets = {r["metric"]: r["value"] for r in references["measured_reference_targets"]}
-    entity_count = connection.execute("SELECT count(*) FROM xt_engagements").fetchone()[0]
+    entity_count = connection.execute("SELECT count(*) FROM xt_engagement_keys").fetchone()[0]
     eligible_count = math.ceil(entity_count * targets["purchase_relationship_metadata_fraction"]) if profile == "calibrated" else entity_count
-    execute(f"ALTER TABLE xt_engagements ADD COLUMN eligible_relationship BOOLEAN DEFAULT FALSE")
-    execute(f"UPDATE xt_engagements SET eligible_relationship=(engagement_number <= {eligible_count})")
+    execute(f"""CREATE VIEW xt_engagements AS
+        SELECT {path} AS engagement_path,
+               md5(a.account_id || ':' || lower(i.item_id)) AS engagement_registry_key,
+               a.account_id, a.customer_path, a.household_id, a.household_cohort, i.item_id,
+               e.origin_purchase_line_id, e.first_event, e.last_event, e.purchase_lines,
+               e.engagement_number, e.engagement_number<={eligible_count} AS eligible_relationship
+        {rank_input}""")
     if profile == "calibrated":
         density = targets["status_events_per_engagement_collection_key"]
         base_events = math.floor(density)
@@ -143,7 +184,7 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
         columns = ", ".join(f"CAST({column} AS {kind}) AS {column}" for column, kind in schema[name].items())
         kind = "VIEW" if source_views else "TABLE"
         execute(f"CREATE {kind} {name} AS SELECT md5({quote(name)} || ':' || row_key) AS _source_row_id, {columns} FROM ({sql}) generated")
-        total, unique = connection.execute(f"SELECT count(*), count(DISTINCT _source_row_id) FROM {name}").fetchone()
+        total, unique = key_counts(connection, f"SELECT _source_row_id::UUID AS key FROM {name}")
         if total != unique:
             raise ValueError(f"duplicate physical identities in {name}")
 
@@ -289,9 +330,15 @@ def statistics(connection):
     sources = json.loads((HERE / "source-schema.json").read_text())
     tables = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in sources}
     normalized = connection.execute("SELECT count(*), sum(missing_customer)::BIGINT, sum(missing_item)::BIGINT, sum(missing_date)::BIGINT FROM normalized_purchase").fetchone()
-    status_rows, keys = connection.execute("SELECT count(*), count(DISTINCT engagement_registry_key) FROM xt_status_events").fetchone()
-    cohorts = connection.execute("""SELECT e.household_cohort, count(*) AS events, count(DISTINCT e.engagement_registry_key) AS keys
-        FROM xt_status_events s JOIN xt_engagements e USING(engagement_registry_key) GROUP BY 1 ORDER BY 1""").fetchall()
+    status_rows, keys = key_counts(connection, "SELECT engagement_registry_key::UUID AS key FROM xt_status_events")
+    cohorts = connection.execute("""SELECT household_cohort, count(*) AS events,
+        count(*) FILTER (WHERE key IS NOT NULL AND (previous IS NULL OR key<>previous)) AS keys
+        FROM (SELECT e.household_cohort, s.engagement_registry_key::UUID AS key,
+                     lag(s.engagement_registry_key::UUID) OVER (
+                         PARTITION BY e.household_cohort ORDER BY s.engagement_registry_key::UUID) AS previous
+              FROM xt_status_events s JOIN xt_engagements e
+                ON s.engagement_registry_key::UUID=e.engagement_registry_key::UUID) ordered
+        GROUP BY 1 ORDER BY 1""").fetchall()
     hot_share = connection.execute("SELECT count(*) FILTER (WHERE origin='synthetic_jcc_assignment')::DOUBLE / nullif(count(*),0) FROM xt_status_events").fetchone()[0]
     config = json.loads(connection.execute("SELECT configuration FROM xt_run").fetchone()[0])
     references = json.loads((HERE / "profiles.json").read_text())["measured_reference_targets"]

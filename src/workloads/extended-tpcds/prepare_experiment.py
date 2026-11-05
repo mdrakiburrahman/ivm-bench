@@ -30,7 +30,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
         "threads": int(os.environ.get("DUCKDB_THREADS", "4")),
         "max_temp_directory_size": os.environ.get("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", "4GB"),
     }
-    recipe = {"preparation_version": 3, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
+    recipe = {"preparation_version": 4, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
               "steps": steps, "duckdb_generator_version": duckdb.__version__}
     metadata = directory / "preparation.json"
     if metadata.is_file():
@@ -63,7 +63,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
             connection.execute("ROLLBACK")
             raise
     # Insert-only planning reads immutable projections. Updates/deletes still
-    # need disk-backed working tables so planning can evict them while sorting.
+    # need disk-backed working tables so planning can evict them during replay.
     insert_only = options["mode"] in ("insertion", "repeated_insertions")
     with duckdb.connect(str(directory / "planning.duckdb"), config=resources) as connection:
         connection.execute("ATTACH " + generate.quote(base_path) + " AS raw (READ_ONLY)")
@@ -72,7 +72,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
             with stage(f"{'bind' if insert_only else 'copy'} source {table}"):
                 kind = "VIEW" if insert_only else "TABLE"
                 connection.execute(f"CREATE {kind} {table} AS SELECT * FROM canonical.main.{table}")
-        with stage("refresh planning and sorted exports"):
+        with stage("refresh planning and exports"):
             manifest = mutations.plan(connection, directory / "plan", mode=options["mode"],
                                       initial_pct=initial_pct, steps=steps, days=options["days"],
                                       seed=options["seed"], mutation_cohort=options["mutation_cohort"],
