@@ -110,9 +110,11 @@ def export_rows(connection, sql, path, root):
 
 
 def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=None,
-         days=3, seed=17, mutation_cohort="all"):
+         days=3, seed=17, mutation_cohort="all", mutate_source=True):
     if mode not in MODES:
         raise ValueError("unknown mutation mode")
+    if not mutate_source and mode not in ("insertion", "repeated_insertions"):
+        raise ValueError("read-only planning requires an insert-only mode")
     if type(days) is not int or days < 1:
         raise ValueError("days must be a positive integer")
     if type(seed) is not int:
@@ -162,13 +164,19 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
     # A frozen source pool gives repetitions a fixed denominator and lets days
     # replay withheld arrivals instead of inventing a moving reporting clock.
     for table in EVENT_DATES:
-        connection.execute(f"CREATE TEMP TABLE pool_{table} AS SELECT * FROM {table}")
+        kind = "TABLE" if mutate_source else "VIEW"
+        connection.execute(f"CREATE TEMP {kind} pool_{table} AS SELECT * FROM {table}")
         predicate = f"{score(seed, 1)} < {initial_width}"
         if mode == "days":
             predicate += f" AND {EVENT_DATES[table]} < DATE {quote(start)}"
-        connection.execute(f"DELETE FROM {table} WHERE NOT coalesce(({predicate}),FALSE)")
+        if mutate_source:
+            connection.execute(f"DELETE FROM {table} WHERE NOT coalesce(({predicate}),FALSE)")
     for table in sources():
-        manifest["initial"][table] = export_rows(connection, f"SELECT * FROM {table}", directory / "initial" / f"{table}.parquet", directory)
+        sql = f"SELECT * FROM {table}"
+        if not mutate_source and table in EVENT_DATES:
+            sql += f" WHERE {score(seed, 1)} < {initial_width}"
+        manifest["initial"][table] = export_rows(connection, sql, directory / "initial" / f"{table}.parquet", directory)
+    row_counts = {table: image["rows"] for table, image in manifest["initial"].items()}
     for number, step in enumerate(steps, 2):
         batch_path = directory / f"batch{number}"
         batch_path.mkdir()
@@ -211,11 +219,16 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
             # Restrict both synthetic copies and original daily arrivals by the
             # mutation binding; query bindings are independent of this setting.
             sql += " AND " + cohort_predicate(table, mutation_cohort)
-            connection.execute("CREATE OR REPLACE TEMP TABLE changes AS " + sql)
-            after = export_rows(connection, "SELECT * FROM changes", batch_path / f"{table}.insert.after.parquet", directory)
-            connection.execute(f"INSERT INTO {table} SELECT * FROM changes")
+            if mutate_source:
+                connection.execute("CREATE OR REPLACE TEMP TABLE changes AS " + sql)
+                sql = "SELECT * FROM changes"
+            after = export_rows(connection, sql, batch_path / f"{table}.insert.after.parquet", directory)
+            if mutate_source:
+                connection.execute(f"INSERT INTO {table} SELECT * FROM changes")
+            row_counts[table] += after["rows"]
             summary["operations"].append({"table": table, "kind": "insert", "before": None, "after": after})
-        summary["source_rows"] = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in sources()}
+        summary["source_rows"] = ({table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in sources()}
+                                  if mutate_source else dict(row_counts))
         manifest["batches"].append(summary)
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest

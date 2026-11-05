@@ -19,6 +19,40 @@ from test_workload import fixture
 
 
 class MutationTests(unittest.TestCase):
+    def test_read_only_insert_plans_match_mutable_plans_without_changing_sources(self):
+        for mode in ('insertion', 'repeated_insertions'):
+            for initial, cohort in [('0', 'all'), ('50', 'hot'), ('100', 'cold')]:
+                with self.subTest(mode=mode, initial=initial, cohort=cohort), tempfile.TemporaryDirectory() as folder:
+                    manifests = []
+                    for compact in (False, True):
+                        with fixture() as connection:
+                            generate.prepare(connection, 'base', report_date=date(2002, 12, 31), source_views=compact)
+                            before = generate.statistics(connection)
+                            step = {'insert_pct':'30', 'update_pct':'0', 'delete_pct':'0'}
+                            manifests.append(mutations.plan(connection, Path(folder) / str(compact), mode=mode,
+                                                            initial_pct=initial, steps=[step, step],
+                                                            mutation_cohort=cohort, mutate_source=not compact))
+                            if compact:
+                                self.assertEqual(generate.statistics(connection), before)
+                                self.assertEqual(connection.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE 'pool_%' OR table_name='changes'").fetchone()[0], 0)
+                    # Parquet encodings may differ between a stored table and a
+                    # projection. Compare schemas, ordered rows and plan metadata.
+                    with duckdb.connect() as check:
+                        for path in (Path(folder) / 'False').rglob('*.parquet'):
+                            other = Path(folder) / 'True' / path.relative_to(Path(folder) / 'False')
+                            expected = check.execute('SELECT * FROM read_parquet(?) ORDER BY _source_row_id', [str(path)]).fetchall()
+                            schema = check.description
+                            actual = check.execute('SELECT * FROM read_parquet(?) ORDER BY _source_row_id', [str(other)]).fetchall()
+                            self.assertEqual(check.description, schema, str(path))
+                            self.assertEqual(actual, expected, str(path))
+                    without_encoding = lambda value: json.loads(json.dumps(value), object_hook=lambda obj: {k:v for k,v in obj.items() if k != 'sha256'})
+                    self.assertEqual(without_encoding(manifests[0]), without_encoding(manifests[1]))
+
+    def test_read_only_planning_rejects_modes_requiring_source_mutations(self):
+        for mode in ('mixed', 'updates', 'deletes', 'days'):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'insert-only'):
+                mutations.plan(None, 'unused', mode=mode, mutate_source=False)
+
     def test_cli_imports_existing_experiment_percentages_and_checks_scale(self):
         with tempfile.TemporaryDirectory() as folder, fixture() as connection:
             root = Path(folder)

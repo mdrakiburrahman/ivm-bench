@@ -80,6 +80,16 @@ each batch use typed Parquet row images, checksums and a JSON manifest. The sour
 pool is prepared outside measured model execution. The report date stays fixed
 in every mode, including days mode.
 
+OAT preparation represents the 18 wide sources as typed views over shared
+entity/event tables. Insert-only planning streams initial and refresh Parquet
+images from those immutable views without copying histories or event pools into
+working tables. Update/delete modes retain mutable planning tables. After export,
+preparation removes its three scratch databases before starting an engine; the
+Parquet plan, checksums, source statistics and configuration remain available.
+This changes preparation storage, not source row counts, keys, values, or model SQL.
+At SF25 the native profile still represents about 2.16 billion source rows, so
+SF25 must not be interpreted as a 25 GB cap on this extended workload.
+
 | Mode | Changes after initial construction |
 | --- | --- |
 | `insertion` | A seeded selection of event-feed payloads receives fresh physical IDs; selection varies per batch |

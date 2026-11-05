@@ -18,7 +18,7 @@ def quote(value):
 
 def prepare(connection, base_schema, profile="native", seed=17, report_date=None,
             history_months=12, accounts_per_customer=2, metadata_versions=2,
-            base_scale_factor=None, base_generator=None):
+            base_scale_factor=None, base_generator=None, source_views=False):
     if profile not in ("native", "calibrated", "jcc_stress"):
         raise ValueError("unknown profile")
     if any(type(value) is not int or value < 1 for value in
@@ -141,7 +141,8 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
 
     def source(name, sql):
         columns = ", ".join(f"CAST({column} AS {kind}) AS {column}" for column, kind in schema[name].items())
-        execute(f"CREATE TABLE {name} AS SELECT md5({quote(name)} || ':' || row_key) AS _source_row_id, {columns} FROM ({sql}) generated")
+        kind = "VIEW" if source_views else "TABLE"
+        execute(f"CREATE {kind} {name} AS SELECT md5({quote(name)} || ':' || row_key) AS _source_row_id, {columns} FROM ({sql}) generated")
         total, unique = connection.execute(f"SELECT count(*), count(DISTINCT _source_row_id) FROM {name}").fetchone()
         if total != unique:
             raise ValueError(f"duplicate physical identities in {name}")

@@ -39,6 +39,18 @@ def fixture():
 
 
 class WorkloadTests(unittest.TestCase):
+    def test_source_projections_preserve_tables_keys_and_statistics(self):
+        for profile in ('native', 'calibrated', 'jcc_stress'):
+            with self.subTest(profile=profile), fixture() as tables, fixture() as views:
+                expected = generate.prepare(tables, 'base', profile=profile, report_date=date(2002, 12, 31))
+                actual = generate.prepare(views, 'base', profile=profile, report_date=date(2002, 12, 31), source_views=True)
+                self.assertEqual(actual, expected)
+                self.assertEqual(generate.statistics(views), generate.statistics(tables))
+                for name in json.loads((generate.HERE / 'source-schema.json').read_text()):
+                    self.assertEqual(views.execute(f'SELECT * FROM {name} ORDER BY _source_row_id').fetchall(),
+                                     tables.execute(f'SELECT * FROM {name} ORDER BY _source_row_id').fetchall(), name)
+                self.assertEqual(views.execute("SELECT count(*) FROM information_schema.tables WHERE table_type='VIEW' AND table_name LIKE 'ext_%'").fetchone()[0], 18)
+
     def test_sql_dependencies_match_mapping(self):
         configuration = {"report_date": "2002-12-31", "history_months": 12}
         with duckdb.connect() as connection:

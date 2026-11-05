@@ -30,7 +30,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
         "threads": int(os.environ.get("DUCKDB_THREADS", "4")),
         "max_temp_directory_size": os.environ.get("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", "4GB"),
     }
-    recipe = {"scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
+    recipe = {"preparation_version": 2, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
               "steps": steps, "duckdb_generator_version": duckdb.__version__}
     metadata = directory / "preparation.json"
     if metadata.is_file():
@@ -56,25 +56,33 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
             config = generate.prepare(connection, "raw.main", profile=options["profile"], seed=options["seed"],
                                       report_date=options["report_date"], history_months=options["history_months"],
                                       base_scale_factor=scale_factor,
-                                      base_generator=f"DuckDB tpcds extension {duckdb.__version__}")
+                                      base_generator=f"DuckDB tpcds extension {duckdb.__version__}", source_views=True)
             achieved = generate.statistics(connection)
             connection.execute("COMMIT")
         except Exception:
             connection.execute("ROLLBACK")
             raise
-    # Persistent working tables can be evicted while COPY sorts the row images.
-    # An in-memory database keeps the complete source copy inside the RAM cap.
+    # Insert-only planning reads immutable projections. Updates/deletes still
+    # need disk-backed working tables so planning can evict them while sorting.
+    insert_only = options["mode"] in ("insertion", "repeated_insertions")
     with duckdb.connect(str(directory / "planning.duckdb"), config=resources) as connection:
+        connection.execute("ATTACH " + generate.quote(base_path) + " AS raw (READ_ONLY)")
         connection.execute("ATTACH " + generate.quote(extension_path) + " AS canonical (READ_ONLY)")
         for table in [*mutations.sources(), "xt_run", "xt_engagements", "xt_customers", "xt_accounts"]:
-            with stage(f"copy source {table}"):
-                connection.execute(f"CREATE TABLE {table} AS SELECT * FROM canonical.main.{table}")
+            with stage(f"{'bind' if insert_only else 'copy'} source {table}"):
+                kind = "VIEW" if insert_only else "TABLE"
+                connection.execute(f"CREATE {kind} {table} AS SELECT * FROM canonical.main.{table}")
         with stage("refresh planning and sorted exports"):
             manifest = mutations.plan(connection, directory / "plan", mode=options["mode"],
                                       initial_pct=initial_pct, steps=steps, days=options["days"],
-                                      seed=options["seed"], mutation_cohort=options["mutation_cohort"])
+                                      seed=options["seed"], mutation_cohort=options["mutation_cohort"],
+                                      mutate_source=not insert_only)
     result = {"recipe": recipe, "configuration": config, "achieved": achieved,
               "plan_id": manifest["plan_id"], "batches": len(manifest["batches"]) + 1}
+    # Engines replay the immutable Parquet plan; these databases are preparation
+    # scratch, not engine inputs. Release their space before any engine starts.
+    for path in (base_path, extension_path, directory / "planning.duckdb"):
+        path.unlink(missing_ok=True)
     metadata.write_text(json.dumps(result, indent=2) + "\n")
     return result
 
