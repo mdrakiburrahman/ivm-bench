@@ -5,7 +5,7 @@ materialized analytical pipeline patterned after Insights. It is an experimental
 IVM workload derived from TPC-DS, with its own queries, data profiles and update
 streams. Its results are not comparable to officially published TPC-DS results.
 
-The current SF1/SF25 engine experiments use the `native` control profile. They
+The recorded SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated
 reproduction of the original Fabric workload**. Native generation assigns every
 engagement a purchase relationship and about 75% non-null channel assessments;
@@ -15,8 +15,55 @@ one current health row each, versus 138,099 instance-health staging rows in the
 reference profile. These are different populations, not a production scale-factor
 mapping. Neither source marginals nor the small referentially closed seed data
 establish production intermediate, window-expansion or final-group cardinalities.
-The `calibrated` profile implements four marginal targets; it does not yet
-validate those downstream cardinalities or the remaining joint distributions.
+The SF1/SF25/SF100 experiment files now select `calibrated`, matching four measured
+marginal targets instead of the native control's dense predicates. This is a
+Fabric-inspired scenario, not a validated production-cardinality reproduction:
+downstream counts and the remaining joint distributions still require measurement.
+The generator/API default remains `native`; setting `extended_tpcds.profile` to
+`native` selects that control with the same query templates and mutation settings.
+
+### Calibrated-profile local check (2026-11-06)
+
+The experiment files now select the existing calibrated scenario. Generator v2
+also removes the shared-rank coupling between purchase eligibility and the
+optional fourth status observation. This changes source distributions; it is not
+an engine optimization. Query templates, base TPC-DS rows, report date, refresh
+percentages and resource limits remain the same between the controls below.
+
+A sequential local SF0.1 comparison used DuckDB 1.2.1, four threads, 4 GB memory,
+16 GB spill, seed 17, report date 2002-12-31, 12 history months and insertion
+100/1/0.01. Base-table row counts and checksums matched. Each profile passed all
+96 model bag comparisons after each of three batches (288 comparisons), plus
+independent window-cardinality checks. The 28-day evaluated fact remained
+nonempty in both profiles.
+
+| Measurement | Native control | Calibrated |
+|---|---:|---:|
+| Initial logical extension-source rows | 8,800,797 | 10,101,373 |
+| Preparation wall time | 16.04 s | 21.39 s |
+| Retained source/metadata files | 255.31 MB | 290.14 MB |
+| Initial target engagements | 430,625 | 4,560 |
+| Initial 28-day selected entity/dates | 2,158,027 | 396,758 |
+| Initial 28-day channel-unpivot rows | 6,474,081 | 1,190,274 |
+| Initial 28-day channel-eligibility fact rows | 2,858,804 | 1,163,402 |
+| Initial 28-day evaluated fact rows | 620,569 | 1,046 |
+| Initial channel-eligibility fact SQL time | 4.49 s | 1.00 s |
+| All-model SQL time, initial / refresh 1 / refresh 2 | 28.07 / 27.94 / 28.54 s | 15.94 / 15.64 / 15.55 s |
+
+Achieved calibrated density was 3.74258 observations/key (target 3.74186),
+purchase eligibility 1.05893% (target 1.05875%), and store/catalog/web non-null
+assessments 0.08757% / 0.09530% / 0.09656% (targets 0.09269% / 0.09269% /
+0.10210%). These are the generator's declared marginal populations, not measured
+production downstream counts.
+
+These are single observations on a shared 16 GiB laptop, with no statistical
+speedup claim. Model timers cover full-recompute CTAS SQL within a shared
+transaction; they exclude final commit, source replay, counts and validation.
+They are not OpenIVM MV-command or incremental-refresh timings. Calibration
+reduced analytical work here but increased preparation and retained bytes.
+SF25 initialization/refresh performance and production joint-distribution
+fidelity remain unvalidated. The initial 2 GB validation attempt exhausted memory;
+both reported profiles were rerun with identical 4 GB limits.
 
 The standalone implementation generates 18 extension sources and materializes all
 96 translated models in DuckDB. It reports intermediate row counts and checks
@@ -485,6 +532,11 @@ temporal distribution; it does not reconstruct production history. Metadata
 probabilities are sampled independently of event eligibility and therefore do not
 establish event-level production selectivity. Finite-population deviations are
 reported, including separate store and catalog achieved fractions.
+
+Generator version 2 assigns the optional fourth observation with a separately
+seeded hash threshold instead of reusing the eligibility rank prefix. The global
+density matches the target in expectation; finite-population deviations are
+reported. This avoids forcing every eligible entity to have four observations.
 
 The remaining nine reference metrics, including volume ratios, fanout tails and
 numeric correlations, are unimplemented targets. Generation artifacts mark these

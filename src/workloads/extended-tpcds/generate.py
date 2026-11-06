@@ -150,14 +150,15 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
     if profile == "calibrated":
         density = targets["status_events_per_engagement_collection_key"]
         base_events = math.floor(density)
-        extra_entities = math.floor(entity_count * (density - base_events))
+        extra_probability = density - base_events
+        extra_observation = random_fraction(quote('status-count:') + ' || e.engagement_path')
         event_day = f"{clock} - floor({random_fraction('e.engagement_path || v.n::VARCHAR')} * 365)::INTEGER"
         execute(f"""CREATE TABLE xt_status_events AS
             SELECT 'synthetic:' || e.engagement_registry_key || ':' || v.n::VARCHAR AS event_id,
                    e.engagement_registry_key, {event_day} + INTERVAL 14 HOUR AS event_time,
                    e.origin_purchase_line_id, 'synthetic_calibrated' AS origin
             FROM xt_engagements e CROSS JOIN range({base_events + 1}) v(n)
-            WHERE v.n < {base_events} OR (v.n={base_events} AND e.engagement_number <= {extra_entities})""")
+            WHERE v.n < {base_events} OR (v.n={base_events} AND {extra_observation} < {extra_probability})""")
     else:
         execute("""CREATE TABLE xt_status_events AS
             SELECT purchase_line_id AS event_id, engagement_registry_key, event_time,
@@ -302,7 +303,7 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
     for table in ["customer", "item", "date_dim", "time_dim", "store_sales", "catalog_sales", "web_sales"]:
         rows, checksum = connection.execute(f"SELECT count(*), bit_xor(md5_number(to_json(t)))::VARCHAR FROM {base_schema}.{table} t").fetchone()
         base_signature[table] = {"rows": rows, "row_checksum_xor": checksum}
-    configuration = {"generator_version": 1, "duckdb_version": duckdb.__version__, "profile": profile,
+    configuration = {"generator_version": 2, "duckdb_version": duckdb.__version__, "profile": profile,
                      "base_scale_factor": base_scale_factor, "base_generator": base_generator,
                      "base_signature": base_signature,
                      "seed": seed, "report_date": str(report_date), "history_months": history_months,
@@ -311,6 +312,7 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
                      "missing_time_policy": "midnight when time lookup fails or t_time is null",
                      "primary_metadata_omission": {"origin": "chosen_fallback_scenario", "rule": "every tenth engagement"},
                      "status_date_distribution": "seeded_uniform_365_days_at_14h" if profile == "calibrated" else "purchase_timestamps",
+                     "status_count_assignment": "independently_seeded_hash_threshold" if profile == "calibrated" else "purchase_rows",
                      "channel_assessment_probabilities": {
                          channel: targets["third_channel_assessment_nonnull_fraction" if channel == "web" else "channel_assessment_nonnull_fraction"] if profile == "calibrated" else 0.75
                          for channel in ["store", "catalog", "web"]},

@@ -174,7 +174,10 @@ class WorkloadTests(unittest.TestCase):
             config = generate.prepare(connection, "base", "calibrated", report_date=date(2002, 12, 31))
             targets = {entry["metric"]: entry["value"] for entry in json.loads((generate.HERE / "profiles.json").read_text())["measured_reference_targets"]}
             entities, events = connection.execute("SELECT (SELECT count(*) FROM xt_engagements), (SELECT count(*) FROM xt_status_events)").fetchone()
-            self.assertEqual(events, int(entities * targets["status_events_per_engagement_collection_key"]))
+            density = targets["status_events_per_engagement_collection_key"]
+            fraction = density-math.floor(density)
+            self.assertLessEqual(abs(events-entities*density), 5*math.sqrt(entities*fraction*(1-fraction)))
+            self.assertEqual(config['status_count_assignment'], 'independently_seeded_hash_threshold')
             actual, expected = connection.execute("SELECT count(*) FILTER(WHERE eligible_relationship), ceil(count(*) * ?) FROM xt_engagements", [targets["purchase_relationship_metadata_fraction"]]).fetchone()
             self.assertEqual(actual, expected)
             self.assertEqual(len(config["implemented_calibration_targets"]), 4)
@@ -182,6 +185,19 @@ class WorkloadTests(unittest.TestCase):
             self.assertTrue(calibration["status_events_per_engagement_collection_key"]["implemented"])
             self.assertIsNone(calibration["parent_capacity_limit_pearson_r"]["observed"])
             self.assertFalse(calibration["parent_capacity_limit_pearson_r"]["implemented"])
+
+    def test_calibrated_extra_observations_are_not_clustered_at_first_ranks(self):
+        with fixture() as connection:
+            generate.prepare(connection, 'base', 'calibrated', report_date=date(2002,12,31))
+            entities = connection.execute('SELECT count(*) FROM xt_engagements').fetchone()[0]
+            counts = connection.execute(f"""SELECT e.engagement_number<={entities//2} AS first_half,
+                    min(s.observations), max(s.observations)
+                FROM xt_engagements e JOIN (
+                    SELECT engagement_registry_key, count(*) AS observations
+                    FROM xt_status_events GROUP BY engagement_registry_key
+                ) s USING (engagement_registry_key)
+                GROUP BY 1 ORDER BY 1""").fetchall()
+            self.assertEqual(counts, [(False,3,4),(True,3,4)])
 
     def test_equal_timestamp_observations_have_deterministic_winners(self):
         for reverse in [False, True]:

@@ -24,7 +24,7 @@
     "batch_3_update_pct": "0",
     "batch_3_delete_pct": "0",
     "extended_tpcds": {
-      "profile": "native",
+      "profile": "calibrated",
       "mode": "insertion",
       "report_date": "2002-12-31",
       "batches": 3,
@@ -40,7 +40,7 @@
   },
   "experiments": [
     {
-      "label": "Extended TPC-DS SF100, insertion 100/1/0.01, serial engines"
+      "label": "Extended TPC-DS SF100, Fabric-inspired calibrated profile, insertion 100/1/0.01, serial engines"
     }
   ]
 }
