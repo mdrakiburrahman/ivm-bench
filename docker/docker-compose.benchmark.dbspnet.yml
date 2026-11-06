@@ -20,9 +20,20 @@ services:
       context: ../src/containers/dbspnet
       args:
         DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/clast-project/dbsp-net.git}"
-        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-74ea062}"
+        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-f02030d}"
     cpus: ${DBSPNET_CPUS:-32}
     mem_limit: ${DBSPNET_MEM:-120g}
+    environment:
+      # Data-parallel program across this many workers, matching Feldera's `workers: 12`
+      # (dbt-projects/feldera/profiles.yml). Set 1 for the serial engine.
+      DBSPNET_WORKERS: "${DBSPNET_WORKERS:-12}"
+      # GC settings are the host's to choose (the runtime reads them once at start). These
+      # are the settings DbspNet's own SF=3 measurements use: server GC, and background GC
+      # off, which removes a bimodal output-write time and cuts GC pause by ~18%
+      # (dbsp-net docs/design-bounded-memory.md §3b-§3e). No heap limit: the container's
+      # mem_limit gives .NET its default (75% of it).
+      DOTNET_gcServer: "${DBSPNET_GC_SERVER:-1}"
+      DOTNET_gcConcurrent: "${DBSPNET_GC_CONCURRENT:-0}"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
       - ../mount/results/${SCALE_FACTOR:-3}/dbspnet:/data/processed/dbspnet
