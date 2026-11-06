@@ -5,6 +5,64 @@ index e9dfb59..0ef05a9 100644
 @@ -102 +102 @@ lazy val ivmExtension = (project in file("ivm-extension"))
 -          Seq("duckdb", "openivm.duckdb_extension").flatMap { name =>
 +          Seq("duckdb", "openivm.duckdb_extension", "libstdc++.so.6", "libgcc_s.so.1").flatMap { name =>
+diff --git a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
+index ede36c5..7637061 100644
+--- a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
++++ b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
+@@ -2009,2 +2009,3 @@ object SparkRefreshRewriter {
+-    val qcol      = "(?<![\\w`])(?:`?\\w++`?\\s*\\.\\s*)?`?openivm_timestamp`?"
+-    val tsLiteral = "(?:'[^']*+'::\\s*+TIMESTAMP|CAST\\s*+\\(\\s*+'[^']*+'\\s++AS\\s++TIMESTAMP\\s*+\\))"
++    val qcol = "(?<![\\w`])(?:`?\\w++`?\\s*\\.\\s*)?`?openivm_timestamp`?"
++    val tsLiteral =
++      "(?:'[^']*+'::\\s*+TIMESTAMP|CAST\\s*+\\(\\s*+'[^']*+'\\s++AS\\s++TIMESTAMP\\s*+\\)|TIMESTAMP\\s++'[^']*+')"
+@@ -2018,4 +2019,6 @@ object SparkRefreshRewriter {
+-    // LPTS rewrites parenthesises each WHERE conjunct
+-    // (`WHERE (`openivm_timestamp`>=CAST(...))`), so match the predicate either
+-    // wrapped in a balanced paren pair or bare (pre-merge single-line form).
+-    val tsPred = "(?:\\(\\s*" + qcol + cmp + refreshHorizon + "\\s*\\)|" + qcol + cmp + refreshHorizon + ")"
++    // DuckDB 2.0 can parenthesize the column, TIMESTAMP literal, and whole
++    // predicate independently: `((openivm_timestamp) >= (TIMESTAMP '...'))`.
++    val colExpr     = "(?:\\(\\s*+" + qcol + "\\s*+\\)|" + qcol + ")"
++    val horizonExpr = "(?:\\(\\s*+" + refreshHorizon + "\\s*+\\)|" + refreshHorizon + ")"
++    val comparison  = colExpr + cmp + horizonExpr
++    val tsPred      = "(?:\\(\\s*+" + comparison + "\\s*+\\)|" + comparison + ")"
+diff --git a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
+index b13fff4..e0f95a6 100644
+--- a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
++++ b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
+@@ -738,0 +739,18 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
++    it("keeps staged source rows visible in DuckDB 2.0 simple projection SQL") {
++      val duckdb2Sql = simpleProjectionInput.replace(
++        "openivm_timestamp >= '2026-05-16 10:00:55'::TIMESTAMP",
++        "((openivm_timestamp) >= (TIMESTAMP '2026-05-16 10:00:55'))"
++      )
++      val rewritten = SparkRefreshRewriter.rewrite(
++        compiledSql = duckdb2Sql,
++        mvName = mvName,
++        mvLocation = mvLocation,
++        viewLogicalName = viewLogicalName,
++        sourceTempViews = Map("users" -> "openivm_delta_users"),
++        viewDeltaPath = viewDeltaPath
++      )
++      rewritten.statements should not be empty
++      rewritten.statements.foreach(_ should not include "TIMESTAMP '2026-05-16 10:00:55'")
++      rewritten.statements.head should include("openivm_delta_users")
++    }
++
+@@ -2698,0 +2717,13 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
++    it("strips DuckDB 2.0 parenthesized timestamp literals from source delta scans") {
++      val cutoff = "((openivm_timestamp) >= (TIMESTAMP '2026-11-05 22:32:21.6993'))"
++      SparkRefreshRewriter.stripTimestampPredicate(
++        s"SELECT * FROM openivm_delta_staging_holding_history WHERE $cutoff"
++      ) shouldBe "SELECT * FROM openivm_delta_staging_holding_history"
++      SparkRefreshRewriter.stripTimestampPredicate(
++        s"SELECT * FROM t WHERE amount > 100 AND $cutoff"
++      ) shouldBe "SELECT * FROM t WHERE amount > 100"
++      SparkRefreshRewriter.stripTimestampPredicate(
++        s"SELECT * FROM t WHERE $cutoff AND amount > 100"
++      ) shouldBe "SELECT * FROM t WHERE amount > 100"
++    }
++
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
 index 9e9b616..60634b9 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala

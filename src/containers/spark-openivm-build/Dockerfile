@@ -150,6 +150,7 @@ ENV OPENIVM_SPARK_TARGET=spark-3.5
 # orchestrator's plain `docker compose build` invocation, so we accept a
 # slower cold cache here — sbt will re-fetch deps when the builder image changes.
 RUN sbt -batch \
+    'ivmCommon/testOnly org.openivm.spark.common.SparkRefreshRewriterSpec' \
     'ivmCompiler/testOnly org.openivm.spark.compiler.LptsSparkDialectSpec' \
     'ivmCompiler/testOnly org.openivm.spark.compiler.OpenIvmCompilerSpec -- -z "translate the joined TPC-DI offset window initial load"' \
     ivmExtension/assembly && \
