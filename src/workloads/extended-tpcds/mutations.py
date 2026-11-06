@@ -14,9 +14,9 @@ from pathlib import Path
 import duckdb
 
 if __package__:
-    from .generate import HERE, quote
+    from .generate import HERE, quote, key_counts
 else:
-    from generate import HERE, quote
+    from generate import HERE, quote, key_counts
 
 SCORE_MODULUS = 1_000_000
 MODES = ("insertion", "updates", "deletes", "days", "repeated_insertions", "mixed")
@@ -110,7 +110,7 @@ def export_rows(connection, sql, path, root):
 
 
 def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=None,
-         days=3, seed=17, mutation_cohort="all", mutate_source=True):
+         days=3, seed=17, mutation_cohort="all", mutate_source=True, expected_initial_rows=None):
     if mode not in MODES:
         raise ValueError("unknown mutation mode")
     if not mutate_source and mode not in ("insertion", "repeated_insertions"):
@@ -122,6 +122,9 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
     if mutation_cohort not in ("all", "hot", "cold"):
         raise ValueError("mutation cohort must be all, hot or cold")
     initial_width = bucket_width(initial_pct)
+    reuse_initial_pool = mode != "days" and initial_width == SCORE_MODULUS
+    if expected_initial_rows is not None and (not reuse_initial_pool or set(expected_initial_rows) != set(sources())):
+        raise ValueError("deferred identity validation requires a complete initial snapshot")
     default = default_percentages(mode)
     steps = [dict(default) for _ in range(days if mode == "days" else 2)] if steps is None else steps
     if mode == "days" and len(steps) != days:
@@ -167,8 +170,9 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
     initial_filter = ("_source_row_id IS NOT NULL" if initial_width == SCORE_MODULUS
                       else f"{score(seed, 1)} < {initial_width}")
     for table in EVENT_DATES:
-        kind = "TABLE" if mutate_source else "VIEW"
-        connection.execute(f"CREATE TEMP {kind} pool_{table} AS SELECT * FROM {table}")
+        if not reuse_initial_pool:
+            kind = "TABLE" if mutate_source else "VIEW"
+            connection.execute(f"CREATE TEMP {kind} pool_{table} AS SELECT * FROM {table}")
         predicate = initial_filter
         if mode == "days":
             predicate += f" AND {EVENT_DATES[table]} < DATE {quote(start)}"
@@ -179,6 +183,19 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
         if not mutate_source and table in EVENT_DATES:
             sql += f" WHERE {initial_filter}"
         manifest["initial"][table] = export_rows(connection, sql, directory / "initial" / f"{table}.parquet", directory)
+        if expected_initial_rows is not None:
+            path = directory / manifest["initial"][table]["path"]
+            total, unique = key_counts(connection, f"SELECT _source_row_id::UUID AS key FROM read_parquet({quote(path)})")
+            if total != unique:
+                raise ValueError(f"duplicate physical identities in {table}")
+            if total != expected_initial_rows[table]:
+                raise ValueError(f"incomplete initial snapshot for {table}")
+    # Full initial images are the immutable source pool, even when later updates
+    # mutate working tables. Partial snapshots/daily arrivals keep the full pool.
+    if reuse_initial_pool:
+        for table in EVENT_DATES:
+            path = directory / manifest["initial"][table]["path"]
+            connection.execute(f"CREATE TEMP VIEW pool_{table} AS SELECT * FROM read_parquet({quote(path)})")
     row_counts = {table: image["rows"] for table, image in manifest["initial"].items()}
     for number, step in enumerate(steps, 2):
         batch_path = directory / f"batch{number}"

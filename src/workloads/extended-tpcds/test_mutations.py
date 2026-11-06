@@ -49,7 +49,8 @@ class MutationTests(unittest.TestCase):
                             step = {'insert_pct':'30', 'update_pct':'0', 'delete_pct':'0'}
                             manifests.append(mutations.plan(connection, Path(folder) / str(compact), mode=mode,
                                                             initial_pct=initial, steps=[step, step],
-                                                            mutation_cohort=cohort, mutate_source=not compact))
+                                                            mutation_cohort=cohort, mutate_source=not compact,
+                                                            expected_initial_rows=before['extension_rows'] if initial=='100' else None))
                             if compact:
                                 self.assertEqual(generate.statistics(connection), before)
                                 self.assertEqual(connection.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE 'pool_%' OR table_name='changes'").fetchone()[0], 0)
@@ -65,6 +66,48 @@ class MutationTests(unittest.TestCase):
                             self.assertEqual(actual, expected, str(path))
                     without_encoding = lambda value: json.loads(json.dumps(value), object_hook=lambda obj: {k:v for k,v in obj.items() if k != 'sha256'})
                     self.assertEqual(without_encoding(manifests[0]), without_encoding(manifests[1]))
+
+    def test_deferred_initial_validation_rejects_duplicates_nulls_and_incomplete_snapshots(self):
+        for fault in ('duplicate', 'static_null', 'event_null'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as folder, fixture() as connection:
+                generate.prepare(connection, 'base', report_date=date(2002,12,31), validate_source_ids=False)
+                expected = generate.statistics(connection)['extension_rows']
+                if fault=='duplicate':
+                    connection.execute('INSERT INTO ext_calendar SELECT * FROM ext_calendar LIMIT 1')
+                    expected['ext_calendar'] += 1
+                elif fault=='static_null':
+                    connection.execute('UPDATE ext_calendar SET _source_row_id=NULL WHERE date=(SELECT min(date) FROM ext_calendar)')
+                else:
+                    connection.execute('UPDATE ext_purchase_usage_events SET _source_row_id=NULL WHERE _source_row_id=(SELECT min(_source_row_id) FROM ext_purchase_usage_events)')
+                message = 'incomplete initial snapshot' if fault=='event_null' else 'duplicate physical identities'
+                path = Path(folder)/'plan'
+                with self.assertRaisesRegex(ValueError,message):
+                    mutations.plan(connection,path,steps=[],expected_initial_rows=expected)
+                self.assertFalse((path/'manifest.json').exists())
+
+    def test_deferred_validation_requires_the_full_initial_population(self):
+        with fixture() as connection:
+            generate.prepare(connection,'base',report_date=date(2002,12,31))
+            counts = generate.statistics(connection)['extension_rows']
+            for mode,initial in [('insertion','50'),('days','100')]:
+                with self.subTest(mode=mode), self.assertRaisesRegex(ValueError,'complete initial snapshot'):
+                    mutations.plan(connection,'unused',mode=mode,initial_pct=initial,expected_initial_rows=counts)
+
+    def test_full_initial_pool_stays_frozen_after_mixed_mutations(self):
+        with tempfile.TemporaryDirectory() as folder, fixture() as connection:
+            generate.prepare(connection,'base',report_date=date(2002,12,31),validate_source_ids=False)
+            counts = generate.statistics(connection)['extension_rows']
+            path = Path(folder)/'plan'
+            result = mutations.plan(connection,path,mode='mixed',expected_initial_rows=counts,
+                                    steps=[{'insert_pct':'100','update_pct':'20','delete_pct':'10'}])
+            for table in mutations.EVENT_DATES:
+                image = path/result['initial'][table]['path']
+                difference = connection.execute(f"""SELECT count(*) FROM (
+                    (SELECT * FROM pool_{table} EXCEPT ALL SELECT * FROM read_parquet(?)) UNION ALL
+                    (SELECT * FROM read_parquet(?) EXCEPT ALL SELECT * FROM pool_{table}))""",[str(image),str(image)]).fetchone()[0]
+                self.assertEqual(difference,0,table)
+                self.assertEqual(connection.execute(f'SELECT count(*) FROM pool_{table}').fetchone()[0],counts[table])
+            self.assertGreater(result['batches'][0]['source_rows']['ext_purchase_usage_events'],counts['ext_purchase_usage_events'])
 
     def test_read_only_planning_rejects_modes_requiring_source_mutations(self):
         for mode in ('mixed', 'updates', 'deletes', 'days'):

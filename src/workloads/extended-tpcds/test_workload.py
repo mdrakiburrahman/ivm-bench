@@ -52,6 +52,20 @@ class WorkloadTests(unittest.TestCase):
                 UNION ALL SELECT md5('1')::UUID UNION ALL SELECT NULL::UUID""")
             self.assertEqual(counts, (2000003, 2000000))
 
+    def test_structured_identity_boundaries_do_not_overlap_or_truncate(self):
+        with duckdb.connect() as connection:
+            identities = []
+            for family in (0, 1, 65535):
+                for ordinal in (0, 1, 2**64-1):
+                    for suffix in (0, 1, 2**32-1):
+                        token = connection.execute('SELECT lower('+generate.row_identity(family,ordinal,suffix)+')').fetchone()[0]
+                        self.assertEqual(len(token),28)
+                        identities.append('0012'+token)
+            self.assertEqual(len(set(identities)),len(identities))
+            for family,ordinal,suffix in [(-1,0,0),(65536,0,0),(0,-1,0),(0,2**64,0),(0,0,-1),(0,0,2**32)]:
+                with self.subTest(components=(family,ordinal,suffix)), self.assertRaises(duckdb.Error):
+                    connection.execute('SELECT '+generate.row_identity(family,ordinal,suffix)).fetchone()
+
     def test_compact_engagements_match_original_ranking_including_hash_collisions(self):
         for profile, collide in [('native',False), ('calibrated',False), ('native',True)]:
             with self.subTest(profile=profile, collide=collide), fixture() as connection:
@@ -90,7 +104,9 @@ class WorkloadTests(unittest.TestCase):
                     FROM xt_status_events s JOIN xt_engagements e USING (engagement_registry_key)
                     GROUP BY 1 ORDER BY 1""").fetchall()
                 self.assertEqual(stats['cohorts'], [{'cohort':c,'events':n,'registry_keys':k} for c,n,k in cohorts])
-                for name in json.loads((generate.HERE / 'source-schema.json').read_text()):
+                for namespace, name in enumerate(json.loads((generate.HERE / 'source-schema.json').read_text()),1):
+                    invalid = views.execute(f"SELECT count(*) FROM {name} WHERE _source_row_id IS NULL OR length(_source_row_id)<>32 OR substr(_source_row_id,1,4)<>'{namespace:04x}'").fetchone()[0]
+                    self.assertEqual(invalid,0,name)
                     self.assertEqual(views.execute(f'SELECT * FROM {name} ORDER BY _source_row_id').fetchall(),
                                      tables.execute(f'SELECT * FROM {name} ORDER BY _source_row_id').fetchall(), name)
                 self.assertEqual(views.execute("SELECT count(*) FROM information_schema.tables WHERE table_type='VIEW' AND table_name LIKE 'ext_%'").fetchone()[0], 18)
@@ -211,13 +227,14 @@ class WorkloadTests(unittest.TestCase):
             self.assertEqual(actual, sorted(expected))
 
     def test_compact_calibrated_events_reject_colliding_published_registry_keys(self):
-        with fixture() as connection:
-            def registry_hash(value):
-                return '0'*32 if value.startswith('account:') else hashlib.md5(value.encode()).hexdigest()
-            connection.create_function('registry_hash', registry_hash, ['VARCHAR'], 'VARCHAR')
-            connection.execute('CREATE MACRO md5(value) AS registry_hash(value)')
-            with self.assertRaisesRegex(ValueError, 'duplicate physical identities in ext_engagement_status_events'):
-                generate.prepare(connection, 'base', 'calibrated', report_date=date(2002,12,31))
+        for validate in (True,False):
+            with self.subTest(validate=validate), fixture() as connection:
+                def registry_hash(value):
+                    return '0'*32 if value.startswith('account:') else hashlib.md5(value.encode()).hexdigest()
+                connection.create_function('registry_hash', registry_hash, ['VARCHAR'], 'VARCHAR')
+                connection.execute('CREATE MACRO md5(value) AS registry_hash(value)')
+                with self.assertRaisesRegex(ValueError, 'duplicate engagement registry identities'):
+                    generate.prepare(connection, 'base', 'calibrated', report_date=date(2002,12,31), validate_source_ids=validate)
 
     def test_calibrated_extra_observations_are_not_clustered_at_first_ranks(self):
         with fixture() as connection:

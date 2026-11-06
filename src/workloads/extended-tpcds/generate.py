@@ -23,9 +23,25 @@ def key_counts(connection, query):
         FROM (SELECT key, lag(key) OVER (ORDER BY key) AS previous FROM ({query}) keys) ordered""").fetchone()
 
 
+def row_identity(family, ordinal, suffix="0"):
+    """Encode integer family:uint16, ordinal:uint64, suffix:uint32 injectively.
+
+    The source namespace supplies the remaining 16 bits. Casts reject overflow;
+    integer components cannot collide or be truncated within these bounds.
+    """
+    return (f"lpad(hex(CAST(({family}) AS USMALLINT)),4,'0') || "
+            f"lpad(hex(CAST(({ordinal}) AS UBIGINT)),16,'0') || "
+            f"lpad(hex(CAST(({suffix}) AS UINTEGER)),8,'0')")
+
+
+def purchase_identity(channel="channel", order="order_id", item="source_item_sk"):
+    family = f"CASE {channel} WHEN 'store' THEN 3 WHEN 'catalog' THEN 4 WHEN 'web' THEN 5 END"
+    return row_identity(family, order, item)
+
+
 def prepare(connection, base_schema, profile="native", seed=17, report_date=None,
             history_months=12, accounts_per_customer=2, metadata_versions=2,
-            base_scale_factor=None, base_generator=None, source_views=False):
+            base_scale_factor=None, base_generator=None, source_views=False, validate_source_ids=True):
     if profile not in ("native", "calibrated", "jcc_stress"):
         raise ValueError("unknown profile")
     if any(type(value) is not int or value < 1 for value in
@@ -140,6 +156,32 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
     targets = {r["metric"]: r["value"] for r in references["measured_reference_targets"]}
     entity_count = connection.execute("SELECT count(*) FROM xt_engagement_keys").fetchone()[0]
     eligible_count = math.ceil(entity_count * targets["purchase_relationship_metadata_fraction"]) if profile == "calibrated" else entity_count
+    # Business identity is checked once per entity, independently of physical row
+    # IDs. This also makes integer entity references safe for the status census.
+    total, unique = key_counts(connection, f"SELECT md5(a.account_id || ':' || lower(i.item_id))::UUID AS key {rank_input}")
+    if total != unique:
+        raise ValueError("duplicate engagement registry identities")
+    total, unique = key_counts(connection, "SELECT md5(customer_path)::UUID AS key FROM xt_customers")
+    if total != unique:
+        raise ValueError("duplicate customer registry identities")
+    assessment = {}
+    for index, channel in enumerate(["store", "catalog", "web"]):
+        probability = (targets["third_channel_assessment_nonnull_fraction" if channel == "web" else
+                               "channel_assessment_nonnull_fraction"] if profile == "calibrated" else 0.75)
+        assessment[channel] = f"CASE WHEN {random_fraction(path + ' || ' + quote(channel))} < {probability} THEN CASE WHEN (engagement_number+{index})%3=0 THEN 'notready' ELSE 'ready' END ELSE NULL END"
+    execute("ALTER TABLE xt_engagement_keys RENAME TO xt_engagement_core")
+    execute(f"""CREATE TABLE xt_engagement_keys AS
+        SELECT e.*, md5('assessment:' || {path}) AS assessment_key,
+               {assessment['store']} AS store_eligibility,
+               {assessment['catalog']} AS catalog_eligibility,
+               {assessment['web']} AS web_eligibility,
+               CASE WHEN engagement_number%2=0 THEN 'observed' ELSE 'reported' END AS activity_mode,
+               CASE WHEN engagement_number%3=0 THEN NULL ELSE 'standard' END AS service_role,
+               'V' || (1+engagement_number%3) AS product_version,
+               CASE WHEN engagement_number%3=0 THEN 'BASIC' WHEN engagement_number%3=1 THEN 'STANDARD' ELSE 'PREMIUM' END AS product_tier,
+               1+engagement_number%16 AS reported_units, 32-engagement_number%16 AS allocated_units
+        {rank_input.replace('xt_engagement_keys', 'xt_engagement_core')}""")
+    execute("DROP TABLE xt_engagement_core")
     execute(f"""CREATE VIEW xt_engagements AS
         SELECT {path} AS engagement_path,
                md5(a.account_id || ':' || lower(i.item_id)) AS engagement_registry_key,
@@ -163,10 +205,11 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
             SELECT 'synthetic:' || md5(a.account_id || ':' || lower(i.item_id)) || ':' || s.observation_number::VARCHAR AS event_id,
                    md5(a.account_id || ':' || lower(i.item_id)) AS engagement_registry_key,
                    s.event_time, e.origin_purchase_line_id, 'synthetic_calibrated' AS origin,
-                   {path} AS engagement_path, a.household_cohort, s._engagement_key
+                   {path} AS engagement_path, a.household_cohort, s._engagement_key,
+                   e.assessment_key, {row_identity(2, 'e.engagement_number', 's.observation_number')} AS _row_identity
             FROM xt_status_event_keys s JOIN xt_engagement_keys e USING (_engagement_key)
             JOIN xt_accounts a USING (_account_number) JOIN xt_items i USING (_item_number)""")
-        execute("CREATE VIEW xt_status_events AS SELECT * EXCLUDE (engagement_path, household_cohort, _engagement_key) FROM xt_status_event_details")
+        execute("CREATE VIEW xt_status_events AS SELECT * EXCLUDE (engagement_path, household_cohort, _engagement_key, assessment_key, _row_identity) FROM xt_status_event_details")
     else:
         execute("""CREATE TABLE xt_status_events AS
             SELECT purchase_line_id AS event_id, engagement_registry_key, event_time,
@@ -188,19 +231,23 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
         execute("UPDATE xt_status_events e SET engagement_registry_key=r.registry_key, origin='synthetic_jcc_assignment' FROM reassigned r WHERE e.event_id=r.event_id")
 
     if profile != "calibrated":
-        execute("""CREATE VIEW xt_status_event_details AS
-            SELECT s.*, e.engagement_path, e.household_cohort FROM xt_status_events s
-            JOIN xt_engagements e USING (engagement_registry_key)""")
+        execute(f"""CREATE VIEW xt_status_event_details AS
+            SELECT s.*, e.engagement_path, e.household_cohort,
+                   md5('assessment:' || e.engagement_path) AS assessment_key,
+                   {purchase_identity("split_part(s.event_id,':',1)", "split_part(s.event_id,':',2)", "split_part(s.event_id,':',3)")} AS _row_identity
+            FROM xt_status_events s JOIN xt_engagements e USING (engagement_registry_key)""")
 
     schema = json.loads((HERE / "source-schema.json").read_text())
 
     def source(name, sql):
         columns = ", ".join(f"CAST({column} AS {kind}) AS {column}" for column, kind in schema[name].items())
         kind = "VIEW" if source_views else "TABLE"
-        execute(f"CREATE {kind} {name} AS SELECT md5({quote(name)} || ':' || row_key) AS _source_row_id, {columns} FROM ({sql}) generated")
-        total, unique = key_counts(connection, f"SELECT _source_row_id::UUID AS key FROM {name}")
-        if total != unique:
-            raise ValueError(f"duplicate physical identities in {name}")
+        namespace = list(schema).index(name) + 1
+        execute(f"CREATE {kind} {name} AS SELECT CASE WHEN row_key IS NOT NULL THEN '{namespace:04x}' || lower(_row_identity) END AS _source_row_id, {columns} FROM ({sql}) generated")
+        if validate_source_ids:
+            total, unique = key_counts(connection, f"SELECT _source_row_id::UUID AS key FROM {name}")
+            if total != unique:
+                raise ValueError(f"duplicate physical identities in {name}")
 
     # History rows are real extension inputs; staging retains only current rows.
     versions = f"range({metadata_versions}) versions(version)"
@@ -208,18 +255,18 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
     current = f"version={metadata_versions}-1"
     region = "'retail' AS region_partition"
     source("ext_entity_registry", f"""
-        SELECT customer_path || ':' || version AS row_key, md5(customer_path) AS registry_key,
+        SELECT {row_identity(1, 'customer_number', 'version')} AS _row_identity, customer_path || ':' || version AS row_key, md5(customer_path) AS registry_key,
                'account:' || lower(customer_id) || ':0' AS account_id, customer_path AS entity_path,
                'customers' AS entity_type, {effective} AS effective_start, {region}
         FROM xt_customers CROSS JOIN {versions}
         UNION ALL
-        SELECT engagement_path || ':' || version, engagement_registry_key, account_id, engagement_path,
+        SELECT {row_identity(2, 'engagement_number', 'version')}, engagement_path || ':' || version, engagement_registry_key, account_id, engagement_path,
                'engagements', {effective}, 'retail' FROM xt_engagements CROSS JOIN {versions}
         UNION ALL
-        SELECT 'line:' || purchase_line_id, md5('line:' || purchase_line_id), account_id,
+        SELECT {purchase_identity()}, 'line:' || purchase_line_id, md5('line:' || purchase_line_id), account_id,
                engagement_path || '/order-lines/' || md5(purchase_line_id), 'order_lines', event_time, 'retail'
         FROM xt_purchase""")
-    source("ext_account_profile", f"""SELECT account_id || ':' || version AS row_key, account_id,
+    source("ext_account_profile", f"""SELECT {row_identity(1, "_account_number", "version")} AS _row_identity, account_id || ':' || version AS row_key, account_id,
         'household:' || household_id AS loyalty_household_id, household_id,
         {effective} AS effective_start, {effective} AS ingestion_time,
         CASE WHEN customer_number%2=0 THEN 'Member' ELSE 'Guest' END AS offer_type, 'Shopping' AS usage_type,
@@ -230,8 +277,8 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
         'Household ' || household_id AS household_name_translated, NULL AS household_name_raw,
         NULL AS household_name_secondary, 'Household ' || household_id AS household_name,
         {current} AS is_current FROM xt_accounts CROSS JOIN {versions}""")
-    source("ext_account_household", "SELECT account_id AS row_key, account_id, 'household:' || household_id AS loyalty_household_id FROM xt_accounts")
-    source("ext_calendar", f"""SELECT d_date_sk::VARCHAR AS row_key, strftime(d_date,'%Y%m%d') AS dim_date_id,
+    source("ext_account_household", f"SELECT {row_identity(1, '_account_number')} AS _row_identity, account_id AS row_key, account_id, 'household:' || household_id AS loyalty_household_id FROM xt_accounts")
+    source("ext_calendar", f"""SELECT {row_identity(1, "d_date_sk")} AS _row_identity, d_date_sk::VARCHAR AS row_key, strftime(d_date,'%Y%m%d') AS dim_date_id,
         d_date AS date, year(d_date) AS year, month(d_date) AS month, day(d_date) AS day,
         'th' AS day_suffix, isodow(d_date) AS week_day, dayname(d_date) AS week_day_name,
         ceil(day(d_date)/7.0) AS dow_in_month, dayofyear(d_date) AS day_of_year,
@@ -252,72 +299,74 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
     catalog.update(price_catalog_id="i_item_id", catalog_size="'1'", catalog_price="max(i_current_price)::VARCHAR",
                    catalog_consumption_multiplier="'1'", catalog_average_revenue_per_unit="max(i_current_price)::VARCHAR",
                    catalog_currency="'USD'", catalog_unit_of_measure="'Item'", catalog_description="max(i_item_desc)")
-    source("ext_price_catalog", "SELECT i_item_id AS row_key, " + ",".join(f"{value} AS {key}" for key, value in catalog.items()) + f" FROM {base_schema}.item GROUP BY i_item_id")
-    source("ext_purchase_usage_events", """SELECT purchase_line_id AS row_key, engagement_registry_key AS registry_key,
+    source("ext_price_catalog", f"SELECT {row_identity(1, 'min(i_item_sk)')} AS _row_identity, i_item_id AS row_key, " + ",".join(f"{value} AS {key}" for key, value in catalog.items()) + f" FROM {base_schema}.item GROUP BY i_item_id")
+    source("ext_purchase_usage_events", f"""SELECT {purchase_identity()} AS _row_identity, purchase_line_id AS row_key, engagement_registry_key AS registry_key,
         strftime(event_time,'%Y%m%d') AS purchase_date_key, date_diff('second',date_trunc('day',event_time),event_time)::VARCHAR AS purchase_second_key,
         item_id AS price_catalog_id, purchase_quantity, strftime(event_time,'%Y%m') AS event_month,
         'retail' AS region_partition FROM xt_purchase""")
-    metadata = f"xt_engagements e CROSS JOIN {versions}"
+    execute(f"""CREATE VIEW xt_engagement_metadata AS
+        SELECT {path} AS engagement_path, a.customer_path,
+               e.engagement_number, e.engagement_number<={eligible_count} AS eligible_relationship,
+               e.reported_units, e.allocated_units, e.activity_mode, e.service_role,
+               e.product_version, e.product_tier, e.assessment_key,
+               e.store_eligibility, e.catalog_eligibility, e.web_eligibility
+        {rank_input}""")
+    metadata = f"xt_engagement_metadata e CROSS JOIN {versions}"
     common = f"{effective} AS effective_start, {current} AS is_current, {region}"
-    source("ext_engagement_capacity_history", f"""SELECT engagement_path || ':' || version AS row_key,
+    source("ext_engagement_capacity_history", f"""SELECT {row_identity(2, 'engagement_number', 'version')} AS _row_identity, engagement_path || ':' || version AS row_key,
         engagement_path, customer_path, CASE WHEN eligible_relationship THEN 'purchase' ELSE 'interest' END AS relationship_type,
-        1+engagement_number%16 AS reported_units, 32-engagement_number%16 AS allocated_units, {common}
+        reported_units, allocated_units, {common}
         FROM {metadata} WHERE engagement_number%10<>0""")
-    source("ext_engagement_activity_history", f"""SELECT engagement_path || ':' || version AS row_key,
-        engagement_path, CASE WHEN engagement_number%2=0 THEN 'observed' ELSE 'reported' END AS activity_mode,
+    source("ext_engagement_activity_history", f"""SELECT {row_identity(2, 'engagement_number', 'version')} AS _row_identity, engagement_path || ':' || version AS row_key,
+        engagement_path, activity_mode,
         {common} FROM {metadata}""")
-    source("ext_engagement_service_history", f"SELECT engagement_path || ':' || version AS row_key, engagement_path, CASE WHEN engagement_number%3=0 THEN NULL ELSE 'standard' END AS service_role, {common} FROM {metadata}")
-    source("ext_engagement_product_history", f"""SELECT engagement_path || ':' || version AS row_key, engagement_path,
-        'V' || (1+engagement_number%3) AS product_version,
-        CASE WHEN engagement_number%3=0 THEN 'BASIC' WHEN engagement_number%3=1 THEN 'STANDARD' ELSE 'PREMIUM' END AS product_tier,
+    source("ext_engagement_service_history", f"SELECT {row_identity(2, 'engagement_number', 'version')} AS _row_identity, engagement_path || ':' || version AS row_key, engagement_path, service_role, {common} FROM {metadata}")
+    source("ext_engagement_product_history", f"""SELECT {row_identity(2, 'engagement_number', 'version')} AS _row_identity, engagement_path || ':' || version AS row_key, engagement_path,
+        product_version, product_tier,
         {common} FROM {metadata}""")
-    assessment_probability = targets["channel_assessment_nonnull_fraction"] if profile == "calibrated" else 0.75
-    assessment = {}
-    for index, channel in enumerate(["store", "catalog", "web"]):
-        probability = targets["third_channel_assessment_nonnull_fraction"] if profile == "calibrated" and channel == "web" else assessment_probability
-        assessment[channel] = f"CASE WHEN {random_fraction('engagement_path || ' + quote(channel))} < {probability} THEN CASE WHEN (engagement_number+{index})%3=0 THEN 'notready' ELSE 'ready' END ELSE NULL END"
-    source("ext_engagement_channel_history", f"""SELECT engagement_path || ':' || version AS row_key,
-        md5('assessment:' || engagement_path) AS assessment_key,
-        {assessment['store']} AS store_eligibility, {assessment['catalog']} AS catalog_eligibility, {assessment['web']} AS web_eligibility,
+    source("ext_engagement_channel_history", f"""SELECT {row_identity(2, 'engagement_number', 'version')} AS _row_identity, engagement_path || ':' || version AS row_key,
+        assessment_key, store_eligibility, catalog_eligibility, web_eligibility,
         {effective} AS ingestion_time, {common} FROM {metadata}""")
-    source("ext_engagement_status_events", """SELECT event_id AS row_key, s.engagement_registry_key,
+    source("ext_engagement_status_events", """SELECT _row_identity, event_id AS row_key, s.engagement_registry_key,
         strftime(event_time,'%Y%m%d') AS event_date_key,
         date_diff('second',date_trunc('day',event_time),event_time)::VARCHAR AS event_second_key,
         event_time AS observation_time, event_time+INTERVAL 1 HOUR AS ingestion_time,
-        md5('assessment:' || s.engagement_path) AS assessment_key,
+        assessment_key,
         strftime(event_time,'%Y%m%d') AS event_date, strftime(event_time,'%Y%m') AS event_month, 'retail' AS region_partition
         FROM xt_status_event_details s""")
     parent_metadata = f"xt_customers CROSS JOIN {versions}"
-    source("ext_customer_profile_history", f"""SELECT customer_path || ':' || version AS row_key, customer_path,
+    source("ext_customer_profile_history", f"""SELECT {row_identity(1, 'customer_number', 'version')} AS _row_identity, customer_path || ':' || version AS row_key, customer_path,
         'Retail' AS platform_name, 'Retail' AS reported_platform,
         1+customer_number%16 AS parent_capacity, 2*(1+customer_number%16) AS parent_limit,
         'Consumer' AS customer_segment, 'General' AS customer_segment_detail,
         TRUE AS store_active, customer_number%2=0 AS catalog_active, customer_number%3=0 AS web_active,
         {effective} AS ingestion_time, {common} FROM {parent_metadata}""")
-    source("ext_customer_preference_history", f"""SELECT customer_path || ':' || version AS row_key, customer_path,
+    source("ext_customer_preference_history", f"""SELECT {row_identity(1, 'customer_number', 'version')} AS _row_identity, customer_path || ':' || version AS row_key, customer_path,
         CASE WHEN customer_number%2=0 THEN 'Loyalty Member' ELSE 'Guest Shopper' END AS preference_sku,
         'retail' AS preference_type, {effective} AS ingestion_time, {common} FROM {parent_metadata}""")
-    source("ext_customer_policy_history", f"""SELECT customer_path || ':' || version AS row_key, customer_path,
+    source("ext_customer_policy_history", f"""SELECT {row_identity(1, 'customer_number', 'version')} AS _row_identity, customer_path || ':' || version AS row_key, customer_path,
         CASE WHEN customer_number%3=0 THEN NULL ELSE 'standard' END AS policy_type,
         {effective} AS ingestion_time, {common} FROM {parent_metadata}""")
-    source("ext_customer_status_events", """SELECT p.purchase_line_id AS row_key, md5(p.customer_path) AS customer_registry_key,
+    source("ext_customer_status_events", f"""SELECT {purchase_identity("p.channel", "p.order_id", "p.source_item_sk")} AS _row_identity, p.purchase_line_id AS row_key, md5(p.customer_path) AS customer_registry_key,
         strftime(p.event_time,'%Y%m%d') AS event_date_key,
         date_diff('second',date_trunc('day',p.event_time),p.event_time)::VARCHAR AS event_second_key,
         CASE WHEN c.customer_number%20=0 THEN 'inactive' ELSE 'active' END AS customer_status,
         p.event_time+INTERVAL 1 HOUR AS ingestion_time, strftime(p.event_time,'%Y%m') AS event_month,
         'retail' AS region_partition FROM xt_purchase p JOIN xt_customers c USING(customer_path)""")
-    source("ext_purchase_receipt_events", """SELECT purchase_line_id AS row_key, event_time AS receipt_time, engagement_path,
+    source("ext_purchase_receipt_events", f"""SELECT {purchase_identity()} AS _row_identity, purchase_line_id AS row_key, event_time AS receipt_time, engagement_path,
         to_json(struct_pack(CustomerPath := customer_path, ReportedUnits := purchase_quantity)) AS receipt_payload,
         'retail' AS region, strftime(event_time,'%Y%m') AS event_month FROM xt_purchase""")
-    source("ext_engagement_observation_events", """SELECT purchase_line_id AS row_key, event_time AS observation_time,
+    source("ext_engagement_observation_events", f"""SELECT {purchase_identity()} AS _row_identity, purchase_line_id AS row_key, event_time AS observation_time,
         engagement_path, customer_path, purchase_quantity::VARCHAR AS reported_units,
         'retail' AS region, strftime(event_time,'%Y%m') AS event_month FROM xt_purchase""")
     base_signature = {}
     for table in ["customer", "item", "date_dim", "time_dim", "store_sales", "catalog_sales", "web_sales"]:
         rows, checksum = connection.execute(f"SELECT count(*), bit_xor(md5_number(to_json(t)))::VARCHAR FROM {base_schema}.{table} t").fetchone()
         base_signature[table] = {"rows": rows, "row_checksum_xor": checksum}
-    configuration = {"generator_version": 2, "duckdb_version": duckdb.__version__, "profile": profile,
+    configuration = {"generator_version": 3, "duckdb_version": duckdb.__version__, "profile": profile,
                      "base_scale_factor": base_scale_factor, "base_generator": base_generator,
+                     "physical_source_identity": {"encoding": "source16_family16_ordinal64_suffix32_hex",
+                                                  "namespaces": {name: number for number, name in enumerate(schema, 1)}},
                      "base_signature": base_signature,
                      "seed": seed, "report_date": str(report_date), "history_months": history_months,
                      "accounts_per_customer": accounts_per_customer, "household_size": 2,
@@ -346,8 +395,8 @@ def statistics(connection):
     tables = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in sources}
     normalized = connection.execute("SELECT count(*), sum(missing_customer)::BIGINT, sum(missing_item)::BIGINT, sum(missing_date)::BIGINT FROM normalized_purchase").fetchone()
     config = json.loads(connection.execute("SELECT configuration FROM xt_run").fetchone()[0])
-    # Calibrated events have a compact entity reference; prepare() checks its
-    # published identity for collisions when validating the status source.
+    # prepare() validates registry identity once per entity, so census references
+    # can use integer handles without repeating event-level hash sorting.
     key = "_engagement_key" if config["profile"] == "calibrated" else "engagement_registry_key::UUID"
     # Each registry key belongs to exactly one household cohort. Derive totals
     # from that same exact census instead of sorting all status keys a second time.

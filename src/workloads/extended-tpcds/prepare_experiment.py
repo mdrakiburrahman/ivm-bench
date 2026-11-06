@@ -30,7 +30,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
         "threads": int(os.environ.get("DUCKDB_THREADS", "4")),
         "max_temp_directory_size": os.environ.get("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", "4GB"),
     }
-    recipe = {"preparation_version": 6, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
+    recipe = {"preparation_version": 7, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
               "steps": steps, "duckdb_generator_version": duckdb.__version__}
     metadata = directory / "preparation.json"
     if metadata.is_file():
@@ -49,6 +49,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
         connection.execute("INSTALL tpcds")
         connection.execute("LOAD tpcds")
         connection.execute(f"CALL dsdgen(sf={float(scale_factor)})")
+    full_initial = options["mode"] != "days" and mutations.bucket_width(initial_pct) == mutations.SCORE_MODULUS
     with stage("extended history generation and statistics"), duckdb.connect(str(extension_path), config=resources) as connection:
         connection.execute("ATTACH " + generate.quote(base_path) + " AS raw (READ_ONLY)")
         connection.execute("BEGIN")
@@ -56,7 +57,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
             config = generate.prepare(connection, "raw.main", profile=options["profile"], seed=options["seed"],
                                       report_date=options["report_date"], history_months=options["history_months"],
                                       base_scale_factor=scale_factor,
-                                      base_generator=f"DuckDB tpcds extension {duckdb.__version__}", source_views=True)
+                                      base_generator=f"DuckDB tpcds extension {duckdb.__version__}", source_views=True, validate_source_ids=not full_initial)
             achieved = generate.statistics(connection)
             connection.execute("COMMIT")
         except Exception:
@@ -76,7 +77,8 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
             manifest = mutations.plan(connection, directory / "plan", mode=options["mode"],
                                       initial_pct=initial_pct, steps=steps, days=options["days"],
                                       seed=options["seed"], mutation_cohort=options["mutation_cohort"],
-                                      mutate_source=not insert_only)
+                                      mutate_source=not insert_only,
+                                      expected_initial_rows=achieved["extension_rows"] if full_initial else None)
     result = {"recipe": recipe, "configuration": config, "achieved": achieved,
               "plan_id": manifest["plan_id"], "batches": len(manifest["batches"]) + 1}
     # Engines replay the immutable Parquet plan; these databases are preparation

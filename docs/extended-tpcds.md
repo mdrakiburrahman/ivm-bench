@@ -65,7 +65,72 @@ SF25 initialization/refresh performance and production joint-distribution
 fidelity remain unvalidated. The initial 2 GB validation attempt exhausted memory;
 both reported profiles were rerun with identical 4 GB limits.
 
+### Preparation pipeline, generator version 3 (2026-11-06)
+
+The four follow-up optimizations preserve the 96 SQL models and their dependency
+shape, initial business rows, source cardinalities and calibrated distributions:
+
+- With a complete initial snapshot, validate all 18 physical-ID sets from the
+  exported Parquet files. Check both uniqueness/non-NULL IDs and full source-row
+  coverage before constructing refreshes. Partial initial snapshots and days mode
+  retain generation-time validation of the complete population.
+- Use full initial Parquet images as immutable refresh pools, including during
+  mixed updates/deletes. Partial initial snapshots and days mode retain the
+  complete original pool, including rows withheld from the initial load.
+- Cache assessment keys, channel assessments and other engagement attributes once
+  per entity, then expand history versions. All inactive history rows remain.
+- Give initial rows structured 32-character hexadecimal IDs: a 16-bit source
+  namespace, 16-bit entity/channel family, 64-bit ordinal and 32-bit version or
+  observation suffix. Unsigned casts reject overflow. Entity registry identities
+  are validated independently once per entity; initial physical-ID validation is
+  still exact. Insert copies retain the existing seeded per-batch MD5 identity.
+
+This is **generator version 3 / preparation recipe 7**. Physical IDs, dataset/plan
+IDs and seeded refresh selections change. Source schemas, business keys, initial
+payload bags, timestamps, SQL ordering, full initial row counts and insertion
+percentage semantics are preserved. The namespace map is recorded in source
+configuration. Old preparation caches cannot be reused under the new recipe.
+
+A fresh sequential local SF1 comparison against `f93e4e2`, using DuckDB 1.2.1,
+four threads, 4 GB DuckDB memory, 16 GB spill, calibrated profile, seed 17,
+2002-12-31, 12 history months and insertion 100/1/0.01, measured:
+
+| Preparation measurement | Before | Generator v3 |
+|---|---:|---:|
+| Total wall time, including fresh base generation | 181.98 s | 110.73 s |
+| All 18 physical-ID checks | 69.88 s | 11.06 s |
+| Refresh export SQL | 19.44 s | 7.72 s |
+| Retained source/metadata files | 2.889 GB | 1.411 GB |
+| Peak process RSS | 4.309 GB | 5.027 GB |
+| Initial logical source rows | 101,318,311 | 101,318,311 |
+
+Preparation took **39.2% less time** and retained files were **51.1% smaller**.
+Process memory increased with attribute caching; the DuckDB memory limit is not
+an RSS cap. Component times are included in the total. These are single shared
+laptop observations, not isolated/statistical estimates or an SF25 result. Base
+signatures, every initial source count and all achieved calibration statistics
+matched. SF1 inserted/resulting counts were 378,028 / 101,696,339 in batch 2 and
+3,789 / 101,700,128 in batch 3. The version-2 selections were 376,758 and 3,798
+insertions; changed physical IDs intentionally change the deterministic buckets.
+
+A real SF0.1 three-batch replay passed **288/288 model bag comparisons**, plus
+independent window-cardinality checks. All 96 initial model row counts matched
+the prior generator. All 18 initial source bags (10,101,373 business rows,
+excluding only the changed physical-ID column) matched exactly, including NULLs
+and duplicate multiplicities. All 46 workload tests passed, including overflow,
+business-key collisions, duplicate/NULL exported IDs, missing snapshot rows,
+partial/daily validation routes and immutable pools across mixed mutations.
+
+The Fabric comparison retains current-row filters, 365-day retention,
+1/7/28-day windows, latest-row/non-NULL selection, three-channel expansion,
+distinct aggregates and the shared DAG. Matching the remaining production input
+volume ratios and unknown downstream/joint cardinalities is separate work; these
+preparation changes do not claim to establish that match.
+
 ### Preparation cost reduction (2026-11-06)
+
+Historical comparison for `f93e4e2`, before generator version 3.
+
 
 Calibrated status events are now stored internally as an integer entity reference,
 observation number and timestamp. Views reconstruct the same event IDs, registry
@@ -184,9 +249,10 @@ pool is prepared outside measured model execution. The report date stays fixed
 in every mode, including days mode.
 
 OAT preparation represents the 18 wide sources as typed views over shared
-entity/event tables. Insert-only planning streams initial and refresh Parquet
-images from those immutable views without copying histories or event pools into
-working tables. Update/delete modes retain mutable planning tables. After export,
+entity/event tables. Insert-only planning streams initial images from those
+views. Full initial images then provide immutable refresh pools; partial/daily
+loads retain complete original pools. Update/delete modes retain mutable working
+tables and use the same frozen original-pool contract. After export,
 preparation removes its three scratch databases before starting an engine; the
 Parquet plan, checksums, source statistics and configuration remain available.
 Shared preparation tables use integer account/item keys and reconstruct long
@@ -196,8 +262,10 @@ compare adjacent sorted binary keys instead of allocating a global distinct set.
 Parquet images use Zstandard level 1 compression and retain the same typed
 columns and source values. Physical file order is unspecified: event ordering is
 defined by the original timestamps and SQL ordering columns, and refresh batches
-remain unchanged. Export no longer globally sorts wide rows by their MD5 IDs.
-This changes preparation storage, not source row counts, keys, values, or model SQL.
+retain their prescribed ordering and percentage semantics. Export does not
+globally sort wide rows by physical IDs. Generator v3 changes the initial
+physical-ID encoding and therefore seeded refresh selections, while preserving
+initial business payloads, row counts, schemas and model SQL, as described above.
 At SF25 the native profile still represents about 2.16 billion source rows, so
 SF25 must not be interpreted as a 25 GB cap on this extended workload.
 
@@ -576,7 +644,7 @@ probabilities are sampled independently of event eligibility and therefore do no
 establish event-level production selectivity. Finite-population deviations are
 reported, including separate store and catalog achieved fractions.
 
-Generator version 2 assigns the optional fourth observation with a separately
+Since generator version 2, the optional fourth observation is assigned with a separately
 seeded hash threshold instead of reusing the eligibility rank prefix. The global
 density matches the target in expectation; finite-population deviations are
 reported. This avoids forcing every eligible entity to have four observations.
