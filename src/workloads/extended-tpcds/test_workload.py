@@ -6,7 +6,7 @@ import math
 import tempfile
 import unittest
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import duckdb
 
@@ -83,6 +83,13 @@ class WorkloadTests(unittest.TestCase):
                 actual = generate.prepare(views, 'base', profile=profile, report_date=date(2002, 12, 31), source_views=True)
                 self.assertEqual(actual, expected)
                 self.assertEqual(generate.statistics(views), generate.statistics(tables))
+                stats = generate.statistics(views)
+                rows, keys = views.execute('SELECT count(*), count(DISTINCT engagement_registry_key) FROM xt_status_events').fetchone()
+                self.assertEqual((stats['status_event_rows'], stats['status_registry_keys']), (rows,keys))
+                cohorts = views.execute("""SELECT e.household_cohort, count(*), count(DISTINCT s.engagement_registry_key)
+                    FROM xt_status_events s JOIN xt_engagements e USING (engagement_registry_key)
+                    GROUP BY 1 ORDER BY 1""").fetchall()
+                self.assertEqual(stats['cohorts'], [{'cohort':c,'events':n,'registry_keys':k} for c,n,k in cohorts])
                 for name in json.loads((generate.HERE / 'source-schema.json').read_text()):
                     self.assertEqual(views.execute(f'SELECT * FROM {name} ORDER BY _source_row_id').fetchall(),
                                      tables.execute(f'SELECT * FROM {name} ORDER BY _source_row_id').fetchall(), name)
@@ -185,6 +192,32 @@ class WorkloadTests(unittest.TestCase):
             self.assertTrue(calibration["status_events_per_engagement_collection_key"]["implemented"])
             self.assertIsNone(calibration["parent_capacity_limit_pearson_r"]["observed"])
             self.assertFalse(calibration["parent_capacity_limit_pearson_r"]["implemented"])
+
+    def test_compact_calibrated_events_preserve_ids_times_and_origins(self):
+        with fixture() as connection:
+            config = generate.prepare(connection, 'base', 'calibrated', report_date=date(2002,12,31))
+            density = config['calibration_target_values']['status_events_per_engagement_collection_key']
+            expected = []
+            def fraction(value):
+                return int(hashlib.md5(('17:'+value).encode()).hexdigest()[:8],16)/2**32
+            for path, key, origin in connection.execute(
+                'SELECT engagement_path, engagement_registry_key, origin_purchase_line_id FROM xt_engagements'
+            ).fetchall():
+                count = math.floor(density) + (fraction('status-count:'+path)<density-math.floor(density))
+                for number in range(count):
+                    timestamp = datetime(2002,12,31,14)-timedelta(days=math.floor(fraction(path+str(number))*365))
+                    expected.append((f'synthetic:{key}:{number}',key,timestamp,origin,'synthetic_calibrated'))
+            actual = connection.execute('SELECT * FROM xt_status_events ORDER BY event_id').fetchall()
+            self.assertEqual(actual, sorted(expected))
+
+    def test_compact_calibrated_events_reject_colliding_published_registry_keys(self):
+        with fixture() as connection:
+            def registry_hash(value):
+                return '0'*32 if value.startswith('account:') else hashlib.md5(value.encode()).hexdigest()
+            connection.create_function('registry_hash', registry_hash, ['VARCHAR'], 'VARCHAR')
+            connection.execute('CREATE MACRO md5(value) AS registry_hash(value)')
+            with self.assertRaisesRegex(ValueError, 'duplicate physical identities in ext_engagement_status_events'):
+                generate.prepare(connection, 'base', 'calibrated', report_date=date(2002,12,31))
 
     def test_calibrated_extra_observations_are_not_clustered_at_first_ranks(self):
         with fixture() as connection:

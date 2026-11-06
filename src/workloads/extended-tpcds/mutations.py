@@ -163,10 +163,13 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
     (directory / "initial").mkdir()
     # A frozen source pool gives repetitions a fixed denominator and lets days
     # replay withheld arrivals instead of inventing a moving reporting clock.
+    # A full initial selection needs only the score's NULL behavior, not hashing.
+    initial_filter = ("_source_row_id IS NOT NULL" if initial_width == SCORE_MODULUS
+                      else f"{score(seed, 1)} < {initial_width}")
     for table in EVENT_DATES:
         kind = "TABLE" if mutate_source else "VIEW"
         connection.execute(f"CREATE TEMP {kind} pool_{table} AS SELECT * FROM {table}")
-        predicate = f"{score(seed, 1)} < {initial_width}"
+        predicate = initial_filter
         if mode == "days":
             predicate += f" AND {EVENT_DATES[table]} < DATE {quote(start)}"
         if mutate_source:
@@ -174,7 +177,7 @@ def plan(connection, directory, *, mode="insertion", initial_pct="100", steps=No
     for table in sources():
         sql = f"SELECT * FROM {table}"
         if not mutate_source and table in EVENT_DATES:
-            sql += f" WHERE {score(seed, 1)} < {initial_width}"
+            sql += f" WHERE {initial_filter}"
         manifest["initial"][table] = export_rows(connection, sql, directory / "initial" / f"{table}.parquet", directory)
     row_counts = {table: image["rows"] for table, image in manifest["initial"].items()}
     for number, step in enumerate(steps, 2):

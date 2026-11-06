@@ -153,12 +153,20 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
         extra_probability = density - base_events
         extra_observation = random_fraction(quote('status-count:') + ' || e.engagement_path')
         event_day = f"{clock} - floor({random_fraction('e.engagement_path || v.n::VARCHAR')} * 365)::INTEGER"
-        execute(f"""CREATE TABLE xt_status_events AS
-            SELECT 'synthetic:' || e.engagement_registry_key || ':' || v.n::VARCHAR AS event_id,
-                   e.engagement_registry_key, {event_day} + INTERVAL 14 HOUR AS event_time,
-                   e.origin_purchase_line_id, 'synthetic_calibrated' AS origin
-            FROM xt_engagements e CROSS JOIN range({base_events + 1}) v(n)
+        execute(f"""CREATE TABLE xt_status_event_keys AS
+            SELECT e._engagement_key, v.n AS observation_number,
+                   {event_day} + INTERVAL 14 HOUR AS event_time
+            FROM (SELECT e._engagement_key, {path} AS engagement_path {rank_input}) e
+            CROSS JOIN range({base_events + 1}) v(n)
             WHERE v.n < {base_events} OR (v.n={base_events} AND {extra_observation} < {extra_probability})""")
+        execute(f"""CREATE VIEW xt_status_event_details AS
+            SELECT 'synthetic:' || md5(a.account_id || ':' || lower(i.item_id)) || ':' || s.observation_number::VARCHAR AS event_id,
+                   md5(a.account_id || ':' || lower(i.item_id)) AS engagement_registry_key,
+                   s.event_time, e.origin_purchase_line_id, 'synthetic_calibrated' AS origin,
+                   {path} AS engagement_path, a.household_cohort, s._engagement_key
+            FROM xt_status_event_keys s JOIN xt_engagement_keys e USING (_engagement_key)
+            JOIN xt_accounts a USING (_account_number) JOIN xt_items i USING (_item_number)""")
+        execute("CREATE VIEW xt_status_events AS SELECT * EXCLUDE (engagement_path, household_cohort, _engagement_key) FROM xt_status_event_details")
     else:
         execute("""CREATE TABLE xt_status_events AS
             SELECT purchase_line_id AS event_id, engagement_registry_key, event_time,
@@ -178,6 +186,11 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
             JOIN hot_engagements h ON (e.n-1)%5=h.n
             WHERE e.n <= (SELECT floor(count(*) * 0.25) FROM xt_status_events)""")
         execute("UPDATE xt_status_events e SET engagement_registry_key=r.registry_key, origin='synthetic_jcc_assignment' FROM reassigned r WHERE e.event_id=r.event_id")
+
+    if profile != "calibrated":
+        execute("""CREATE VIEW xt_status_event_details AS
+            SELECT s.*, e.engagement_path, e.household_cohort FROM xt_status_events s
+            JOIN xt_engagements e USING (engagement_registry_key)""")
 
     schema = json.loads((HERE / "source-schema.json").read_text())
 
@@ -271,9 +284,9 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
         strftime(event_time,'%Y%m%d') AS event_date_key,
         date_diff('second',date_trunc('day',event_time),event_time)::VARCHAR AS event_second_key,
         event_time AS observation_time, event_time+INTERVAL 1 HOUR AS ingestion_time,
-        md5('assessment:' || e.engagement_path) AS assessment_key,
+        md5('assessment:' || s.engagement_path) AS assessment_key,
         strftime(event_time,'%Y%m%d') AS event_date, strftime(event_time,'%Y%m') AS event_month, 'retail' AS region_partition
-        FROM xt_status_events s JOIN xt_engagements e USING (engagement_registry_key)""")
+        FROM xt_status_event_details s""")
     parent_metadata = f"xt_customers CROSS JOIN {versions}"
     source("ext_customer_profile_history", f"""SELECT customer_path || ':' || version AS row_key, customer_path,
         'Retail' AS platform_name, 'Retail' AS reported_platform,
@@ -332,17 +345,23 @@ def statistics(connection):
     sources = json.loads((HERE / "source-schema.json").read_text())
     tables = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in sources}
     normalized = connection.execute("SELECT count(*), sum(missing_customer)::BIGINT, sum(missing_item)::BIGINT, sum(missing_date)::BIGINT FROM normalized_purchase").fetchone()
-    status_rows, keys = key_counts(connection, "SELECT engagement_registry_key::UUID AS key FROM xt_status_events")
-    cohorts = connection.execute("""SELECT household_cohort, count(*) AS events,
-        count(*) FILTER (WHERE key IS NOT NULL AND (previous IS NULL OR key<>previous)) AS keys
-        FROM (SELECT e.household_cohort, s.engagement_registry_key::UUID AS key,
-                     lag(s.engagement_registry_key::UUID) OVER (
-                         PARTITION BY e.household_cohort ORDER BY s.engagement_registry_key::UUID) AS previous
-              FROM xt_status_events s JOIN xt_engagements e
-                ON s.engagement_registry_key::UUID=e.engagement_registry_key::UUID) ordered
-        GROUP BY 1 ORDER BY 1""").fetchall()
-    hot_share = connection.execute("SELECT count(*) FILTER (WHERE origin='synthetic_jcc_assignment')::DOUBLE / nullif(count(*),0) FROM xt_status_events").fetchone()[0]
     config = json.loads(connection.execute("SELECT configuration FROM xt_run").fetchone()[0])
+    # Calibrated events have a compact entity reference; prepare() checks its
+    # published identity for collisions when validating the status source.
+    key = "_engagement_key" if config["profile"] == "calibrated" else "engagement_registry_key::UUID"
+    # Each registry key belongs to exactly one household cohort. Derive totals
+    # from that same exact census instead of sorting all status keys a second time.
+    cohorts = connection.execute(f"""SELECT household_cohort, count(*) AS events,
+        count(*) FILTER (WHERE key IS NOT NULL AND (previous IS NULL OR key<>previous)) AS keys,
+        count(*) FILTER (WHERE origin='synthetic_jcc_assignment') AS reassigned
+        FROM (SELECT household_cohort, {key} AS key, origin,
+                     lag({key}) OVER (
+                         PARTITION BY household_cohort ORDER BY {key}) AS previous
+              FROM xt_status_event_details) ordered
+        GROUP BY 1 ORDER BY 1""").fetchall()
+    status_rows = sum(row[1] for row in cohorts)
+    keys = sum(row[2] for row in cohorts)
+    hot_share = sum(row[3] for row in cohorts) / status_rows if status_rows else None
     references = json.loads((HERE / "profiles.json").read_text())["measured_reference_targets"]
     metadata_fraction = connection.execute("SELECT count(*) FILTER(WHERE relationship_type='purchase')::DOUBLE/nullif(count(*),0) FROM ext_engagement_capacity_history WHERE is_current").fetchone()[0]
     channel_fractions = connection.execute("SELECT count(store_eligibility)::DOUBLE/nullif(count(*),0), count(catalog_eligibility)::DOUBLE/nullif(count(*),0), count(web_eligibility)::DOUBLE/nullif(count(*),0) FROM ext_engagement_channel_history WHERE is_current").fetchone()
@@ -358,7 +377,7 @@ def statistics(connection):
             "missing_item_rows": normalized[2], "quarantined_missing_date_rows": normalized[3],
             "status_event_rows": status_rows, "status_registry_keys": keys,
             "status_events_per_registry_key": status_rows / keys if keys else None,
-            "cohorts": [{"cohort": c, "events": n, "registry_keys": k} for c, n, k in cohorts],
+            "cohorts": [{"cohort": c, "events": n, "registry_keys": k} for c, n, k, _ in cohorts],
             "reassigned_stress_event_share": hot_share}
 
 

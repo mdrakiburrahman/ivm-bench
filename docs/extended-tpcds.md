@@ -65,6 +65,49 @@ SF25 initialization/refresh performance and production joint-distribution
 fidelity remain unvalidated. The initial 2 GB validation attempt exhausted memory;
 both reported profiles were rerun with identical 4 GB limits.
 
+### Preparation cost reduction (2026-11-06)
+
+Calibrated status events are now stored internally as an integer entity reference,
+observation number and timestamp. Views reconstruct the same event IDs, registry
+keys, origin purchase IDs and source schemas. Export joins these events to the
+entity dictionary by integer key, avoiding a second join on reconstructed hash
+strings. A single exact cohort census computes event counts, distinct entity
+counts and stress-reassignment share; calibrated census sorting uses the integer
+entity reference after published status IDs have passed collision validation.
+The 100% initial selection retains the original NULL behavior without computing
+a redundant selection hash. Exact source-ID checks remain enabled for all 18
+sources. Preparation recipe v6 invalidates the old scratch representation;
+source configuration, dataset ID and logical mutation-plan identity are unchanged.
+
+A sequential local SF1 comparison against `a8d9e2a` used the same calibrated
+profile, DuckDB 1.2.1, four threads, 4 GB memory and 16 GB spill, seed 17,
+report date 2002-12-31, 12 history months and insertion 100/1/0.01. Each variant
+performed fresh base generation and prepared 101,318,311 initial logical source
+rows, including 18,133,570 status observations.
+
+| Preparation measurement | Before | After |
+|---|---:|---:|
+| Total wall time | 198.56 s | 170.85 s |
+| Status-event construction | 21.59 s | 8.90 s |
+| Status totals and cohort census | 20.31 s | 5.74 s |
+| All 18 source-ID checks | 63.80 s | 63.95 s |
+| Planning and exports | 50.7 s | 53.0 s |
+| Peak process RSS | 4.65 GB | 4.39 GB |
+
+Total preparation time fell 14.0% in this observation. Component timers are
+included in the total. Export became slightly slower; source-ID checks and
+export remain substantial costs. These are single observations on the shared
+16 GiB laptop, not isolated or statistical performance estimates, and do not
+establish an SF25 speedup. Exported files remain approximately 2.89 GB in both
+variants, with small layout-dependent size differences; row order is unspecified.
+
+All 28 initial/refresh images matched after sorting by their unique physical
+IDs: 101,698,867 complete rows compared with identical Arrow schemas and values,
+including NULLs and duplicate business rows. Logical manifest metadata (excluding
+physical file checksums) and achieved counts/calibration statistics matched
+exactly. All 42 workload tests passed, including independently reconstructed
+calibrated IDs/timestamps and rejection of colliding published registry keys.
+
 The standalone implementation generates 18 extension sources and materializes all
 96 translated models in DuckDB. It reports intermediate row counts and checks
 temporal cardinality and monthly quantity independently. The mutation planner and
