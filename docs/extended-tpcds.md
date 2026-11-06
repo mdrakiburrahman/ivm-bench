@@ -5,6 +5,19 @@ materialized analytical pipeline patterned after Insights. It is an experimental
 IVM workload derived from TPC-DS, with its own queries, data profiles and update
 streams. Its results are not comparable to officially published TPC-DS results.
 
+The current SF1/SF25 engine experiments use the `native` control profile. They
+preserve the translated query roles, but are **not a cardinality-calibrated
+reproduction of the original Fabric workload**. Native generation assigns every
+engagement a purchase relationship and about 75% non-null channel assessments;
+the reference staging slices report about 1.06% matching relationship rows and
+0.093–0.102% non-null assessments. At SF25, 120,324,287 generated engagements give
+one current health row each, versus 138,099 instance-health staging rows in the
+reference profile. These are different populations, not a production scale-factor
+mapping. Neither source marginals nor the small referentially closed seed data
+establish production intermediate, window-expansion or final-group cardinalities.
+The `calibrated` profile implements four marginal targets; it does not yet
+validate those downstream cardinalities or the remaining joint distributions.
+
 The standalone implementation generates 18 extension sources and materializes all
 96 translated models in DuckDB. It reports intermediate row counts and checks
 temporal cardinality and monthly quantity independently. The mutation planner and
