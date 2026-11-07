@@ -5,12 +5,17 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 MODULE_PATH = (Path(__file__).resolve().parents[1] / 'adapters/dbt-duckdb-openivm/'
                'dbt/adapters/openivm/connections.py')
 spec = importlib.util.spec_from_file_location('openivm_cli_connections', MODULE_PATH)
 connections = importlib.util.module_from_spec(spec)
+PROFILE_PATH = Path(__file__).resolve().parents[1] / 'services/openivm_profile.py'
+profile_spec = importlib.util.spec_from_file_location('openivm_profile', PROFILE_PATH)
+profile = importlib.util.module_from_spec(profile_spec)
+profile_spec.loader.exec_module(profile)
 try:
     spec.loader.exec_module(connections)
     HAS_ADAPTER = True
@@ -27,6 +32,10 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         self.enterContext(patch.object(connections, 'TEMP_DIR', directory))
         self.enterContext(patch.object(connections, 'MAX_RETRIES', 2))
         self.enterContext(patch.object(connections, 'PROFILE_REFRESH', False))
+        self.enterContext(patch.object(connections, 'REFRESH_PIPELINE', False))
+        self.enterContext(patch.object(connections, 'DIAGNOSTIC_VIEW', ''))
+        connections._pipeline_completed = False
+        connections._pipeline_error = None
         self.sleep = self.enterContext(patch.object(connections.time, 'sleep'))
 
     @staticmethod
@@ -123,6 +132,74 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
                     connections._run_cli('SELECT 1')
                 self.assertEqual(run.call_count, 1)
         self.sleep.assert_not_called()
+
+    def test_pipeline_refreshes_all_qualified_views_once_across_workers(self):
+        def execute(sql):
+            if sql.startswith('COPY (SELECT view_catalog'):
+                path = sql.split('TO ', 1)[1].split(' (HEADER', 1)[0].strip("'")
+                with open(path, 'w', newline='') as output:
+                    writer = csv.writer(output)
+                    writer.writerow(['view_catalog', 'view_schema', 'view_sql_name'])
+                    writer.writerows([['ducklake', 'silver', 'watches'],
+                                     ['ducklake', 'gold', 'summary']])
+                return ''
+            self.assertEqual(sql, "PRAGMA refresh_pipeline('ducklake.silver.watches', "
+                                  "'ducklake.gold.summary')")
+            return 'Success\ntrue\n'
+        with patch.object(connections, 'REFRESH_PIPELINE', True), \
+                patch.object(connections, '_run_cli', side_effect=execute) as run, \
+                ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda _: connections._run_pipeline_once(), range(8)))
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(sum(bool(result) for result in results), 1)
+
+    def test_failed_pipeline_is_not_replayed_after_partial_commit(self):
+        def execute(sql):
+            if sql.startswith('COPY (SELECT view_catalog'):
+                path = sql.split('TO ', 1)[1].split(' (HEADER', 1)[0].strip("'")
+                with open(path, 'w', newline='') as output:
+                    output.write('view_catalog,view_schema,view_sql_name\n'
+                                 'ducklake,silver,watches\n')
+                return ''
+            raise connections.DbtDatabaseError('second node failed')
+        with patch.object(connections, 'REFRESH_PIPELINE', True), \
+                patch.object(connections, '_run_cli', side_effect=execute) as run:
+            for _ in range(2):
+                with self.assertRaisesRegex(connections.DbtDatabaseError, 'second node failed'):
+                    connections._run_pipeline_once()
+        self.assertEqual(run.call_count, 2)
+
+    def test_diagnostic_archive_only_applies_to_selected_refresh(self):
+        def execute(*args, **kwargs):
+            return self.output(kwargs['input'])
+        with patch.object(connections, 'DIAGNOSTIC_VIEW', 'ducklake.silver.watches'), \
+                patch.object(connections.subprocess, 'run', side_effect=execute) as run:
+            for sql in ("PRAGMA refresh_options('ducklake','gold','summary')",
+                        "PRAGMA refresh_options('ducklake','silver','watches')"):
+                connections._run_cli(sql)
+        programs = [call.kwargs['input'] for call in run.call_args_list]
+        self.assertNotIn('SET openivm_archive_compiled_sql=true;', programs[0])
+        self.assertIn('SET openivm_archive_compiled_sql=true;', programs[1])
+
+
+class OpenIVMMergeDiagnosticTest(unittest.TestCase):
+    def test_exports_full_archived_merge_and_nonexecuting_plan(self):
+        full_sql = 'MERGE INTO ducklake.silver.watches USING (SELECT 1) d ON false WHEN NOT MATCHED THEN INSERT VALUES (1)'
+        def copy(query, path):
+            self.assertIn("p.view_sql_name='watches'", query)
+            with path.open('w', newline='') as output:
+                writer = csv.DictWriter(output, fieldnames=['stmt_order', 'sql'])
+                writer.writeheader()
+                writer.writerows([{'stmt_order': 0, 'sql': 'SELECT 1'},
+                                  {'stmt_order': 1, 'sql': full_sql}])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(profile, 'DIAGNOSTIC_VIEW', 'ducklake.silver.watches'), \
+                patch.object(profile, '_copy_query_to_csv', side_effect=copy), \
+                patch.object(profile, '_explain_merge', return_value='plan') as explain:
+            result = profile._diagnostic_merge(Path(directory))
+        self.assertEqual(result['statements'][1]['sql'], full_sql)
+        self.assertEqual(result['merge_plan_after_refresh'], 'plan')
+        explain.assert_called_once_with(full_sql)
 
 
 if __name__ == '__main__':

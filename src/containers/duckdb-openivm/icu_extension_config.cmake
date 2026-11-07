@@ -1,3 +1,3 @@
-# Build a revision-matched loadable ICU extension without adding it to the
-# static extension registry of OpenIVM's benchmark helper executables.
-duckdb_extension_load(icu DONT_LINK)
+# Build a revision-matched loadable ICU extension. DuckDB 2.0 only links an
+# extension statically when explicitly requested, so DONT_LINK is unnecessary.
+duckdb_extension_load(icu)

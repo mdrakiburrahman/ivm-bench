@@ -93,6 +93,19 @@ use separate branches or dispatches to compare revisions. The revision must prov
 `cost_model_benchmark` and support the selected arguments; DuckDB and the build
 tooling remain separately pinned in that Dockerfile.
 
+For DuckDB OpenIVM refresh diagnosis, run
+[`duckdb-openivm-pipeline-merge-probe.json`](src/containers/benchmark-server/experiments/duckdb-openivm-pipeline-merge-probe.json)
+through `ci.yaml` using `experiments_file`. Its opt-in pipeline runs all existing
+MVs once in dependency order, replacing 49 per-model refresh CLI calls with one
+metadata lookup and one pipeline call. The SF10 experiment validates every MV
+with bidirectional `EXCEPT ALL`; the SF100 experiments compare pipeline timing
+and capture the full executed `silver.watches` MERGE plus its JSON `EXPLAIN` in
+`openivm-merge-diagnostic-batch<N>.json`. Archive capture is enabled only for
+the diagnostic run. The plan is collected after refresh, when delta sizes may
+have changed. In pipeline mode, dbt attributes the whole pipeline to its first
+model, so compare total dbt invocation and OpenIVM per-view profile timings,
+not individual dbt model timings against Figure 1.
+
 Cost-model CSVs are uploaded with the CI artifacts under
 `mount/cost-model-bench/<run-id>/<experiment-index>-<label>/`. Scale factors
 run sequentially, and the CI job timeout and cancellation rules apply.

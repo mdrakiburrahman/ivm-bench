@@ -1,0 +1,492 @@
+diff --git a/spark-ext/build.sbt b/spark-ext/build.sbt
+index e9dfb59..0ef05a9 100644
+--- a/spark-ext/build.sbt
++++ b/spark-ext/build.sbt
+@@ -102 +102 @@ lazy val ivmExtension = (project in file("ivm-extension"))
+-          Seq("duckdb", "openivm.duckdb_extension").flatMap { name =>
++          Seq("duckdb", "openivm.duckdb_extension", "libstdc++.so.6", "libgcc_s.so.1").flatMap { name =>
+diff --git a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
+index ede36c5..7637061 100644
+--- a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
++++ b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
+@@ -2009,2 +2009,3 @@ object SparkRefreshRewriter {
+-    val qcol      = "(?<![\\w`])(?:`?\\w++`?\\s*\\.\\s*)?`?openivm_timestamp`?"
+-    val tsLiteral = "(?:'[^']*+'::\\s*+TIMESTAMP|CAST\\s*+\\(\\s*+'[^']*+'\\s++AS\\s++TIMESTAMP\\s*+\\))"
++    val qcol = "(?<![\\w`])(?:`?\\w++`?\\s*\\.\\s*)?`?openivm_timestamp`?"
++    val tsLiteral =
++      "(?:'[^']*+'::\\s*+TIMESTAMP|CAST\\s*+\\(\\s*+'[^']*+'\\s++AS\\s++TIMESTAMP\\s*+\\)|TIMESTAMP\\s++'[^']*+')"
+@@ -2018,4 +2019,6 @@ object SparkRefreshRewriter {
+-    // LPTS rewrites parenthesises each WHERE conjunct
+-    // (`WHERE (`openivm_timestamp`>=CAST(...))`), so match the predicate either
+-    // wrapped in a balanced paren pair or bare (pre-merge single-line form).
+-    val tsPred = "(?:\\(\\s*" + qcol + cmp + refreshHorizon + "\\s*\\)|" + qcol + cmp + refreshHorizon + ")"
++    // DuckDB 2.0 can parenthesize the column, TIMESTAMP literal, and whole
++    // predicate independently: `((openivm_timestamp) >= (TIMESTAMP '...'))`.
++    val colExpr     = "(?:\\(\\s*+" + qcol + "\\s*+\\)|" + qcol + ")"
++    val horizonExpr = "(?:\\(\\s*+" + refreshHorizon + "\\s*+\\)|" + refreshHorizon + ")"
++    val comparison  = colExpr + cmp + horizonExpr
++    val tsPred      = "(?:\\(\\s*+" + comparison + "\\s*+\\)|" + comparison + ")"
+diff --git a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
+index b13fff4..e0f95a6 100644
+--- a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
++++ b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
+@@ -738,0 +739,18 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
++    it("keeps staged source rows visible in DuckDB 2.0 simple projection SQL") {
++      val duckdb2Sql = simpleProjectionInput.replace(
++        "openivm_timestamp >= '2026-05-16 10:00:55'::TIMESTAMP",
++        "((openivm_timestamp) >= (TIMESTAMP '2026-05-16 10:00:55'))"
++      )
++      val rewritten = SparkRefreshRewriter.rewrite(
++        compiledSql = duckdb2Sql,
++        mvName = mvName,
++        mvLocation = mvLocation,
++        viewLogicalName = viewLogicalName,
++        sourceTempViews = Map("users" -> "openivm_delta_users"),
++        viewDeltaPath = viewDeltaPath
++      )
++      rewritten.statements should not be empty
++      rewritten.statements.foreach(_ should not include "TIMESTAMP '2026-05-16 10:00:55'")
++      rewritten.statements.head should include("openivm_delta_users")
++    }
++
+@@ -2698,0 +2717,13 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
++    it("strips DuckDB 2.0 parenthesized timestamp literals from source delta scans") {
++      val cutoff = "((openivm_timestamp) >= (TIMESTAMP '2026-11-05 22:32:21.6993'))"
++      SparkRefreshRewriter.stripTimestampPredicate(
++        s"SELECT * FROM openivm_delta_staging_holding_history WHERE $cutoff"
++      ) shouldBe "SELECT * FROM openivm_delta_staging_holding_history"
++      SparkRefreshRewriter.stripTimestampPredicate(
++        s"SELECT * FROM t WHERE amount > 100 AND $cutoff"
++      ) shouldBe "SELECT * FROM t WHERE amount > 100"
++      SparkRefreshRewriter.stripTimestampPredicate(
++        s"SELECT * FROM t WHERE $cutoff AND amount > 100"
++      ) shouldBe "SELECT * FROM t WHERE amount > 100"
++    }
++
+diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
+index 9e9b616..60634b9 100644
+--- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
++++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
+@@ -147 +147,11 @@ object LptsSparkDialect {
+-                                  rewriteNowTimestamp(rewriteLikeOperators(rewriteQuotedCastTypes(sql)))
++                                  rewriteNowTimestamp(
++                                    rewriteLikeOperators(
++                                      SparkFunctionShimSql.rewriteOffsetWindowFrames(
++                                        SparkFunctionShimSql.rewriteOffsetLiteralCasts(
++                                          rewriteQuotedCastTypes(
++                                            SparkFunctionShimSql.rewriteQualifiedSystemIntervals(sql)
++                                          )
++                                        )
++                                      )
++                                    )
++                                  )
+@@ -267,81 +277,3 @@ object LptsSparkDialect {
+-  /** Rewrites DuckDB's `to_<unit>(N)` interval constructors to Spark's
+-    * `INTERVAL N <UNIT>` syntax. openivm emits these forms when a user view
+-    * body uses `INTERVAL N <unit>` and the LPTS pipeline serializes the
+-    * bound AST in DuckDB's preferred form (e.g. `INTERVAL 1 MILLISECOND`
+-    * round-trips as `to_milliseconds(CAST(1 AS DOUBLE))`).
+-    *
+-    * Supported units (matching DuckDB's interval-helper functions):
+-    *   - to_milliseconds(N)  → INTERVAL N MILLISECOND
+-    *   - to_seconds(N)       → INTERVAL N SECOND
+-    *   - to_minutes(N)       → INTERVAL N MINUTE
+-    *   - to_hours(N)         → INTERVAL N HOUR
+-    *   - to_days(N)          → INTERVAL N DAY
+-    *   - to_months(N)        → INTERVAL N MONTH
+-    *   - to_years(N)         → INTERVAL N YEAR
+-    *
+-    * The argument can be any expression with balanced parentheses (e.g.
+-    * `1`, `CAST(1 AS DOUBLE)`, `<column>`). Spark's `INTERVAL <expr> <UNIT>`
+-    * accepts any numeric expression as long as the value can be evaluated to
+-    * a numeric constant — for column refs, the user should use multiplication
+-    * `<col> * INTERVAL 1 MILLISECOND` instead, but the LPTS-emitted form
+-    * never uses column args here, just CAST'd literals.
+-    */
+-  private[compiler] def rewriteToTemporalUnit(sql: String): String = {
+-    val unitMap = Seq(
+-      "milliseconds" -> "MILLISECOND",
+-      "seconds"      -> "SECOND",
+-      "minutes"      -> "MINUTE",
+-      "hours"        -> "HOUR",
+-      "days"         -> "DAY",
+-      "months"       -> "MONTH",
+-      "years"        -> "YEAR"
+-    )
+-    // Helper: extract the balanced-paren argument starting at `start` (which
+-    // should be the opening `(` index). Returns the argument substring and
+-    // the index just past the closing `)`, or (None, -1) if unbalanced.
+-    def extractBalancedArg(s: String, openIdx: Int): (Option[String], Int) = {
+-      if (openIdx >= s.length || s.charAt(openIdx) != '(') return (None, -1)
+-      var depth    = 1
+-      var i        = openIdx + 1
+-      val argStart = i
+-      while (i < s.length && depth > 0) {
+-        s.charAt(i) match {
+-          case '(' => depth += 1
+-          case ')' => depth -= 1
+-          case _   => ()
+-        }
+-        if (depth > 0) i += 1
+-      }
+-      if (depth != 0) (None, -1)
+-      else (Some(s.substring(argStart, i)), i + 1)
+-    }
+-    var s = sql
+-    for ((fn, unit) <- unitMap) {
+-      val callRe  = ("(?i)\\bto_" + fn + "\\s*(?=\\()").r
+-      var changed = true
+-      while (changed) {
+-        changed = false
+-        callRe.findFirstMatchIn(s) match {
+-          case None =>
+-            ()
+-          case Some(m) =>
+-            val (argOpt, endIdx) = extractBalancedArg(s, m.end)
+-            argOpt match {
+-              case Some(arg) =>
+-                val before = s.substring(0, m.start)
+-                val after  = s.substring(endIdx)
+-                // Use Spark's `<expr> * INTERVAL 1 <UNIT>` form because Spark
+-                // 3.5's `INTERVAL <expr> <UNIT>` requires the expression to be
+-                // a literal — openivm/lpts emits `to_milliseconds(CAST(1 AS
+-                // DOUBLE))` for `INTERVAL 1 MILLISECOND`, so the arg is rarely
+-                // a bare literal.
+-                val argTrim = arg.trim
+-                s = s"${before}(($argTrim) * INTERVAL 1 $unit)$after"
+-                changed = true
+-              case None => ()
+-            }
+-        }
+-      }
+-    }
+-    s
+-  }
++  /** Rewrites DuckDB interval constructors using the shared quote-aware SQL scanner. */
++  private[compiler] def rewriteToTemporalUnit(sql: String): String =
++    SparkFunctionShimSql.rewriteTemporalUnitConstructors(sql)
+diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
+index 727217f..bebf550 100644
+--- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
++++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
+@@ -36,0 +37,149 @@ private[compiler] object SparkFunctionShimSql {
++  private val QualifiedSystemAdd =
++    """(?i)(?:"system"|`system`|system)\s*\.\s*(?:"main"|`main`|main)\s*\.\s*(?:"add"|`add`|add)""".r.pattern
++  private val QualifiedSystemInterval =
++    """(?i)(?:"system"|`system`|system)\s*\.\s*(?:"main"|`main`|main)\s*\.\s*(?:"(to_(?:microseconds|milliseconds|seconds|minutes|hours|days|months|years))"|`(to_(?:microseconds|milliseconds|seconds|minutes|hours|days|months|years))`|(to_(?:microseconds|milliseconds|seconds|minutes|hours|days|months|years)))""".r.pattern
++  private val QualifiedSystemFunction =
++    """(?i)(?:"system"|`system`|system)\s*\.\s*(?:"main"|`main`|main)\s*\.\s*(?:"([a-z_][a-z_0-9]*)"|`([a-z_][a-z_0-9]*)`|([a-z_][a-z_0-9]*))""".r.pattern
++
++  /** DuckDB 2.0 qualifies built-in functions with system.main. Restore the
++    * unqualified calls before Spark dialect rewrites, including interval
++    * arithmetic that must become an infix expression.
++    */
++  private[compiler] def rewriteQualifiedSystemIntervals(sql: String): String =
++    rewriteOutsideProtected(sql, protectDoubleQuotes = false) { i =>
++      val boundary =
++        i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
++      if (!boundary) None
++      else {
++        val add = QualifiedSystemAdd.matcher(sql).region(i, sql.length)
++        if (add.lookingAt()) {
++          parseFunctionCall(sql, add.end()).filter(_.topLevelCommaCount == 1).flatMap { call =>
++            splitTopLevelArgs(sql, call).collect { case Seq(left, right) =>
++              val lhs = rewriteQualifiedSystemIntervals(sql.substring(left._1, left._2).trim)
++              val rhs = rewriteQualifiedSystemIntervals(sql.substring(right._1, right._2).trim)
++              (call.closeParen + 1, s"(($lhs) + ($rhs))")
++            }
++          }
++        } else {
++          val unit = QualifiedSystemInterval.matcher(sql).region(i, sql.length)
++          if (unit.lookingAt() && parseFunctionCall(sql, unit.end()).isDefined)
++            Some(unit.end() -> Seq(unit.group(1), unit.group(2), unit.group(3)).find(_ != null).get)
++          else {
++            val builtin = QualifiedSystemFunction.matcher(sql).region(i, sql.length)
++            if (builtin.lookingAt() && parseFunctionCall(sql, builtin.end()).isDefined)
++              Some(builtin.end() -> Seq(builtin.group(1), builtin.group(2), builtin.group(3)).find(_ != null).get)
++            else None
++          }
++        }
++      }
++    }
++
++  private val OffsetWindowFunction = "(?i)(?:lag|lead)".r.pattern
++  private val CastOffsetLiteral =
++    """(?i)^CAST\s*\(\s*([+-]?[0-9]+)\s+AS\s+(?:TINYINT|SMALLINT|INT|INTEGER|BIGINT|HUGEINT)\s*\)$""".r
++
++  /** Spark requires an integer literal as LAG/LEAD's offset. LPTS renders a
++    * literal source offset as CAST(1 AS BIGINT), which Spark's analyzer rejects
++    * with a misleading window-frame error.
++    */
++  private[compiler] def rewriteOffsetLiteralCasts(sql: String): String =
++    rewriteOutsideProtected(sql, protectBackticks = true) { i =>
++      val boundary = i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_')
++      if (!boundary) None
++      else {
++        val offset = OffsetWindowFunction.matcher(sql).region(i, sql.length)
++        if (!offset.lookingAt()) None
++        else
++          parseFunctionCall(sql, offset.end()).flatMap { call =>
++            splitTopLevelArgs(sql, call).flatMap(_.lift(1)).flatMap { case (start, end) =>
++              val raw = sql.substring(start, end)
++              CastOffsetLiteral.findFirstMatchIn(raw.trim).map { literal =>
++                val leading  = raw.takeWhile(_.isWhitespace)
++                val trailing = raw.reverse.takeWhile(_.isWhitespace).reverse
++                val replacement = sql.substring(i, start) + leading + literal.group(1) + trailing +
++                  sql.substring(end, call.closeParen + 1)
++                (call.closeParen + 1, replacement)
++              }
++            }
++          }
++      }
++    }
++
++  /** DuckDB serializes a frame for LAG/LEAD even though these functions do
++    * not use it. Spark rejects any explicit frame on either function.
++    */
++  private[compiler] def rewriteOffsetWindowFrames(sql: String): String =
++    rewriteOutsideProtected(sql, protectBackticks = true) { i =>
++      val boundary = i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_')
++      if (!boundary) None
++      else {
++        val offset = OffsetWindowFunction.matcher(sql).region(i, sql.length)
++        if (!offset.lookingAt()) None
++        else
++          parseFunctionCall(sql, offset.end()).flatMap { args =>
++            val overStart = skipTriviaForward(sql, args.closeParen + 1, sql.length)
++            val overEnd   = overStart + 4
++            if (
++              overEnd > sql.length || !sql.regionMatches(true, overStart, "OVER", 0, 4) ||
++              !hasRightIdentifierBoundary(sql, overEnd)
++            ) None
++            else
++              parseFunctionCall(sql, overEnd).flatMap { window =>
++                var cursor = window.openParen + 1
++                var frame  = Option.empty[Int]
++                while (cursor < window.closeParen && frame.isEmpty) {
++                  val next = Seq("ROWS", "RANGE", "GROUPS")
++                    .flatMap(unit => findTopLevelKeyword(sql, cursor, window.closeParen, unit).map(_ -> unit))
++                    .sortBy(_._1)
++                    .headOption
++                  next match {
++                    case Some((start, unit)) =>
++                      val after = skipTriviaForward(sql, start + unit.length, window.closeParen)
++                      val beginsFrame = after < window.closeParen &&
++                        (Seq("BETWEEN", "UNBOUNDED", "CURRENT").exists(startsWithKeyword(sql, after, _)) ||
++                          sql.charAt(after).isDigit)
++                      if (beginsFrame) frame = Some(start)
++                      else cursor = start + unit.length
++                    case None => cursor = window.closeParen
++                  }
++                }
++                frame.map { start =>
++                  val prefix = sql.substring(i, start).reverse.dropWhile(_.isWhitespace).reverse
++                  (window.closeParen + 1, prefix + ")")
++                }
++              }
++          }
++      }
++    }
++
++  private val TemporalUnitCall =
++    """(?i)to_(microseconds|milliseconds|seconds|minutes|hours|days|weeks|months|years)""".r.pattern
++
++  private[compiler] def rewriteTemporalUnitConstructors(sql: String): String =
++    rewriteOutsideProtected(sql, protectBackticks = true) { i =>
++      val boundary =
++        i == 0 || !(sql.charAt(i - 1).isLetterOrDigit || sql.charAt(i - 1) == '_' || sql.charAt(i - 1) == '.')
++      if (!boundary) None
++      else {
++        val unit = TemporalUnitCall.matcher(sql).region(i, sql.length)
++        if (!unit.lookingAt()) None
++        else
++          parseFunctionCall(sql, unit.end()).filter(_.topLevelCommaCount == 0).map { call =>
++            val arg   = rewriteTemporalUnitConstructors(call.args(sql)).trim
++            val parts = Array.fill(7)("0")
++            unit.group(1).toLowerCase(Locale.ROOT) match {
++              case "years"        => parts(0) = arg
++              case "months"       => parts(1) = arg
++              case "weeks"        => parts(2) = arg
++              case "days"         => parts(3) = arg
++              case "hours"        => parts(4) = arg
++              case "minutes"      => parts(5) = arg
++              case "seconds"      => parts(6) = arg
++              case "milliseconds" => parts(6) = s"(($arg) / 1000.0)"
++              case "microseconds" => parts(6) = s"(($arg) / 1000000.0)"
++            }
++            (call.closeParen + 1, s"make_interval(${parts.mkString(", ")})")
++          }
++      }
++    }
++
+diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
+index 7aa2e50..889d532 100644
+--- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
++++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
+@@ -4,0 +5 @@ import org.scalatest.matchers.should.Matchers
++import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
+@@ -12,0 +14,71 @@ class LptsSparkDialectSpec extends AnyFunSpec with Matchers {
++  describe("DuckDB 2.0 qualified interval functions") {
++    it("translates the initial-load interval expression without catalog-qualified functions") {
++      val sql = """SELECT ts - "system".main."add"("system".main."add"(
++        |"system".main.to_months(0), "system".main.to_days(0)),
++        |"system".main.to_microseconds(CAST(1000 AS BIGINT))) AS shifted FROM t""".stripMargin
++      val translated = LptsSparkDialect.translate(sql)
++      translated should include("make_interval(0, 0, 0, 0, 0, 0,")
++      translated should include("/ 1000000.0)")
++      translated should not include "to_microseconds"
++      translated should not include "system"
++      translated should not include "add("
++      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
++      LptsSparkDialect.translate(translated) shouldBe translated
++    }
++
++    it("leaves quoted identifiers, strings, and comments alone") {
++      val sql = """SELECT 'system.main.add(1, 2)', "system.main.add", x
++        |-- system.main.add(1, 2)
++        |/* system.main.to_days(1) */ FROM t""".stripMargin
++      LptsSparkDialect.translate(sql) should include("'system.main.add(1, 2)'")
++      LptsSparkDialect.translate(sql) should include("/* system.main.to_days(1) */")
++      LptsSparkDialect.translate(sql) should include("\"system.main.add\"")
++    }
++
++    it("dequalifies other built-in calls before translating nested struct fields") {
++      val sql = """SELECT "system"."main"."struct_extract"(
++        |  "system"."main"."struct_extract"(Customer, 'Name'), 'C_F_NAME') AS first_name FROM t""".stripMargin
++      val translated = LptsSparkDialect.translate(sql)
++      translated should include("Customer.Name.C_F_NAME")
++      translated should not include "system"
++      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
++    }
++
++    it("removes DuckDB's unused LAG and LEAD frames accepted by Spark") {
++      val sql = """SELECT lag(th_dts) OVER (PARTITION BY t_id ORDER BY th_dts DESC
++        |  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
++        |lead(th_dts, 1) OVER (PARTITION BY t_id ORDER BY th_dts
++        |  RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING),
++        |sum(amount) OVER (PARTITION BY t_id ORDER BY th_dts
++        |  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t""".stripMargin
++      val translated = LptsSparkDialect.translate(sql)
++      translated.toUpperCase(java.util.Locale.ROOT).split("ROWS BETWEEN", -1).length shouldBe 2
++      translated.toUpperCase(java.util.Locale.ROOT) should not include "RANGE BETWEEN"
++      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
++      LptsSparkDialect.translate(translated) shouldBe translated
++    }
++
++    it("keeps an ORDER BY column named rows while removing a real frame") {
++      val sql        = "SELECT lag(x) OVER (ORDER BY rows ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t"
++      val translated = LptsSparkDialect.translate(sql)
++      translated should include("ORDER BY rows)")
++      translated.toUpperCase(java.util.Locale.ROOT) should not include "ROWS BETWEEN"
++      LptsSparkDialect.translate("SELECT lag(x) OVER (ORDER BY rows) FROM t") shouldBe
++        "SELECT lag(x) OVER (ORDER BY rows) FROM t"
++      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
++    }
++
++    it("uses bare literal offsets for Spark LAG and LEAD analysis") {
++      val sql = """SELECT lag(ts, CAST(1 AS BIGINT), CAST(NULL AS TIMESTAMP)) OVER (ORDER BY ts),
++        |lead(ts, CAST(2 AS INTEGER)) OVER (ORDER BY ts),
++        |lag(ts, CAST(n AS BIGINT)) OVER (ORDER BY ts),
++        |'lag(ts, CAST(1 AS BIGINT))' FROM t""".stripMargin
++      val translated = LptsSparkDialect.translate(sql)
++      translated should include("lag(ts, 1, CAST(NULL AS TIMESTAMP))")
++      translated should include("lead(ts, 2)")
++      translated should include("lag(ts, CAST(n AS BIGINT))")
++      translated should include("'lag(ts, CAST(1 AS BIGINT))'")
++      LptsSparkDialect.translate(translated) shouldBe translated
++    }
++  }
++
+diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
+index a1ab2e6..060732b 100644
+--- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
++++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
+@@ -9,0 +10 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
++import org.apache.spark.sql.{Row, SparkSession}
+@@ -254,0 +256,68 @@ class OpenIvmCompilerSpec extends AnyFlatSpec with Matchers with BeforeAndAfterA
++  it should "translate native struct access and LAG SQL for Spark initial load" in {
++    val result = sharedCompiler.compile(
++      CompileRequest(
++        viewName = "mv_struct_lag",
++        viewSql =
++          "SELECT id, payload.name AS name, LAG(ts) OVER (PARTITION BY id ORDER BY ts) AS prior FROM struct_src",
++        sources = Map("struct_src" -> StructType.fromDDL("id INT, payload STRUCT<name: STRING>, ts TIMESTAMP"))
++      )
++    )
++    val sql = LptsSparkDialect.translate(result.initialLoadSql)
++    sql.toLowerCase(java.util.Locale.ROOT) should not include "system.main"
++    sql.toUpperCase(java.util.Locale.ROOT) should not include "LAG(TS) OVER (PARTITION BY ID ORDER BY TS ROWS"
++    noException should be thrownBy org.apache.spark.sql.catalyst.parser.CatalystSqlParser.parsePlan(sql)
++  }
++
++  it should "translate the joined TPC-DI offset window initial load" in {
++    val schemas = Map(
++      "brokerage_trade"         -> StructType.fromDDL("t_id BIGINT, t_dts TIMESTAMP, t_st_id STRING, t_tt_id STRING"),
++      "brokerage_trade_history" -> StructType.fromDDL("th_t_id BIGINT, th_dts TIMESTAMP, th_st_id STRING"),
++      "reference_trade_type"    -> StructType.fromDDL("tt_id STRING"),
++      "reference_status_type"   -> StructType.fromDDL("st_id STRING")
++    )
++    val result = sharedCompiler.compile(
++      CompileRequest(
++        viewName = "mv_joined_lag",
++        viewSql = """SELECT t.t_id, coalesce(lag(h.th_dts) OVER (
++            | PARTITION BY t.t_id ORDER BY h.th_dts DESC, t.t_dts DESC, t.t_st_id DESC, h.th_st_id DESC
++            |) - INTERVAL 1 MILLISECOND, to_timestamp('9999-12-31 23:59:59.999')) AS end_timestamp,
++            |CASE WHEN row_number() OVER (
++            | PARTITION BY t.t_id ORDER BY h.th_dts DESC, t.t_dts DESC, t.t_st_id DESC, h.th_st_id DESC
++            |) = 1 THEN true ELSE false END AS is_current
++            |FROM brokerage_trade t JOIN brokerage_trade_history h ON t.t_id = h.th_t_id
++            |JOIN reference_trade_type tt ON t.t_tt_id = tt.tt_id
++            |JOIN reference_status_type ts ON t.t_st_id = ts.st_id
++            |JOIN reference_status_type us ON h.th_st_id = us.st_id""".stripMargin,
++        sources = schemas
++      )
++    )
++    val sql = LptsSparkDialect.translate(result.initialLoadSql)
++    sql.toLowerCase(java.util.Locale.ROOT) should include("lag(th_dts, 1,")
++    noException should be thrownBy org.apache.spark.sql.catalyst.parser.CatalystSqlParser.parsePlan(sql)
++    val spark = SparkSession
++      .builder()
++      .master("local[1]")
++      .appName("openivm-offset-window-test")
++      .config("spark.ui.enabled", "false")
++      .getOrCreate()
++    try {
++      schemas.foreach { case (name, schema) =>
++        spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema).createOrReplaceTempView(name)
++      }
++      noException should be thrownBy spark.sql(sql).queryExecution.analyzed
++      val leadSql = LptsSparkDialect.translate(
++        "SELECT lead(th_dts, CAST(2 AS BIGINT)) OVER (ORDER BY th_dts) FROM brokerage_trade_history"
++      )
++      noException should be thrownBy spark.sql(leadSql).queryExecution.analyzed
++      val monthSql = LptsSparkDialect.translate(
++        "SELECT CAST(DATE '2015-01-31' + system.main.add(system.main.to_months(1), system.main.to_days(0)) AS DATE)"
++      )
++      spark.sql(monthSql).collect()(0).getDate(0).toLocalDate shouldBe LocalDate.parse("2015-02-28")
++      val microsSql = LptsSparkDialect.translate(
++        "SELECT CAST(TIMESTAMP '2020-01-01 00:00:00.000001' - " +
++          "system.main.add(system.main.to_months(0), system.main.to_microseconds(1)) AS STRING)"
++      )
++      spark.sql(microsSql).collect()(0).getString(0) shouldBe "2020-01-01 00:00:00"
++    } finally spark.stop()
++  }
++
+diff --git a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
+index 4e380d5..c1cd4a5 100644
+--- a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
++++ b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
+@@ -128 +128 @@ private[commands] object OpenIvmCompilers {
+-        nativeLibraryPath = cliLibraryPath
++        nativeLibraryPath = cliLibraryPath.orElse(Option(new java.io.File(cliPath).getParent))
+@@ -161,0 +162,2 @@ private[commands] object OpenIvmCompilers {
++    extract("/openivm-native/libstdc++.so.6", new java.io.File(localDir, "libstdc++.so.6"))
++    extract("/openivm-native/libgcc_s.so.1", new java.io.File(localDir, "libgcc_s.so.1"))
+@@ -2927,0 +2930,2 @@ case class CreateMaterializedViewCommand(
++          val compileCause = Option(e.getMessage).getOrElse(e.toString).replace('\n', ' ').take(512)
++          profile.timeStep("create_compile_failure", s"cause=$compileCause") { () }
+@@ -3105,0 +3110,4 @@ case class CreateMaterializedViewCommand(
++    profile.timeStep(
++      "create_compiler_verdict",
++      s"compiled=${classification.compileRefreshTypeName};effective=$effectiveRefreshTypeName;reason=$classifyReason"
++    ) { () }

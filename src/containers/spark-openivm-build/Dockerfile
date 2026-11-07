@@ -14,23 +14,20 @@
 #                                    extension ABI
 #
 #  Stages:
-#    1. openivm-builder    — verbatim from spark-ext/dev/docker/Dockerfile.
-#                            Builds the two duckdb-side binaries.
+#    1. openivm-builder    — builds the pinned DuckDB 2.0 CLI and extension.
 #    2. spark-ext-builder  — JDK 17 + sbt; clones openivm-spark @ pinned
 #                            SHA and runs `sbt ivmExtension/assembly`.
 #    3. final              — Ubuntu 24.04 runtime; aggregates all three
 #                            artifacts at /opt/spark-openivm/. entrypoint
 #                            copies them to ${OUTPUT_DIR:-/output}/.
 #
-#  OPENIVM_SPARK_COMMIT pins the openivm-spark repo. OPENIVM_COMMIT and
-#  LPTS_COMMIT MUST match the values in spark-ext/dev/pins.env at that SHA
-#  (the spark-side compiler loads only those exact builds — ABI sensitive).
-#  Whenever OPENIVM_SPARK_COMMIT is bumped, re-sync the other two pins from
-#  the new pins.env.
+#  This benchmark holds OPENIVM_SPARK_COMMIT fixed while testing the native
+#  DuckDB 2.0 compiler from the same OpenIVM revision as the DuckDB engine.
+#  The native revision pins DuckDB, LPTS, and CI tools through its submodules.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: openivm-builder (verbatim from spark-ext/dev/docker/Dockerfile)
+# Stage 1: openivm-builder
 # -----------------------------------------------------------------------------
 # Build the openivm duckdb CLI + extension on ubuntu:22.04 (GLIBC 2.35), NOT
 # 24.04 (GLIBC 2.39). These artifacts are copied into the ubuntu:22.04 final
@@ -45,11 +42,7 @@ FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_BRANCH=main
-ARG OPENIVM_COMMIT=13b30d9b1d35e88599b22c5e3684d0b405f6d3ad
-ARG LPTS_REPO=https://github.com/cwida/lpts.git
-ARG LPTS_BRANCH=main
-ARG LPTS_COMMIT=29c606ee18ad8e4d04cab940f361cbf6fbe5b881
+ARG OPENIVM_COMMIT=8c21ee588309630797daa638c0287002190721fc
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -75,25 +68,13 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
 
 WORKDIR /src
 
-# Clone openivm at the pinned commit on the openivm-spark branch, then
-# override the lpts submodule to point at OUR fork so we never need to
-# commit a submodule-URL bump into openivm to pick up new lpts work.
+# The OpenIVM revision pins matching DuckDB 2.0 and LPTS submodules.
 RUN git init -q && \
     git remote add origin "${OPENIVM_REPO}" && \
     git fetch --depth 1 origin "${OPENIVM_COMMIT}" && \
     git checkout -q FETCH_HEAD && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
-    git config -f .gitmodules submodule.third_party/lpts.url "${LPTS_REPO}" && \
-    git submodule sync --recursive && \
-    git submodule update --init --recursive --depth 1 duckdb extension-ci-tools && \
-    (cd duckdb && git fetch --depth 1 origin tag v1.5.2 && git checkout 8a5851971fae891f292c2714d86046ee018e9737) && \
-    (cd extension-ci-tools && git fetch --depth 1 origin 72e76e99cd7fee45a99739cd118ec2db64e034ec && git checkout FETCH_HEAD) && \
-    (cd third_party/lpts && \
-        git init -q && \
-        (git remote add origin "${LPTS_REPO}" 2>/dev/null || git remote set-url origin "${LPTS_REPO}") && \
-        git fetch --depth 1 origin "${LPTS_COMMIT}" && \
-        git checkout -q FETCH_HEAD && \
-        git submodule update --init --recursive --depth 1)
+    git submodule update --init --recursive --depth 1 duckdb extension-ci-tools third_party/lpts
 
 # Build (release).
 RUN GEN=ninja make -j"$(nproc)"
@@ -142,6 +123,15 @@ RUN git init . && \
     git fetch --depth 1 origin "${OPENIVM_SPARK_COMMIT}" && \
     git checkout -q FETCH_HEAD
 
+# Keep this DuckDB 2.0 compatibility fix with the benchmark pin. The Spark
+# translator must lower qualified interval calls, and Fabric needs the native
+# compiler's C++ runtime alongside the bundled CLI and extension.
+COPY patches/duckdb2-spark-compiler.patch /tmp/duckdb2-spark-compiler.patch
+# The patch targets the exact OPENIVM_SPARK_COMMIT above; zero-context format
+# keeps the vendored diff free of whitespace-only context lines.
+RUN git apply --unidiff-zero --check /tmp/duckdb2-spark-compiler.patch && \
+    git apply --unidiff-zero /tmp/duckdb2-spark-compiler.patch
+
 WORKDIR /src/spark-ext
 
 ENV SBT_OPTS="-Xmx4g -XX:+UseG1GC"
@@ -151,17 +141,25 @@ COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /native/openivm.
 COPY --from=openivm-builder /artifacts/libstdc++.so.6 /native/libstdc++.so.6
 COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /native/libgcc_s.so.1
 ENV OPENIVM_NATIVE_DIR=/native
+ENV OPENIVM_EXTENSION_PATH=/native/openivm.duckdb_extension
+ENV OPENIVM_CLI_PATH=/native/duckdb
+ENV OPENIVM_CLI_LD_LIBRARY_PATH=/native
 ENV OPENIVM_SPARK_TARGET=spark-3.5
 
 # Build the assembly fat jar. BuildKit cache mounts are unavailable in the
 # orchestrator's plain `docker compose build` invocation, so we accept a
-# slower cold cache here — sbt will re-fetch deps each rebuild. Acceptable
-# since rebuilds only happen on OPENIVM_SPARK_COMMIT bumps.
-RUN sbt -batch ivmExtension/assembly && \
+# slower cold cache here — sbt will re-fetch deps when the builder image changes.
+RUN sbt -batch \
+    'ivmCommon/testOnly org.openivm.spark.common.SparkRefreshRewriterSpec' \
+    'ivmCompiler/testOnly org.openivm.spark.compiler.LptsSparkDialectSpec' \
+    'ivmCompiler/testOnly org.openivm.spark.compiler.OpenIvmCompilerSpec -- -z "translate the joined TPC-DI offset window initial load"' \
+    ivmExtension/assembly && \
     find /src/spark-ext -name 'ivmExtension-*-assembly.jar' -path '*/scala-2.12/*' -exec cp {} /tmp/openivm-extension.jar \;
 
 # Sanity check.
-RUN test -s /tmp/openivm-extension.jar
+RUN test -s /tmp/openivm-extension.jar && \
+    jar tf /tmp/openivm-extension.jar | grep -Fq openivm-native/libstdc++.so.6 && \
+    jar tf /tmp/openivm-extension.jar | grep -Fq openivm-native/libgcc_s.so.1
 
 # -----------------------------------------------------------------------------
 # Stage 3: final runtime image.
@@ -171,9 +169,8 @@ FROM ubuntu:22.04
 ARG OPENIVM_SPARK_COMMIT=243d13f5cbd9eee4f4c8975cea94d5d40f3fe6a3
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
-# Cache-bust key: hash of the WHOLE Dockerfile. The orchestrator reuses this
-# builder image only when the label still matches, so a base-image / glibc /
-# toolchain change (not just an OPENIVM_SPARK_COMMIT bump) forces a rebuild.
+# Cache-bust key: hash of the Dockerfile and vendored patches. The orchestrator
+# reuses this builder image only when the label still matches.
 ARG SPARK_OPENIVM_DOCKERFILE_HASH=""
 LABEL org.openivm.spark.dockerfile_hash="${SPARK_OPENIVM_DOCKERFILE_HASH}"
 
