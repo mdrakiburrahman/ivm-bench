@@ -1,21 +1,25 @@
 diff --git a/spark-ext/build.sbt b/spark-ext/build.sbt
-index e9dfb59..0ef05a9 100644
+index e9dfb59eba60216962c09322aa384f7437545909..0ef05a9e75c1515f2d71e2ee4135bc26302c8660 100644
 --- a/spark-ext/build.sbt
 +++ b/spark-ext/build.sbt
 @@ -102 +102 @@ lazy val ivmExtension = (project in file("ivm-extension"))
 -          Seq("duckdb", "openivm.duckdb_extension").flatMap { name =>
 +          Seq("duckdb", "openivm.duckdb_extension", "libstdc++.so.6", "libgcc_s.so.1").flatMap { name =>
 diff --git a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
-index ede36c5..7637061 100644
+index ede36c53318614a07516e9e74618df6649e1304d..b73bb38a360266bf91ac1dcd120611d962ad7fd8 100644
 --- a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
 +++ b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/SparkRefreshRewriter.scala
-@@ -2009,2 +2009,3 @@ object SparkRefreshRewriter {
+@@ -615 +615,2 @@ object SparkRefreshRewriter {
+-      RewrittenRefresh(withSemiJoinRewrite.map(postProcess), hasRunningWindowProgram)
++      val withPublishedSnapshotReuse = reuseFullyReplacedTargetInCascade(withSemiJoinRewrite, mvName, viewLogicalName)
++      RewrittenRefresh(withPublishedSnapshotReuse.map(postProcess), hasRunningWindowProgram)
+@@ -2009,2 +2010,3 @@ object SparkRefreshRewriter {
 -    val qcol      = "(?<![\\w`])(?:`?\\w++`?\\s*\\.\\s*)?`?openivm_timestamp`?"
 -    val tsLiteral = "(?:'[^']*+'::\\s*+TIMESTAMP|CAST\\s*+\\(\\s*+'[^']*+'\\s++AS\\s++TIMESTAMP\\s*+\\))"
 +    val qcol = "(?<![\\w`])(?:`?\\w++`?\\s*\\.\\s*)?`?openivm_timestamp`?"
 +    val tsLiteral =
 +      "(?:'[^']*+'::\\s*+TIMESTAMP|CAST\\s*+\\(\\s*+'[^']*+'\\s++AS\\s++TIMESTAMP\\s*+\\)|TIMESTAMP\\s++'[^']*+')"
-@@ -2018,4 +2019,6 @@ object SparkRefreshRewriter {
+@@ -2018,4 +2020,6 @@ object SparkRefreshRewriter {
 -    // LPTS rewrites parenthesises each WHERE conjunct
 -    // (`WHERE (`openivm_timestamp`>=CAST(...))`), so match the predicate either
 -    // wrapped in a balanced paren pair or bare (pre-merge single-line form).
@@ -26,8 +30,50 @@ index ede36c5..7637061 100644
 +    val horizonExpr = "(?:\\(\\s*+" + refreshHorizon + "\\s*+\\)|" + refreshHorizon + ")"
 +    val comparison  = colExpr + cmp + horizonExpr
 +    val tsPred      = "(?:\\(\\s*+" + comparison + "\\s*+\\)|" + comparison + ")"
+@@ -3649,0 +3654,41 @@ object SparkRefreshRewriter {
++  /** A full-table recompute has already written exactly the rows in openivm_new.
++    * Read those published rows for the positive cascade delta instead of running
++    * the entire recompute a second time. A partition/group replacement cannot
++    * use this path because its target also contains unaffected rows.
++    */
++  private def reuseFullyReplacedTargetInCascade(
++      statements: Seq[String],
++      mvName: TableIdentifier,
++      viewLogicalName: String
++  ): Seq[String] = {
++    val target     = backtickMvName(mvName)
++    val newView    = s"openivm_new_$viewLogicalName"
++    val fullDelete = s"DELETE FROM $target"
++    val fullInsert = s"INSERT INTO $target SELECT * FROM $newView"
++    def fromScratch(name: String) =
++      ("(?i)\\bFROM\\s+(?:`" + java.util.regex.Pattern.quote(name) + "`|" +
++        java.util.regex.Pattern.quote(name) + ")(?![\\w`])").r
++    val newSource = fromScratch(newView)
++    val oldSource = fromScratch(s"openivm_old_$viewLogicalName")
++
++    statements.indices
++      .collectFirst {
++        case insertIdx
++            if insertIdx > 0 && insertIdx + 1 < statements.size &&
++              statements(insertIdx - 1).trim.equalsIgnoreCase(fullDelete) &&
++              statements(insertIdx).trim.equalsIgnoreCase(fullInsert) &&
++              statements(insertIdx + 1).trim.toUpperCase.startsWith("CREATE OR REPLACE TABLE DELTA.") &&
++              oldSource.findFirstIn(statements(insertIdx + 1)).isDefined &&
++              newSource.findAllIn(statements(insertIdx + 1)).size == 1 =>
++          val cascade = statements(insertIdx + 1)
++          statements.updated(
++            insertIdx + 1,
++            newSource.replaceFirstIn(
++              cascade,
++              java.util.regex.Matcher.quoteReplacement(s"FROM $target")
++            )
++          )
++      }
++      .getOrElse(statements)
++  }
++
 diff --git a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
-index b13fff4..e0f95a6 100644
+index b13fff45232f2d0c1848dccf75f9406227374c10..bba539adb7b9f20c5a985a2bab2a51e8ff37170a 100644
 --- a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
 +++ b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
 @@ -738,0 +739,18 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
@@ -49,7 +95,53 @@ index b13fff4..e0f95a6 100644
 +      rewritten.statements.head should include("openivm_delta_users")
 +    }
 +
-@@ -2698,0 +2717,13 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
+@@ -1333,0 +1352,45 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
++    it("reads the published target for a full replacement cascade, without changing partial replacement") {
++      val input =
++        """CREATE OR REPLACE TEMP TABLE openivm_old_mv_r AS SELECT * FROM openivm_data_mv_r;
++          |CREATE OR REPLACE TEMP TABLE openivm_new_mv_r AS SELECT id, region, amount FROM memory.main.sales;
++          |DELETE FROM openivm_data_mv_r;
++          |INSERT INTO openivm_data_mv_r SELECT * FROM openivm_new_mv_r;
++          |INSERT INTO openivm_delta_mv_r
++          |SELECT *, CAST(-1 AS INTEGER), CURRENT_TIMESTAMP FROM openivm_old_mv_r
++          |UNION ALL SELECT *, CAST(1 AS INTEGER), CURRENT_TIMESTAMP FROM openivm_new_mv_r;
++          |DROP TABLE IF EXISTS openivm_old_mv_r;
++          |DROP TABLE IF EXISTS openivm_new_mv_r;
++          |""".stripMargin
++      def rewrite(sql: String) = SparkRefreshRewriter
++        .rewrite(
++          compiledSql = sql,
++          mvName = mvName,
++          mvLocation = mvLocation,
++          viewLogicalName = viewLogicalName,
++          sourceTempViews = Map.empty,
++          viewDeltaPath = viewDeltaPath,
++          mvVersionBeforeRefresh = Some(7L)
++        )
++        .statements
++
++      val full = rewrite(input)
++      val cascade = full
++        .find(_.startsWith(s"CREATE OR REPLACE TABLE delta.`$viewDeltaPath`"))
++        .getOrElse(fail("signed cascade missing"))
++      cascade should include("FROM openivm_old_mv_r")
++      cascade should include("FROM `mydb`.`mv_r`")
++      cascade should not include "FROM openivm_new_mv_r"
++      full should contain("INSERT INTO `mydb`.`mv_r` SELECT * FROM openivm_new_mv_r")
++
++      val partial = rewrite(
++        input.replace(
++          "DELETE FROM openivm_data_mv_r;",
++          "DELETE FROM openivm_data_mv_r WHERE region = 'west';"
++        )
++      )
++      val partialCascade = partial
++        .find(_.startsWith(s"CREATE OR REPLACE TABLE delta.`$viewDeltaPath`"))
++        .getOrElse(fail("partial signed cascade missing"))
++      partialCascade should include("FROM openivm_new_mv_r")
++    }
++
+@@ -2663,0 +2727,13 @@ class SparkRefreshRewriterSpec extends AnyFunSpec with Matchers {
 +    it("strips DuckDB 2.0 parenthesized timestamp literals from source delta scans") {
 +      val cutoff = "((openivm_timestamp) >= (TIMESTAMP '2026-11-05 22:32:21.6993'))"
 +      SparkRefreshRewriter.stripTimestampPredicate(
@@ -64,7 +156,7 @@ index b13fff4..e0f95a6 100644
 +    }
 +
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
-index 9e9b616..60634b9 100644
+index 9e9b616c75e22f61a453fe7babcc5456d7d55353..60634b91a3ffb427004b7fb19fa3abb9e18fc86b 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
 @@ -147 +147,11 @@ object LptsSparkDialect {
@@ -166,7 +258,7 @@ index 9e9b616..60634b9 100644
 +  private[compiler] def rewriteToTemporalUnit(sql: String): String =
 +    SparkFunctionShimSql.rewriteTemporalUnitConstructors(sql)
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
-index 727217f..bebf550 100644
+index 727217f46bbe9e22e4d7a694e47e894f722516e0..bebf5508a0eb43610563c376e437c66f4253583a 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/SparkFunctionShimSql.scala
 @@ -36,0 +37,149 @@ private[compiler] object SparkFunctionShimSql {
@@ -320,7 +412,7 @@ index 727217f..bebf550 100644
 +    }
 +
 diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
-index 7aa2e50..889d532 100644
+index 7aa2e5052c2fd30ab2b5d9e8a3eb02b14ed797b1..889d53271a7c3bc79c3bde1c66c96fa6dd1ec13f 100644
 --- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
 +++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
 @@ -4,0 +5 @@ import org.scalatest.matchers.should.Matchers
@@ -398,7 +490,7 @@ index 7aa2e50..889d532 100644
 +  }
 +
 diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
-index a1ab2e6..060732b 100644
+index a1ab2e6e4abef36ab2ac0e5e630e86af3f7e8a05..060732bf528635f312c0e08863a1107c198b99df 100644
 --- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
 +++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
 @@ -9,0 +10 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
@@ -473,7 +565,7 @@ index a1ab2e6..060732b 100644
 +  }
 +
 diff --git a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
-index 4e380d5..c1cd4a5 100644
+index 4e380d57d516f7afc70b99cddaaeb6175b9b157f..c1cd4a536009bc12cdbaa6e8acaa1779b804bd69 100644
 --- a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 +++ b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 @@ -128 +128 @@ private[commands] object OpenIvmCompilers {
@@ -490,3 +582,67 @@ index 4e380d5..c1cd4a5 100644
 +      "create_compiler_verdict",
 +      s"compiled=${classification.compileRefreshTypeName};effective=$effectiveRefreshTypeName;reason=$classifyReason"
 +    ) { () }
+diff --git a/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala b/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala
+index 7fa2cbc2067787d37f54add51c852cb68fedad41..ebd0cb765ec9b5b26741a0534a1b2b9baa4c845f 100644
+--- a/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala
++++ b/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala
+@@ -24,0 +25 @@ import org.openivm.spark.common.{
++  SparkRefreshRewriter,
+@@ -955,0 +957,57 @@ class MaterializedViewCommandsSpec extends AnyFunSpec with Matchers with BeforeA
++    it("reuses a fully replaced target for positive cascade rows") {
++      val suffix      = UUID.randomUUID().toString.take(8)
++      val target      = s"published_reuse_$suffix"
++      val source      = s"published_source_$suffix"
++      val targetPath  = s"$warehouseDir/_ivm/test/$target"
++      val deltaPath   = s"$warehouseDir/_ivm/test/${target}_delta"
++      val priorBypass = IvmDmlInterceptorRule.bypass.get()
++      IvmDmlInterceptorRule.bypass.set(true)
++      try {
++        spark
++          .sql(
++            s"CREATE TABLE `$target` USING DELTA LOCATION '$targetPath' AS " +
++              "SELECT col1 AS k, col2 AS v FROM VALUES ('a', 1), ('b', 2), ('b', 2) AS t(col1, col2)"
++          )
++          .collect()
++        spark
++          .sql(
++            s"CREATE OR REPLACE TEMP VIEW `$source` AS " +
++              "SELECT col1 AS k, col2 AS v FROM VALUES ('b', 2), ('c', 3) AS t(col1, col2)"
++          )
++          .collect()
++        val oldVersion = DeltaTableVersion.requireLatest(spark, targetPath)
++        val compiled =
++          s"""CREATE OR REPLACE TEMP TABLE openivm_old_mv_reuse AS SELECT * FROM openivm_data_mv_reuse;
++             |CREATE OR REPLACE TEMP TABLE openivm_new_mv_reuse AS SELECT * FROM `$source`;
++             |DELETE FROM openivm_data_mv_reuse;
++             |INSERT INTO openivm_data_mv_reuse SELECT * FROM openivm_new_mv_reuse;
++             |INSERT INTO openivm_delta_mv_reuse
++             |SELECT *, CAST(-1 AS INTEGER), CURRENT_TIMESTAMP FROM openivm_old_mv_reuse
++             |UNION ALL SELECT *, CAST(1 AS INTEGER), CURRENT_TIMESTAMP FROM openivm_new_mv_reuse;
++             |DROP TABLE IF EXISTS openivm_old_mv_reuse;
++             |DROP TABLE IF EXISTS openivm_new_mv_reuse;
++             |""".stripMargin
++        val rewritten = SparkRefreshRewriter.rewrite(
++          compiledSql = compiled,
++          mvName = TableIdentifier(target),
++          mvLocation = targetPath,
++          viewLogicalName = "mv_reuse",
++          sourceTempViews = Map.empty,
++          viewDeltaPath = deltaPath,
++          mvVersionBeforeRefresh = Some(oldVersion)
++        )
++        rewritten.statements.foreach(sql => spark.sql(sql).collect())
++        assertSqlBagEqual(s"SELECT k, v FROM `$target`", s"SELECT k, v FROM `$source`")
++        assertSqlBagEqual(
++          s"SELECT k, v, openivm_multiplicity FROM delta.`$deltaPath`",
++          "SELECT col1 AS k, col2 AS v, col3 AS openivm_multiplicity " +
++            "FROM VALUES ('a', 1, -1), ('b', 2, -1), ('b', 2, -1), " +
++            "('b', 2, 1), ('c', 3, 1) AS t(col1, col2, col3)"
++        )
++      } finally {
++        spark.sql(s"DROP VIEW IF EXISTS `$source`").collect()
++        spark.sql(s"DROP TABLE IF EXISTS `$target`").collect()
++        IvmDmlInterceptorRule.bypass.set(priorBypass)
++      }
++    }
++
