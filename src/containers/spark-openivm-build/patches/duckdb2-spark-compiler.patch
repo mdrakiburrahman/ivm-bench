@@ -156,10 +156,23 @@ index b13fff45232f2d0c1848dccf75f9406227374c10..bba539adb7b9f20c5a985a2bab2a51e8
 +    }
 +
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
-index 9e9b616c75e22f61a453fe7babcc5456d7d55353..60634b91a3ffb427004b7fb19fa3abb9e18fc86b 100644
+index 9e9b616c75e22f61a453fe7babcc5456d7d55353..5ead9d7e8ede2ea278bb2aaa5d88335536c4c250 100644
 --- a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
 +++ b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
-@@ -147 +147,11 @@ object LptsSparkDialect {
+@@ -112,0 +113,3 @@ object LptsSparkDialect {
++  private val AntiJoinProjectionRe =
++    """(?i)\bANTI\s+JOIN\s+(t\d+_projection_materialized_for_join)\s+ON\b""".r
++
+@@ -127,2 +130 @@ object LptsSparkDialect {
+-    *   - [[rewriteBareBackslashLiterals]] runs LAST (outermost), after every
+-    *     other pass has finished producing the final literal text, so it
++    *   - [[rewriteBareBackslashLiterals]] runs after all literal rewrites, so it
+@@ -131,2 +133,2 @@ object LptsSparkDialect {
+-  def translate(sql: String): String =
+-    rewriteBareBackslashLiterals(
++  def translate(sql: String): String = {
++    val translated = rewriteBareBackslashLiterals(
+@@ -147 +149,11 @@ object LptsSparkDialect {
 -                                  rewriteNowTimestamp(rewriteLikeOperators(rewriteQuotedCastTypes(sql)))
 +                                  rewriteNowTimestamp(
 +                                    rewriteLikeOperators(
@@ -172,7 +185,34 @@ index 9e9b616c75e22f61a453fe7babcc5456d7d55353..60634b91a3ffb427004b7fb19fa3abb9
 +                                      )
 +                                    )
 +                                  )
-@@ -267,81 +277,3 @@ object LptsSparkDialect {
+@@ -162,0 +175,26 @@ object LptsSparkDialect {
++    deduplicateAntiJoinProjectionInputs(translated)
++  }
++
++  /** Spark keeps DISTINCT on a generated anti-join RHS as a hash aggregate.
++    * The DuckDB 2.0 optimizer omits it because the anti join is semantically
++    * unchanged, but duplicate RHS keys make Spark shuffle far more rows.
++    * Preserve bag semantics when the CTE is also referenced outside anti joins.
++    */
++  private[compiler] def deduplicateAntiJoinProjectionInputs(sql: String): String = {
++    val rhsNames = AntiJoinProjectionRe.findAllMatchIn(sql).map(_.group(1)).toVector.distinct
++    rhsNames.foldLeft(sql) { (current, name) =>
++      val allUses  = ("(?i)\\b" + java.util.regex.Pattern.quote(name) + "\\b(?!\\s*\\.)").r.findAllIn(current).length
++      val antiUses = AntiJoinProjectionRe.findAllMatchIn(current).count(_.group(1).equalsIgnoreCase(name))
++      if (allUses != antiUses + 1) current
++      else {
++        val header =
++          ("(?im)^([ \\t]*(?:WITH\\s+)?" + java.util.regex.Pattern.quote(name) +
++            "\\s*\\([^)]*\\)\\s+AS\\s*\\(\\s*)SELECT(?!\\s+DISTINCT\\b)").r
++        header.findFirstMatchIn(current) match {
++          case Some(m) =>
++            current.substring(0, m.start) + m.group(1) + "SELECT DISTINCT" + current.substring(m.end)
++          case None => current
++        }
++      }
++    }
++  }
+@@ -267,81 +305,3 @@ object LptsSparkDialect {
 -  /** Rewrites DuckDB's `to_<unit>(N)` interval constructors to Spark's
 -    * `INTERVAL N <UNIT>` syntax. openivm emits these forms when a user view
 -    * body uses `INTERVAL N <unit>` and the LPTS pipeline serializes the
@@ -412,7 +452,7 @@ index 727217f46bbe9e22e4d7a694e47e894f722516e0..bebf5508a0eb43610563c376e437c66f
 +    }
 +
 diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
-index 7aa2e5052c2fd30ab2b5d9e8a3eb02b14ed797b1..889d53271a7c3bc79c3bde1c66c96fa6dd1ec13f 100644
+index 7aa2e5052c2fd30ab2b5d9e8a3eb02b14ed797b1..8a67f442d9eb52011cfd1d2b6e3096bc5daece4e 100644
 --- a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
 +++ b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/LptsSparkDialectSpec.scala
 @@ -4,0 +5 @@ import org.scalatest.matchers.should.Matchers
@@ -488,6 +528,23 @@ index 7aa2e5052c2fd30ab2b5d9e8a3eb02b14ed797b1..889d53271a7c3bc79c3bde1c66c96fa6
 +      LptsSparkDialect.translate(translated) shouldBe translated
 +    }
 +  }
++
+@@ -809,0 +882,16 @@ class LptsSparkDialectSpec extends AnyFunSpec with Matchers {
++    it("deduplicates an anti-join projection used only as its RHS") {
++      val sql =
++        """WITH t8_projection_materialized_for_join (scalar_0, sk_broker_id) AS (
++          |    SELECT 1, sk_broker_id FROM trades
++          |)
++          |SELECT b.sk_broker_id FROM brokers b ANTI JOIN t8_projection_materialized_for_join
++          |ON b.sk_broker_id <=> t8_projection_materialized_for_join.sk_broker_id""".stripMargin
++      val translated = LptsSparkDialect.translate(sql)
++      translated should include("SELECT DISTINCT 1, sk_broker_id FROM trades")
++      LptsSparkDialect.translate(translated) shouldBe translated
++      noException should be thrownBy CatalystSqlParser.parsePlan(translated)
++
++      val reused = sql + " UNION ALL SELECT sk_broker_id FROM t8_projection_materialized_for_join"
++      LptsSparkDialect.translate(reused) shouldBe reused
++    }
 +
 diff --git a/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala b/spark-ext/ivm-compiler/src/test/scala/org/openivm/spark/compiler/OpenIvmCompilerSpec.scala
 index a1ab2e6e4abef36ab2ac0e5e630e86af3f7e8a05..060732bf528635f312c0e08863a1107c198b99df 100644
@@ -583,11 +640,14 @@ index 4e380d57d516f7afc70b99cddaaeb6175b9b157f..c1cd4a536009bc12cdbaa6e8acaa1779
 +      s"compiled=${classification.compileRefreshTypeName};effective=$effectiveRefreshTypeName;reason=$classifyReason"
 +    ) { () }
 diff --git a/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala b/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala
-index 7fa2cbc2067787d37f54add51c852cb68fedad41..ebd0cb765ec9b5b26741a0534a1b2b9baa4c845f 100644
+index 7fa2cbc2067787d37f54add51c852cb68fedad41..4a244c8b06a4806cb2881163d724fed6b1d0b4de 100644
 --- a/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala
 +++ b/spark-ext/ivm-extension/src/test/scala/org/openivm/spark/commands/MaterializedViewCommandsSpec.scala
 @@ -24,0 +25 @@ import org.openivm.spark.common.{
 +  SparkRefreshRewriter,
+@@ -32 +33 @@ import org.openivm.spark.analyzer.IvmDmlInterceptorRule
+-import org.openivm.spark.compiler.CompiledRefresh
++import org.openivm.spark.compiler.{CompiledRefresh, LptsSparkDialect}
 @@ -955,0 +957,57 @@ class MaterializedViewCommandsSpec extends AnyFunSpec with Matchers with BeforeA
 +    it("reuses a fully replaced target for positive cascade rows") {
 +      val suffix      = UUID.randomUUID().toString.take(8)
@@ -644,5 +704,62 @@ index 7fa2cbc2067787d37f54add51c852cb68fedad41..ebd0cb765ec9b5b26741a0534a1b2b9b
 +        spark.sql(s"DROP TABLE IF EXISTS `$target`").collect()
 +        IvmDmlInterceptorRule.bypass.set(priorBypass)
 +      }
++    }
++
+@@ -2276,0 +2335,56 @@ class MaterializedViewCommandsSpec extends AnyFunSpec with Matchers with BeforeA
++
++    it("maintains a RIGHT-join projection after one mixed delta batch") {
++      spark.sql("CREATE TABLE right_fact_t10(id INT, ka INT, kb INT) USING DELTA")
++      spark.sql("CREATE TABLE right_dim_t10(k INT, v STRING) USING DELTA")
++      spark.sql("CREATE TABLE right_aux_t10(k INT, v STRING) USING DELTA")
++      spark.sql("INSERT INTO right_fact_t10 VALUES (1, 10, 20), (2, 11, 21), (3, 12, 20)")
++      spark.sql("INSERT INTO right_dim_t10 VALUES (10, 'a10'), (10, 'a10b'), (11, 'a11')")
++      spark.sql("INSERT INTO right_aux_t10 VALUES (20, 'b20'), (21, 'b21')")
++
++      val query =
++        "SELECT f.id, a.v AS av, b.v AS bv FROM right_dim_t10 a " +
++          "RIGHT JOIN right_fact_t10 f ON a.k = f.ka " +
++          "LEFT JOIN right_aux_t10 b ON f.kb = b.k"
++      spark.sql(s"CREATE MATERIALIZED VIEW right_mv_t10 AS $query")
++      assertSqlBagEqual("SELECT id, av, bv FROM right_mv_t10", query)
++
++      spark.sql("INSERT INTO right_dim_t10 VALUES (12, 'a12')")
++      spark.sql("DELETE FROM right_aux_t10 WHERE k = 21")
++      spark.sql("UPDATE right_dim_t10 SET v = concat(v, 'x') WHERE k = 10")
++      spark.sql("UPDATE right_fact_t10 SET kb = 21 WHERE id = 1")
++      spark.sql("INSERT INTO right_fact_t10 VALUES (4, 12, 21)")
++      spark.sql("DELETE FROM right_dim_t10 WHERE k = 11")
++      spark.sql("REFRESH MATERIALIZED VIEW right_mv_t10")
++      assertSqlBagEqual("SELECT id, av, bv FROM right_mv_t10", query)
++    }
++
++    it("deduplicates a generated anti-join input without changing MV bag semantics") {
++      spark.sql("CREATE TABLE anti_brokers_t10(id INT, name STRING) USING DELTA")
++      spark.sql("CREATE TABLE anti_accounts_t10(id INT, broker_id INT) USING DELTA")
++      spark.sql("CREATE TABLE anti_trades_t10(account_id INT) USING DELTA")
++      spark.sql("INSERT INTO anti_brokers_t10 VALUES (1, 'a'), (2, 'b'), (3, 'c')")
++      spark.sql("INSERT INTO anti_accounts_t10 VALUES (10, 1), (11, 1), (20, 2)")
++      spark.sql("INSERT INTO anti_trades_t10 VALUES (10), (10), (11)")
++
++      val query =
++        "SELECT b.id, b.name FROM anti_brokers_t10 b WHERE NOT EXISTS (" +
++          "SELECT 1 FROM anti_accounts_t10 a JOIN anti_trades_t10 t ON a.id = t.account_id " +
++          "WHERE a.broker_id = b.id)"
++      spark.sql(s"CREATE MATERIALIZED VIEW anti_mv_t10 AS $query")
++      val initialSql = MvCatalog
++        .lookup(spark, TableIdentifier("anti_mv_t10"))
++        .get
++        .properties(MvMetadata.CompiledInitialLoadSqlKey)
++      val translated = LptsSparkDialect.translate(initialSql)
++      translated should fullyMatch regex
++        "(?s).*projection_materialized_for_join[^)]*\\) AS \\(\\s*SELECT DISTINCT.*"
++      spark.sql("EXPLAIN FORMATTED " + translated).collect().mkString("\n") should include("HashAggregate")
++      assertSqlBagEqual("SELECT id, name FROM anti_mv_t10", query)
++
++      spark.sql("DELETE FROM anti_trades_t10 WHERE account_id = 11")
++      spark.sql("INSERT INTO anti_trades_t10 VALUES (20), (20)")
++      spark.sql("UPDATE anti_accounts_t10 SET broker_id = 3 WHERE id = 10")
++      spark.sql("REFRESH MATERIALIZED VIEW anti_mv_t10")
++      assertSqlBagEqual("SELECT id, name FROM anti_mv_t10", query)
 +    }
 +
