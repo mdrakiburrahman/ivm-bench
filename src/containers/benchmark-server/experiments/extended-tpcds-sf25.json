@@ -34,11 +34,14 @@
       "storage_metrics": false,
       "preserve_raw": true,
       "spark_metrics_capture": false
+    },
+    "spark_tunables": {
+      "shuffle_partitions": 256
     }
   },
   "experiments": [
     {
-      "label": "Extended TPC-DS SF25, Fabric-inspired calibrated profile, insertion 100/1/0.01, serial engines"
+      "label": "Extended TPC-DS SF25, Fabric-inspired calibrated profile, insertion 100/1/0.01, serial engines; Spark shuffle partitions 256"
     }
   ]
 }

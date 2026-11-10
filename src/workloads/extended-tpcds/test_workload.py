@@ -47,10 +47,14 @@ class WorkloadTests(unittest.TestCase):
             'memory_limit':'64MB', 'threads':1, 'temp_directory':folder,
             'max_temp_directory_size':'1GB',
         }) as connection:
-            counts = generate.key_counts(connection, """SELECT md5(n::VARCHAR)::UUID AS key
-                FROM range(2000000) t(n) UNION ALL SELECT md5('0')::UUID
-                UNION ALL SELECT md5('1')::UUID UNION ALL SELECT NULL::UUID""")
-            self.assertEqual(counts, (2000003, 2000000))
+            identities = ["md5(n::VARCHAR)::UUID",
+                          "('0000'||"+generate.purchase_identity("'store'",'n//2','n%2+1')+")::UUID"]
+            for identity in identities:
+                with self.subTest(identity=identity):
+                    counts = generate.key_counts(connection, f"""SELECT {identity} AS key FROM (
+                        SELECT n FROM range(2000000) t(n) UNION ALL SELECT 0
+                        UNION ALL SELECT 1 UNION ALL SELECT NULL::BIGINT) rows""")
+                    self.assertEqual(counts, (2000003, 2000000))
 
     def test_structured_identity_boundaries_do_not_overlap_or_truncate(self):
         with duckdb.connect() as connection:
@@ -59,12 +63,26 @@ class WorkloadTests(unittest.TestCase):
                 for ordinal in (0, 1, 2**64-1):
                     for suffix in (0, 1, 2**32-1):
                         token = connection.execute('SELECT lower('+generate.row_identity(family,ordinal,suffix)+')').fetchone()[0]
-                        self.assertEqual(len(token),28)
+                        self.assertEqual(token,f'{family:04x}{ordinal:016x}{suffix:08x}')
                         identities.append('0012'+token)
             self.assertEqual(len(set(identities)),len(identities))
+            for parts in [('NULL',0,0),(0,'NULL',0),(0,0,'NULL')]:
+                self.assertIsNone(connection.execute('SELECT '+generate.row_identity(*parts)).fetchone()[0])
             for family,ordinal,suffix in [(-1,0,0),(65536,0,0),(0,-1,0),(0,2**64,0),(0,0,-1),(0,0,2**32)]:
                 with self.subTest(components=(family,ordinal,suffix)), self.assertRaises(duckdb.Error):
                     connection.execute('SELECT '+generate.row_identity(family,ordinal,suffix)).fetchone()
+
+    def test_normalized_line_identity_validation_rejects_duplicates_and_null_components(self):
+        for fault in ('duplicate','null_order','null_item'):
+            with self.subTest(fault=fault), fixture() as connection:
+                if fault=='duplicate':
+                    connection.execute('INSERT INTO base.store_sales SELECT * FROM base.store_sales LIMIT 1')
+                elif fault=='null_order':
+                    connection.execute('UPDATE base.store_sales SET ss_ticket_number=NULL WHERE ss_ticket_number=0')
+                else:
+                    connection.execute('UPDATE base.store_sales SET ss_item_sk=NULL WHERE ss_ticket_number=0')
+                with self.assertRaisesRegex(ValueError,'sales line identities are not unique'):
+                    generate.prepare(connection,'base',source_views=True,report_date=date(2002,12,31))
 
     def test_compact_engagements_match_original_ranking_including_hash_collisions(self):
         for profile, collide in [('native',False), ('calibrated',False), ('native',True)]:
@@ -96,6 +114,8 @@ class WorkloadTests(unittest.TestCase):
                 expected = generate.prepare(tables, 'base', profile=profile, report_date=date(2002, 12, 31))
                 actual = generate.prepare(views, 'base', profile=profile, report_date=date(2002, 12, 31), source_views=True)
                 self.assertEqual(actual, expected)
+                self.assertEqual(views.execute('SELECT * FROM normalized_purchase ORDER BY purchase_line_id').fetchall(),
+                                 tables.execute('SELECT * FROM normalized_purchase ORDER BY purchase_line_id').fetchall())
                 self.assertEqual(generate.statistics(views), generate.statistics(tables))
                 stats = generate.statistics(views)
                 rows, keys = views.execute('SELECT count(*), count(DISTINCT engagement_registry_key) FROM xt_status_events').fetchone()

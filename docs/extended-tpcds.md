@@ -65,6 +65,62 @@ SF25 initialization/refresh performance and production joint-distribution
 fidelity remain unvalidated. The initial 2 GB validation attempt exhausted memory;
 both reported profiles were rerun with identical 4 GB limits.
 
+### Follow-up: bounded raw identity validation (2026-11-10)
+
+Raw sales-line identity validation now sorts the exact fixed-width encoding of
+(channel, order number, item surrogate key), using the same unsigned component
+bounds as generator v3. This replaces a global string `COUNT(DISTINCT)` while
+retaining duplicate and NULL rejection. It does not change source rows, schemas,
+IDs, dataset/plan identities, cache recipe or any model SQL.
+
+A two-million-row identity probe at a 64 MB DuckDB limit and one thread exhausted
+memory with the original string-distinct query. The binary sort returned all
+2,000,000 distinct keys in 1.10 s. This is an operator-level memory result, not
+a claim that complete preparation fits 64 MB or is faster overall. The CI test
+also checks two million keys plus duplicates and NULLs under the same budget.
+
+All 47 workload tests pass. A fresh real SF0.1 plan matches all 28 prior-v3
+initial/refresh images, totaling 10,139,543 complete rows including physical IDs,
+with identical schemas, logical manifest metadata and achieved statistics.
+
+In-place cached-column updates, encoded channel caches and narrower scratch
+layouts were tested but not retained: current-session comparisons did not show
+a reliable overall time/RSS improvement. No broader preparation speedup is
+claimed for this follow-up.
+
+### SF25 Spark OpenIVM: partial acceptance and tuning trial
+
+[Run 42235802869](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/42235802869)
+tested `af9d087`, calibrated SF25, Spark OpenIVM only, insertion 100/1/0.01 and
+validation ON. It ran November 6–7 and failed in the second refresh. Preparation
+completed with 16 threads, a 128 GB DuckDB limit and 64 GB spill: base generation
+354.2 s, history/statistics 2,130.7 s and planning/export 1,512.2 s, totaling
+3,997.1 s (66m37s). These inputs differ from the historical native-profile trial.
+
+| Batch | Engine time, excluding validation | Model validation |
+|---|---:|---|
+| Initial | 7,848.5 s | 96/96, zero differences |
+| First refresh, 1% | 6,252.6 s | 96/96, zero differences |
+| Second refresh, 0.01% | Incomplete | Not performed |
+
+The third batch completed 93 MV-refresh commands before the 28-day eligibility
+fact hit the 3,600 s client timeout. The backend continued and finished that fact
+in 5,970.9 s (99m31s), after which the queued failure-diagnostic `SHOW TABLES`
+returned. The remaining two models and batch validation did not run. The dirty
+checkpoint remains evidence of an incomplete batch; this is not SF25 acceptance.
+
+The target fact used `GROUP_RECOMPUTE`. Its captured third-refresh span records
+zero same-MV lock wait, 1 ms catalog time and 32 ms RocksDB writes. Archived logs
+show no OOM/disk-full/fetch-failure marker for this operation. They do not yet
+establish the cause of the longer computation. Initial and first-refresh counts
+both include 296,521,890 unpivoted rows and 258,030,725 fact groups.
+
+The recorded Spark configuration used 16 shuffle partitions. The SF25 experiment
+now requests 256 through the existing shared Spark tunable; default parallelism,
+CPU/RAM allocations, source generation, SQL, percentages, timeout and validation
+are unchanged. This is an unproven tuning trial intended to reduce per-task
+aggregation state. It must be validated and measured before claiming a speedup.
+
 ### Preparation pipeline, generator version 3 (2026-11-06)
 
 The four follow-up optimizations preserve the 96 SQL models and their dependency

@@ -88,7 +88,12 @@ def prepare(connection, base_schema, profile="native", seed=17, report_date=None
             LEFT JOIN {base_schema}.time_dim t ON s.{prefix}_sold_time_sk=t.t_time_sk
         """)
     execute("CREATE TABLE normalized_purchase AS " + " UNION ALL ".join(projections))
-    count, distinct = connection.execute("SELECT count(*), count(DISTINCT purchase_line_id) FROM normalized_purchase").fetchone()
+    # The channel/order/item tuple is the sales-line identity and already fits
+    # the generator's typed physical-ID domain. Sort its fixed-width encoding
+    # exactly so uniqueness validation can spill instead of retaining strings.
+    count, distinct = key_counts(connection, f"""SELECT
+        CASE WHEN purchase_line_id IS NOT NULL THEN ('0000' || {purchase_identity()})::UUID END AS key
+        FROM normalized_purchase""")
     if count != distinct:
         raise ValueError("TPC-DS sales line identities are not unique")
     if report_date is None:
