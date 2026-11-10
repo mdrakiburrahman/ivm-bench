@@ -24,6 +24,7 @@
     "batch_3_update_pct": "0",
     "batch_3_delete_pct": "0",
     "extended_tpcds": {
+      "source_size_gb": 1,
       "profile": "calibrated",
       "mode": "insertion",
       "report_date": "2002-12-31",

@@ -186,6 +186,7 @@ class ExtendedTPCDSOptions:
     mutation_cohort: str = "all"
     fallback_policy: str = "table"  # rejected CREATE MV may use an explicit table fallback
     statement_timeout_s: float = 300.0
+    source_size_gb: Optional[float] = None  # initial Parquet bytes before compression, decimal GB
 
     def __post_init__(self):
         if self.profile not in ("native", "calibrated", "jcc_stress"):
@@ -203,6 +204,12 @@ class ExtendedTPCDSOptions:
             raise ValueError("fallback policy must be table or strict")
         if not math.isfinite(self.statement_timeout_s) or self.statement_timeout_s <= 0:
             raise ValueError("statement timeout must be positive and finite")
+        if self.source_size_gb is not None:
+            if (isinstance(self.source_size_gb, bool) or not isinstance(self.source_size_gb, (int, float))
+                    or not math.isfinite(self.source_size_gb) or self.source_size_gb <= 0):
+                raise ValueError("source_size_gb must be positive and finite")
+            if self.mode == "days":
+                raise ValueError("source_size_gb requires a complete initial snapshot")
 
     @property
     def batch_count(self):
@@ -283,6 +290,8 @@ class BenchmarkConfig:
                 initial = Decimal(str(self.batch_1_pct))
                 if not initial.is_finite() or not 0 <= initial <= 100:
                     raise ValueError("initial percentage must be finite and between 0 and 100")
+                if self.extended_tpcds.source_size_gb is not None and initial != 100:
+                    raise ValueError("source_size_gb requires a complete initial snapshot")
                 for step in self.extended_tpcds.steps(self):
                     insert, update, delete = [Decimal(str(step[key])) for key in ("insert_pct", "update_pct", "delete_pct")]
                     if any(not value.is_finite() or not 0 <= value <= 100 for value in (insert,update,delete)) or update+delete > 100:

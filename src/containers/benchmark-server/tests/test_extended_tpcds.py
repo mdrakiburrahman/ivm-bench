@@ -16,6 +16,36 @@ from services.oat_runner import generate_results_csv
 
 
 class ExtendedTPCDSConfigTests(unittest.TestCase):
+    def test_source_size_target_is_validated_and_forwarded(self):
+        e = self.experiment(scale_factor=25, extended_tpcds={'source_size_gb':25})
+        self.assertEqual(json.loads(e.to_compose_env()['EXTENDED_TPCDS_OPTIONS'])['source_size_gb'],25)
+        for value in (0, -1, float('nan'), float('inf'), True, '25'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError,'source_size_gb'):
+                ExtendedTPCDSOptions(source_size_gb=value)
+        with self.assertRaisesRegex(ValueError,'complete initial'):
+            ExtendedTPCDSOptions(mode='days',source_size_gb=25)
+        with self.assertRaisesRegex(ValueError,'complete initial'):
+            self.experiment(batch_1_pct='50',extended_tpcds={'source_size_gb':25})
+
+    def test_extended_source_reporting_uses_its_plan_and_retains_byte_measurements(self):
+        from services.orchestrator import Orchestrator
+        e = self.experiment(scale_factor=25,extended_tpcds={'source_size_gb':25})
+        runner = Orchestrator.__new__(Orchestrator)
+        runner._config = BenchmarkConfig(workload=e.workload, scale_factor=e.scale_factor,
+                                         extended_tpcds=e.extended_tpcds, batch_1_pct=e.batch_1_pct,
+                                         engines=e.engines, repo_dir='/repo')
+        runner._oat_run_id = None
+        runner.emit = Mock()
+        counts = {'batches':{str(n):{'tables':{'events':n},'total_rows':n} for n in (1,2,3)},
+                  'preparation':{'source_storage':{'parquet_uncompressed_bytes':25_000_000_000}}}
+        with patch('services.orchestrator.collect_extended_source_row_counts',return_value=counts) as collect, \
+             patch('services.orchestrator.collect_source_row_counts') as delta:
+            runner._record_source_row_counts(0,e)
+        delta.assert_not_called()
+        self.assertTrue(collect.call_args.args[0].endswith('/extended-tpcds/'+workload_cache_key(runner._config)))
+        self.assertEqual(runner._current_source_row_counts['batches']['1']['total_rows'],1)
+        self.assertEqual(runner._current_source_row_counts['preparation']['source_storage']['parquet_uncompressed_bytes'],25_000_000_000)
+
     def test_preparation_streams_progress_and_stops_containers_on_timeout(self):
         from contextlib import nullcontext
         from services.orchestrator import Orchestrator

@@ -5,7 +5,82 @@ materialized analytical pipeline patterned after Insights. It is an experimental
 IVM workload derived from TPC-DS, with its own queries, data profiles and update
 streams. Its results are not comparable to officially published TPC-DS results.
 
-The recorded SF1/SF25 engine runs used the `native` control profile. They
+### Source-size contract and expansion audit (2026-11-10)
+
+The SF1/SF25/SF100 experiment files now set `extended_tpcds.source_size_gb` to
+1/25/100 respectively. This targets the **complete initial extended source
+export**, after generating metadata and histories, within 10%. GB is decimal;
+the measured basis is the sum of Parquet column-chunk `total_uncompressed_size`,
+before ZSTD compression but after Parquet encoding. It is not expanded string
+payload size, RAM, engine storage or total materialized-model storage. Compressed
+file bytes and rows are recorded separately for every initial table. Refresh
+files, base/scratch databases and independent validation copies are excluded.
+All engines receive exactly the same immutable source plan.
+
+The base TPC-DS SF is selected from a small real export and corrected using
+measured bytes, with at most four generation attempts. Each attempt regenerates
+the whole relational dataset; individual tables are never independently trimmed.
+The pinned [DuckDB generator](https://github.com/duckdb/duckdb/blob/v1.2.1/extension/tpcds/dsdgen/dsdgen-c/scaling.cpp)
+uses whole-number row-count scales above SF1; estimates in that range are rounded
+to avoid repeated truncation and unnecessary regeneration.
+Out-of-tolerance candidates are discarded, and a plan is published only when it
+meets the size contract. A failure to converge fails preparation before engines
+start. The actual base SF, signatures, achieved counts, sizing attempts and byte
+totals are retained in `preparation.json` and benchmark source-count artifacts.
+Generator v3 is unchanged; preparation recipe v8 rejects older caches.
+
+Without `source_size_gb`, `scale_factor` retains its previous meaning: the base
+TPC-DS generator SF, with an unconstrained extension. When overriding an experiment,
+set `source_size_gb` explicitly too; it does not inherit a `scale_factor` override.
+Byte targeting requires a 100% initial snapshot and does not support days mode.
+SQL templates, history length, calibrated predicates, static-reference handling,
+physical-key checks, refresh percentages and independent validation are unchanged.
+This changes the generated population and makes historical timings incomparable
+to the newly sized experiments.
+
+The [SF25 expansion audit](../src/workloads/extended-tpcds/validation/source-size-audit.json)
+records 126,548,911 base rows across the seven used TPC-DS tables, but
+**2,487,948,819 extended source rows** and **4,765,011,277 rows across 96
+materialized models** in the prior calibrated run. There are 122,579,322 dated
+purchases and 120,324,287 distinct engagement identities. Two metadata versions
+across five histories, registry entries and 450,235,557 generated status events
+then expand those entities. SF25 was never a 25 GB extended-input guarantee.
+An existing real base-SF1 export measures 1.397 GB compressed and 12.776 GB in
+uncompressed Parquet column chunks; multiplying that observation is only an
+estimate, not an SF25 byte measurement.
+
+This audit also compares all 18 staging populations to the pinned Fabric
+predicate slices. For example, per engagement-status row:
+
+| Staging population | Generated SF25 | Fabric predicate slice |
+|---|---:|---:|
+| Engagement activity | 0.26725 | 0.26769 |
+| Purchase usage | 0.05436 | 0.30695 |
+| Customer status | 0.05436 | 20.29350 |
+| Account profile | 0.00155 | 36.50574 |
+
+The reference slices are not complete raw source tables. A global size correction
+does not repair these relative-volume differences or establish unknown production
+window/final-group counts. The calibrated scenario matches four marginals; it
+remains a Fabric-inspired workload, not a production-cardinality reproduction.
+
+A real local 250 MB target achieved **247,730,531 uncompressed bytes (−0.91%)**,
+25,511,726 compressed bytes and 1,978,819 initial rows. All 96 models passed
+independent bag comparisons after initialization and both 1%/0.01% refreshes:
+**288/288 checks, zero differences**. This verifies sizing/replay correctness,
+not SF25 engine performance.
+
+The real 25 GB source-size check achieved **25,440,545,552 uncompressed bytes
+(+1.76%)**, **2,814,847,278 compressed bytes** and **201,620,651 initial rows**.
+All 18 physical-ID/coverage checks and refresh planning completed. That is 12.34×
+fewer source rows than the previous base-SF25 setup. This check used the initial
+correction loop before whole-number scale rounding was added; its four attempts
+took 946.9 s locally at four threads / 2 GB memory / 16 GB spill. It is not a
+timing result for the final estimator. The smaller replay above and 51 workload /
+116 benchmark-server tests pass. A Spark run on the new size contract remains
+outstanding; the existing 256-partition trial uses the old, much larger population.
+
+The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated
 reproduction of the original Fabric workload**. Native generation assigns every
 engagement a purchase relationship and about 75% non-null channel assessments;

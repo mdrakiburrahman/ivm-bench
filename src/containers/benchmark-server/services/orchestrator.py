@@ -20,11 +20,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
-from models.config import BenchmarkConfig, is_cloud_engine
+from models.config import BenchmarkConfig, is_cloud_engine, workload_cache_key
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BatchResult, BenchmarkResult, EngineResult
 from services import oat_runner
-from services.source_row_counts import collect_source_row_counts
+from services.source_row_counts import collect_source_row_counts, collect_extended_source_row_counts
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner, OpenIvmValidationError
@@ -597,9 +597,16 @@ class Orchestrator:
         if inputs.repeated_refresh:
             with open(os.path.join(delta_dir, "refresh-plan.json"), encoding="utf-8") as plan_file:
                 refresh_plan = json.load(plan_file)
-        counts = collect_source_row_counts(
-            delta_dir, self._config.batch_count, refresh_plan=refresh_plan,
-        )
+        if inputs.workload == 'extended-tpcds':
+            counts = collect_extended_source_row_counts(os.path.join(
+                repo, 'mount', 'raw', str(inputs.scale_factor), 'extended-tpcds',
+                workload_cache_key(self._config)))
+            self.emit('  [datagen] Initial source storage: ' + json.dumps(
+                counts['preparation']['source_storage']))
+        else:
+            counts = collect_source_row_counts(
+                delta_dir, self._config.batch_count, refresh_plan=refresh_plan,
+            )
         counts.update({
             "scale_factor": inputs.scale_factor,
             "batch_2_days": inputs.batch_2_days,

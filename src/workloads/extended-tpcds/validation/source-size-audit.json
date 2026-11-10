@@ -1,0 +1,507 @@
+{
+  "historical_run": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/42235802869",
+  "historical_commit": "af9d0875b31d90b0368418f27a8d71b828c332d3",
+  "base_scale_factor": 25,
+  "base_rows_used": 126548911,
+  "generated_source_rows": 2487948819,
+  "materialized_model_rows": 4765011277,
+  "reference_repository": "https://github.com/mdrakiburrahman/dbt-insights",
+  "reference_commit": "54711257f95d561e00305be33272daba87988da1",
+  "limitations": [
+    "Reference counts are separately profiled staging predicate slices, not complete raw source scans.",
+    "No production intermediate/window/final-group counts are available; marginal calibration is insufficient.",
+    "A global byte-size correction does not repair the different relative table populations."
+  ],
+  "tables": [
+    {
+      "extension_source": "ext_entity_registry",
+      "reference_staging_model": "stg_arm_collection_dim",
+      "full_source_rows": 97435870,
+      "predicate_slice_rows": 2046109,
+      "generated_source_rows": 363927898,
+      "generated_staging_model": "stg_entity_registry",
+      "generated_staging_rows": 363927898,
+      "generated_staging_per_status_row": 0.8083055466007986,
+      "reference_slice_per_status_row": 3.9662037737019418
+    },
+    {
+      "extension_source": "ext_price_catalog",
+      "reference_staging_model": "stg_billing_meter_dim",
+      "full_source_rows": 1436,
+      "predicate_slice_rows": 1436,
+      "generated_source_rows": 17001,
+      "generated_staging_model": "stg_price_catalog",
+      "generated_staging_rows": 17001,
+      "generated_staging_per_status_row": 3.776023402789576e-05,
+      "reference_slice_per_status_row": 0.0027835607091489206
+    },
+    {
+      "extension_source": "ext_purchase_usage_events",
+      "reference_staging_model": "stg_billing_usage_summary_fact",
+      "full_source_rows": 4047833163,
+      "predicate_slice_rows": 158353,
+      "generated_source_rows": 122579322,
+      "generated_staging_model": "stg_purchase_usage_events",
+      "generated_staging_rows": 24475437,
+      "generated_staging_per_status_row": 0.05436140397947291,
+      "reference_slice_per_status_row": 0.306953474217172
+    },
+    {
+      "extension_source": "ext_account_profile",
+      "reference_staging_model": "stg_customer_subscription_effective_mat_view",
+      "full_source_rows": 18832802,
+      "predicate_slice_rows": 18832802,
+      "generated_source_rows": 1400004,
+      "generated_staging_model": "stg_account_profile",
+      "generated_staging_rows": 700002,
+      "generated_staging_per_status_row": 0.001554746152578971,
+      "reference_slice_per_status_row": 36.505743516978555
+    },
+    {
+      "extension_source": "ext_calendar",
+      "reference_staging_model": "stg_date_dim",
+      "full_source_rows": 10958,
+      "predicate_slice_rows": 10958,
+      "generated_source_rows": 73049,
+      "generated_staging_model": "stg_calendar",
+      "generated_staging_rows": 73049,
+      "generated_staging_per_status_row": 0.00016224618172482543,
+      "reference_slice_per_status_row": 0.0212411269156364
+    },
+    {
+      "extension_source": "ext_customer_policy_history",
+      "reference_staging_model": "stg_extension_configuration_dim",
+      "full_source_rows": 43929177,
+      "predicate_slice_rows": 1248,
+      "generated_source_rows": 700002,
+      "generated_staging_model": "stg_customer_policy_history",
+      "generated_staging_rows": 350001,
+      "generated_staging_per_status_row": 0.0007773730762894855,
+      "reference_slice_per_status_row": 0.002419139112129424
+    },
+    {
+      "extension_source": "ext_engagement_service_history",
+      "reference_staging_model": "stg_instance_hadr_dim",
+      "full_source_rows": 229212520,
+      "predicate_slice_rows": 138099,
+      "generated_source_rows": 240648574,
+      "generated_staging_model": "stg_engagement_service_history",
+      "generated_staging_rows": 120324287,
+      "generated_staging_per_status_row": 0.26724741111462236,
+      "reference_slice_per_status_row": 0.2676928623765716
+    },
+    {
+      "extension_source": "ext_engagement_activity_history",
+      "reference_staging_model": "stg_instance_health_dim",
+      "full_source_rows": 228616139,
+      "predicate_slice_rows": 138099,
+      "generated_source_rows": 240648574,
+      "generated_staging_model": "stg_engagement_activity_history",
+      "generated_staging_rows": 120324287,
+      "generated_staging_per_status_row": 0.26724741111462236,
+      "reference_slice_per_status_row": 0.2676928623765716
+    },
+    {
+      "extension_source": "ext_engagement_capacity_history",
+      "reference_staging_model": "stg_instance_infrastructure_dim",
+      "full_source_rows": 231752548,
+      "predicate_slice_rows": 138088,
+      "generated_source_rows": 216583718,
+      "generated_staging_model": "stg_engagement_capacity_history",
+      "generated_staging_rows": 108291859,
+      "generated_staging_per_status_row": 0.24052267155790186,
+      "reference_slice_per_status_row": 0.2676715398363204
+    },
+    {
+      "extension_source": "ext_engagement_channel_history",
+      "reference_staging_model": "stg_instance_migration_dim",
+      "full_source_rows": 91676867,
+      "predicate_slice_rows": 138097,
+      "generated_source_rows": 240648574,
+      "generated_staging_model": "stg_engagement_channel_history",
+      "generated_staging_rows": 120324287,
+      "generated_staging_per_status_row": 0.26724741111462236,
+      "reference_slice_per_status_row": 0.26768898555107135
+    },
+    {
+      "extension_source": "ext_engagement_status_events",
+      "reference_staging_model": "stg_instance_status_fact",
+      "full_source_rows": 2983994619,
+      "predicate_slice_rows": 515886,
+      "generated_source_rows": 450235557,
+      "generated_staging_model": "stg_engagement_status_events",
+      "generated_staging_rows": 450235557,
+      "generated_staging_per_status_row": 1.0,
+      "reference_slice_per_status_row": 1.0
+    },
+    {
+      "extension_source": "ext_engagement_product_history",
+      "reference_staging_model": "stg_instance_version_dim",
+      "full_source_rows": 230496047,
+      "predicate_slice_rows": 138098,
+      "generated_source_rows": 240648574,
+      "generated_staging_model": "stg_engagement_product_history",
+      "generated_staging_rows": 120324287,
+      "generated_staging_per_status_row": 0.26724741111462236,
+      "reference_slice_per_status_row": 0.2676909239638215
+    },
+    {
+      "extension_source": "ext_customer_profile_history",
+      "reference_staging_model": "stg_machine_infrastructure_dim",
+      "full_source_rows": 56641479,
+      "predicate_slice_rows": 1603182,
+      "generated_source_rows": 700002,
+      "generated_staging_model": "stg_customer_profile_history",
+      "generated_staging_rows": 350001,
+      "generated_staging_per_status_row": 0.0007773730762894855,
+      "reference_slice_per_status_row": 3.107628429536758
+    },
+    {
+      "extension_source": "ext_customer_preference_history",
+      "reference_staging_model": "stg_machine_os_dim",
+      "full_source_rows": 242231468,
+      "predicate_slice_rows": 1603179,
+      "generated_source_rows": 700002,
+      "generated_staging_model": "stg_customer_preference_history",
+      "generated_staging_rows": 350001,
+      "generated_staging_per_status_row": 0.0007773730762894855,
+      "reference_slice_per_status_row": 3.1076226142985077
+    },
+    {
+      "extension_source": "ext_customer_status_events",
+      "reference_staging_model": "stg_machine_status_fact",
+      "full_source_rows": 3892549712,
+      "predicate_slice_rows": 10469131,
+      "generated_source_rows": 122579322,
+      "generated_staging_model": "stg_customer_status_events",
+      "generated_staging_rows": 24475437,
+      "generated_staging_per_status_row": 0.05436140397947291,
+      "reference_slice_per_status_row": 20.293497012905952
+    },
+    {
+      "extension_source": "ext_purchase_receipt_events",
+      "reference_staging_model": "stg_silver_billing_usage",
+      "full_source_rows": 16876164161,
+      "predicate_slice_rows": 149059,
+      "generated_source_rows": 122579322,
+      "generated_staging_model": "stg_purchase_receipt_events",
+      "generated_staging_rows": 24475437,
+      "generated_staging_per_status_row": 0.05436140397947291,
+      "reference_slice_per_status_row": 0.28893786611770816
+    },
+    {
+      "extension_source": "ext_engagement_observation_events",
+      "reference_staging_model": "stg_silver_sqlserverinstance_global",
+      "full_source_rows": 15017100930,
+      "predicate_slice_rows": 1482764,
+      "generated_source_rows": 122579322,
+      "generated_staging_model": "stg_engagement_observation_events",
+      "generated_staging_rows": 24475437,
+      "generated_staging_per_status_row": 0.05436140397947291,
+      "reference_slice_per_status_row": 2.87420864299477
+    },
+    {
+      "extension_source": "ext_account_household",
+      "reference_staging_model": "stg_subscription_tenant_mat_view",
+      "full_source_rows": 18832802,
+      "predicate_slice_rows": 18832802,
+      "generated_source_rows": 700002,
+      "generated_staging_model": "stg_account_household",
+      "generated_staging_rows": 700002,
+      "generated_staging_per_status_row": 0.001554746152578971,
+      "reference_slice_per_status_row": 36.505743516978555
+    }
+  ],
+  "size_contract_validation": {
+    "target_bytes": 250000000.0,
+    "source_storage": {
+      "tables": {
+        "ext_entity_registry": {
+          "rows": 280101,
+          "parquet_bytes": 7061704,
+          "parquet_uncompressed_bytes": 52844604
+        },
+        "ext_price_catalog": {
+          "rows": 177,
+          "parquet_bytes": 28828,
+          "parquet_uncompressed_bytes": 35851
+        },
+        "ext_purchase_usage_events": {
+          "rows": 96813,
+          "parquet_bytes": 2335340,
+          "parquet_uncompressed_bytes": 9428667
+        },
+        "ext_account_profile": {
+          "rows": 7880,
+          "parquet_bytes": 46932,
+          "parquet_uncompressed_bytes": 692193
+        },
+        "ext_calendar": {
+          "rows": 73049,
+          "parquet_bytes": 636489,
+          "parquet_uncompressed_bytes": 8169676
+        },
+        "ext_customer_policy_history": {
+          "rows": 3940,
+          "parquet_bytes": 9022,
+          "parquet_uncompressed_bytes": 270013
+        },
+        "ext_engagement_service_history": {
+          "rows": 179348,
+          "parquet_bytes": 946335,
+          "parquet_uncompressed_bytes": 19008849
+        },
+        "ext_engagement_activity_history": {
+          "rows": 179348,
+          "parquet_bytes": 948187,
+          "parquet_uncompressed_bytes": 19027601
+        },
+        "ext_engagement_capacity_history": {
+          "rows": 161414,
+          "parquet_bytes": 1170767,
+          "parquet_uncompressed_bytes": 22575328
+        },
+        "ext_engagement_channel_history": {
+          "rows": 179348,
+          "parquet_bytes": 1996523,
+          "parquet_uncompressed_bytes": 12940035
+        },
+        "ext_engagement_status_events": {
+          "rows": 335794,
+          "parquet_bytes": 6539404,
+          "parquet_uncompressed_bytes": 40946189
+        },
+        "ext_engagement_product_history": {
+          "rows": 179348,
+          "parquet_bytes": 992364,
+          "parquet_uncompressed_bytes": 19328814
+        },
+        "ext_customer_profile_history": {
+          "rows": 3940,
+          "parquet_bytes": 10670,
+          "parquet_uncompressed_bytes": 282451
+        },
+        "ext_customer_preference_history": {
+          "rows": 3940,
+          "parquet_bytes": 9293,
+          "parquet_uncompressed_bytes": 272718
+        },
+        "ext_customer_status_events": {
+          "rows": 96813,
+          "parquet_bytes": 782318,
+          "parquet_uncompressed_bytes": 9828340
+        },
+        "ext_purchase_receipt_events": {
+          "rows": 96813,
+          "parquet_bytes": 1054115,
+          "parquet_uncompressed_bytes": 17638632
+        },
+        "ext_engagement_observation_events": {
+          "rows": 96813,
+          "parquet_bytes": 927602,
+          "parquet_uncompressed_bytes": 14157869
+        },
+        "ext_account_household": {
+          "rows": 3940,
+          "parquet_bytes": 15833,
+          "parquet_uncompressed_bytes": 282701
+        }
+      },
+      "rows": 1978819,
+      "parquet_bytes": 25511726,
+      "parquet_uncompressed_bytes": 247730531
+    },
+    "sizing_attempts": [
+      {
+        "base_scale_factor": 0.1,
+        "source_bytes": 1269096122
+      },
+      {
+        "base_scale_factor": 0.019699059485424858,
+        "source_bytes": 247730531
+      }
+    ],
+    "actual_base_scale_factor": 0.019699059485424858,
+    "mode": "insertion",
+    "initial_pct": "100",
+    "insert_pcts": [
+      "1",
+      "0.01"
+    ],
+    "batches": [
+      {
+        "batch": 1,
+        "models_checked": 96,
+        "total_differences": 0,
+        "source_rows": 1978819
+      },
+      {
+        "batch": 2,
+        "models_checked": 96,
+        "total_differences": 0,
+        "source_rows": 1985999
+      },
+      {
+        "batch": 3,
+        "models_checked": 96,
+        "total_differences": 0,
+        "source_rows": 1986078
+      }
+    ]
+  },
+  "size_contract_sf25": {
+    "source_storage": {
+      "tables": {
+        "ext_entity_registry": {
+          "rows": 29459613,
+          "parquet_bytes": 776250733,
+          "parquet_uncompressed_bytes": 5543059560
+        },
+        "ext_price_catalog": {
+          "rows": 13001,
+          "parquet_bytes": 700055,
+          "parquet_uncompressed_bytes": 2295365
+        },
+        "ext_purchase_usage_events": {
+          "rows": 9805667,
+          "parquet_bytes": 245900995,
+          "parquet_uncompressed_bytes": 1094597423
+        },
+        "ext_account_profile": {
+          "rows": 576004,
+          "parquet_bytes": 1846401,
+          "parquet_uncompressed_bytes": 88987387
+        },
+        "ext_calendar": {
+          "rows": 73049,
+          "parquet_bytes": 636489,
+          "parquet_uncompressed_bytes": 8169676
+        },
+        "ext_customer_policy_history": {
+          "rows": 288002,
+          "parquet_bytes": 692053,
+          "parquet_uncompressed_bytes": 19717932
+        },
+        "ext_engagement_service_history": {
+          "rows": 19365944,
+          "parquet_bytes": 130431816,
+          "parquet_uncompressed_bytes": 2052659487
+        },
+        "ext_engagement_activity_history": {
+          "rows": 19365944,
+          "parquet_bytes": 130639748,
+          "parquet_uncompressed_bytes": 2054812537
+        },
+        "ext_engagement_capacity_history": {
+          "rows": 17429350,
+          "parquet_bytes": 159851187,
+          "parquet_uncompressed_bytes": 2437970975
+        },
+        "ext_engagement_channel_history": {
+          "rows": 19365944,
+          "parquet_bytes": 220895121,
+          "parquet_uncompressed_bytes": 1397217601
+        },
+        "ext_engagement_status_events": {
+          "rows": 36231182,
+          "parquet_bytes": 733039517,
+          "parquet_uncompressed_bytes": 4417468406
+        },
+        "ext_engagement_product_history": {
+          "rows": 19365944,
+          "parquet_bytes": 135402612,
+          "parquet_uncompressed_bytes": 2087101777
+        },
+        "ext_customer_profile_history": {
+          "rows": 288002,
+          "parquet_bytes": 696999,
+          "parquet_uncompressed_bytes": 20595354
+        },
+        "ext_customer_preference_history": {
+          "rows": 288002,
+          "parquet_bytes": 692782,
+          "parquet_uncompressed_bytes": 19910164
+        },
+        "ext_customer_status_events": {
+          "rows": 9805667,
+          "parquet_bytes": 70999977,
+          "parquet_uncompressed_bytes": 957578165
+        },
+        "ext_purchase_receipt_events": {
+          "rows": 9805667,
+          "parquet_bytes": 109482928,
+          "parquet_uncompressed_bytes": 1783261565
+        },
+        "ext_engagement_observation_events": {
+          "rows": 9805667,
+          "parquet_bytes": 95836780,
+          "parquet_uncompressed_bytes": 1430706151
+        },
+        "ext_account_household": {
+          "rows": 288002,
+          "parquet_bytes": 851085,
+          "parquet_uncompressed_bytes": 24436027
+        }
+      },
+      "rows": 201620651,
+      "parquet_bytes": 2814847278,
+      "parquet_uncompressed_bytes": 25440545552
+    },
+    "sizing": {
+      "target_bytes": 25000000000,
+      "relative_tolerance": 0.1,
+      "basis": "initial Parquet column chunks before compression",
+      "attempts": [
+        {
+          "base_scale_factor": 0.1,
+          "source_bytes": 1269096122
+        },
+        {
+          "base_scale_factor": 1.9699059485424855,
+          "source_bytes": 12776098593
+        },
+        {
+          "base_scale_factor": 3.8546703717944717,
+          "source_bytes": 38111361760
+        },
+        {
+          "base_scale_factor": 2.528557229251359,
+          "source_bytes": 25440545552
+        }
+      ]
+    },
+    "base_scale_factor_argument": 2.528557229251359,
+    "base_signature": {
+      "customer": {
+        "rows": 144000,
+        "row_checksum_xor": "46321033936528439807572957059327779135"
+      },
+      "item": {
+        "rows": 26000,
+        "row_checksum_xor": "58060423914777018083114213050041118065"
+      },
+      "date_dim": {
+        "rows": 73049,
+        "row_checksum_xor": "-77181200345983161280827225212381880565"
+      },
+      "time_dim": {
+        "rows": 86400,
+        "row_checksum_xor": "-31346681985102018649007520020552729711"
+      },
+      "store_sales": {
+        "rows": 5760749,
+        "row_checksum_xor": "124970159886267431617795703751061170715"
+      },
+      "catalog_sales": {
+        "rows": 2880058,
+        "row_checksum_xor": "59775788096664442314912660255864196846"
+      },
+      "web_sales": {
+        "rows": 1439247,
+        "row_checksum_xor": "2621270497751340420695096961713000677"
+      }
+    },
+    "validation_scope": "Source export sizes, all 18 physical-ID/coverage checks and refresh planning; no engine run.",
+    "sizing_note": "Measured with the initial correction loop before rounding estimates >=1 to whole-number generator scales. The final rounding optimization is covered by the preparation tests; no preparation speedup is claimed."
+  }
+}
