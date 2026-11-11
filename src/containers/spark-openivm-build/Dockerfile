@@ -35,9 +35,9 @@
 # the `duckdb` CLI and dlopens `openivm.duckdb_extension`); a 24.04-built binary
 # fails on 22.04 with `GLIBC_2.38 not found` / `GLIBCXX_3.4.32 not found`, which
 # crashes every per-view compile -> COMPILE_FAILED -> FULL_REFRESH for all views.
-# The pinned lpts revision needs GCC 13, so pull gcc-13 from the toolchain PPA. Keep libstdc++
-# DYNAMIC (no -static-libstdc++): the CLI and the loadable extension must share a
-# single libstdc++, so the final stage installs the matching gcc-13 libstdc++6.
+# Use GCC 12 from Ubuntu 22.04's own repositories so this build does not depend
+# on the external toolchain PPA. Keep libstdc++ DYNAMIC (no -static-libstdc++):
+# the CLI and the loadable extension must share a single libstdc++.
 FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
@@ -58,12 +58,9 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
     apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git ca-certificates \
         python3 python3-pip libssl-dev pkg-config zip unzip curl \
-        software-properties-common gpg-agent && \
-    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
-    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --no-install-recommends gcc-13 g++-13 && \
-    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
-    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
+        gcc-12 g++-12 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -184,16 +181,18 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
         fi; \
     fi && \
     apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --no-install-recommends ca-certificates software-properties-common gpg-agent && \
-    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
-    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
-    apt-get install -y --only-upgrade libstdc++6 && \
+    apt-get install -y --no-install-recommends ca-certificates libstdc++6 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /opt/spark-openivm/openivm.duckdb_extension
 COPY --from=openivm-builder /artifacts/duckdb                   /opt/spark-openivm/duckdb
 COPY --from=openivm-builder /artifacts/SHA256SUMS               /opt/spark-openivm/SHA256SUMS
 COPY --from=spark-ext-builder /tmp/openivm-extension.jar        /opt/spark-openivm/openivm-extension.jar
+
+# Fail the build if the compiler CLI cannot load the extension with the final
+# image's runtime libraries. Otherwise Spark treats every MV as COMPILE_FAILED.
+RUN /opt/spark-openivm/duckdb -unsigned -c \
+    "LOAD '/opt/spark-openivm/openivm.duckdb_extension'; SELECT 42;"
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /opt/spark-openivm/duckdb
