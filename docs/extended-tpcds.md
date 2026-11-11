@@ -80,6 +80,26 @@ timing result for the final estimator. The smaller replay above and 51 workload 
 116 benchmark-server tests pass. A Spark run on the new size contract remains
 outstanding; the existing 256-partition trial uses the old, much larger population.
 
+The new size contract subsequently passed Spark OpenIVM in
+[42997087685](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/42997087685):
+all 288 model comparisons had zero differences. Initial / 1% / 0.01% measured
+source-replay and model-command times were 1,378.36 / 983.88 / 905.47 seconds;
+validation and post-build counts are excluded. Preparation took about four
+minutes, and the entire job including validation took 2h12m.
+
+The other eight-engine sweep
+[43024951661](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43024951661)
+failed twice during shared image preparation, before creating any experiment
+results. Attempt 1 timed out contacting Launchpad; attempt 2 could not resolve
+`archive.ubuntu.com` or `security.ubuntu.com` inside the classic Docker builder.
+These are setup failures, not failures of the eight engines. The required image
+builds now use the runner's host network through Compose `build.network`; runtime
+network settings, engine/data pins, SQL and resource allocations are unchanged.
+GCI records bounded host/default-bridge/build-host DNS probes before expensive
+work, so another resolver failure is visible immediately. Dockerfiles and the
+existing signed PPA setup are unchanged. This setup correction still needs a
+successful GCI run before being called verified.
+
 The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated
 reproduction of the original Fabric workload**. Native generation assigns every

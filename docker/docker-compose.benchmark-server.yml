@@ -1,6 +1,7 @@
 services:
   benchmark-server:
     build:
+      network: host
       context: ../src/containers/benchmark-server
     ports:
       - "9000:9000"

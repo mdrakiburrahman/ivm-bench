@@ -27,6 +27,7 @@ services:
 
   spark:
     build:
+      network: host
       context: ../src/containers/spark
     depends_on:
       mssql-metastore:

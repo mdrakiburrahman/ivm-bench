@@ -1,6 +1,7 @@
 services:
   spark-openivm-builder:
     build:
+      network: host
       context: ../src/containers/spark-openivm-build
       args:
         UBUNTU_MIRROR: "${OPENIVM_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"

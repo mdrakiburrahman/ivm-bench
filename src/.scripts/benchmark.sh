@@ -147,6 +147,16 @@ fi
 export OPENIVM_UBUNTU_MIRROR
 
 COMPOSE_FILE="docker/docker-compose.benchmark-server.yml"
+
+# Check the resolver used by build.network before starting expensive CI builds.
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "Runner DNS:"
+  timeout 20s getent ahostsv4 archive.ubuntu.com
+  echo "Default build bridge DNS (diagnostic):"
+  timeout 20s docker run --rm ubuntu:22.04 timeout 10s getent ahostsv4 archive.ubuntu.com || true
+  echo "Host build network DNS:"
+  timeout 30s docker run --rm --network host ubuntu:22.04 timeout 20s getent ahostsv4 archive.ubuntu.com
+fi
 HEALTH_RETRIES=60
 
 cleanup() {

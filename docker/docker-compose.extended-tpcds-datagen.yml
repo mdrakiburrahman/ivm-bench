@@ -1,6 +1,7 @@
 services:
   extended-tpcds-datagen:
     build:
+      network: host
       context: ../src/workloads/extended-tpcds
     environment:
       SCALE_FACTOR: "${SCALE_FACTOR}"

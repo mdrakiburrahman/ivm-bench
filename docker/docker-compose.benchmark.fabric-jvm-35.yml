@@ -1,6 +1,7 @@
 services:
   imds-router:
     build:
+      network: host
       context: ../src/containers/imds-router
     environment:
       IMDS_ROUTER_PORT: "${IMDS_ROUTER_PORT:-8080}"
