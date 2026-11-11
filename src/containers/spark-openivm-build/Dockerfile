@@ -73,8 +73,13 @@ RUN git init -q && \
     git config --global url."https://github.com/".insteadOf "git@github.com:" && \
     git submodule update --init --recursive --depth 1 duckdb extension-ci-tools third_party/lpts
 
-# Build (release).
-RUN GEN=ninja make -j"$(nproc)"
+# Build (release). The benchmark server retains only the end of Docker's output
+# on failure, so print the compiler diagnostics again after parallel jobs stop.
+RUN GEN=ninja make -j"$(nproc)" > /tmp/openivm-build.log 2>&1 || { \
+        tail -15 /tmp/openivm-build.log; \
+        grep -n -B 5 -A 12 -E 'error:|fatal error:|FAILED:' /tmp/openivm-build.log | head -40; \
+        exit 1; \
+    }
 
 # Collect deliverables.
 RUN mkdir -p /artifacts && \
