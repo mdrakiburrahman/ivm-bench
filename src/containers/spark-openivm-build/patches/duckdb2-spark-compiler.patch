@@ -250,7 +250,7 @@ index b13fff45232f2d0c1848dccf75f9406227374c10..bba539adb7b9f20c5a985a2bab2a51e8
 +    }
 +
 diff --git a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala
-index 69aff03ec17285fc07a699f9f4170cb60041f009..1aa24b14e6b7a9446a6dfb474daf4a7893a44a40 100644
+index 69aff03ec17285fc07a699f9f4170cb60041f009..4cd066b06357defa34280967ae73592aae77e873 100644
 --- a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala
 +++ b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala
 @@ -7,0 +8,2 @@ import java.io.File
@@ -258,10 +258,11 @@ index 69aff03ec17285fc07a699f9f4170cb60041f009..1aa24b14e6b7a9446a6dfb474daf4a78
 +import java.util.concurrent.{CountDownLatch, TimeUnit}
 @@ -12,0 +15 @@ class OpenIvmMaintenanceCoordinatorSpec extends AnyFunSpec with BeforeAndAfterEa
 +    OpenIvmMaintenanceCoordinator.clearBeforeSleepHookForTesting()
-@@ -56,0 +60,40 @@ class OpenIvmMaintenanceCoordinatorSpec extends AnyFunSpec with BeforeAndAfterEa
+@@ -56,0 +60,52 @@ class OpenIvmMaintenanceCoordinatorSpec extends AnyFunSpec with BeforeAndAfterEa
 +    it("recalculates a shorter interval without running an immediate maintenance sweep") {
 +      val firstDir  = newDbDir("registration-first")
 +      val secondDir = newDbDir("registration-second")
++      val thirdDir  = newDbDir("registration-third")
 +      val conf = OpenIvmRocksDBConf.default.copy(
 +        maintenanceIntervalMs = 60000L,
 +        compactionThresholdSstCount = 0,
@@ -269,8 +270,9 @@ index 69aff03ec17285fc07a699f9f4170cb60041f009..1aa24b14e6b7a9446a6dfb474daf4a78
 +      )
 +      val first      = new OpenIvmRocksDB(firstDir.getAbsolutePath, conf, Seq("meta"))
 +      val second     = new OpenIvmRocksDB(secondDir.getAbsolutePath, conf, Seq("meta"))
++      val third      = new OpenIvmRocksDB(thirdDir.getAbsolutePath, conf, Seq("meta"))
 +      val sleepCount = new AtomicInteger(0)
-+      val sleeps     = Array.fill(2)(new CountDownLatch(1))
++      val sleeps     = Array.fill(3)(new CountDownLatch(1))
 +
 +      OpenIvmMaintenanceCoordinator.setBeforeSleepHookForTesting(() => {
 +        val index = sleepCount.getAndIncrement()
@@ -280,6 +282,7 @@ index 69aff03ec17285fc07a699f9f4170cb60041f009..1aa24b14e6b7a9446a6dfb474daf4a78
 +      try {
 +        first.load()
 +        second.load()
++        third.load()
 +        populateUntilSst(first)
 +
 +        OpenIvmMaintenanceCoordinator.register(first, conf)
@@ -289,11 +292,20 @@ index 69aff03ec17285fc07a699f9f4170cb60041f009..1aa24b14e6b7a9446a6dfb474daf4a78
 +        OpenIvmMaintenanceCoordinator.register(second, conf.copy(maintenanceIntervalMs = 30000L))
 +        sleeps(1).await(10L, TimeUnit.SECONDS) shouldBe true
 +        first.compactCallCount shouldBe 0L
++
++        // Registering another shard at the current interval must leave the
++        // daemon asleep. The old behavior interrupted it for every new shard.
++        OpenIvmMaintenanceCoordinator.register(third, conf.copy(maintenanceIntervalMs = 30000L))
++        sleeps(2).await(200L, TimeUnit.MILLISECONDS) shouldBe false
++        first.compactCallCount shouldBe 0L
 +      } finally {
++        OpenIvmMaintenanceCoordinator.unregister(third)
 +        OpenIvmMaintenanceCoordinator.unregister(second)
 +        OpenIvmMaintenanceCoordinator.unregister(first)
++        closeQuietly(third)
 +        closeQuietly(second)
 +        closeQuietly(first)
++        deleteRecursively(thirdDir)
 +        deleteRecursively(secondDir)
 +        deleteRecursively(firstDir)
 +      }
