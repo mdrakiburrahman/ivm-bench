@@ -4,9 +4,8 @@
 # ivm-bench fetches the engine source itself, no sibling checkout needed. Bump the engine
 # by overriding DBSPNET_COMMIT (and DBSPNET_REPO for a fork).
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-# Temporary dependency: clast-project/dbsp-net#1; repin after upstream merge.
-ARG DBSPNET_REPO=https://github.com/ila/dbsp-net.git
-ARG DBSPNET_COMMIT=e256f5c435dcc8bb5ed5ea088137a3234234c51f
+ARG DBSPNET_REPO=https://github.com/clast-project/dbsp-net.git
+ARG DBSPNET_COMMIT=b580b7f99b4df5cef3630e3f989c1d5f0fc9b15f
 
 # git + certs for the clone.
 RUN apt-get update \
@@ -15,8 +14,7 @@ RUN apt-get update \
 
 WORKDIR /src
 RUN git clone "${DBSPNET_REPO}" . \
- && git checkout "${DBSPNET_COMMIT}" \
- && git submodule update --init --recursive --depth 1
+ && git checkout "${DBSPNET_COMMIT}"
 RUN dotnet publish src/DbspNet.Server/DbspNet.Server.csproj -c Release -o /app
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

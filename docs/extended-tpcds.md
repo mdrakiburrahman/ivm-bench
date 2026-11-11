@@ -5,6 +5,28 @@ materialized analytical pipeline patterned after Insights. It is an experimental
 IVM workload derived from TPC-DS, with its own queries, data profiles and update
 streams. Its results are not comparable to officially published TPC-DS results.
 
+### Isolated DBSP.NET spill trial (2026-11-11)
+
+Branch `bench/tpcds-sf25-dbspnet-spill-20261111` is stacked on `a77210b` for a
+DBSP.NET-only SF25 rerun with the same 25 GB source target, calibrated profile,
+100/1/0.01 insertions and full validation. It pins official upstream main
+`b580b7f99b4df5cef3630e3f989c1d5f0fc9b15f`, which includes the memory work
+referenced in [issue #2](https://github.com/clast-project/dbsp-net/issues/2#issuecomment-6786398252)
+and the merged SQL compatibility PR. No upstream engine code is modified.
+
+This test branch explicitly enables the maintainer's spilling settings: 12
+workers, spill on, 262,144-row step chunks, 1,024 MiB block cache, 49,152 MiB
+pressure limit, 48 GiB GC heap, server GC on and concurrent GC off. `/spill` is
+backed by `mount/spill/<sf>/dbspnet`, outside uploaded artifacts; the regular
+workflow mount cleanup removes it before the next run. Checkpoints remain off,
+and the orchestrator's CPU/container-memory allocation is unchanged.
+
+These Compose defaults are dedicated to this isolated test branch. They are
+not proposed TPC-DI defaults: spilling carries a cost for workloads that fit in
+memory. The main TPC-DS PR and the other eight-engine SF25 sweep still use
+`a77210b`. The heap setting is a deliberate reproduction of the upstream
+configuration and must be reported with any performance comparison.
+
 ### Source-size contract and expansion audit (2026-11-10)
 
 The SF1/SF25/SF100 experiment files now set `extended_tpcds.source_size_gb` to

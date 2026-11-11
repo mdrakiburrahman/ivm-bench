@@ -19,13 +19,27 @@ services:
     build:
       context: ../src/containers/dbspnet
       args:
-        DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/ila/dbsp-net.git}"
-        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-e256f5c435dcc8bb5ed5ea088137a3234234c51f}"
+        DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/clast-project/dbsp-net.git}"
+        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-b580b7f99b4df5cef3630e3f989c1d5f0fc9b15f}"
     cpus: ${DBSPNET_CPUS:-32}
     mem_limit: ${DBSPNET_MEM:-120g}
+    # Dedicated Extended TPC-DS spill experiment; not a TPC-DI default change.
+    # https://github.com/clast-project/dbsp-net/issues/2#issuecomment-6786398252
+    environment:
+      DBSPNET_WORKERS: "12"
+      DBSPNET_SPILL: "on"
+      DBSPNET_STEP_SPILL_ROWS: "262144"
+      DBSPNET_BLOCK_SPILL_DIR: "/spill"
+      DBSPNET_BLOCK_CACHE_MIB: "1024"
+      DBSPNET_MEMORY_LIMIT_MIB: "49152"
+      DOTNET_GCHeapHardLimit: "0xC00000000"
+      DOTNET_gcServer: "1"
+      DOTNET_gcConcurrent: "0"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
       - ../mount/results/${SCALE_FACTOR:-3}/dbspnet:/data/processed/dbspnet
+      # Scratch state can exceed 100 GB. Keep it outside uploaded artifacts.
+      - ../mount/spill/${SCALE_FACTOR:-3}/dbspnet:/spill
     ports:
       - "8081:8080"
     healthcheck:
