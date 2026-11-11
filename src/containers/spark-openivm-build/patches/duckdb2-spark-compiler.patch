@@ -72,6 +72,100 @@ index ede36c53318614a07516e9e74618df6649e1304d..b73bb38a360266bf91ac1dcd120611d9
 +      .getOrElse(statements)
 +  }
 +
+diff --git a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinator.scala b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinator.scala
+index b93b99f4bed26ef4377ecc116825500a17403ba8..88278f6e2e7f5764596c42e472293bb38e02c62a 100644
+--- a/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinator.scala
++++ b/spark-ext/ivm-common/src/main/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinator.scala
+@@ -14,2 +14,9 @@ object OpenIvmMaintenanceCoordinator {
+-  @volatile private var running    = false
+-  private var daemonThread: Thread = _
++  @volatile private var running                               = false
++  private var daemonThread: Thread                            = _
++  @volatile private var beforeSleepHookForTesting: () => Unit = () => ()
++
++  private[rocksdb] def setBeforeSleepHookForTesting(hook: () => Unit): Unit =
++    beforeSleepHookForTesting = hook
++
++  private[rocksdb] def clearBeforeSleepHookForTesting(): Unit =
++    beforeSleepHookForTesting = () => ()
+@@ -18,0 +26,2 @@ object OpenIvmMaintenanceCoordinator {
++      val previousInterval = currentIntervalMsLocked()
++      val existingDaemon   = daemonThread != null && daemonThread.isAlive
+@@ -21 +30 @@ object OpenIvmMaintenanceCoordinator {
+-      daemonThread
++      if (existingDaemon && currentIntervalMsLocked() < previousInterval) daemonThread else null
+@@ -29 +38 @@ object OpenIvmMaintenanceCoordinator {
+-    val threadToInterrupt = this.synchronized {
++    this.synchronized {
+@@ -31,4 +39,0 @@ object OpenIvmMaintenanceCoordinator {
+-      daemonThread
+-    }
+-    if (threadToInterrupt != null) {
+-      threadToInterrupt.interrupt()
+@@ -95,5 +100,10 @@ object OpenIvmMaintenanceCoordinator {
+-      try {
+-        Thread.sleep(sleepMs)
+-      } catch {
+-        case _: InterruptedException => ()
+-      }
++      beforeSleepHookForTesting()
++      val intervalElapsed =
++        try {
++          Thread.sleep(sleepMs)
++          true
++        } catch {
++          // Registration and removal wake us to recalculate the interval. They
++          // must not turn a scheduled maintenance pass into an immediate sweep.
++          case _: InterruptedException => false
++        }
+@@ -105,3 +115,4 @@ object OpenIvmMaintenanceCoordinator {
+-      val snapshot = this.synchronized {
+-        registrations.toSeq
+-      }
++      if (intervalElapsed) {
++        val snapshot = this.synchronized {
++          registrations.toSeq
++        }
+@@ -109,12 +120,13 @@ object OpenIvmMaintenanceCoordinator {
+-      snapshot.foreach { case (db, conf) =>
+-        try {
+-          if (!db.isClosed) {
+-            val runStarted = System.nanoTime()
+-            OpenIvmMetrics.increment("rocksdb.maintenance.run.count")
+-            db.withWriteLock {
+-              val holdStarted = System.nanoTime()
+-              if (!db.isClosed) {
+-                db.cleanup(conf.minVersionsToRetain)
+-                if (db.sstFileCount > conf.compactionThresholdSstCount) {
+-                  OpenIvmMetrics.increment("rocksdb.maintenance.compaction.count")
+-                  db.compactRange()
++        snapshot.foreach { case (db, conf) =>
++          try {
++            if (!db.isClosed) {
++              val runStarted = System.nanoTime()
++              OpenIvmMetrics.increment("rocksdb.maintenance.run.count")
++              db.withWriteLock {
++                val holdStarted = System.nanoTime()
++                if (!db.isClosed) {
++                  db.cleanup(conf.minVersionsToRetain)
++                  if (db.sstFileCount > conf.compactionThresholdSstCount) {
++                    OpenIvmMetrics.increment("rocksdb.maintenance.compaction.count")
++                    db.compactRange()
++                  }
+@@ -121,0 +134 @@ object OpenIvmMaintenanceCoordinator {
++                OpenIvmMetrics.updateTimer("rocksdb.maintenance.lock_hold", System.nanoTime() - holdStarted)
+@@ -123 +136 @@ object OpenIvmMaintenanceCoordinator {
+-              OpenIvmMetrics.updateTimer("rocksdb.maintenance.lock_hold", System.nanoTime() - holdStarted)
++              OpenIvmMetrics.updateTimer("rocksdb.maintenance.run", System.nanoTime() - runStarted)
+@@ -125 +138,3 @@ object OpenIvmMaintenanceCoordinator {
+-            OpenIvmMetrics.updateTimer("rocksdb.maintenance.run", System.nanoTime() - runStarted)
++          } catch {
++            case NonFatal(error) =>
++              log.warn(s"openivm-rocksdb maintenance failed for ${db.path}", error)
+@@ -127,3 +141,0 @@ object OpenIvmMaintenanceCoordinator {
+-        } catch {
+-          case NonFatal(error) =>
+-            log.warn(s"openivm-rocksdb maintenance failed for ${db.path}", error)
 diff --git a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
 index b13fff45232f2d0c1848dccf75f9406227374c10..bba539adb7b9f20c5a985a2bab2a51e8ff37170a 100644
 --- a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/SparkRefreshRewriterSpec.scala
@@ -153,6 +247,56 @@ index b13fff45232f2d0c1848dccf75f9406227374c10..bba539adb7b9f20c5a985a2bab2a51e8
 +      SparkRefreshRewriter.stripTimestampPredicate(
 +        s"SELECT * FROM t WHERE $cutoff AND amount > 100"
 +      ) shouldBe "SELECT * FROM t WHERE amount > 100"
++    }
++
+diff --git a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala
+index 69aff03ec17285fc07a699f9f4170cb60041f009..1aa24b14e6b7a9446a6dfb474daf4a7893a44a40 100644
+--- a/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala
++++ b/spark-ext/ivm-common/src/test/scala/org/openivm/spark/common/rocksdb/OpenIvmMaintenanceCoordinatorSpec.scala
+@@ -7,0 +8,2 @@ import java.io.File
++import java.util.concurrent.atomic.AtomicInteger
++import java.util.concurrent.{CountDownLatch, TimeUnit}
+@@ -12,0 +15 @@ class OpenIvmMaintenanceCoordinatorSpec extends AnyFunSpec with BeforeAndAfterEa
++    OpenIvmMaintenanceCoordinator.clearBeforeSleepHookForTesting()
+@@ -56,0 +60,40 @@ class OpenIvmMaintenanceCoordinatorSpec extends AnyFunSpec with BeforeAndAfterEa
++    it("recalculates a shorter interval without running an immediate maintenance sweep") {
++      val firstDir  = newDbDir("registration-first")
++      val secondDir = newDbDir("registration-second")
++      val conf = OpenIvmRocksDBConf.default.copy(
++        maintenanceIntervalMs = 60000L,
++        compactionThresholdSstCount = 0,
++        walEnabled = false
++      )
++      val first      = new OpenIvmRocksDB(firstDir.getAbsolutePath, conf, Seq("meta"))
++      val second     = new OpenIvmRocksDB(secondDir.getAbsolutePath, conf, Seq("meta"))
++      val sleepCount = new AtomicInteger(0)
++      val sleeps     = Array.fill(2)(new CountDownLatch(1))
++
++      OpenIvmMaintenanceCoordinator.setBeforeSleepHookForTesting(() => {
++        val index = sleepCount.getAndIncrement()
++        if (index < sleeps.length) sleeps(index).countDown()
++      })
++
++      try {
++        first.load()
++        second.load()
++        populateUntilSst(first)
++
++        OpenIvmMaintenanceCoordinator.register(first, conf)
++        sleeps(0).await(10L, TimeUnit.SECONDS) shouldBe true
++        first.compactCallCount shouldBe 0L
++
++        OpenIvmMaintenanceCoordinator.register(second, conf.copy(maintenanceIntervalMs = 30000L))
++        sleeps(1).await(10L, TimeUnit.SECONDS) shouldBe true
++        first.compactCallCount shouldBe 0L
++      } finally {
++        OpenIvmMaintenanceCoordinator.unregister(second)
++        OpenIvmMaintenanceCoordinator.unregister(first)
++        closeQuietly(second)
++        closeQuietly(first)
++        deleteRecursively(secondDir)
++        deleteRecursively(firstDir)
++      }
 +    }
 +
 diff --git a/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala b/spark-ext/ivm-compiler/src/main/scala/org/openivm/spark/compiler/LptsSparkDialect.scala
