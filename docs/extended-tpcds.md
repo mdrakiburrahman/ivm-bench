@@ -135,6 +135,24 @@ secret-free host-to-relay probe to distinguish host reachability from sidecar
 connectivity. Authentication remains required. The remaining three engine
 outcomes require reruns; no upstream Feldera or Enzyme code was changed.
 
+Feldera follow-up [43200965698](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43200965698)
+completed initialization after the permission fix, but only 92/96 comparisons
+matched. Differences were `dim_household` (2), `stg_entity_registry` (1,149),
+the monthly engagement snapshot (32,028), and 28-day eligibility history
+(11,564). Refreshes did not execute, so it has no validated performance result.
+
+The result reader also lacked support for Feldera's documented
+[unindexed Delta CDC output](https://docs.feldera.com/connectors/sinks/delta/).
+It now folds full-row insert/delete multiplicities, including duplicate and
+NULL rows, rather than counting every change as a live row. Unkeyed `u` events,
+negative multiplicities, incomplete CDC metadata and unexpected schema widths
+fail explicitly. Ordinary Delta state tables retain their existing reader.
+This changes observer/count/validation interpretation, not source data, queries
+or upstream Feldera. Per-model encoding and bounded raw mismatch samples are
+retained to diagnose any remaining failures. The existing full-bag correctness
+gate is unchanged; the reader correction still needs SF25 acceptance and is
+not yet established as the explanation for all four mismatches.
+
 The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated
 reproduction of the original Fabric workload**. Native generation assigns every

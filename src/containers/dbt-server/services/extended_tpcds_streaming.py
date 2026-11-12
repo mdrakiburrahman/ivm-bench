@@ -154,7 +154,28 @@ def _source(connection, path):
     from services.extended_tpcds import quote
     # Delta deletion vectors tombstone rows within active Parquet files.
     connection.execute('LOAD delta')
-    connection.execute('CREATE OR REPLACE VIEW xt_source AS SELECT * FROM delta_scan(' + quote(path) + ')')
+    scan='delta_scan('+quote(path)+')'
+    columns=[row[0] for row in connection.execute('DESCRIBE SELECT * FROM '+scan).fetchall()]
+    metadata={'__feldera_op','__feldera_ts'}
+    if not metadata.intersection(columns):
+        connection.execute('CREATE OR REPLACE VIEW xt_source AS SELECT * FROM '+scan)
+        return 'delta_state'
+    if not metadata.issubset(columns):
+        raise ValueError('incomplete Feldera CDC metadata')
+    # Without a unique-key index Feldera emits full-row inserts/deletes, not
+    # a current-state table. Fold signed multiplicities, retaining duplicates
+    # and NULLs. Indexed updates need key information and must not be guessed.
+    payload=', '.join('"'+name.replace('"','""')+'"' for name in columns if name not in metadata)
+    connection.execute(f'''CREATE OR REPLACE VIEW xt_source AS
+        WITH net AS (
+            SELECT {payload}, sum(CASE __feldera_op WHEN 'i' THEN 1 WHEN 'd' THEN -1
+                ELSE error('unsupported Feldera CDC operation without an index') END)::BIGINT AS __xt_weight
+            FROM {scan} GROUP BY ALL
+        )
+        SELECT {payload} FROM net, LATERAL range(
+            CASE WHEN __xt_weight<0 THEN error('negative Feldera CDC multiplicity')
+                 ELSE __xt_weight END) copies(n)''')
+    return 'feldera_cdc'
 
 
 def replay(manifest, directory, work_dir, batch_num):
@@ -308,15 +329,32 @@ def validate_batch(engine,batch_num,manifest_path,work_dir,options):
     state=json.loads((work_dir/'stream-checkpoint.json').read_text())
     if state['dirty'] or state['batch_num']!=batch_num or state['plan_id']!=manifest['plan_id']:
         raise ValueError('validation snapshot differs from the committed stream batch')
-    checks={}
+    checks={};encodings={};samples={}
     with duckdb.connect() as reference:
         mutations.load_initial(reference,manifest,manifest_path.parent)
         for batch in manifest['batches'][:batch_num-1]:
             mutations.apply_batch(reference,manifest,manifest_path.parent,batch)
         pipeline.build(reference,cohort=options['query_cohort'])
         for name in pipeline.selected_models():
-            _source(reference,work_dir/'outputs'/name)
+            path=work_dir/'outputs'/name
+            version_before=DeltaTable(str(path)).version()
+            encodings[name]=_source(reference,path)
             columns=reference.execute('DESCRIBE '+name).fetchall()
+            actual_columns=reference.execute('DESCRIBE xt_source').fetchall()
+            if len(actual_columns)!=len(columns):
+                raise ValueError(f'output schema width differs for {name}: '
+                                 f'actual={[r[0] for r in actual_columns]}, reference={[r[0] for r in columns]}')
             checks[name]=reference.execute(_verify_probe('xt_source','SELECT * FROM '+name,[(r[0],r[1]) for r in columns])).fetchall()[0][0]
+            if checks[name]:
+                samples[name]={'actual_rows':reference.execute('SELECT count(*) FROM xt_source').fetchone()[0],
+                               'reference_rows':reference.execute('SELECT count(*) FROM '+name).fetchone()[0],
+                               'version_before':version_before,'version_after':DeltaTable(str(path)).version(),
+                               'columns':[r[0] for r in columns]}
+                # Preserve raw values for diagnosis; the correctness gate above
+                # still uses the normalized full-bag comparison, never samples.
+                for label,left,right in [('extra_rows_raw','xt_source',name),('missing_rows_raw',name,'xt_source')]:
+                    rows=reference.execute(f'SELECT * FROM ((SELECT * FROM {left}) EXCEPT ALL (SELECT * FROM {right})) LIMIT 5').fetchall()
+                    samples[name][label]=json.loads(json.dumps(rows,default=str))
     return {'status':'passed' if not any(checks.values()) else 'failed','models_checked':len(checks),'differences':checks,
+            'output_encodings':encodings,'failure_samples':samples,
             'comparison':'fresh DuckDB source replay and full recomputation; EXCEPT ALL; float values rounded to 10 decimals'}

@@ -18,6 +18,26 @@ spec.loader.exec_module(module)
 
 
 class ExtendedTPCDSStreamingTest(unittest.TestCase):
+    def test_delta_output_reader_folds_cdc_bags_with_nulls_deletes_and_duplicates(self):
+        with tempfile.TemporaryDirectory() as folder, module.duckdb.connect() as connection:
+            rows=[(1,'gone','i'),(1,'gone','d'),(2,None,'i'),(2,None,'i'),(2,None,'d'),
+                  (3,'old','i'),(3,'old','d'),(3,'new','i'),(4,'duplicate','i'),(4,'duplicate','i')]
+            table=module.pa.table({'key':[r[0] for r in rows],'value':[r[1] for r in rows],
+                '__feldera_op':[r[2] for r in rows],'__feldera_ts':list(range(len(rows)))})
+            module.write_deltalake(folder,table,mode='error')
+            module._source(connection,Path(folder))
+            self.assertEqual(connection.execute('SELECT * FROM xt_source ORDER BY key').fetchall(),
+                             [(2,None),(3,'new'),(4,'duplicate'),(4,'duplicate')])
+            self.assertEqual([r[0] for r in connection.description],['key','value'])
+
+    def test_delta_output_reader_rejects_unkeyed_updates_and_negative_counts(self):
+        for operation in ('u','d'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as folder, module.duckdb.connect() as connection:
+                module.write_deltalake(folder,module.pa.table({'key':[1],'__feldera_op':[operation],'__feldera_ts':[1]}),mode='error')
+                module._source(connection,Path(folder))
+                with self.assertRaisesRegex(module.duckdb.Error,'Feldera CDC'):
+                    connection.execute('SELECT * FROM xt_source').fetchall()
+
     def test_external_writer_can_access_output_parent_before_deploy_with_restrictive_umask(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);work=root/'work';manifest=root/'manifest.json'

@@ -231,7 +231,21 @@
       "status": "failed",
       "run_id": 43073736234,
       "stage": "initialization",
-      "reason": "output-directory permissions"
+      "reason": "output-directory permissions",
+      "followup": {
+        "run_id": 43200965698,
+        "bench_commit": "393302288b65cd3745e787f03e20dfd35b7512e3",
+        "stage": "initial model validation",
+        "models_checked": 96,
+        "models_matched": 92,
+        "differences": {
+          "dim_household": 2,
+          "fact_engagement_status_channel_eligibility_28d_rolling_hist_12m": 11564,
+          "fact_engagement_status_monthly_snapshot": 32028,
+          "stg_entity_registry": 1149
+        },
+        "interpretation": "Output-directory access was fixed; initialization finished but four model comparisons failed. No refresh or validated performance result."
+      }
     }
   },
   "source_identity": {
