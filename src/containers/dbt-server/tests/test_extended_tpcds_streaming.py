@@ -2,6 +2,7 @@ import importlib.util
 import json
 import hashlib
 import os
+import stat
 from pathlib import Path
 import sys
 import tempfile
@@ -17,6 +18,25 @@ spec.loader.exec_module(module)
 
 
 class ExtendedTPCDSStreamingTest(unittest.TestCase):
+    def test_external_writer_can_access_output_parent_before_deploy_with_restrictive_umask(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);work=root/'work';manifest=root/'manifest.json'
+            manifest.write_text(json.dumps({'plan_id':'p','schemas':{},'initial':{},'batches':[]}))
+            def check_outputs(_spec,_engine):
+                self.assertEqual(stat.S_IMODE((work/'outputs').stat().st_mode),0o777)
+                self.assertEqual(work.stat().st_mode & 0o055,0o055)
+                self.assertFalse((work/'stream-checkpoint.json').stat().st_mode & stat.S_IWOTH)
+                self.assertTrue(json.loads((work/'stream-checkpoint.json').read_text())['dirty'])
+                raise RuntimeError('stop after checking external writer access')
+            old_umask=os.umask(0o077)
+            try:
+                with patch.object(module,'program',return_value={'program':[],'inputs':[],'outputs':[]}), \
+                     patch.object(module,'replay'),patch.object(module,'deploy',side_effect=check_outputs), \
+                     self.assertRaisesRegex(RuntimeError,'external writer access'):
+                    module.run_batch('feldera',1,manifest,work,{'query_cohort':'all'})
+            finally:
+                os.umask(old_umask)
+
     def image(self,root,name,ids,values):
         path=root/(name+'.parquet')
         module.pq.write_table(module.pa.table({'_source_row_id':ids,'value':values}),path,compression='zstd')

@@ -1,0 +1,251 @@
+{
+  "workload": "extended-tpcds",
+  "source_size_gb_target": 25,
+  "percentages": [
+    "100",
+    "1",
+    "0.01"
+  ],
+  "metric": "harness source replay plus complete model commands; excludes preparation, row counts and independent validation",
+  "repetitions": 1,
+  "engines": {
+    "duckdb": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 450.12585675902665,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 278.1265547936782,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 283.5491285454482,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 1011.801540098153,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "duckdb-openivm": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 820.3262206399813,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 121.39659677445889,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 113.35278233513236,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 1055.0755997495726,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "spark": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 686.1312823947519,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 530.9523292277008,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 534.4006938869134,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 1751.484305509366,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "databricks-enzyme": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 4693.391830886714,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 5327.320135383867,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 5561.459251799621,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 15582.171218070202,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "databricks-openivm": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 822.092700060457,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 1178.7823272105306,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 1403.7903961008415,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3404.665423371829,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "spark-openivm": {
+      "run_id": 42997087685,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/42997087685",
+      "bench_commit": "a77210b8227392c455e43141a75e0a9a804ea3dd",
+      "raw_outputs_sha256": "22989908ec53a9ba55f0a89f39f7a492ddf54fbcda66772c369138590be2b329",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 1378.3550763633102,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 983.87902663555,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 905.4697139896452,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3267.7038169885054,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    }
+  },
+  "failed_engines": {
+    "fabric-jvm-35": {
+      "status": "failed",
+      "run_id": 43073736234,
+      "stage": "initialization",
+      "reason": "identity relay timeout"
+    },
+    "fabric-openivm-jvm-35": {
+      "status": "failed",
+      "run_id": 43073736234,
+      "stage": "initialization",
+      "reason": "identity relay timeout"
+    },
+    "feldera": {
+      "status": "failed",
+      "run_id": 43073736234,
+      "stage": "initialization",
+      "reason": "output-directory permissions"
+    }
+  },
+  "source_identity": {
+    "plan_id": "69589bd87ec0e895",
+    "dataset_id": "c2724495535a6f94",
+    "initial_rows": 201620651,
+    "base_scale_factor": 2.0,
+    "verified_matching": [
+      "source configuration",
+      "preparation recipe",
+      "base row counts and checksum XORs",
+      "achieved source statistics",
+      "per-table initial and per-batch source counts"
+    ],
+    "files": "Parquet encoding/order and byte sizes can differ; byte-identical files are not claimed."
+  }
+}

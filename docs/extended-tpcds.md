@@ -77,8 +77,7 @@ fewer source rows than the previous base-SF25 setup. This check used the initial
 correction loop before whole-number scale rounding was added; its four attempts
 took 946.9 s locally at four threads / 2 GB memory / 16 GB spill. It is not a
 timing result for the final estimator. The smaller replay above and 51 workload /
-116 benchmark-server tests pass. A Spark run on the new size contract remains
-outstanding; the existing 256-partition trial uses the old, much larger population.
+116 benchmark-server tests passed at that revision.
 
 The new size contract subsequently passed Spark OpenIVM in
 [42997087685](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/42997087685):
@@ -97,8 +96,44 @@ builds now use the runner's host network through Compose `build.network`; runtim
 network settings, engine/data pins, SQL and resource allocations are unchanged.
 GCI records bounded host/default-bridge/build-host DNS probes before expensive
 work, so another resolver failure is visible immediately. Dockerfiles and the
-existing signed PPA setup are unchanged. This setup correction still needs a
-successful GCI run before being called verified.
+existing signed PPA setup are unchanged. The corrected sweep below completed
+image preparation and attempted all eight engines.
+
+### Validated SF25 results (2026-11-12)
+
+[43073736234](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234)
+passed DuckDB, DuckDB OpenIVM, Spark, Databricks Enzyme and Databricks OpenIVM.
+Each passed all 288 model comparisons. Together with the earlier Spark OpenIVM
+run, six engines have complete validated results. These are single observations
+of harness source-replay plus model-command time, excluding preparation, counts
+and validation. Totals sum the three measured batches, not experiment wall time.
+
+| Engine | Initial | 1% refresh | 0.01% refresh | Total |
+|---|---:|---:|---:|---:|
+| DuckDB | 00:07:30 | 00:04:38 | 00:04:44 | 00:16:52 |
+| DuckDB OpenIVM | 00:13:40 | 00:02:01 | 00:01:53 | 00:17:35 |
+| Spark | 00:11:26 | 00:08:51 | 00:08:54 | 00:29:11 |
+| Spark OpenIVM (earlier run) | 00:22:58 | 00:16:24 | 00:15:05 | 00:54:28 |
+| Databricks Enzyme | 01:18:13 | 01:28:47 | 01:32:41 | 04:19:42 |
+| Databricks OpenIVM | 00:13:42 | 00:19:39 | 00:23:24 | 00:56:45 |
+
+The two runs have identical plan `69589bd87ec0e895`, dataset
+`c2724495535a6f94`, preparation recipe, source configuration (including base
+checksums), all achieved statistics, and every initial/refresh table count.
+There are 201,620,651 initial source rows. Spark tunables also match, including
+256 shuffle partitions. Byte-identical Parquet files are not claimed. The
+[machine-readable results](../src/workloads/extended-tpcds/validation/sf25-results-20261112.json)
+retain exact seconds, provenance and the source-identity checks.
+
+The overall sweep failed because both Fabric engines timed out through the
+identity relay before initialization, and Feldera's pipeline UID could not
+create its Delta output directories under the dbt-owned work directory. These
+three have no valid performance results. The streaming wrapper now creates an
+accessible output parent while retaining checkpoint ownership; a restrictive
+umask regression test and all 16 streaming tests pass. Fabric reruns include a
+secret-free host-to-relay probe to distinguish host reachability from sidecar
+connectivity. Authentication remains required. The remaining three engine
+outcomes require reruns; no upstream Feldera or Enzyme code was changed.
 
 The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated

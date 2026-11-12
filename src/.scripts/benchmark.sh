@@ -156,6 +156,9 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   timeout 20s docker run --rm ubuntu:22.04 timeout 10s getent ahostsv4 archive.ubuntu.com || true
   echo "Host build network DNS:"
   timeout 30s docker run --rm --network host ubuntu:22.04 timeout 20s getent ahostsv4 archive.ubuntu.com
+  if [[ "${ENGINES:-}" == *fabric* ]]; then
+    python3 tools/scripts/github/check-fabric-relay.py
+  fi
 fi
 HEALTH_RETRIES=60
 

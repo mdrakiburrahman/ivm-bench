@@ -235,6 +235,12 @@ def run_batch(engine,batch_num,manifest_path,work_dir,options):
     manifest=json.loads(manifest_path.read_text())
     manifest['_query_cohort']=options['query_cohort']
     work_dir.mkdir(parents=True,exist_ok=True)
+    # The pipeline writes Delta outputs under a different container UID.
+    # Keep checkpoint ownership local; grant access only to its output parent.
+    work_dir.chmod(work_dir.stat().st_mode | 0o055)
+    output_dir=work_dir/'outputs'
+    output_dir.mkdir(exist_ok=True)
+    output_dir.chmod(0o777)
     checkpoint=work_dir/'stream-checkpoint.json'
     state=json.loads(checkpoint.read_text()) if checkpoint.exists() else {'batch_num':0,'plan_id':manifest['plan_id'],'options':options,'dirty':False}
     if state['dirty'] or state['batch_num']!=batch_num-1 or state['plan_id']!=manifest['plan_id'] or state['options']!=options:
