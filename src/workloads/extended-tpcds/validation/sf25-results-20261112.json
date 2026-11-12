@@ -212,6 +212,74 @@
         "default_parallelism": null,
         "dbt_threads": null
       }
+    },
+    "fabric-jvm-35": {
+      "run_id": 43200988469,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43200988469",
+      "bench_commit": "393302288b65cd3745e787f03e20dfd35b7512e3",
+      "raw_outputs_sha256": "57b5f0add5a93f2a05517749407a57acb00826a507a35f00d0cdee0e2a203fac",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 1517.042464836035,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 961.5028308006003,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 910.7895368258469,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3389.334832462482,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "fabric-openivm-jvm-35": {
+      "run_id": 43200988469,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43200988469",
+      "bench_commit": "393302288b65cd3745e787f03e20dfd35b7512e3",
+      "raw_outputs_sha256": "57b5f0add5a93f2a05517749407a57acb00826a507a35f00d0cdee0e2a203fac",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 1845.995674135629,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 1158.1296282410622,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 1175.3905375846662,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 4179.515839961357,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
     }
   },
   "failed_engines": {
@@ -219,13 +287,15 @@
       "status": "failed",
       "run_id": 43073736234,
       "stage": "initialization",
-      "reason": "identity relay timeout"
+      "reason": "identity relay timeout",
+      "resolved_in_run": 43200988469
     },
     "fabric-openivm-jvm-35": {
       "status": "failed",
       "run_id": 43073736234,
       "stage": "initialization",
-      "reason": "identity relay timeout"
+      "reason": "identity relay timeout",
+      "resolved_in_run": 43200988469
     },
     "feldera": {
       "status": "failed",
@@ -245,6 +315,13 @@
           "stg_entity_registry": 1149
         },
         "interpretation": "Output-directory access was fixed; initialization finished but four model comparisons failed. No refresh or validated performance result."
+      },
+      "validator_followup": {
+        "run_id": 43235024115,
+        "bench_commit": "9134cf66c804d6e700fcc2f70b5d77926e42e11a",
+        "stage": "full bag comparison",
+        "error": "Corrupted uncompressed string segment: offset table overlaps the dictionary",
+        "interpretation": "Validator crashed during comparison; no passing or complete failed comparison set available."
       }
     }
   },
@@ -260,6 +337,11 @@
       "achieved source statistics",
       "per-table initial and per-batch source counts"
     ],
-    "files": "Parquet encoding/order and byte sizes can differ; byte-identical files are not claimed."
+    "files": "Parquet encoding/order and byte sizes can differ; byte-identical files are not claimed.",
+    "verified_runs": [
+      42997087685,
+      43073736234,
+      43200988469
+    ]
   }
 }

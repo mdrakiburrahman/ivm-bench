@@ -5,8 +5,10 @@ across batches; source mutation and compile spans remain separate from drain tim
 """
 import json
 import hashlib
+import logging
 import os
 import time
+import tempfile
 from pathlib import Path
 
 import duckdb
@@ -330,31 +332,58 @@ def validate_batch(engine,batch_num,manifest_path,work_dir,options):
     if state['dirty'] or state['batch_num']!=batch_num or state['plan_id']!=manifest['plan_id']:
         raise ValueError('validation snapshot differs from the committed stream batch')
     checks={};encodings={};samples={}
-    with duckdb.connect() as reference:
-        mutations.load_initial(reference,manifest,manifest_path.parent)
-        for batch in manifest['batches'][:batch_num-1]:
-            mutations.apply_batch(reference,manifest,manifest_path.parent,batch)
-        pipeline.build(reference,cohort=options['query_cohort'])
-        for name in pipeline.selected_models():
-            path=work_dir/'outputs'/name
-            version_before=DeltaTable(str(path)).version()
-            encodings[name]=_source(reference,path)
-            columns=reference.execute('DESCRIBE '+name).fetchall()
-            actual_columns=reference.execute('DESCRIBE xt_source').fetchall()
-            if len(actual_columns)!=len(columns):
-                raise ValueError(f'output schema width differs for {name}: '
-                                 f'actual={[r[0] for r in actual_columns]}, reference={[r[0] for r in columns]}')
-            checks[name]=reference.execute(_verify_probe('xt_source','SELECT * FROM '+name,[(r[0],r[1]) for r in columns])).fetchall()[0][0]
-            if checks[name]:
-                samples[name]={'actual_rows':reference.execute('SELECT count(*) FROM xt_source').fetchone()[0],
-                               'reference_rows':reference.execute('SELECT count(*) FROM '+name).fetchone()[0],
-                               'version_before':version_before,'version_after':DeltaTable(str(path)).version(),
-                               'columns':[r[0] for r in columns]}
-                # Preserve raw values for diagnosis; the correctness gate above
-                # still uses the normalized full-bag comparison, never samples.
-                for label,left,right in [('extra_rows_raw','xt_source',name),('missing_rows_raw',name,'xt_source')]:
-                    rows=reference.execute(f'SELECT * FROM ((SELECT * FROM {left}) EXCEPT ALL (SELECT * FROM {right})) LIMIT 5').fetchall()
-                    samples[name][label]=json.loads(json.dumps(rows,default=str))
+    progress={'status':'running','engine':engine,'batch_num':batch_num,'duckdb_version':duckdb.__version__,
+              'stage':'reference replay','differences':checks,'output_encodings':encodings,'failure_samples':samples}
+    progress_path=work_dir/f'validation{batch_num}.json'
+    def save_progress():
+        try:
+            progress_path.write_text(json.dumps(progress,indent=2))
+        except OSError:
+            logging.warning('Could not save streaming validation progress',exc_info=True)
+    # Keep the independent DAG on disk, and compare a single stable output
+    # snapshot instead of evaluating a large CDC aggregation twice per probe.
+    with tempfile.TemporaryDirectory(prefix='validation-',dir=work_dir) as scratch, \
+         duckdb.connect(str(Path(scratch)/'reference.duckdb')) as reference:
+        try:
+            progress['reference_settings']=dict(reference.execute("SELECT name,value FROM duckdb_settings() WHERE name IN ('memory_limit','threads','temp_directory','max_temp_directory_size')").fetchall())
+            mutations.load_initial(reference,manifest,manifest_path.parent)
+            for batch in manifest['batches'][:batch_num-1]:
+                mutations.apply_batch(reference,manifest,manifest_path.parent,batch)
+            progress['stage']='reference build'
+            save_progress()
+            pipeline.build(reference,cohort=options['query_cohort'])
+            for name in pipeline.selected_models():
+                progress.update(stage='output snapshot',model=name)
+                save_progress()
+                path=work_dir/'outputs'/name
+                version_before=DeltaTable(str(path)).version()
+                encodings[name]=_source(reference,path)
+                reference.execute('CREATE OR REPLACE TABLE xt_actual AS SELECT * FROM xt_source')
+                columns=reference.execute('DESCRIBE '+name).fetchall()
+                actual_columns=reference.execute('DESCRIBE xt_actual').fetchall()
+                if len(actual_columns)!=len(columns):
+                    raise ValueError(f'output schema width differs for {name}: '
+                                     f'actual={[r[0] for r in actual_columns]}, reference={[r[0] for r in columns]}')
+                progress['stage']='full bag comparison'
+                save_progress()
+                checks[name]=reference.execute(_verify_probe('xt_actual','SELECT * FROM '+name,[(r[0],r[1]) for r in columns])).fetchall()[0][0]
+                if checks[name]:
+                    samples[name]={'actual_rows':reference.execute('SELECT count(*) FROM xt_actual').fetchone()[0],
+                                   'reference_rows':reference.execute('SELECT count(*) FROM '+name).fetchone()[0],
+                                   'version_before':version_before,'version_after':DeltaTable(str(path)).version(),
+                                   'columns':[r[0] for r in columns]}
+                    # Preserve raw values for diagnosis; the correctness gate above
+                    # still uses the normalized full-bag comparison, never samples.
+                    for label,left,right in [('extra_rows_raw','xt_actual',name),('missing_rows_raw',name,'xt_actual')]:
+                        rows=reference.execute(f'SELECT * FROM ((SELECT * FROM {left}) EXCEPT ALL (SELECT * FROM {right})) LIMIT 5').fetchall()
+                        samples[name][label]=json.loads(json.dumps(rows,default=str))
+            progress.update(status='passed' if not any(checks.values()) else 'failed',stage='completed')
+        except Exception as error:
+            progress.update(status='error',error=str(error))
+            raise
+        finally:
+            progress['models_checked']=len(checks)
+            save_progress()
     return {'status':'passed' if not any(checks.values()) else 'failed','models_checked':len(checks),'differences':checks,
             'output_encodings':encodings,'failure_samples':samples,
             'comparison':'fresh DuckDB source replay and full recomputation; EXCEPT ALL; float values rounded to 10 decimals'}

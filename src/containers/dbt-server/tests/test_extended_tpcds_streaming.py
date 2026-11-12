@@ -18,6 +18,50 @@ spec.loader.exec_module(module)
 
 
 class ExtendedTPCDSStreamingTest(unittest.TestCase):
+    def test_validation_compares_one_disk_backed_snapshot_and_preserves_failure_progress(self):
+        from services import extended_tpcds as workload
+        from services.compiler_bench import engines
+        for fail in (False,True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);work=root/'work';work.mkdir();manifest=root/'manifest.json'
+                manifest.write_text(json.dumps({'plan_id':'p','schemas':{},'initial':{},'batches':[]}))
+                (work/'stream-checkpoint.json').write_text(json.dumps({'plan_id':'p','batch_num':1,'dirty':False}))
+                output=work/'outputs/v'
+                module.write_deltalake(str(output),module.pa.table({'key':[2],'value':['new'],
+                    '__feldera_op':['i'],'__feldera_ts':[1]}),mode='error')
+                def build(reference,**kwargs):
+                    self.assertEqual(reference.execute('SELECT current_database()').fetchone()[0],'reference')
+                    reference.execute("CREATE TABLE v AS SELECT 2::BIGINT AS key, 'new' AS value")
+                original_probe=engines._verify_probe
+                def probe(actual,sql,columns):
+                    self.assertEqual(actual,'xt_actual')
+                    # The output advances after its snapshot. Both EXCEPT ALL
+                    # directions must still read the same captured rows.
+                    module.write_deltalake(str(output),module.pa.table({'key':[2,3],'value':['new','later'],
+                        '__feldera_op':['d','i'],'__feldera_ts':[2,2]}),mode='append')
+                    if fail:
+                        raise RuntimeError('forced comparison failure')
+                    return original_probe(actual,sql,columns)
+                with patch.object(workload.mutations,'load_initial'), \
+                     patch.object(workload.pipeline,'build',side_effect=build), \
+                     patch.object(workload.pipeline,'selected_models',return_value=['v']), \
+                     patch.object(engines,'_verify_probe',side_effect=probe):
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError,'forced comparison failure'):
+                            module.validate_batch('feldera',1,manifest,work,{'query_cohort':'all'})
+                    else:
+                        result=module.validate_batch('feldera',1,manifest,work,{'query_cohort':'all'})
+                        self.assertEqual(result['status'],'passed')
+                        self.assertEqual(result['differences'],{'v':0})
+                        self.assertEqual(result['output_encodings'],{'v':'feldera_cdc'})
+                saved=json.loads((work/'validation1.json').read_text())
+                self.assertEqual(saved['status'],'error' if fail else 'passed')
+                self.assertEqual(saved['model'],'v')
+                self.assertEqual(list(work.glob('validation-*')),[])
+                if fail:
+                    self.assertEqual(saved['stage'],'full bag comparison')
+                    self.assertEqual(saved['error'],'forced comparison failure')
+
     def test_delta_output_reader_folds_cdc_bags_with_nulls_deletes_and_duplicates(self):
         with tempfile.TemporaryDirectory() as folder, module.duckdb.connect() as connection:
             rows=[(1,'gone','i'),(1,'gone','d'),(2,None,'i'),(2,None,'i'),(2,None,'d'),

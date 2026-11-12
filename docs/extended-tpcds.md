@@ -103,8 +103,10 @@ image preparation and attempted all eight engines.
 
 [43073736234](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234)
 passed DuckDB, DuckDB OpenIVM, Spark, Databricks Enzyme and Databricks OpenIVM.
-Each passed all 288 model comparisons. Together with the earlier Spark OpenIVM
-run, six engines have complete validated results. These are single observations
+Each passed all 288 model comparisons. Both Fabric engines subsequently passed
+in [43200988469](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43200988469).
+Together with the earlier Spark OpenIVM run, eight engines have complete
+validated results. These are single observations
 of harness source-replay plus model-command time, excluding preparation, counts
 and validation. Totals sum the three measured batches, not experiment wall time.
 
@@ -116,8 +118,10 @@ and validation. Totals sum the three measured batches, not experiment wall time.
 | Spark OpenIVM (earlier run) | 00:22:58 | 00:16:24 | 00:15:05 | 00:54:28 |
 | Databricks Enzyme | 01:18:13 | 01:28:47 | 01:32:41 | 04:19:42 |
 | Databricks OpenIVM | 00:13:42 | 00:19:39 | 00:23:24 | 00:56:45 |
+| Fabric JVM 3.5 | 00:25:17 | 00:16:02 | 00:15:11 | 00:56:29 |
+| Fabric OpenIVM JVM 3.5 | 00:30:46 | 00:19:18 | 00:19:35 | 01:09:40 |
 
-The two runs have identical plan `69589bd87ec0e895`, dataset
+All three contributing runs have identical plan `69589bd87ec0e895`, dataset
 `c2724495535a6f94`, preparation recipe, source configuration (including base
 checksums), all achieved statistics, and every initial/refresh table count.
 There are 201,620,651 initial source rows. Spark tunables also match, including
@@ -128,12 +132,13 @@ retain exact seconds, provenance and the source-identity checks.
 The overall sweep failed because both Fabric engines timed out through the
 identity relay before initialization, and Feldera's pipeline UID could not
 create its Delta output directories under the dbt-owned work directory. These
-three have no valid performance results. The streaming wrapper now creates an
+three had no valid performance results at that point. The streaming wrapper now creates an
 accessible output parent while retaining checkpoint ownership; a restrictive
 umask regression test and all 16 streaming tests pass. Fabric reruns include a
 secret-free host-to-relay probe to distinguish host reachability from sidecar
 connectivity. Authentication remains required. The remaining three engine
-outcomes require reruns; no upstream Feldera or Enzyme code was changed.
+outcomes required reruns; the later Fabric runs passed. No upstream Feldera or
+Enzyme code was changed.
 
 Feldera follow-up [43200965698](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43200965698)
 completed initialization after the permission fix, but only 92/96 comparisons
@@ -152,6 +157,20 @@ or upstream Feldera. Per-model encoding and bounded raw mismatch samples are
 retained to diagnose any remaining failures. The existing full-bag correctness
 gate is unchanged; the reader correction still needs SF25 acceptance and is
 not yet established as the explanation for all four mismatches.
+
+The next Feldera attempt,
+[43235024115](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43235024115),
+completed execution but the validator raised `Corrupted uncompressed string
+segment: offset table overlaps the dictionary` inside the comparison query.
+This is not a passing result or evidence identifying a Feldera SQL bug. The
+validator now builds its independent reference DAG in a temporary disk-backed
+database and materializes each observed output once before comparing both
+directions. This avoids evaluating the CDC aggregation twice and compares a
+single captured snapshot even if the external Delta table advances. Nineteen
+streaming tests pass, including a changing-output snapshot test and preservation
+of the failing model/stage after an exception. Partial progress also records the
+DuckDB version and settings. Full 96-model bag comparison remains required;
+the large SF25 case still needs acceptance with this validation path.
 
 The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated
