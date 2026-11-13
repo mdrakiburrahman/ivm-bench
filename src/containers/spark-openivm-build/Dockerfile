@@ -35,16 +35,18 @@
 # the `duckdb` CLI and dlopens `openivm.duckdb_extension`); a 24.04-built binary
 # fails on 22.04 with `GLIBC_2.38 not found` / `GLIBCXX_3.4.32 not found`, which
 # crashes every per-view compile -> COMPILE_FAILED -> FULL_REFRESH for all views.
-# Use GCC 12 from Ubuntu 22.04's own repositories so this build does not depend
-# on the external toolchain PPA. Keep libstdc++ DYNAMIC (no -static-libstdc++):
-# the CLI and the loadable extension must share a single libstdc++.
+# Use GCC 13 on Ubuntu 22.04, matching the benchmark's native OpenIVM builder.
+# Keep libstdc++ DYNAMIC (no -static-libstdc++): the CLI and the loadable
+# extension must share a single libstdc++.
 FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=a615c9f4f46a6337692894a4b5a3289af5997f05
+ARG OPENIVM_COMMIT=b9932eb44d2bac563c150ba7080a3ebdb7f4d284
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+RUN printf 'Acquire::Retries "5";\nAcquire::ForceIPv4 "true";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-download-retries
 
 RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
         if [ -f /etc/apt/sources.list ]; then \
@@ -58,9 +60,12 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
     apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git ca-certificates \
         python3 python3-pip libssl-dev pkg-config zip unzip curl \
-        gcc-12 g++-12 && \
-    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100 && \
-    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100 && \
+        software-properties-common gpg-agent && \
+    add-apt-repository -y ppa:ubuntu-toolchain-r/test && \
+    apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
+    apt-get install -y --no-install-recommends gcc-13 g++-13 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -188,6 +193,10 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
     apt-get update -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=60 && \
     apt-get install -y --no-install-recommends ca-certificates libstdc++6 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=openivm-builder /artifacts/libstdc++.so.6 /opt/spark-openivm/lib/libstdc++.so.6
+COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /opt/spark-openivm/lib/libgcc_s.so.1
+ENV LD_LIBRARY_PATH=/opt/spark-openivm/lib
 
 COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /opt/spark-openivm/openivm.duckdb_extension
 COPY --from=openivm-builder /artifacts/duckdb                   /opt/spark-openivm/duckdb

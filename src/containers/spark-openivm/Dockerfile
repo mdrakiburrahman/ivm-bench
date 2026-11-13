@@ -3,10 +3,8 @@ FROM rakirahman.azurecr.io/devcontainer/spark:2d6281b13738c8576a232df9a708f5c083
 USER root
 
 # The bundled openivm `duckdb` CLI (mounted from /opt/spark-openivm, built with
-# GCC 12) is executed HERE by the spark driver's OpenIvmCompiler to classify each
-# MV. Both the CLI and this base use Ubuntu 22.04 and its GCC 12 libstdc++.
-# Verify the runtime package is present without relying on the external
-# toolchain PPA; the jar also bundles the builder's matching libstdc++.
+# GCC 13) is executed HERE by the spark driver's OpenIvmCompiler to classify each
+# MV. The jar bundles the compiler's matching libstdc++ and libgcc for that CLI.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl libstdc++6 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
