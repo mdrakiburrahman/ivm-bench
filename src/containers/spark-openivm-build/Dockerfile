@@ -42,7 +42,7 @@ FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=b9932eb44d2bac563c150ba7080a3ebdb7f4d284
+ARG OPENIVM_COMMIT=5b01e8845be0ab49df297ca5e3ae373ce963fd2d
 
 ENV DEBIAN_FRONTEND=noninteractive
 
