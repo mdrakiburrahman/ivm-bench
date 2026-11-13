@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from decimal import Decimal, ROUND_DOWN
 from unittest.mock import Mock,patch
 
 APP=Path(__file__).parents[1]
@@ -49,8 +50,24 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
             c.execute("INSERT INTO int_engagement_status_transaction SELECT "
                       "'2002-01-01'::TIMESTAMP, household_key, " + ', '.join(dimensions)
                       + ', engagement_path, 100.0 FROM int_engagement_status_transaction')
-            expected = [(1,1,1),(2,1,3),(3,1,-1),(4,1,-3)]
-            for sql in (query,rendered.replace('SAFE_CAST(', 'TRY_CAST(')):
+            c.execute("INSERT INTO int_engagement_status_transaction SELECT '2002-01-02'::TIMESTAMP, 5, "
+                      + ', '.join('1' for _ in dimensions)
+                      + ", 'fraction-'||n, 1.0/6 FROM range(3) t(n)")
+            expected = [(1,1,1),(2,1,3),(3,1,-1),(4,1,-3),(5,3,1)]
+            # Feldera converts DOUBLE via its shortest decimal string, then
+            # truncates to the target scale; DuckDB's cast rounds instead.
+            c.create_function('feldera_decimal',lambda value: Decimal(str(value)).quantize(
+                Decimal('0.0000000001'),rounding=ROUND_DOWN),['DOUBLE'],'DECIMAL(28,10)')
+            decimal_cast = 'CAST("effective_units" AS DECIMAL(28, 10))'
+            unrounded = rendered.replace('ROUND("effective_units", 10)', '"effective_units"')
+            unrounded = unrounded.replace(decimal_cast, 'feldera_decimal("effective_units")')
+            self.assertEqual(c.execute('SELECT effective_units_count FROM ('
+                + unrounded.replace('SAFE_CAST(', 'TRY_CAST(')
+                + ') WHERE household_key=5').fetchone()[0],0)
+            feldera_cast = rendered.replace('CAST(ROUND("effective_units", 10) AS DECIMAL(28, 10))',
+                                             'feldera_decimal(ROUND("effective_units", 10))')
+            for sql in (query,rendered.replace('SAFE_CAST(', 'TRY_CAST('),
+                        feldera_cast.replace('SAFE_CAST(', 'TRY_CAST(')):
                 rows = c.execute('SELECT household_key, engagement_total_count, effective_units_count '
                                  'FROM ('+sql+') ORDER BY household_key').fetchall()
                 self.assertEqual(rows, expected)

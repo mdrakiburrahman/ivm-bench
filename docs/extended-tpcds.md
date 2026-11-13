@@ -186,10 +186,26 @@ Thus the unary call can produce 0 for 0.5 where DuckDB produces 1. The Feldera
 SQL renderer now supplies explicit precision 0 for unary `ROUND`; existing
 explicit precisions and other engines are unchanged. Twenty-one streaming tests
 cover signed half ties, explicit precisions and the monthly snapshot after
-latest-event deduplication. This is an adapter fix, not a change to the shared
-model, input, validation tolerance or upstream engine. Its SF25 acceptance is
-pending; the failed run did not execute refreshes and supplies no validated
-performance result.
+latest-event deduplication. Follow-up
+[43412683862](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43412683862)
+confirmed that the explicit final `ROUND(..., 0)` alone does not fix the
+32,028 monthly bag differences; refreshes did not execute.
+
+The earlier conversion also matters: Feldera's
+[DOUBLE-to-decimal conversion](https://github.com/feldera/feldera/blob/3d952e22a221aff3ccff780db8f1e46c1b5beaae/crates/fxp/src/fixed.rs#L911)
+truncates to the requested scale, whereas DuckDB rounds. Three `1/6` units become
+`0.4999999998` after truncation and summation, versus `0.5000000001` after
+rounding, so the final integer counts differ. The shared monthly model now
+makes ten-decimal rounding explicit **before** casting and summation.
+An independent local replay of that cast behavior on 339,195 saved transactions
+reproduces 370 bag differences; explicit rounding removes all 370. DuckDB's
+165,616 monthly rows are identical before and after this clarification.
+The regression fixture also exercises three fractional engagements in one
+monthly group using a truncating decimal conversion. These local results are
+not Feldera end-to-end acceptance. The eight successful engine timings above
+precede this SQL clarification; source data, cardinalities, query structure,
+validation tolerance and upstream engine code are unchanged. SF25 validation
+of initialization and both refreshes remains required.
 
 The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated
