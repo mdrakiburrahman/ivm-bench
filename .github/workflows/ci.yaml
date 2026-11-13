@@ -127,7 +127,7 @@ on:
         type: string
 
 concurrency:
-  group: ci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
+  group: ci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}-${{ inputs.scale_factor }}-${{ inputs.engines }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:

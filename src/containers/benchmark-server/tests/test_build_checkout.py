@@ -10,9 +10,27 @@ BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from services.docker_manager import DockerManager
+from services.orchestrator import _spark_builder_source_hash
 
 
 class BuildCheckoutTest(unittest.TestCase):
+    def test_spark_builder_cache_key_includes_vendored_patch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dockerfile = root / "Dockerfile"
+            patches = root / "patches"
+            patches.mkdir()
+            patch_file = patches / "compiler.patch"
+            dockerfile.write_text("FROM scratch\n")
+            patch_file.write_text("first revision\n")
+            first = _spark_builder_source_hash(str(dockerfile))
+            patch_file.write_text("second revision\n")
+            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile)))
+            patch_file.write_text("first revision\n")
+            self.assertEqual(first, _spark_builder_source_hash(str(dockerfile)))
+            dockerfile.write_text("FROM busybox\n")
+            self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile)))
+
     def test_spark_build_fetches_a_pin_outside_branch_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

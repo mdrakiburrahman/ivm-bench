@@ -5,6 +5,8 @@ import logging
 import re
 import os
 import subprocess
+import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -33,6 +35,15 @@ TEMP_DIR = os.environ.get(
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 PROFILE_REFRESH = os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
 SNAPSHOT_PUBLICATION = os.environ.get("OPENIVM_SNAPSHOT_PUBLICATION", "0") == "1"
+REFRESH_PIPELINE = os.environ.get("OPENIVM_REFRESH_PIPELINE", "0") == "1"
+DIAGNOSTIC_VIEW = os.environ.get("OPENIVM_DIAGNOSTIC_VIEW", "")
+_REFRESH_OPTIONS = re.compile(
+    r"^PRAGMA\s+refresh_options\s*\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*;?$",
+    re.IGNORECASE,
+)
+_pipeline_lock = threading.Lock()
+_pipeline_completed = False
+_pipeline_error = None
 
 
 MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
@@ -61,6 +72,9 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         preamble_lines.append("SET openivm_snapshot_publication=true;")
     if PROFILE_REFRESH:
         preamble_lines.append("SET openivm_profile_refresh=true;")
+    if DIAGNOSTIC_VIEW and (REFRESH_PIPELINE and sql.lstrip().lower().startswith("pragma refresh_pipeline(")
+                            or _refresh_target(sql) == DIAGNOSTIC_VIEW.lower()):
+        preamble_lines.append("SET openivm_archive_compiled_sql=true;")
     preamble_lines.extend([
         "SET openivm_cascade_refresh='off';",
         "INSTALL icu; LOAD icu;",
@@ -140,6 +154,41 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         )
 
 
+def _refresh_target(sql: str) -> str:
+    match = _REFRESH_OPTIONS.fullmatch(sql.strip())
+    return ".".join(match.groups()).lower() if match else ""
+
+
+def _run_pipeline_once() -> str:
+    """Coalesce dbt's refresh calls, retaining failures to avoid replaying committed nodes."""
+    global _pipeline_completed, _pipeline_error
+    with _pipeline_lock:
+        if _pipeline_error is not None:
+            raise _pipeline_error
+        if _pipeline_completed:
+            return ""
+        try:
+            os.makedirs(TEMP_DIR, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=TEMP_DIR, prefix="pipeline-targets-") as directory:
+                path = os.path.join(directory, "views.csv")
+                literal = "'" + path.replace("'", "''") + "'"
+                _run_cli("COPY (SELECT view_catalog, view_schema, view_sql_name FROM openivm_views "
+                         "ORDER BY view_catalog, view_schema, view_sql_name) "
+                         f"TO {literal} (HEADER, DELIMITER ',')")
+                with open(path, newline="") as source:
+                    names = [".".join((row["view_catalog"], row["view_schema"], row["view_sql_name"]))
+                             for row in csv.DictReader(source)]
+            if not names:
+                raise DbtDatabaseError("OpenIVM pipeline has no materialized views")
+            args = ", ".join("'" + name.replace("'", "''") + "'" for name in names)
+            output = _run_cli(f"PRAGMA refresh_pipeline({args})")
+            _pipeline_completed = True
+            return output
+        except Exception as error:
+            _pipeline_error = error
+            raise
+
+
 class OpenIVMConnectionManager(SQLConnectionManager):
     """Executes all SQL through the OpenIVM CLI binary subprocess."""
 
@@ -195,7 +244,8 @@ class OpenIVMConnectionManager(SQLConnectionManager):
         logger.debug("OpenIVM execute: %s", sql_stripped[:120])
 
         t0 = time.monotonic()
-        output = _run_cli(sql_stripped)
+        output = (_run_pipeline_once() if REFRESH_PIPELINE and _refresh_target(sql_stripped)
+                  else _run_cli(sql_stripped))
         elapsed = time.monotonic() - t0
 
         logger.debug("OpenIVM result (%.2fs): %s", elapsed, output[:200])

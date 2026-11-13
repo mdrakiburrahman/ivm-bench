@@ -1,0 +1,38 @@
+{
+  "_design_notes": [
+    "Experimental runs on top of the DuckDB 2.0 OpenIVM pin. Do not substitute these for Figure 1 per-model dbt timings.",
+    "The pipeline mode refreshes all existing materialized views once in dependency order; dbt's first model absorbs the pipeline time, so use OpenIVM profile and total dbt invocation time.",
+    "The watches diagnostic archives exact executed SQL and EXPLAINs its MERGE after refresh. Post-refresh delta cardinalities may differ from those at execution time."
+  ],
+  "baseline": {
+    "engines": ["duckdb-openivm"],
+    "schedule": "serial",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "feature_flags": {
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true
+    }
+  },
+  "experiments": [
+    {
+      "label": "pipeline-sf10-validation",
+      "scale_factor": 10,
+      "feature_flags": {"openivm_validate": true, "openivm_refresh_pipeline": true}
+    },
+    {
+      "label": "pipeline-sf100-timing",
+      "scale_factor": 100,
+      "feature_flags": {"openivm_validate": false, "openivm_refresh_pipeline": true}
+    },
+    {
+      "label": "per-view-sf100-watches-merge-diagnostic",
+      "scale_factor": 100,
+      "openivm_diagnostic_view": "ducklake.silver.watches",
+      "feature_flags": {"openivm_validate": false, "openivm_refresh_pipeline": false}
+    }
+  ]
+}
