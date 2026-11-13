@@ -155,8 +155,7 @@ fail explicitly. Ordinary Delta state tables retain their existing reader.
 This changes observer/count/validation interpretation, not source data, queries
 or upstream Feldera. Per-model encoding and bounded raw mismatch samples are
 retained to diagnose any remaining failures. The existing full-bag correctness
-gate is unchanged; the reader correction still needs SF25 acceptance and is
-not yet established as the explanation for all four mismatches.
+gate is unchanged.
 
 The next Feldera attempt,
 [43235024115](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43235024115),
@@ -170,7 +169,27 @@ single captured snapshot even if the external Delta table advances. Nineteen
 streaming tests pass, including a changing-output snapshot test and preservation
 of the failing model/stage after an exception. Partial progress also records the
 DuckDB version and settings. Full 96-model bag comparison remains required;
-the large SF25 case still needs acceptance with this validation path.
+the large SF25 case still requires all three batches to pass.
+
+Follow-up [43328052708](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43328052708)
+completed all 96 initialization comparisons with DuckDB 2.0.0 and confirmed
+that every Feldera output uses CDC encoding. **95/96 models matched**: household,
+registry and 28-day eligibility history now pass. Only
+`fact_engagement_status_monthly_snapshot` differs (32,028 bag differences;
+15,159,841 rows on both sides). The output Delta version remained 1 throughout
+the comparison. Saved samples differ in the final integer units count.
+
+Feldera's [decimal runtime](https://github.com/feldera/feldera/blob/3d952e22a221aff3ccff780db8f1e46c1b5beaae/crates/sqllib/src/decimal.rs#L290)
+implements unary `ROUND(decimal)` with ties-to-even, whereas `ROUND(decimal, 0)`
+uses [half-away-from-zero rounding](https://github.com/feldera/feldera/blob/3d952e22a221aff3ccff780db8f1e46c1b5beaae/crates/fxp/src/fixed.rs#L417).
+Thus the unary call can produce 0 for 0.5 where DuckDB produces 1. The Feldera
+SQL renderer now supplies explicit precision 0 for unary `ROUND`; existing
+explicit precisions and other engines are unchanged. Twenty-one streaming tests
+cover signed half ties, explicit precisions and the monthly snapshot after
+latest-event deduplication. This is an adapter fix, not a change to the shared
+model, input, validation tolerance or upstream engine. Its SF25 acceptance is
+pending; the failed run did not execute refreshes and supplies no validated
+performance result.
 
 The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated

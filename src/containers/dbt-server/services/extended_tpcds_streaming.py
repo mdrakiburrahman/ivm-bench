@@ -46,6 +46,14 @@ class FelderaDialect(DuckDB):
         def trycast_sql(self, expression):
             return f"SAFE_CAST({self.sql(expression, 'this')} AS {self.sql(expression, 'to')})"
 
+        def round_sql(self, expression):
+            # Feldera's unary decimal ROUND uses ties-to-even; its explicit
+            # precision overload rounds half away from zero, as DuckDB does.
+            if expression.args.get('decimals') is None:
+                expression = expression.copy()
+                expression.set('decimals', exp.Literal.number(0))
+            return super().round_sql(expression)
+
         def regexpreplace_sql(self, expression):
             modifiers = expression.args.get('modifiers')
             if modifiers is not None and modifiers.this != 'g':

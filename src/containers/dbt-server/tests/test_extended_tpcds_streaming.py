@@ -18,6 +18,43 @@ spec.loader.exec_module(module)
 
 
 class ExtendedTPCDSStreamingTest(unittest.TestCase):
+    def test_feldera_round_uses_explicit_precision_and_preserves_signed_half_ties(self):
+        query = 'SELECT ROUND(value), ROUND(value, 1), ROUND(value, -1) FROM amounts'
+        rendered = module.render(query, 'feldera')
+        self.assertIn('ROUND("value", 0)', rendered)
+        self.assertIn('ROUND("value", 1)', rendered)
+        self.assertIn('ROUND("value", -1)', rendered)
+        with module.duckdb.connect() as c:
+            c.execute('CREATE TABLE amounts(value DECIMAL(28,10))')
+            c.execute('INSERT INTO amounts VALUES (0.5),(1.5),(2.5),(-0.5),(-1.5),(-2.5),(0.49),(0.51),(NULL)')
+            self.assertEqual(c.execute(rendered).fetchall(), c.execute(query).fetchall())
+            self.assertNotEqual(c.execute('SELECT round_even(value,0) FROM amounts').fetchall(),
+                                c.execute('SELECT round(value) FROM amounts').fetchall())
+        self.assertIn('ROUND("value")', module.render(query, 'dbspnet'))
+
+    def test_feldera_monthly_snapshot_keeps_half_units_after_latest_event_deduplication(self):
+        from services.extended_tpcds import pipeline
+        query = pipeline.render_model('fact_engagement_status_monthly_snapshot',
+                                      {'report_date':'2002-12-31','history_months':12})
+        rendered = module.render(query, 'feldera')
+        self.assertIn('ROUND("effective_units_count", 0)', rendered)
+        with module.duckdb.connect() as c:
+            dimensions = ['account_offer_key','account_usage_key','platform_key','preference_key',
+                          'product_tier_key','product_version_key','engagement_type_key','mode_key']
+            c.execute('CREATE TABLE int_engagement_status_transaction AS SELECT '
+                      "'2002-01-02'::TIMESTAMP AS event_time, household_key, "
+                      + ', '.join('1 AS '+name for name in dimensions)
+                      + ', CAST(household_key AS VARCHAR) AS engagement_path, effective_units '
+                      'FROM (VALUES (1,0.5::DOUBLE),(2,2.5),(3,-0.5),(4,-2.5)) t(household_key,effective_units)')
+            c.execute("INSERT INTO int_engagement_status_transaction SELECT "
+                      "'2002-01-01'::TIMESTAMP, household_key, " + ', '.join(dimensions)
+                      + ', engagement_path, 100.0 FROM int_engagement_status_transaction')
+            expected = [(1,1,1),(2,1,3),(3,1,-1),(4,1,-3)]
+            for sql in (query,rendered.replace('SAFE_CAST(', 'TRY_CAST(')):
+                rows = c.execute('SELECT household_key, engagement_total_count, effective_units_count '
+                                 'FROM ('+sql+') ORDER BY household_key').fetchall()
+                self.assertEqual(rows, expected)
+
     def test_validation_compares_one_disk_backed_snapshot_and_preserves_failure_progress(self):
         from services import extended_tpcds as workload
         from services.compiler_bench import engines

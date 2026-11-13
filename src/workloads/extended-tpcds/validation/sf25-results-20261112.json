@@ -322,6 +322,27 @@
         "stage": "full bag comparison",
         "error": "Corrupted uncompressed string segment: offset table overlaps the dictionary",
         "interpretation": "Validator crashed during comparison; no passing or complete failed comparison set available."
+      },
+      "snapshot_followup": {
+        "run_id": 43328052708,
+        "bench_commit": "8a04d87d7c324191e2182650bf9eedb8314ded0a",
+        "stage": "initial model validation",
+        "duckdb_version": "2.0.0",
+        "models_checked": 96,
+        "models_matched": 95,
+        "output_encoding": "feldera_cdc",
+        "nonzero_differences": {
+          "fact_engagement_status_monthly_snapshot": 32028
+        },
+        "remaining_model_rows": {
+          "actual": 15159841,
+          "reference": 15159841
+        },
+        "remaining_model_delta_versions": {
+          "before": 1,
+          "after": 1
+        },
+        "interpretation": "Disk-backed snapshot validation completed. Household, registry and 28-day eligibility history pass. Only monthly units differ; Feldera unary decimal ROUND uses ties-to-even. Explicit precision adapter fix requires acceptance. Refreshes did not execute."
       }
     }
   },
