@@ -781,6 +781,9 @@ diff --git a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/M
 index 4e380d57d516f7afc70b99cddaaeb6175b9b157f..c1cd4a536009bc12cdbaa6e8acaa1779b804bd69 100644
 --- a/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
 +++ b/spark-ext/ivm-extension/src/main/scala/org/openivm/spark/commands/MaterializedViewCommands.scala
+@@ -121 +121 @@ private[commands] object OpenIvmCompilers {
+-        nativeLibraryPath = cliLibraryPath
++        nativeLibraryPath = cliLibraryPath.orElse(Option(new java.io.File(cliEnv).getParent))
 @@ -128 +128 @@ private[commands] object OpenIvmCompilers {
 -        nativeLibraryPath = cliLibraryPath
 +        nativeLibraryPath = cliLibraryPath.orElse(Option(new java.io.File(cliPath).getParent))
