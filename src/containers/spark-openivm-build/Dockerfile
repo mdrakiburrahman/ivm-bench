@@ -194,9 +194,9 @@ RUN if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu" ]; then \
     apt-get install -y --no-install-recommends ca-certificates libstdc++6 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-COPY --from=openivm-builder /artifacts/libstdc++.so.6 /opt/spark-openivm/lib/libstdc++.so.6
-COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /opt/spark-openivm/lib/libgcc_s.so.1
-ENV LD_LIBRARY_PATH=/opt/spark-openivm/lib
+COPY --from=openivm-builder /artifacts/libstdc++.so.6 /opt/spark-openivm/libstdc++.so.6
+COPY --from=openivm-builder /artifacts/libgcc_s.so.1 /opt/spark-openivm/libgcc_s.so.1
+ENV LD_LIBRARY_PATH=/opt/spark-openivm
 
 COPY --from=openivm-builder /artifacts/openivm.duckdb_extension /opt/spark-openivm/openivm.duckdb_extension
 COPY --from=openivm-builder /artifacts/duckdb                   /opt/spark-openivm/duckdb

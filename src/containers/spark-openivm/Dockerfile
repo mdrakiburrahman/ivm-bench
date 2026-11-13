@@ -4,7 +4,7 @@ USER root
 
 # The bundled openivm `duckdb` CLI (mounted from /opt/spark-openivm, built with
 # GCC 13) is executed HERE by the spark driver's OpenIvmCompiler to classify each
-# MV. The jar bundles the compiler's matching libstdc++ and libgcc for that CLI.
+# MV. The bind-mounted artifacts include matching libstdc++ and libgcc for that CLI.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl libstdc++6 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
