@@ -2,9 +2,9 @@
 
 The shared `sql_catalog` package is the source of SQL executed by the benchmark.
 Shared SQL is stored in Spark dialect and SQLGlot renders it for each engine.
-The dbt-server image generates checked-in models and macros into the existing
-`dbt-projects/<engine>/{models,macros}/` paths; inline SQL is loaded by the
-Python service that executes it.
+The dbt-server image generates ignored models and macros into
+`dbt-projects/<engine>/{models,macros}/`; inline SQL is loaded by the Python
+service that executes it. Never commit generated project SQL.
 
 ## Layout and overrides
 
@@ -23,6 +23,10 @@ Python service that executes it.
 An override reason names the engine constraint and SQL construct; avoid generic
 reasons such as "engine differs". `overrides` prints the current override
 ledger. `engines.json` maps every configured engine ID to its SQLGlot dialect.
+`project_targets.json` groups models and macros by the engines that need them;
+it contains paths only, not SQL. Add a target there when introducing a dbt
+model or macro. An engine's absence from a group means that project does not
+use that entry; a reasoned skip describes an intentional unsupported case.
 
 ## Rendering and porting
 
@@ -76,8 +80,10 @@ implicit descending null ordering (Spark/PostgreSQL default to `NULLS FIRST`);
 explicit `NULLS LAST` remains distinct. Byte-identical Spark
 SQL is equal without parsing, including syntax unsupported by SQLGlot.
 Jinja control-block models are excluded from AST comparison. `generate` writes
-a model or macro when its project destination already exists or an engine
-override is present; inline SQL is loaded at runtime.
+the declared project targets even from an empty checkout; inline SQL is loaded
+at runtime. Generate before running local dbt or `check`; the Docker image and
+CI do this automatically. If a target is removed, delete its local generated
+file as well; `check` reports undeclared or stale output.
 
 Exceptions are reasoned JSON entries under
 `src/containers/sql_catalog/exceptions/*.json`. Test paths (`*/tests/**`) are

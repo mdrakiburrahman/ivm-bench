@@ -182,6 +182,10 @@ jobs:
           fi
           .runtime/ci-tests/bin/python -m pip install -r src/containers/benchmark-server/requirements.txt PyYAML databricks-sdk
           export PYTHONPATH="$PWD/src/containers${PYTHONPATH:+:$PYTHONPATH}"
+          .runtime/ci-tests/bin/python -m sql_catalog generate --all
+          .runtime/ci-tests/bin/python -m sql_catalog check --all
+          .runtime/ci-tests/bin/python -m sql_catalog parity --all
+          .runtime/ci-tests/bin/python tools/scripts/check-sql-catalog.py --all
           .runtime/ci-tests/bin/python -m unittest discover -s src/containers/dbt-server/tests -v
           .runtime/ci-tests/bin/python -m unittest discover -s src/containers/benchmark-server/tests -v
 

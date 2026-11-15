@@ -124,6 +124,37 @@ def _load_engines():
     return engines
 
 
+def _project_targets():
+    """Return the declared dbt outputs, independent of generated files."""
+    with (PACKAGE_DIR / "project_targets.json").open(encoding="utf-8") as file:
+        groups = json.load(file)
+    if not isinstance(groups, dict) or set(groups) != {"models", "macros"}:
+        raise ValueError("project_targets.json must contain models and macros groups")
+    engines = _load_engines()
+    targets = set()
+    for category, entries in groups.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"project_targets.json: {category} must be a list")
+        for group in entries:
+            if not isinstance(group, dict) or set(group) != {"engines", "paths"}:
+                raise ValueError(f"project_targets.json: invalid {category} group")
+            group_engines, paths = group["engines"], group["paths"]
+            if not isinstance(group_engines, list) or not group_engines or not isinstance(paths, list) or not paths:
+                raise ValueError(f"project_targets.json: empty or invalid {category} group")
+            for engine in group_engines:
+                if engine not in engines:
+                    raise ValueError(f"project_targets.json: unknown engine {engine!r}")
+                for name in paths:
+                    relative = _relative_sql_path(name).as_posix()
+                    if relative != name:
+                        raise ValueError(f"project_targets.json: invalid path {name!r}")
+                    target = (engine, category, name)
+                    if target in targets:
+                        raise ValueError(f"project_targets.json: duplicate target {target!r}")
+                    targets.add(target)
+    return targets
+
+
 def _parse_override(path):
     if not path.is_file():
         return None
@@ -451,18 +482,10 @@ def _generate_catalog_files(engine, category, prefixes=(), output_dir=None):
     if category not in {"models", "macros"}:
         raise ValueError(f"Unsupported generated SQL category: {category!r}")
     generated = []
-    for entry_category, name in _entry_names(prefixes):
-        if entry_category != category:
-            continue
-        override = _parse_override(_override_path(engine, category, name))
-        if override is not None and override["skip"]:
-            continue
-        canonical = _catalog_path(category, name).is_file()
-        if not canonical and override is None:
+    for target_engine, target_category, name in sorted(_project_targets()):
+        if target_engine != engine or target_category != category or not _matches_prefix(category, name, prefixes):
             continue
         destination = _destination(engine, category, name, output_dir)
-        if output_dir is None and not destination.is_file() and override is None:
-            continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(render_sql(engine, category, name), encoding="utf-8")
         generated.append(destination)
@@ -470,12 +493,12 @@ def _generate_catalog_files(engine, category, prefixes=(), output_dir=None):
 
 
 def generate_models(engine, output_dir=None, prefixes=()):
-    """Render catalog models applicable to an engine's existing project."""
+    """Render the declared models for an engine's project."""
     return _generate_catalog_files(engine, "models", prefixes, output_dir)
 
 
 def generate_macros(engine, output_dir=None, prefixes=()):
-    """Render catalog macros applicable to an engine's existing project."""
+    """Render the declared macros for an engine's project."""
     return _generate_catalog_files(engine, "macros", prefixes, output_dir)
 
 
@@ -641,8 +664,15 @@ def check_catalog(prefixes=(), scan_project=True):
     entries = set(_catalog_entries(prefixes))
     try:
         _exceptions()
+        targets = _project_targets()
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        return [f"Invalid exceptions: {error}"]
+        return [f"Invalid catalog configuration: {error}"]
+
+    for engine, category, name in sorted(targets):
+        if not _matches_prefix(category, name, prefixes):
+            continue
+        if not _catalog_path(category, name).is_file() and not _override_path(engine, category, name).is_file():
+            errors.append(f"{engine}:{category}/{name}: target has no catalog source")
 
     for engine, category, name, path in _override_names():
         if engine not in engines:
@@ -678,6 +708,8 @@ def check_catalog(prefixes=(), scan_project=True):
             if override is not None and override["skip"]:
                 if destination.is_file():
                     errors.append(f"{destination}: stale generated file for catalog skip")
+                if (engine, category, name) in targets:
+                    errors.append(f"{destination}: skipped entry is declared as a project target")
                 continue
             if category == "inline":
                 try:
@@ -685,10 +717,10 @@ def check_catalog(prefixes=(), scan_project=True):
                 except (OSError, ValueError, FileNotFoundError, SqlglotError) as error:
                     errors.append(f"{engine}:{category}/{name}: {error}")
                 continue
-            if override is not None and not destination.is_file():
-                errors.append(f"{destination}: missing generated file for catalog override")
+            if (engine, category, name) not in targets:
                 continue
             if not destination.is_file():
+                errors.append(f"{destination}: missing generated file; run sql_catalog generate")
                 continue
             try:
                 expected = render_sql(engine, category, name)
@@ -712,12 +744,15 @@ def check_catalog(prefixes=(), scan_project=True):
             engine_override_exists = _override_path(engine, category, name).is_file()
             if not canonical_exists and not engine_override_exists:
                 errors.append(f"{path}: project SQL has no canonical source or engine override")
+            elif (engine, category, name) not in targets:
+                errors.append(f"{path}: project SQL is not a declared generation target")
     return sorted(set(errors))
 
 
 def parity_report(prefixes=()):
     """Return parity rows and all engine/model AST differences."""
     engines = _load_engines()
+    targets = _project_targets()
     rows = []
     differences = []
     for category, name in _catalog_entries(prefixes):
@@ -729,7 +764,7 @@ def parity_report(prefixes=()):
             destination = _destination(engine, category, name)
             if override is None and not canonical_exists:
                 continue
-            if override is None and category in {"models", "macros"} and not destination.is_file():
+            if category in {"models", "macros"} and (engine, category, name) not in targets and not (override and override["skip"]):
                 continue
             if override is not None and override["skip"]:
                 status = f"override({override['reason']})"

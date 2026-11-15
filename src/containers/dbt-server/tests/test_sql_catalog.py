@@ -22,12 +22,14 @@ from sql_catalog.generator import (
     _normalized_sql,
     _override_is_unnecessary,
     _parse_override,
+    _project_targets,
     _transpile_sql,
     check_catalog,
     generate_macro,
     generate_macros,
     generate_model,
     generate_models,
+    generate,
     is_sql_candidate,
     load_sql,
     parity_report,
@@ -73,15 +75,11 @@ class SqlCatalogTests(unittest.TestCase):
 
     def test_bulk_generation_includes_catalog_models(self):
         with tempfile.TemporaryDirectory() as output:
-            catalog = CONTAINERS_DIR / "sql_catalog" / "sql" / "spark" / "models"
-            overrides = CONTAINERS_DIR / "sql_catalog" / "overrides" / "duckdb" / "models"
-            expected = {source.relative_to(catalog) for source in catalog.rglob("*.sql")}
-            for source in overrides.rglob("*.sql"):
-                relative = source.relative_to(overrides)
-                if source.read_text(encoding="utf-8").startswith("-- catalog-skip:"):
-                    expected.discard(relative)
-                else:
-                    expected.add(relative)
+            expected = {
+                Path(f"{name}.sql")
+                for engine, category, name in _project_targets()
+                if engine == "duckdb" and category == "models"
+            }
 
             paths = generate_models("duckdb", output)
             self.assertEqual(
@@ -118,11 +116,7 @@ class SqlCatalogTests(unittest.TestCase):
             self.assertEqual(
                 [
                     Path(output) / "generate_schema_name.sql",
-                    Path(output) / "load_fabric_sources.sql",
                     Path(output) / "materializations" / "materialized_view.sql",
-                    Path(output) / "materializations" / "table.sql",
-                    Path(output) / "openivm_setup.sql",
-                    Path(output) / "register_sources.sql",
                 ],
                 paths,
             )
@@ -132,6 +126,18 @@ class SqlCatalogTests(unittest.TestCase):
             }
             self.assertIn("DATABRICKS_EXPERIMENT_ID", rendered["generate_schema_name.sql"])
             self.assertIn("REFRESH POLICY", rendered["materializations/materialized_view.sql"])
+
+    def test_generate_all_from_empty_projects(self):
+        targets = _project_targets()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("sql_catalog.generator.DBT_PROJECTS_DIR", root):
+                generated = generate(all_engines=True)
+                self.assertEqual(
+                    {root / engine / category / f"{name}.sql" for engine, category, name in targets},
+                    set(generated),
+                )
+                self.assertEqual([], check_catalog(scan_project=False))
 
     def test_build_inputs_match_catalog_output_for_existing_engines(self):
         projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"
@@ -170,6 +176,7 @@ class SqlCatalogTests(unittest.TestCase):
                     return_value={"spark": "spark", "duckdb": "duckdb"},
                 ),
                 patch("sql_catalog.generator._catalog_entries", return_value=[("models", "only-override")]),
+                patch("sql_catalog.generator._project_targets", return_value=set()),
                 patch("sql_catalog.generator._override_names", return_value=[]),
                 patch("sql_catalog.generator._catalog_path", return_value=root / "missing.sql"),
                 patch("sql_catalog.generator.DBT_PROJECT_ROOT", root),
@@ -307,6 +314,7 @@ class SqlCatalogTests(unittest.TestCase):
             catalog_path.write_text(source, encoding="utf-8")
             with (
                 patch("sql_catalog.generator._load_engines", return_value={"spark": "spark"}),
+                patch("sql_catalog.generator._project_targets", return_value=set()),
                 patch(
                     "sql_catalog.generator._catalog_entries",
                     return_value=[("inline", "diff_exact")],

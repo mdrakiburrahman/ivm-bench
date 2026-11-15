@@ -125,12 +125,18 @@ def main():
     exceptions = _exceptions()
     failures = []
     paths = _all_paths() if args.all else _changed_paths(base)
+    tracked = set(_git("ls-files").splitlines())
     for path in paths:
+        if not (ROOT / path).is_file():
+            continue
         if path.startswith(
             ("src/containers/sql_catalog/sql/", "src/containers/sql_catalog/overrides/")
         ):
             continue
         if path.endswith(".sql") and "/dbt-projects/" in path:
+            if path in tracked:
+                failures.append(f"{path}: generated project SQL must not be tracked")
+                continue
             project_path = path.split("/dbt-projects/", 1)[1]
             engine, _, project_sql_path = project_path.partition("/")
             category, separator, catalog_path = project_sql_path.partition("/")
