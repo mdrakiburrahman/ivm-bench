@@ -1,12 +1,16 @@
 import argparse
 import fnmatch
 import json
+import logging
 import re
 import sys
+from contextvars import ContextVar
+from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.errors import ErrorLevel, SqlglotError
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -39,6 +43,12 @@ _SQL_KEYWORDS = re.compile(
 )
 _SQL_STRING_START = r"(?:[rubf]{1,2})?(?:'{3}|\"{3}|'|\")"
 _NULL_ORDERING = re.compile(r"\bNULLS\s+(?:FIRST|LAST)\b", re.IGNORECASE)
+# SQLGlot's Spark parser drops list arguments from DuckDB's READ_PARQUET call.
+_READ_PARQUET_ARRAY = re.compile(
+    r"\bread_parquet\s*\(\s*\[[^\]]*\]"
+    r"(?:\s*,\s*union_by_name\s*=\s*(?:true|false))?\s*\)",
+    re.IGNORECASE | re.DOTALL,
+)
 _SQL_STATEMENT_START = re.compile(
     r"^\s*(?!WITH\b)" + _SQL_KEYWORDS.pattern,
     re.IGNORECASE,
@@ -218,6 +228,19 @@ def _mask_tokens(sql):
     return masked, tokens
 
 
+def _mask_opaque_read_parquet(sql):
+    tokens = []
+
+    def replace(match):
+        token = f"SQLCATALOGOPAQUE{len(tokens)}"
+        while token in sql:
+            token += "X"
+        tokens.append((token, match.group(0)))
+        return token
+
+    return _READ_PARQUET_ARRAY.sub(replace, sql), tokens
+
+
 def _mask_jinja(sql):
     tokens = []
 
@@ -255,27 +278,78 @@ def _substitute_params(sql, params):
     )
 
 
+_SQLGLOT_WARNING_MESSAGES = ContextVar("sqlglot_warning_messages", default=None)
+
+
+class _SqlglotWarningFilter(logging.Filter):
+    def filter(self, record):
+        messages = _SQLGLOT_WARNING_MESSAGES.get()
+        if messages is None:
+            return True
+        messages.append(record.getMessage())
+        return False
+
+
+logging.getLogger("sqlglot").addFilter(_SqlglotWarningFilter())
+
+
+def _strict_sqlglot(operation, action):
+    messages = []
+    token = _SQLGLOT_WARNING_MESSAGES.set(messages)
+    try:
+        result = action()
+    finally:
+        _SQLGLOT_WARNING_MESSAGES.reset(token)
+    if messages:
+        raise ValueError(f"{operation} emitted SQLGlot warning: {'; '.join(messages)}")
+    return result
+
+
 def _transpile_sql(source, dialect):
+    result = _strict_sqlglot(
+        "SQL transpilation",
+        lambda: _transpile_sql_unchecked(source, dialect),
+    )
+    if source.strip() and not result.strip():
+        raise ValueError(f"SQLGlot produced empty output for a {dialect} SQL entry")
+    return result
+
+
+def _transpile_sql_unchecked(source, dialect):
     masked, tokens = _mask_tokens(source)
+    opaque_tokens = []
+    if dialect == "duckdb":
+        masked, opaque_tokens = _mask_opaque_read_parquet(masked)
     statements = sqlglot.parse(masked, read="spark")
     rendered = []
     for statement in statements:
         if statement is None:
             continue
         if isinstance(statement, exp.Command):
-            rendered.append(statement.sql(dialect="spark", pretty=True))
+            rendered.append(
+                statement.sql(
+                    dialect="spark",
+                    pretty=True,
+                    unsupported_level=ErrorLevel.RAISE,
+                )
+            )
             continue
-        source_statement = statement.sql(dialect="spark")
+        source_statement = statement.sql(
+            dialect="spark", unsupported_level=ErrorLevel.RAISE
+        )
         if not _NULL_ORDERING.search(masked):
             for ordered in statement.find_all(exp.Ordered):
                 if ordered.args.get("desc"):
                     ordered.set("nulls_first", True)
-            source_statement = statement.sql(dialect="spark")
+            source_statement = statement.sql(
+                dialect="spark", unsupported_level=ErrorLevel.RAISE
+            )
         output = sqlglot.transpile(
             source_statement,
             read="spark",
             write=dialect,
             pretty=True,
+            error_level=ErrorLevel.RAISE,
         )
         if not output:
             raise ValueError(f"SQLGlot produced no output for a {dialect} statement")
@@ -285,6 +359,7 @@ def _transpile_sql(source, dialect):
         result += ";"
     if source.endswith(("\n", "\r")) and result:
         result += "\n"
+    result = _restore_tokens(result, opaque_tokens)
     return _restore_tokens(result, tokens)
 
 
@@ -338,6 +413,10 @@ def render_sql(engine, category, name, **params):
     rendered = _substitute_params(rendered, params)
     if category == "inline" and rendered.endswith("\n"):
         rendered = rendered[:-1]
+    if source.strip() and not rendered.strip():
+        raise ValueError(
+            f"SQL catalog entry {engine}:{category}/{_relative_sql_path(name)} rendered empty SQL"
+        )
     return rendered
 
 
@@ -476,18 +555,50 @@ def _all_project_sql():
                     )
 
 
+def _numeric_literal_value(expression):
+    if not isinstance(expression, exp.Literal) or expression.is_string:
+        return None
+    try:
+        value = Decimal(expression.this)
+    except InvalidOperation:
+        return None
+    return value if value.is_finite() else None
+
+
 def _normalized_sql(sql, dialect):
     if "{%" in sql or "%}" in sql:
         return None
+    result = _strict_sqlglot(
+        "SQL parity normalization",
+        lambda: _normalized_sql_unchecked(sql, dialect),
+    )
+    if sql.strip() and not result.strip():
+        raise ValueError(f"SQLGlot produced empty normalized output for {dialect} SQL")
+    return result
+
+
+def _normalized_sql_unchecked(sql, dialect):
     masked, tokens = _mask_tokens(sql)
+    masked, opaque_tokens = _mask_opaque_read_parquet(masked)
     statements = sqlglot.parse(masked, read=dialect)
     normalized = []
     for statement in statements:
         if statement is None:
             continue
         if isinstance(statement, exp.Command):
-            text = re.sub(r"\s+", " ", statement.sql(dialect=dialect)).strip()
+            text = re.sub(
+                r"\s+",
+                " ",
+                statement.sql(dialect=dialect, unsupported_level=ErrorLevel.RAISE),
+            ).strip()
         else:
+            for modulo in statement.find_all(exp.Mod):
+                divisor = modulo.expression
+                if isinstance(divisor, exp.Nullif):
+                    value = _numeric_literal_value(divisor.this)
+                    fallback = _numeric_literal_value(divisor.expression)
+                    if value is not None and value != 0 and fallback == 0:
+                        modulo.set("expression", divisor.this.copy())
             if dialect in {"spark", "postgres"} and not _NULL_ORDERING.search(masked):
                 for ordered in statement.find_all(exp.Ordered):
                     if ordered.args.get("desc"):
@@ -496,7 +607,10 @@ def _normalized_sql(sql, dialect):
                 node.replace(
                     exp.Cast(this=node.this.copy(), to=exp.DataType.build("DATE"))
                 )
-            text = statement.sql(dialect="spark")
+            text = statement.sql(
+                dialect="spark", unsupported_level=ErrorLevel.RAISE
+            )
+        text = _restore_tokens(text, opaque_tokens)
         normalized.append(_restore_tokens(text, tokens))
     return ";\n".join(normalized)
 
@@ -516,7 +630,7 @@ def _override_is_unnecessary(engine, category, name, override):
     try:
         expected = _render_canonical(engine, category, name, canonical)
         return _normalized_sql(expected, dialect) == _normalized_sql(override["sql"], dialect)
-    except (ValueError, sqlglot.ParseError):
+    except (ValueError, SqlglotError):
         return False
 
 
@@ -568,7 +682,7 @@ def check_catalog(prefixes=(), scan_project=True):
             if category == "inline":
                 try:
                     render_sql(engine, category, name)
-                except (OSError, ValueError, FileNotFoundError) as error:
+                except (OSError, ValueError, FileNotFoundError, SqlglotError) as error:
                     errors.append(f"{engine}:{category}/{name}: {error}")
                 continue
             if override is not None and not destination.is_file():
@@ -578,7 +692,7 @@ def check_catalog(prefixes=(), scan_project=True):
                 continue
             try:
                 expected = render_sql(engine, category, name)
-            except (OSError, ValueError, FileNotFoundError) as error:
+            except (OSError, ValueError, FileNotFoundError, SqlglotError) as error:
                 errors.append(f"{destination}: cannot render catalog SQL: {error}")
                 continue
             actual = destination.read_text(encoding="utf-8")
@@ -637,7 +751,7 @@ def parity_report(prefixes=()):
                             status = "equal" if final_sql == canonical_sql else "DIFF"
                         else:
                             status = "equal" if final_ast == canonical_ast else "DIFF"
-                except (OSError, ValueError, sqlglot.ParseError) as error:
+                except (OSError, ValueError, SqlglotError) as error:
                     status = "DIFF"
                     differences.append(f"{engine}:{category}/{name}: {error}")
             rows.append((engine, category, name, status))

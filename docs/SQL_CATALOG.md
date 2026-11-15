@@ -65,10 +65,15 @@ PYTHONPATH=src/containers python -m sql_catalog overrides
 
 `check` verifies generated-file byte parity, stale skips, missing catalog
 sources for project SQL, override reasons, and unnecessary AST-equal overrides.
+`check` and `parity` fail on SQLGlot unsupported/fallback warnings or empty
+rendered output; use a reasoned override or skip for engine-specific SQL that
+SQLGlot cannot faithfully transpile. DuckDB `read_parquet` calls with a path list
+are preserved opaquely because SQLGlot does not model their list arguments.
 `parity` parses each engine's final SQL with its configured dialect and compares
 the normalized Spark AST with the canonical source. It normalizes one-argument
-`TO_DATE(value)` and implicit descending null ordering (Spark/PostgreSQL default
-to `NULLS FIRST`); explicit `NULLS LAST` remains distinct. Byte-identical Spark
+`TO_DATE(value)`, constant nonzero modulo divisors wrapped in `NULLIF`, and
+implicit descending null ordering (Spark/PostgreSQL default to `NULLS FIRST`);
+explicit `NULLS LAST` remains distinct. Byte-identical Spark
 SQL is equal without parsing, including syntax unsupported by SQLGlot.
 Jinja control-block models are excluded from AST comparison. `generate` writes
 a model or macro when its project destination already exists or an engine

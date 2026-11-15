@@ -1,0 +1,1 @@
+-- catalog-skip: duckdb does not use the Spark query-plan EXPLAIN FORMATTED command.

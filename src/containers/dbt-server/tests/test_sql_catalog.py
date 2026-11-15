@@ -215,6 +215,18 @@ class SqlCatalogTests(unittest.TestCase):
         self.assertIn("{{ ref('source') }}", rendered)
         self.assertFalse(rendered.endswith("\n"))
 
+    def test_duckdb_read_parquet_placeholder_survives_transpilation(self):
+        rendered = load_sql(
+            "duckdb",
+            "inline",
+            "dbt_server/services_ducklake_sources/read_parquet",
+            files="'/tmp/a.parquet'",
+        )
+        self.assertEqual(
+            "read_parquet(['/tmp/a.parquet'], union_by_name = true)",
+            rendered,
+        )
+
     def test_inline_removes_only_one_trailing_newline(self):
         source = "SELECT 1\n\n"
         with tempfile.TemporaryDirectory() as directory:
@@ -261,6 +273,14 @@ class SqlCatalogTests(unittest.TestCase):
         self.assertEqual(
             _normalized_sql(source, "spark"),
             _normalized_sql(rendered, "postgres"),
+        )
+
+    def test_nonzero_modulo_nullif_matches_constant_divisor(self):
+        canonical = "SELECT c % 1000000 AS remainder FROM t"
+        risingwave = "SELECT c % NULLIF(1000000, 0) AS remainder FROM t"
+        self.assertEqual(
+            _normalized_sql(canonical, "spark"),
+            _normalized_sql(risingwave, "risingwave"),
         )
 
     def test_semantically_different_override_is_not_unnecessary(self):

@@ -1,0 +1,1 @@
+-- catalog-skip: dbspnet does not use the Spark query-plan EXPLAIN FORMATTED command.
