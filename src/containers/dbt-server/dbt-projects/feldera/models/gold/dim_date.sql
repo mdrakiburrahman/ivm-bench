@@ -1,3 +1,2 @@
-SELECT
-  *
-FROM {{ ref('date') }}
+select *
+from {{ ref('silver_date') }}
