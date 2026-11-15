@@ -106,7 +106,7 @@ def main() -> int:
                 continue
             dn = con.execute(load_sql("duckdb", "inline", f"{SQL}/count", relation=d)).fetchone()[0]
             fn = con.execute(load_sql("duckdb", "inline", f"{SQL}/count", relation=f)).fetchone()[0]
-            desc = con.execute(load_sql("duckdb", "inline", f"{SQL}/describe", relation=d)).fetchall()
+            desc = con.execute(load_sql("duckdb", "inline", f"{SQL}/schema", relation=d)).fetchall()
         except Exception as e:  # noqa: BLE001
             print(f"{v:<24} READ ERROR: {e}")
             all_ok = False
