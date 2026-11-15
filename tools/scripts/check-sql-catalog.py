@@ -1,4 +1,5 @@
 import argparse
+import ast
 import fnmatch
 import json
 import re
@@ -62,6 +63,27 @@ def _all_paths():
     untracked = _git("ls-files", "--others", "--exclude-standard").splitlines()
     tracked.update(untracked)
     return sorted(path for path in tracked if path and (ROOT / path).is_file())
+
+
+def _docstring_lines(source):
+    tree = ast.parse(source)
+    lines = set()
+    docstring_nodes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(tree):
+        if not isinstance(node, docstring_nodes) or ast.get_docstring(node, clean=False) is None:
+            continue
+        expression = node.body[0]
+        lines.update(range(expression.lineno, expression.end_lineno + 1))
+    return lines
+
+
+def _sql_candidate_lines(source):
+    docstring_lines = _docstring_lines(source)
+    return [
+        (line_number, line)
+        for line_number, line in enumerate(source.splitlines(), 1)
+        if line_number not in docstring_lines and is_sql_candidate(line)
+    ]
 
 
 def _added_lines(path, base_ref):
@@ -139,19 +161,22 @@ def main():
             continue
         if _is_exception(path, exceptions):
             continue
-        current_lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+        source = (ROOT / path).read_text(encoding="utf-8")
+        current_lines = source.splitlines()
+        docstring_lines = _docstring_lines(source)
         lines = list(enumerate(current_lines, 1)) if args.all else _added_lines(path, base)
         for line_number, line in lines:
-            if is_sql_candidate(line):
-                reason = _line_marker(current_lines, line_number - 1)
-                if reason:
-                    continue
-                if reason == "":
-                    failures.append(
-                        f"{path}:{line_number}: SQL exemption marker requires a reason"
-                    )
-                    continue
-                failures.append(f"{path}:{line_number}: SQL added outside the catalog")
+            if line_number in docstring_lines or not is_sql_candidate(line):
+                continue
+            reason = _line_marker(current_lines, line_number - 1)
+            if reason:
+                continue
+            if reason == "":
+                failures.append(
+                    f"{path}:{line_number}: SQL exemption marker requires a reason"
+                )
+                continue
+            failures.append(f"{path}:{line_number}: SQL added outside the catalog")
 
     if failures:
         print("\n".join(failures), file=sys.stderr)

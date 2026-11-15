@@ -37,8 +37,40 @@ _SQL_KEYWORDS = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_SQL_STRING_START = r"(?:[rubf]{1,2})?(?:'{3}|\"{3}|'|\")"
 _NULL_ORDERING = re.compile(r"\bNULLS\s+(?:FIRST|LAST)\b", re.IGNORECASE)
-_SQL_CATALOG_CALL = re.compile(r"\bload_sql\s*\(")
+_SQL_STATEMENT_START = re.compile(
+    r"^\s*(?!WITH\b)" + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
+_SQL_WITH_START = re.compile(
+    r"^\s*WITH\s+(?:RECURSIVE\s+)?"
+    r"(?:[\w$]+|\"[^\"]+\"|`[^`]+`|\[[^\]]+\])"
+    r"(?:\s*\([^)]*\))?\s+AS\s*\(",
+    re.IGNORECASE,
+)
+_SQL_CALL_START = re.compile(
+    r"\b(?:execute|executemany|executescript|execute_sql|execute_query|query|sql)"
+    r"\s*\(\s*(?:\(\s*)*"
+    + _SQL_STRING_START
+    + r"\s*"
+    + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
+_SQL_ASSIGNMENT_START = re.compile(
+    r"^\s*[\w.]+\s*=\s*(?:\(\s*)*"
+    + _SQL_STRING_START
+    + r"\s*"
+    + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
+_SQL_RETURN_START = re.compile(
+    r"^\s*return\s+(?:\(\s*)*"
+    + _SQL_STRING_START
+    + r"\s*"
+    + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
 _EXEMPT_MARKER = re.compile(r"(?:^|\s)#\s*sql-catalog:\s*exempt\s+(\S.*?)\s*$")
 _EXEMPT_PREFIX = re.compile(r"(?:^|\s)#\s*sql-catalog:\s*exempt\b")
 
@@ -623,7 +655,16 @@ def overrides_ledger():
 
 
 def is_sql_candidate(line):
-    return not _SQL_CATALOG_CALL.search(line) and bool(_SQL_KEYWORDS.search(line))
+    return any(
+        pattern.search(line)
+        for pattern in (
+            _SQL_STATEMENT_START,
+            _SQL_WITH_START,
+            _SQL_CALL_START,
+            _SQL_ASSIGNMENT_START,
+            _SQL_RETURN_START,
+        )
+    )
 
 
 def _print_rows(rows):

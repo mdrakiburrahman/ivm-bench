@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sys
 import tempfile
@@ -10,6 +11,10 @@ import sqlglot
 CONTAINERS_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CONTAINERS_DIR))
 ENGINES = json.loads((CONTAINERS_DIR / "sql_catalog" / "engines.json").read_text(encoding="utf-8"))
+GUARD_PATH = CONTAINERS_DIR.parents[1] / "tools" / "scripts" / "check-sql-catalog.py"
+GUARD_SPEC = importlib.util.spec_from_file_location("check_sql_catalog", GUARD_PATH)
+sql_catalog_guard = importlib.util.module_from_spec(GUARD_SPEC)
+GUARD_SPEC.loader.exec_module(sql_catalog_guard)
 
 from sql_catalog.generator import (
     _line_marker,
@@ -356,6 +361,9 @@ class SqlCatalogTests(unittest.TestCase):
             "cursor.execute('REFRESH MATERIALIZED VIEW target')",
             "cursor.execute('PRAGMA refresh_options(...)')",
             "cursor.execute('DROP TABLE IF EXISTS target')",
+            'query = f"SELECT * FROM source"',
+            "  SELECT * FROM source",
+            "WITH counts AS (SELECT COUNT(*) FROM source) SELECT * FROM counts",
         ):
             with self.subTest(line=line):
                 self.assertTrue(is_sql_candidate(line))
@@ -364,6 +372,25 @@ class SqlCatalogTests(unittest.TestCase):
                 'desc = con.execute(load_sql("duckdb", "inline", '
                 'f"{SQL}/describe", relation=d)).fetchall()'
             )
+        )
+        for prose in (
+            "The DESCRIBE output labels numeric columns.",
+            "The SELECT output is explained in this paragraph.",
+            "This works with SQLGlot and engine defaults.",
+            "The `SELECT ... FROM relation` form is used here as an example.",
+            "with self._lock:",
+            "with open(path) as file:",
+        ):
+            with self.subTest(prose=prose):
+                self.assertFalse(is_sql_candidate(prose))
+        source = '''"""SQL example:
+SELECT value FROM source;
+"""
+query = "SELECT value FROM source"
+'''
+        self.assertEqual(
+            [(4, 'query = "SELECT value FROM source"')],
+            sql_catalog_guard._sql_candidate_lines(source),
         )
 
     def test_loader_rejects_path_traversal(self):
