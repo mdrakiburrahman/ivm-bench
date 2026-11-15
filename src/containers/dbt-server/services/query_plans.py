@@ -28,6 +28,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from sql_catalog import load_sql
 
 from services.db import DB_LOCK, get_db
 
@@ -54,6 +55,7 @@ def _fetch_compiled_sql(run_id: str) -> List[Dict[str, Any]]:
     with DB_LOCK:
         conn = get_db()
         rows = conn.execute(
+            # sql-catalog: exempt SQLite run bookkeeping retrieves compiled model SQL using a dynamic parameter list.
             f"""SELECT unique_id, name, resource_type, status, compiled_sql
                 FROM run_nodes
                 WHERE run_id = ?
@@ -108,7 +110,7 @@ def _databricks_explain(sql: str) -> str:
     from services import databricks_enzyme_sources as src
 
     sql_stripped = sql.strip().rstrip(";")
-    explain_sql = f"EXPLAIN FORMATTED {sql_stripped}"
+    explain_sql = load_sql("databricks-enzyme", "inline", "dbt_server/services_query_plans/explain_formatted", sql=sql_stripped)
     df = src._execute(explain_sql)
     if df is None or df.empty:
         return ""
@@ -237,7 +239,7 @@ def _spark_explain_on_session(session_id: str, sql: str) -> str:
     output = _livy_execute(
         _SPARK_LIVY_URL,
         session_id,
-        f"EXPLAIN FORMATTED {sql_stripped}",
+        load_sql("spark", "inline", "dbt_server/services_query_plans/explain_formatted", sql=sql_stripped),
     )
     return _livy_output_to_plan(output)
 
@@ -285,7 +287,7 @@ def _spark_openivm_explain(sql: str) -> str:
 
     sql_stripped = sql.strip().rstrip(";")
     with LivyClient() as livy:
-        result = livy.execute(f"EXPLAIN FORMATTED {sql_stripped}")
+        result = livy.execute(load_sql("spark-openivm", "inline", "dbt_server/services_query_plans/explain_formatted", sql=sql_stripped))
     return _livy_output_to_plan(result.get("output") or {})
 
 

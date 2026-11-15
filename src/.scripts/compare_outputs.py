@@ -23,7 +23,8 @@ Run (from repo root, after a run with PRESERVE_RESULTS=1):
     docker run --rm -w /work \
       -v "$PWD/mount:/mount:ro" \
       -v "$PWD/src/.scripts/compare_outputs.py:/work/compare_outputs.py:ro" \
-      python:3.11-slim bash -c "pip install --quiet duckdb "pyarrow==17.0.0" "numpy<2" && SF=3 python3 compare_outputs.py"
+      -v "$PWD/src/containers/sql_catalog:/work/sql_catalog:ro" \
+      python:3.11-slim bash -c "pip install --quiet duckdb sqlglot 'pyarrow==17.0.0' 'numpy<2' && SF=3 python3 compare_outputs.py"
 """
 import glob
 import json
@@ -33,6 +34,9 @@ import urllib.parse
 
 import duckdb
 import pyarrow.parquet as pq
+from sql_catalog import load_sql
+
+SQL = "scripts/compare_outputs"
 
 SF = os.environ.get("SF", "3")
 BASE = os.environ.get("RESULTS_BASE", f"/mount/results/{SF}")
@@ -82,10 +86,10 @@ def main() -> int:
         sel = []
         for c, t in zip(cols, types):
             if FLOAT_ROUND > 0 and t.upper() in ("FLOAT", "DOUBLE", "REAL"):
-                sel.append(f'round("{c}", {FLOAT_ROUND}) AS "{c}"')
+                sel.append(load_sql("duckdb", "inline", f"{SQL}/rounded_projection", column=c, precision=FLOAT_ROUND))
             else:
-                sel.append(f'"{c}"')
-        return f"SELECT {', '.join(sel)} FROM {r}"
+                sel.append(load_sql("duckdb", "inline", f"{SQL}/column", column=c))
+        return load_sql("duckdb", "inline", f"{SQL}/project", columns=", ".join(sel), relation=r)
 
     hdr = f"{'view':<24}{'dbspnet':>10}{'feldera':>10}{'exact_diff':>12}{'data_diff':>11}"
     print(hdr)
@@ -100,9 +104,9 @@ def main() -> int:
                 print(f"{v:<24} MISSING ({miss})")
                 all_ok = False
                 continue
-            dn = con.execute(f"SELECT count(*) FROM {d}").fetchone()[0]
-            fn = con.execute(f"SELECT count(*) FROM {f}").fetchone()[0]
-            desc = con.execute(f"DESCRIBE SELECT * FROM {d}").fetchall()
+            dn = con.execute(load_sql("duckdb", "inline", f"{SQL}/count", relation=d)).fetchone()[0]
+            fn = con.execute(load_sql("duckdb", "inline", f"{SQL}/count", relation=f)).fetchone()[0]
+            desc = con.execute(load_sql("duckdb", "inline", f"{SQL}/describe", relation=d)).fetchall()
         except Exception as e:  # noqa: BLE001
             print(f"{v:<24} READ ERROR: {e}")
             all_ok = False
@@ -111,14 +115,14 @@ def main() -> int:
         cols = [r[0] for r in desc]
         types = [r[1] for r in desc]
         dp, fp = project(d, cols, types), project(f, cols, types)
-        exact = (con.execute(f"SELECT count(*) FROM (({dp}) EXCEPT ALL ({fp}))").fetchone()[0]
-                 + con.execute(f"SELECT count(*) FROM (({fp}) EXCEPT ALL ({dp}))").fetchone()[0])
+        exact = (con.execute(load_sql("duckdb", "inline", f"{SQL}/diff_count", left=dp, right=fp)).fetchone()[0]
+                 + con.execute(load_sql("duckdb", "inline", f"{SQL}/diff_count", left=fp, right=dp)).fetchone()[0])
 
         nk = [(c, t) for c, t in zip(cols, types) if not c.lower().startswith("sk_")]
         ncols, ntypes = [c for c, _ in nk], [t for _, t in nk]
         dpn, fpn = project(d, ncols, ntypes), project(f, ncols, ntypes)
-        data = (con.execute(f"SELECT count(*) FROM (({dpn}) EXCEPT ALL ({fpn}))").fetchone()[0]
-                + con.execute(f"SELECT count(*) FROM (({fpn}) EXCEPT ALL ({dpn}))").fetchone()[0])
+        data = (con.execute(load_sql("duckdb", "inline", f"{SQL}/diff_count", left=dpn, right=fpn)).fetchone()[0]
+                + con.execute(load_sql("duckdb", "inline", f"{SQL}/diff_count", left=fpn, right=dpn)).fetchone()[0])
 
         flag = "" if data == 0 else "  <-- DATA DIFF"
         print(f"{v:<24}{dn:>10}{fn:>10}{exact:>12}{data:>11}{flag}")

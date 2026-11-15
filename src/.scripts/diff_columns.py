@@ -22,8 +22,9 @@ compare_outputs.py flagged; override by passing names as args or via the VIEWS e
     docker run --rm -w /work \
       -v "$PWD/mount:/mount:ro" \
       -v "$PWD/src/.scripts/diff_columns.py:/work/diff_columns.py:ro" \
+      -v "$PWD/src/containers/sql_catalog:/work/sql_catalog:ro" \
       python:3.11-slim \
-      bash -c "pip install --quiet duckdb 'pyarrow==17.0.0' 'numpy<2' && \
+      bash -c "pip install --quiet duckdb sqlglot 'pyarrow==17.0.0' 'numpy<2' && \
                SF=3 python3 diff_columns.py dim_account market_volatility trade_volume_stats \
                                             customer_concentration broker_performance dim_trade fact_watches"
 """
@@ -35,6 +36,10 @@ import urllib.parse
 
 import duckdb
 import pyarrow.parquet as pq
+from sql_catalog import load_sql
+
+SQL = "scripts/diff_columns"
+COMPARE_SQL = "scripts/compare_outputs"
 
 SF = os.environ.get("SF", "3")
 BASE = os.environ.get("RESULTS_BASE", f"/mount/results/{SF}")
@@ -65,8 +70,8 @@ def live_files(table_dir):
 
 def expr(col, typ):
     if FLOAT_ROUND > 0 and typ.upper() in ("FLOAT", "DOUBLE", "REAL"):
-        return f'round("{col}", {FLOAT_ROUND})'
-    return f'"{col}"'
+        return load_sql("duckdb", "inline", f"{COMPARE_SQL}/rounded_column", column=col, precision=FLOAT_ROUND)
+    return load_sql("duckdb", "inline", f"{COMPARE_SQL}/column", column=col)
 
 
 def main():
@@ -94,12 +99,12 @@ def main():
             print(f"  MISSING: dbspnet={d} feldera={f}")
             continue
 
-        dn = con.execute(f"SELECT count(*) FROM {d}").fetchone()[0]
-        fn = con.execute(f"SELECT count(*) FROM {f}").fetchone()[0]
+        dn = con.execute(load_sql("duckdb", "inline", f"{COMPARE_SQL}/count", relation=d)).fetchone()[0]
+        fn = con.execute(load_sql("duckdb", "inline", f"{COMPARE_SQL}/count", relation=f)).fetchone()[0]
         rowflag = "" if dn == fn else "   <-- ROW COUNT DIFFERS"
         print(f"  rows: dbspnet={dn}  feldera={fn}{rowflag}")
 
-        desc = con.execute(f"DESCRIBE SELECT * FROM {d}").fetchall()
+        desc = con.execute(load_sql("duckdb", "inline", f"{COMPARE_SQL}/describe", relation=d)).fetchall()
         cols = [(r[0], r[1]) for r in desc]
         print(f"  {'column':<28}{'type':<14}{'diff':>10}")
         print("  " + "-" * 52)
@@ -107,10 +112,10 @@ def main():
             e = expr(c, t)
             try:
                 dd = con.execute(
-                    f"SELECT count(*) FROM (SELECT {e} AS x FROM {d} EXCEPT ALL SELECT {e} AS x FROM {f})"
+                    load_sql("duckdb", "inline", f"{SQL}/diff_count", expression=e, left=d, right=f)
                 ).fetchone()[0]
                 fd = con.execute(
-                    f"SELECT count(*) FROM (SELECT {e} AS x FROM {f} EXCEPT ALL SELECT {e} AS x FROM {d})"
+                    load_sql("duckdb", "inline", f"{SQL}/diff_count", expression=e, left=f, right=d)
                 ).fetchone()[0]
             except Exception as ex:  # noqa: BLE001
                 print(f"  {c:<28}{t:<14}{'ERR':>10}  {ex}")
@@ -121,8 +126,8 @@ def main():
             if diff and not c.lower().startswith("sk_"):
                 # CAST samples to VARCHAR so DuckDB need not marshal TIMESTAMP/DATE
                 # values into Python (which requires pytz); also keeps output readable.
-                ds = con.execute(f"SELECT CAST({e} AS VARCHAR) FROM {d} EXCEPT ALL SELECT CAST({e} AS VARCHAR) FROM {f} LIMIT 4").fetchall()
-                fs = con.execute(f"SELECT CAST({e} AS VARCHAR) FROM {f} EXCEPT ALL SELECT CAST({e} AS VARCHAR) FROM {d} LIMIT 4").fetchall()
+                ds = con.execute(load_sql("duckdb", "inline", f"{SQL}/diff_samples", expression=e, left=d, right=f)).fetchall()
+                fs = con.execute(load_sql("duckdb", "inline", f"{SQL}/diff_samples", expression=e, left=f, right=d)).fetchall()
                 print(f"      dbspnet-only e.g.: {[r[0] for r in ds]}")
                 print(f"      feldera-only e.g.: {[r[0] for r in fs]}")
     return 0
