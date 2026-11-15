@@ -1,6 +1,6 @@
+import json
 import sys
 import unittest
-import json
 from pathlib import Path
 
 import sqlglot
@@ -47,6 +47,27 @@ class SqlCatalogTests(unittest.TestCase):
             path = generate_model("duckdb", "silver/date", output)
             self.assertEqual(Path(output) / "silver" / "date.sql", path)
             self.assertIn("{{ ref('reference_date') }}", path.read_text(encoding="utf-8"))
+
+    def test_build_inputs_match_catalog_output_for_existing_engines(self):
+        projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"
+        engines = [
+            engine
+            for engine in ENGINES
+            if (projects / engine / "models" / "silver" / "date.sql").is_file()
+        ]
+        self.assertTrue(engines)
+        for engine in engines:
+            with self.subTest(engine=engine):
+                current = (projects / engine / "models" / "silver" / "date.sql").read_text(
+                    encoding="utf-8"
+                )
+                expected, expected_tokens = _mask_jinja(load_sql(engine, "models", "silver/date"))
+                actual, actual_tokens = _mask_jinja(current)
+                self.assertEqual(expected_tokens, actual_tokens)
+                self.assertEqual(
+                    sqlglot.parse_one(expected, read=ENGINES[engine]).sql(dialect="spark"),
+                    sqlglot.parse_one(actual, read=ENGINES[engine]).sql(dialect="spark"),
+                )
 
     def test_loader_rejects_path_traversal(self):
         with self.assertRaises(ValueError):
