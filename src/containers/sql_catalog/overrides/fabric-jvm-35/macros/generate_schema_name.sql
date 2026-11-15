@@ -1,3 +1,4 @@
+-- catalog-override: Maps every model layer to the single non-schema Lakehouse database.
 {#-- Fabric classic (non-schema) lakehouse: every model materializes into the
      single lakehouse database, so collapse all custom per-layer schemas
      (bronze/silver/gold/work) onto target.schema (== the lakehouse name).

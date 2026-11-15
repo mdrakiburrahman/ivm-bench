@@ -1,3 +1,4 @@
+-- catalog-override: Skips the materialized-view DROP only on the first build of a fresh Lakehouse.
 {#
   Custom materialization for spark-openivm.
 

@@ -1,3 +1,4 @@
+-- catalog-override: Uses DuckLake PRAGMA refresh_options for incremental materialized-view refresh.
 {#
   Custom materialization for DuckDB-OpenIVM.
 

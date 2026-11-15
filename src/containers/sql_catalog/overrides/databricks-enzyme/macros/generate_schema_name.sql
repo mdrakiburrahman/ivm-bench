@@ -1,3 +1,4 @@
+-- catalog-override: Prefixes every schema with the per-experiment ID and fails when the ID is missing.
 {% macro generate_schema_name(custom_schema_name, node) -%}
     {#-
         databricks-enzyme runs in per-experiment isolation: every

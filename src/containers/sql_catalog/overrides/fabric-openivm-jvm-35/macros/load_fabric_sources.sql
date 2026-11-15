@@ -1,3 +1,4 @@
+-- catalog-override: Drops stale Fabric metastore relations before recreating CDF-enabled source tables.
 {#-- On-run-start hook: stage the TPC-DI source tables into the lakehouse from
      the OneLake Files cache that fabric.py (azcopy) has already populated.
 

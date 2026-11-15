@@ -1,3 +1,4 @@
+-- catalog-override: Uses Databricks materialized-view DDL, refresh policy, schedule, and incremental refresh behavior.
 {#
   Databricks Materialized View materialization for the databricks-enzyme
   engine.

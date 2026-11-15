@@ -1,16 +1,17 @@
 import argparse
 import fnmatch
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTAINERS_DIR = ROOT / "src" / "containers"
-EXCEPTIONS_PATH = CONTAINERS_DIR / "sql_catalog" / "exceptions.json"
+EXCEPTIONS_DIR = CONTAINERS_DIR / "sql_catalog" / "exceptions"
 sys.path.insert(0, str(CONTAINERS_DIR))
 
-from sql_catalog.generator import is_sql_candidate, render_sql
+from sql_catalog.generator import _line_marker, is_sql_candidate, render_sql
 
 
 def _git(*args):
@@ -24,18 +25,33 @@ def _git(*args):
 
 
 def _exceptions():
-    return json.loads(EXCEPTIONS_PATH.read_text(encoding="utf-8"))
+    exceptions = []
+    for path in sorted(EXCEPTIONS_DIR.glob("*.json")):
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            raise ValueError(f"{path}: exceptions file must contain a JSON list")
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("path"), str)
+                or not entry["path"]
+                or not isinstance(entry.get("reason"), str)
+                or not entry["reason"].strip()
+            ):
+                raise ValueError(f"{path}: each exception requires a path and reason")
+            exceptions.append(entry)
+    return exceptions
 
 
 def _is_exception(path, exceptions):
+    normalized = path.replace("\\", "/")
+    if "/tests/" in f"/{normalized}/":
+        return True
     return any(fnmatch.fnmatch(path, item["path"]) for item in exceptions)
 
 
 def _changed_paths(base_ref):
-    tracked = set(_git("diff", "--name-only", f"{base_ref}...HEAD").splitlines())
-    tracked.update(
-        _git("diff", "--name-only", "--").splitlines()
-    )
+    tracked = set(_git("diff", "--name-only", base_ref, "--").splitlines())
     untracked = _git("ls-files", "--others", "--exclude-standard").splitlines()
     tracked.update(untracked)
     return sorted(path for path in tracked if path)
@@ -43,10 +59,27 @@ def _changed_paths(base_ref):
 
 def _added_lines(path, base_ref):
     absolute = ROOT / path
+    current_lines = absolute.read_text(encoding="utf-8").splitlines()
     if path in _git("ls-files", "--others", "--exclude-standard").splitlines():
-        return absolute.read_text(encoding="utf-8").splitlines()
-    diff = _git("diff", "--unified=0", f"{base_ref}...", "--", path)
-    return [line[1:] for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")]
+        return list(enumerate(current_lines, 1))
+    diff = _git("diff", "--unified=0", base_ref, "--", path)
+    changed = []
+    line_number = 0
+    for line in diff.splitlines():
+        if line.startswith("@@"):
+            match = re.search(r"\+(\d+)(?:,\d+)?", line)
+            if match:
+                line_number = int(match.group(1))
+        elif line.startswith("+++") or line.startswith("---"):
+            continue
+        elif line.startswith("+"):
+            changed.append((line_number, line[1:]))
+            line_number += 1
+        elif line.startswith("-"):
+            continue
+        elif line.startswith(" "):
+            line_number += 1
+    return changed
 
 
 def main():
@@ -93,8 +126,17 @@ def main():
             continue
         if _is_exception(path, exceptions):
             continue
-        for line_number, line in enumerate(_added_lines(path, base), 1):
+        current_lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+        for line_number, line in _added_lines(path, base):
             if is_sql_candidate(line):
+                reason = _line_marker(current_lines, line_number - 1)
+                if reason:
+                    continue
+                if reason == "":
+                    failures.append(
+                        f"{path}:{line_number}: SQL exemption marker requires a reason"
+                    )
+                    continue
                 failures.append(f"{path}:{line_number}: SQL added outside the catalog")
 
     if failures:
