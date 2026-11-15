@@ -331,6 +331,7 @@ class ReporterTest(unittest.TestCase):
                     "GITHUB_SHA": "source-repo-sha",
                     "CURL_LOG": str(log),
                     "ASSET_BRANCH_STATE": branch_state,
+                    "ENGINE_CHART_PYTHON": sys.executable,
                     "PATH": f"{fake_bin}:{os.environ['PATH']}",
                 })
                 self.assertIn("✅ **Every engine completed every batch**", body)
