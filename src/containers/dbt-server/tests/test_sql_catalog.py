@@ -67,8 +67,21 @@ class SqlCatalogTests(unittest.TestCase):
 
     def test_bulk_generation_includes_catalog_models(self):
         with tempfile.TemporaryDirectory() as output:
+            catalog = CONTAINERS_DIR / "sql_catalog" / "sql" / "spark" / "models"
+            overrides = CONTAINERS_DIR / "sql_catalog" / "overrides" / "duckdb" / "models"
+            expected = {source.relative_to(catalog) for source in catalog.rglob("*.sql")}
+            for source in overrides.rglob("*.sql"):
+                relative = source.relative_to(overrides)
+                if source.read_text(encoding="utf-8").startswith("-- catalog-skip:"):
+                    expected.discard(relative)
+                else:
+                    expected.add(relative)
+
             paths = generate_models("duckdb", output)
-            self.assertEqual([Path(output) / "silver" / "date.sql"], paths)
+            self.assertEqual(
+                [Path(output) / relative for relative in sorted(expected)],
+                paths,
+            )
 
     def test_catalog_macros_match_existing_engine_copies(self):
         projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"
