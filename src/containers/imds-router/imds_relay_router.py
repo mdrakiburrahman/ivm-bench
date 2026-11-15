@@ -12,18 +12,24 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import threading
 import time
 import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import requests
+from urllib3.util import Timeout
 
 LISTEN_PORT = int(os.environ.get("IMDS_ROUTER_PORT", "8080"))
 RELAY_URL = os.environ.get("IMDS_RELAY_URL", "")
 RELAY_SENDER_KEY = os.environ.get("IMDS_RELAY_SENDER_KEY", "")
 RELAY_KEY_NAME = os.environ.get("IMDS_RELAY_KEY_NAME", "Send")
 IDENTITY_HEADER_VALUE = os.environ.get("IDENTITY_HEADER", "local-dev-secret")
-TOKEN_MAX_ATTEMPTS = int(os.environ.get("IMDS_TOKEN_MAX_ATTEMPTS", "3"))
+TOKEN_MAX_ATTEMPTS = int(os.environ.get("IMDS_TOKEN_MAX_ATTEMPTS", "10"))
+TOKEN_REQUEST_BUDGET_SEC = 50
+TOKEN_CONNECT_TIMEOUT_SEC = 5
+TOKEN_READ_TIMEOUT_SEC = 30
 TOKEN_EXPIRY_SKEW_SEC = int(os.environ.get("IMDS_TOKEN_EXPIRY_SKEW_SEC", "300"))
 # The background refresher re-mints a cached token once it is within this many
 # seconds of expiry — deliberately larger than the serve-time skew so a token is
@@ -107,18 +113,62 @@ def _fetch_lock(cache_key):
         return lock
 
 
-def _relay_fetch(resource, client_id):
-    """Single SAS-signed relay round-trip. Returns (body_dict, error_str)."""
+_sessions = threading.local()
+
+
+def _relay_session():
+    if not hasattr(_sessions, "session"):
+        _sessions.session = requests.Session()
+    return _sessions.session
+
+
+def _relay_fetch(resource, client_id, remaining=TOKEN_REQUEST_BUDGET_SEC):
+    """One relay attempt with separate connection and response timeouts."""
     relay_uri = f"{RELAY_URL}?resource={urllib.parse.quote_plus(resource)}"
     if client_id:
         relay_uri += f"&client_id={urllib.parse.quote_plus(client_id)}"
     sas = _generate_sas_token(_relay_sas_uri(RELAY_URL), RELAY_SENDER_KEY, RELAY_KEY_NAME)
-    req = urllib.request.Request(relay_uri, headers={"ServiceBusAuthorization": sas})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = json.loads(resp.read().decode())
-    if not body.get("access_token"):
+    with _relay_session().get(
+        relay_uri,
+        headers={"ServiceBusAuthorization": sas},
+        timeout=Timeout(
+            total=remaining,
+            connect=min(TOKEN_CONNECT_TIMEOUT_SEC, remaining),
+            read=min(TOKEN_READ_TIMEOUT_SEC, remaining),
+        ),
+        allow_redirects=False,
+    ) as resp:
+        resp.raise_for_status()
+        if resp.status_code != 200:
+            return None, f"Unexpected relay HTTP {resp.status_code}"
+        body = resp.json()
+    if not isinstance(body, dict) or not body.get("access_token"):
         return None, "relay returned empty access_token"
     return body, ""
+
+
+def _relay_retry(resource, client_id, deadline, log):
+    last_error = "Token request deadline exceeded"
+    for attempt in range(1, TOKEN_MAX_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            return _relay_fetch(resource, client_id, remaining)
+        except requests.HTTPError as e:
+            status = e.response.status_code
+            last_error = f"Relay HTTP {status}"
+            if status < 500:
+                return None, last_error
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_error = f"Relay {type(e).__name__}"
+        except (ValueError, requests.RequestException) as e:
+            return None, f"Invalid relay response: {type(e).__name__}"
+        log("Token attempt %d/%d failed: %s", attempt, TOKEN_MAX_ATTEMPTS, last_error)
+        if attempt < TOKEN_MAX_ATTEMPTS:
+            delay = random.uniform(0, min(0.5 * 2 ** (attempt - 1), 2))
+            time.sleep(min(delay, max(0, deadline - time.monotonic())))
+    return None, last_error
 
 
 def _fetch_token(resource, client_id, cache_key, log=lambda *a: None):
@@ -127,35 +177,29 @@ def _fetch_token(resource, client_id, cache_key, log=lambda *a: None):
     Dedupes concurrent callers on a per-key lock; a caller that blocked on the
     lock re-checks the cache first so only one relay round-trip happens.
     """
-    with _fetch_lock(cache_key):
+    deadline = time.monotonic() + TOKEN_REQUEST_BUDGET_SEC
+    lock = _fetch_lock(cache_key)
+    if not lock.acquire(timeout=TOKEN_REQUEST_BUDGET_SEC):
+        return None, "Token request deadline exceeded waiting for refresh"
+    try:
         cached = _CACHE.get(cache_key)
         if cached:
             return cached, ""
-        last_error = "unknown error"
-        for attempt in range(1, TOKEN_MAX_ATTEMPTS + 1):
-            try:
-                body, err = _relay_fetch(resource, client_id)
-                if body is not None:
-                    expires_on = _parse_expires_on(body.get("expires_on"))
-                    entry = {
-                        "access_token": body["access_token"],
-                        "expires_on": expires_on if expires_on is not None else 0,
-                        "resource": resource,
-                        "client_id": client_id,
-                    }
-                    if expires_on is not None:
-                        _CACHE.set(cache_key, entry)
-                    return entry, ""
-                last_error = err
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode() if e.fp else ""
-                last_error = f"Relay {e.code}: {detail[:200]}"
-            except Exception as e:  # noqa: BLE001
-                last_error = str(e)
-            log("Token attempt %d/%d failed: %s", attempt, TOKEN_MAX_ATTEMPTS, last_error)
-            if attempt < TOKEN_MAX_ATTEMPTS:
-                time.sleep(min(2**attempt, 10))
-        return None, last_error
+        body, err = _relay_retry(resource, client_id, deadline, log)
+        if body is None:
+            return None, err
+        expires_on = _parse_expires_on(body.get("expires_on"))
+        entry = {
+            "access_token": body["access_token"],
+            "expires_on": expires_on if expires_on is not None else 0,
+            "resource": resource,
+            "client_id": client_id,
+        }
+        if expires_on is not None:
+            _CACHE.set(cache_key, entry)
+        return entry, ""
+    finally:
+        lock.release()
 
 
 def _refresher_loop():
@@ -168,25 +212,27 @@ def _refresher_loop():
         for cache_key, entry in _CACHE.snapshot():
             if entry.get("expires_on", 0) - now > TOKEN_REFRESH_LEAD_SEC:
                 continue
-            # Force a re-fetch by evicting, then minting under the per-key lock.
             with _fetch_lock(cache_key):
                 still = _CACHE.get(cache_key)
                 if still and still["expires_on"] - int(time.time()) > TOKEN_REFRESH_LEAD_SEC:
                     continue
-                try:
-                    body, _ = _relay_fetch(entry["resource"], entry.get("client_id"))
-                    if body is not None:
-                        expires_on = _parse_expires_on(body.get("expires_on"))
-                        if expires_on is not None:
-                            _CACHE.set(cache_key, {
-                                "access_token": body["access_token"],
-                                "expires_on": expires_on,
-                                "resource": entry["resource"],
-                                "client_id": entry.get("client_id"),
-                            })
-                            print(f"[imds-router] refreshed {cache_key} (expires_on={expires_on})", flush=True)
-                except Exception as e:  # noqa: BLE001
-                    print(f"[imds-router] refresh {cache_key} failed: {e}", flush=True)
+                body, err = _relay_retry(
+                    entry["resource"], entry.get("client_id"),
+                    time.monotonic() + TOKEN_REQUEST_BUDGET_SEC,
+                    lambda fmt, *args: print(f"[imds-router] {fmt % args}", flush=True),
+                )
+                if body is None:
+                    print(f"[imds-router] refresh failed: {err}", flush=True)
+                    continue
+                expires_on = _parse_expires_on(body.get("expires_on"))
+                if expires_on is not None:
+                    _CACHE.set(cache_key, {
+                        "access_token": body["access_token"],
+                        "expires_on": expires_on,
+                        "resource": entry["resource"],
+                        "client_id": entry.get("client_id"),
+                    })
+                    print(f"[imds-router] refreshed {cache_key} (expires_on={expires_on})", flush=True)
 
 
 class Handler(BaseHTTPRequestHandler):
