@@ -1,5 +1,8 @@
 # Fabric post-batch validation
 
+[Back to README](../README.md)
+
+
 Validation is opt-in with `OPENIVM_VALIDATE=1` for both `spark-openivm` and
 `fabric-openivm-jvm-35`. The default is disabled at every scale factor, including
 SF10. Checks run after the batch duration is recorded and write
