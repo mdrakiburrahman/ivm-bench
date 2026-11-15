@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -304,6 +305,30 @@ class ReporterTest(unittest.TestCase):
         self.assertIn(image, body)
         self.assertLess(body.index(image), body.index("| Parameter | Value |"))
         self.assertIn("Dry run; no PR comment was posted.", body)
+
+    def test_chart_upload_failure_keeps_comment_and_tables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake_bin = Path(directory) / "bin"
+            fake_bin.mkdir()
+            log = Path(directory) / "curl.log"
+            curl = fake_bin / "curl"
+            curl.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
+                "case \"$*\" in *'/contents/'*) exit 22 ;; *) exit 0 ;; esac\n"
+            )
+            curl.chmod(0o755)
+            body = self.report(self.passing(), extra_env={
+                "PR_NUMBER": "17",
+                "GITHUB_TOKEN": "test-token",
+                "CURL_LOG": str(log),
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            })
+            self.assertIn("✅ **Every engine completed every batch**", body)
+            self.assertIn("| Parameter | Value |", body)
+            self.assertNotIn("<img src=", body)
+            calls = log.read_text()
+            self.assertIn("/contents/pr-17/run-1-1/experiment-01.png", calls)
+            self.assertIn("/issues/17/comments", calls)
 
     def test_red_when_benchmark_step_failed(self):
         self.assertIn("❌ **Benchmark failed: benchmark step failure**",
