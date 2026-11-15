@@ -32,7 +32,9 @@ class RisingWaveSourceLoaderTest(unittest.TestCase):
 
         sql_module = ModuleType("databricks.sql")
         sql_module.connect = Mock()
-        with patch.object(databricks, "sql", sql_module, create=True):
+        import services.db as db
+
+        with patch.object(databricks, "sql", sql_module, create=True), patch.object(db, "init_db"):
             from app import app
 
         routes = {rule.rule for rule in app.url_map.iter_rules()}
