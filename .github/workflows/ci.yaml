@@ -25,6 +25,10 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: "PR to post the results comment on (empty: job summary only)"
+        default: ""
+        type: string
       experiments_file:
         description: "Path under repo root of a pre-built OAT experiments JSON (overrides the per-knob inputs below if set; e.g. src/containers/benchmark-server/experiments/sf-sweep.json)"
         default: ""

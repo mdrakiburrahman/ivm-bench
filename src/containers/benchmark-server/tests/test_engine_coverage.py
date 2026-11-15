@@ -307,28 +307,52 @@ class ReporterTest(unittest.TestCase):
         self.assertIn("Dry run; no PR comment was posted.", body)
 
     def test_chart_upload_failure_keeps_comment_and_tables(self):
-        with tempfile.TemporaryDirectory() as directory:
-            fake_bin = Path(directory) / "bin"
-            fake_bin.mkdir()
-            log = Path(directory) / "curl.log"
-            curl = fake_bin / "curl"
-            curl.write_text(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
-                "case \"$*\" in *'/contents/'*) exit 22 ;; *) exit 0 ;; esac\n"
-            )
-            curl.chmod(0o755)
-            body = self.report(self.passing(), extra_env={
-                "PR_NUMBER": "17",
-                "GITHUB_TOKEN": "test-token",
-                "CURL_LOG": str(log),
-                "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            })
-            self.assertIn("✅ **Every engine completed every batch**", body)
-            self.assertIn("| Parameter | Value |", body)
-            self.assertNotIn("<img src=", body)
-            calls = log.read_text()
-            self.assertIn("/contents/pr-17/run-1-1/experiment-01.png", calls)
-            self.assertIn("/issues/17/comments", calls)
+        for branch_state in ("existing", "missing", "tree-failure"):
+            with self.subTest(branch_state=branch_state), tempfile.TemporaryDirectory() as directory:
+                fake_bin = Path(directory) / "bin"
+                fake_bin.mkdir()
+                log = Path(directory) / "curl.log"
+                curl = fake_bin / "curl"
+                curl.write_text(
+                    "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
+                    "case \"$*\" in\n"
+                    "  *'/git/ref/heads/'*) [ \"$ASSET_BRANCH_STATE\" = existing ] ;;\n"
+                    "  *'/git/trees'*) [ \"$ASSET_BRANCH_STATE\" != tree-failure ] || exit 22;\n"
+                    "    printf '%s\\n' '{\"sha\":\"asset-tree\"}' ;;\n"
+                    "  *'/git/commits'*) printf '%s\\n' '{\"sha\":\"orphan-commit\"}' ;;\n"
+                    "  *'/contents/'*) exit 22 ;;\n"
+                    "  *) exit 0 ;;\n"
+                    "esac\n"
+                )
+                curl.chmod(0o755)
+                body = self.report(self.passing(), extra_env={
+                    "PR_NUMBER": "17",
+                    "GITHUB_TOKEN": "test-token",
+                    "GITHUB_SHA": "source-repo-sha",
+                    "CURL_LOG": str(log),
+                    "ASSET_BRANCH_STATE": branch_state,
+                    "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                })
+                self.assertIn("✅ **Every engine completed every batch**", body)
+                self.assertIn("| Parameter | Value |", body)
+                self.assertNotIn("<img src=", body)
+                calls = log.read_text()
+                self.assertIn("/issues/17/comments", calls)
+                self.assertNotIn("source-repo-sha", calls)
+                if branch_state == "tree-failure":
+                    self.assertNotIn("/contents/", calls)
+                    self.assertNotIn("/git/commits", calls)
+                else:
+                    self.assertIn("/contents/pr-17/run-1-1/experiment-01.png", calls)
+                if branch_state == "existing":
+                    self.assertNotIn("/git/trees", calls)
+                    self.assertNotIn("/git/commits", calls)
+                elif branch_state == "missing":
+                    self.assertIn('"path": "README.md"', calls)
+                    self.assertNotIn('"base_tree"', calls)
+                    self.assertIn('"tree": "asset-tree"', calls)
+                    self.assertIn('"parents": []', calls)
+                    self.assertIn('"sha": "orphan-commit"', calls)
 
     def test_red_when_benchmark_step_failed(self):
         self.assertIn("❌ **Benchmark failed: benchmark step failure**",

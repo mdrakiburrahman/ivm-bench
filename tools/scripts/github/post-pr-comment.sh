@@ -28,12 +28,22 @@ CHART_MARKDOWN=""
 ensure_asset_branch() {
   local api_url="${GITHUB_API_URL:-https://api.github.com}"
   local ref_url="${api_url}/repos/${GITHUB_REPOSITORY}/git/ref/heads/${ASSET_BRANCH}"
-  local payload
+  local payload tree_sha commit_sha
   if curl -sSf -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "$ref_url" -o /dev/null 2>/dev/null; then
     return 0
   fi
-  [[ -n "${GITHUB_SHA:-}" ]] || return 1
-  payload="$(jq -n --arg ref "refs/heads/${ASSET_BRANCH}" --arg sha "$GITHUB_SHA" '{ref: $ref, sha: $sha}')"
+  payload="$(jq -n --arg content "This orphan branch holds only CI benchmark chart images." \
+    '{tree: [{path: "README.md", mode: "100644", type: "blob", content: $content}]}')" || return 1
+  tree_sha="$(curl -sSf -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" "$api_url/repos/${GITHUB_REPOSITORY}/git/trees" \
+    -d "$payload" 2>/dev/null | jq -er '.sha | select(type == "string" and length > 0)')" || return 1
+  payload="$(jq -n --arg tree "$tree_sha" \
+    '{message: "Initialize CI chart assets", tree: $tree, parents: []}')" || return 1
+  commit_sha="$(curl -sSf -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+    -H "Accept: application/vnd.github+json" "$api_url/repos/${GITHUB_REPOSITORY}/git/commits" \
+    -d "$payload" 2>/dev/null | jq -er '.sha | select(type == "string" and length > 0)')" || return 1
+  payload="$(jq -n --arg ref "refs/heads/${ASSET_BRANCH}" --arg sha "$commit_sha" \
+    '{ref: $ref, sha: $sha}')" || return 1
   if ! curl -sSf -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" \
     -H "Accept: application/vnd.github+json" "$api_url/repos/${GITHUB_REPOSITORY}/git/refs" \
     -d "$payload" -o /dev/null 2>/dev/null; then
