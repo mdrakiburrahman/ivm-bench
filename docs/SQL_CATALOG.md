@@ -77,8 +77,9 @@ exempt by rule. A single inline SQL statement may instead be marked on its
 Python line or the line immediately above with
 `# sql-catalog: exempt <specific reason>`; the reason is mandatory.
 
-On the minimal devbox host, run parity, the focused tests, and the incremental
-guard in the dbt-server container:
+On the minimal devbox host, run parity, the focused tests, and the full SQL
+catalog guard in the dbt-server container. Use `--base-ref main` instead of
+`--all` to check only changed files.
 
 ```bash
 docker compose -f docker/docker-compose.benchmark.spark.yml run --rm --no-deps \
@@ -95,5 +96,5 @@ docker compose -f docker/docker-compose.benchmark.spark.yml run --rm --no-deps \
   -e PYTHONPATH=/workspace/src/containers \
   -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory \
   -e GIT_CONFIG_VALUE_0=/workspace \
-  --entrypoint python dbt-server tools/scripts/check-sql-catalog.py --base-ref main
+  --entrypoint python dbt-server tools/scripts/check-sql-catalog.py --all
 ```

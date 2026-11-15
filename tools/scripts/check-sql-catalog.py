@@ -57,6 +57,13 @@ def _changed_paths(base_ref):
     return sorted(path for path in tracked if path)
 
 
+def _all_paths():
+    tracked = set(_git("ls-files").splitlines())
+    untracked = _git("ls-files", "--others", "--exclude-standard").splitlines()
+    tracked.update(untracked)
+    return sorted(path for path in tracked if path and (ROOT / path).is_file())
+
+
 def _added_lines(path, base_ref):
     absolute = ROOT / path
     current_lines = absolute.read_text(encoding="utf-8").splitlines()
@@ -85,12 +92,18 @@ def _added_lines(path, base_ref):
 def main():
     parser = argparse.ArgumentParser(description="Reject new executable SQL outside the catalog.")
     parser.add_argument("--base-ref", default="main")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="scan every tracked and untracked source file instead of only changes",
+    )
     args = parser.parse_args()
 
-    base = _git("merge-base", args.base_ref, "HEAD").strip()
+    base = None if args.all else _git("merge-base", args.base_ref, "HEAD").strip()
     exceptions = _exceptions()
     failures = []
-    for path in _changed_paths(base):
+    paths = _all_paths() if args.all else _changed_paths(base)
+    for path in paths:
         if path.startswith(
             ("src/containers/sql_catalog/sql/", "src/containers/sql_catalog/overrides/")
         ):
@@ -127,7 +140,8 @@ def main():
         if _is_exception(path, exceptions):
             continue
         current_lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
-        for line_number, line in _added_lines(path, base):
+        lines = list(enumerate(current_lines, 1)) if args.all else _added_lines(path, base)
+        for line_number, line in lines:
             if is_sql_candidate(line):
                 reason = _line_marker(current_lines, line_number - 1)
                 if reason:

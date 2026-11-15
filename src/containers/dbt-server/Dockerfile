@@ -46,10 +46,7 @@ COPY dbt-server/services/ /app/services/
 COPY dbt-server/models/ /app/models/
 COPY sql_catalog/ /app/sql_catalog/
 COPY dbt-server/app.py /app/app.py
-RUN python -c "import json; \
-    from sql_catalog import generate_macros, generate_models; \
-    engines = json.load(open('/app/sql_catalog/engines.json')); \
-    [generate(engine) for engine in engines for generate in (generate_models, generate_macros)]"
+RUN python -m sql_catalog generate --all
 
 # Install dbt deps for each project at build time
 RUN cd /app/dbt-projects/spark && dbt deps --profiles-dir . 2>/dev/null || true
