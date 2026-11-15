@@ -1,1 +1,20 @@
-{}
+{
+  "databricks-enzyme": {
+    "macros/generate_schema_name.sql": {
+      "path": "overrides/databricks-enzyme/generate_schema_name.sql",
+      "reason": "Prefixes every schema with the per-experiment ID and fails when the ID is missing."
+    }
+  },
+  "fabric-jvm-35": {
+    "macros/generate_schema_name.sql": {
+      "path": "overrides/fabric-classic/generate_schema_name.sql",
+      "reason": "Maps every model layer to the single non-schema Lakehouse database."
+    }
+  },
+  "fabric-openivm-jvm-35": {
+    "macros/generate_schema_name.sql": {
+      "path": "overrides/fabric-classic/generate_schema_name.sql",
+      "reason": "Maps every model layer to the single non-schema Lakehouse database."
+    }
+  }
+}

@@ -58,7 +58,9 @@ def main():
     exceptions = _exceptions()
     failures = []
     for path in _changed_paths(base):
-        if path.startswith("src/containers/sql_catalog/sql/"):
+        if path.startswith(
+            ("src/containers/sql_catalog/sql/", "src/containers/sql_catalog/overrides/")
+        ):
             continue
         if path.endswith(".sql") and "/dbt-projects/" in path:
             project_path = path.split("/dbt-projects/", 1)[1]

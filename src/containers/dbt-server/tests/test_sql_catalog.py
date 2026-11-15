@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,8 @@ ENGINES = json.loads((CONTAINERS_DIR / "sql_catalog" / "engines.json").read_text
 
 from sql_catalog.generator import (
     _mask_jinja,
+    generate_macro,
+    generate_macros,
     generate_model,
     generate_models,
     is_sql_candidate,
@@ -47,19 +50,45 @@ class SqlCatalogTests(unittest.TestCase):
                 self.assertIn("{{ ref('reference_date') }}", rendered)
 
     def test_model_generation_preserves_project_relative_path(self):
-        import tempfile
-
         with tempfile.TemporaryDirectory() as output:
             path = generate_model("duckdb", "silver/date", output)
             self.assertEqual(Path(output) / "silver" / "date.sql", path)
             self.assertIn("{{ ref('reference_date') }}", path.read_text(encoding="utf-8"))
 
     def test_bulk_generation_includes_all_catalog_models(self):
-        import tempfile
-
         with tempfile.TemporaryDirectory() as output:
             paths = generate_models("duckdb", output)
             self.assertEqual([Path(output) / "silver" / "date.sql"], paths)
+
+    def test_generate_schema_name_macro_matches_each_engine(self):
+        projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"
+        engines = [
+            engine
+            for engine in ENGINES
+            if (projects / engine / "macros" / "generate_schema_name.sql").is_file()
+        ]
+        self.assertTrue(engines)
+        for engine in engines:
+            with self.subTest(engine=engine):
+                current = (projects / engine / "macros" / "generate_schema_name.sql").read_text(
+                    encoding="utf-8"
+                )
+                self.assertEqual(
+                    current,
+                    load_sql(engine, "macros", "generate_schema_name"),
+                )
+
+    def test_macro_generation_preserves_project_relative_path(self):
+        with tempfile.TemporaryDirectory() as output:
+            path = generate_macro("fabric-jvm-35", "generate_schema_name", output)
+            self.assertEqual(Path(output) / "generate_schema_name.sql", path)
+            self.assertIn("{{ target.schema }}", path.read_text(encoding="utf-8"))
+
+    def test_bulk_macro_generation_applies_known_overrides(self):
+        with tempfile.TemporaryDirectory() as output:
+            paths = generate_macros("databricks-enzyme", output)
+            self.assertEqual([Path(output) / "generate_schema_name.sql"], paths)
+            self.assertIn("DATABRICKS_EXPERIMENT_ID", paths[0].read_text(encoding="utf-8"))
 
     def test_build_inputs_match_catalog_output_for_existing_engines(self):
         projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"

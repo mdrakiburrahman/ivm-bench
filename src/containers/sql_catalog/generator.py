@@ -39,9 +39,18 @@ def _apply_override(engine, category, name):
     override = overrides.get(engine, {}).get(key)
     if override is None:
         return None
-    if not override.get("reason") or not override.get("sql"):
-        raise ValueError(f"Override {engine}:{key} requires both sql and reason")
-    return override["sql"]
+    sql = override.get("sql")
+    override_path = override.get("path")
+    if not override.get("reason") or (sql is None) == (override_path is None):
+        raise ValueError(f"Override {engine}:{key} requires exactly one SQL source and a reason")
+    if override_path is not None:
+        path = (PACKAGE_DIR / override_path).resolve()
+        if PACKAGE_DIR.resolve() not in path.parents:
+            raise ValueError(f"Override {engine}:{key} resolves outside the SQL catalog")
+        sql = path.read_text(encoding="utf-8")
+    if not isinstance(sql, str) or not sql:
+        raise ValueError(f"Override {engine}:{key} contains no SQL")
+    return sql
 
 
 def _mask_jinja(sql):
@@ -99,23 +108,47 @@ def generate_model(engine, model, output_dir=None):
     return destination
 
 
-def generate_models(engine, output_dir=None):
-    """Render every catalog model that has a matching existing dbt project file."""
-    catalog_root = PACKAGE_DIR / "sql" / "spark" / "models"
-    project_models = Path(output_dir) if output_dir else (
-        DBT_PROJECT_ROOT / "dbt-projects" / engine / "models"
+def _generate_catalog_files(engine, category, output_dir=None):
+    if category not in {"models", "macros"}:
+        raise ValueError(f"Unsupported generated SQL category: {category!r}")
+    catalog_root = PACKAGE_DIR / "sql" / "spark" / category
+    project_root = Path(output_dir) if output_dir else (
+        DBT_PROJECT_ROOT / "dbt-projects" / engine / category
     )
-    if output_dir is None and not project_models.is_dir():
+    if output_dir is None and not project_root.is_dir():
         return []
 
     generated = []
     for source in sorted(catalog_root.rglob("*.sql")):
         relative = source.relative_to(catalog_root)
-        if output_dir is None and not (project_models / relative).is_file():
+        destination = project_root / relative
+        if output_dir is None and not destination.is_file():
             continue
         model = relative.with_suffix("").as_posix()
-        generated.append(generate_model(engine, model, output_dir))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(render_sql(engine, category, model), encoding="utf-8")
+        generated.append(destination)
     return generated
+
+
+def generate_models(engine, output_dir=None):
+    """Render catalog models that have matching existing dbt project files."""
+    return _generate_catalog_files(engine, "models", output_dir)
+
+
+def generate_macros(engine, output_dir=None):
+    """Render catalog macros that have matching existing dbt project files."""
+    return _generate_catalog_files(engine, "macros", output_dir)
+
+
+def generate_macro(engine, macro, output_dir=None):
+    """Render one catalog macro to a project directory or caller-supplied path."""
+    relative = _relative_sql_path(macro).with_suffix(".sql")
+    destination_root = Path(output_dir) if output_dir else DBT_PROJECT_ROOT / "dbt-projects" / engine / "macros"
+    destination = destination_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(render_sql(engine, "macros", macro), encoding="utf-8")
+    return destination
 
 
 def is_sql_candidate(line):
