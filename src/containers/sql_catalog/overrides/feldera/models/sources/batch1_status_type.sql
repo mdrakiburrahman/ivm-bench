@@ -1,0 +1,3 @@
+-- catalog-override: engine-only: Feldera-only ROW and scalar column schemas model its Delta/Parquet ingestion tables; no other engine has these models.
+st_id VARCHAR,
+st_name VARCHAR
