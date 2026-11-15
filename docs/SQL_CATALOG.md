@@ -3,8 +3,9 @@
 The shared `sql_catalog` package stores engine-neutral SQL under
 `sql_catalog/sql/spark/` and renders it through SQLGlot. The same package is
 copied into both the dbt-server and benchmark-server images. Generated dbt
-models keep their existing `dbt-projects/<engine>/models/` paths so runtime
-consumers do not need a path change.
+models are generated at dbt-server image build time into their existing
+`dbt-projects/<engine>/models/` paths so runtime consumers do not need a path
+change.
 
 ## Porting recipe
 

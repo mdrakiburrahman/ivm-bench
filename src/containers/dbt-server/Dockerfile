@@ -46,6 +46,7 @@ COPY dbt-server/services/ /app/services/
 COPY dbt-server/models/ /app/models/
 COPY sql_catalog/ /app/sql_catalog/
 COPY dbt-server/app.py /app/app.py
+RUN python -c "import json; from pathlib import Path; from sql_catalog import generate_model; root=Path('/app/dbt-projects'); engines=json.load(open('/app/sql_catalog/engines.json')); [generate_model(engine, 'silver/date') for engine in engines if (root / engine / 'models/silver/date.sql').exists()]"
 
 # Install dbt deps for each project at build time
 RUN cd /app/dbt-projects/spark && dbt deps --profiles-dir . 2>/dev/null || true

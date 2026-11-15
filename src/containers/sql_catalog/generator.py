@@ -66,6 +66,10 @@ def _restore_jinja(sql, tokens):
 
 def render_sql(engine, category, name):
     """Load catalog SQL and render it for one configured engine dialect."""
+    dialect = _load_json("engines.json").get(engine)
+    if dialect is None:
+        raise ValueError(f"Unknown SQL catalog engine: {engine!r}")
+
     override = _apply_override(engine, category, name)
     if override is not None:
         return override
@@ -75,9 +79,6 @@ def render_sql(engine, category, name):
     if category == "macros":
         return source
 
-    dialect = _load_json("engines.json").get(engine)
-    if dialect is None:
-        raise ValueError(f"Unknown SQL catalog engine: {engine!r}")
     masked, tokens = _mask_jinja(source)
     rendered = sqlglot.transpile(masked, read="spark", write=dialect)[0]
     return _restore_jinja(rendered, tokens) + ("\n" if source.endswith("\n") else "")

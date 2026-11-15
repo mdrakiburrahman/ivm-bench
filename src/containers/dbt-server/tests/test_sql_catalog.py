@@ -9,7 +9,7 @@ CONTAINERS_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CONTAINERS_DIR))
 ENGINES = json.loads((CONTAINERS_DIR / "sql_catalog" / "engines.json").read_text(encoding="utf-8"))
 
-from sql_catalog.generator import _mask_jinja, _restore_jinja, generate_model, load_sql
+from sql_catalog.generator import _mask_jinja, generate_model, is_sql_candidate, load_sql
 
 
 class SqlCatalogTests(unittest.TestCase):
@@ -51,6 +51,10 @@ class SqlCatalogTests(unittest.TestCase):
     def test_loader_rejects_path_traversal(self):
         with self.assertRaises(ValueError):
             load_sql("spark", "models", "../outside")
+
+    def test_loose_sql_detector_identifies_statements(self):
+        self.assertTrue(is_sql_candidate('cursor.execute("SELECT id FROM accounts")'))
+        self.assertFalse(is_sql_candidate('logger.info("accounts loaded")'))
 
 
 if __name__ == "__main__":
