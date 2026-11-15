@@ -104,7 +104,7 @@ def main():
         rowflag = "" if dn == fn else "   <-- ROW COUNT DIFFERS"
         print(f"  rows: dbspnet={dn}  feldera={fn}{rowflag}")
 
-        desc = con.execute(load_sql("duckdb", "inline", f"{COMPARE_SQL}/describe", relation=d)).fetchall()
+        desc = con.execute(load_sql("duckdb", "inline", f"{COMPARE_SQL}/schema", relation=d)).fetchall()
         cols = [(r[0], r[1]) for r in desc]
         print(f"  {'column':<28}{'type':<14}{'diff':>10}")
         print("  " + "-" * 52)
