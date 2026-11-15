@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,11 @@ REPORTER = REPO / "tools/scripts/github/post-pr-comment.sh"
 _spec = importlib.util.spec_from_file_location("check_engine_coverage", SCRIPT)
 coverage = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(coverage)
+_chart_spec = importlib.util.spec_from_file_location(
+    "render_engine_chart", REPO / "tools/scripts/github/render-engine-chart.py",
+)
+engine_chart = importlib.util.module_from_spec(_chart_spec)
+_chart_spec.loader.exec_module(engine_chart)
 
 ENGINES = ["spark", "duckdb"]
 
@@ -166,6 +172,46 @@ class EngineCoverageTest(unittest.TestCase):
         self.assertIn("batch 3 failed (a \\| b c)", markdown)
 
 
+class EngineChartTest(unittest.TestCase):
+    def test_renders_pr_98_fixture_fastest_first_as_png(self):
+        experiment = {
+            "index": 0,
+            "label": "gci-sf10",
+            "status": "completed",
+            "timed": True,
+            "batch_count": 3,
+            "params": {"scale_factor": 10},
+            "engines": {
+                "spark": {"passed": True, "durations_s": [200, 168, 154]},
+                "spark-openivm": {"passed": True, "durations_s": [753, 302, 296]},
+                "duckdb": {"passed": True, "durations_s": [31, 31, 31]},
+                "duckdb-openivm": {"passed": True, "durations_s": [52, 37, 39]},
+                "feldera": {"passed": True, "durations_s": [91, 7, 8]},
+                "dbspnet": {"passed": True, "durations_s": [91, 1, 1]},
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            charts = engine_chart.render_charts(
+                {"passed": True, "experiments": [experiment]}, Path(directory),
+            )
+            self.assertEqual(len(charts), 1)
+            rows = charts[0]["engines"]
+            self.assertEqual(
+                [row["engine"] for row in rows],
+                ["duckdb", "dbspnet", "feldera", "duckdb-openivm", "spark", "spark-openivm"],
+            )
+            png = Path(charts[0]["path"]).read_bytes()
+            self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+            self.assertIn("duckdb 1m 33s", charts[0]["alt"])
+            self.assertIn("spark-openivm 22m 31s", charts[0]["alt"])
+
+    def test_does_not_render_failed_or_untimed_verdicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(engine_chart.render_charts({"passed": False}, Path(directory)), [])
+            verdict = {"passed": True, "experiments": [{"status": "completed", "timed": False}]}
+            self.assertEqual(engine_chart.render_charts(verdict, Path(directory)), [])
+
+
 class CoverageCliTest(unittest.TestCase):
     def run_cli(self, directory, text, state, *extra):
         experiments = Path(directory) / "experiments.json"
@@ -222,7 +268,7 @@ class CoverageCliTest(unittest.TestCase):
 
 
 class ReporterTest(unittest.TestCase):
-    def report(self, verdict, outcome="success"):
+    def report(self, verdict, outcome="success", extra_env=None):
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "summary.md"
             coverage_file = Path(directory) / "engine-coverage.json"
@@ -235,9 +281,11 @@ class ReporterTest(unittest.TestCase):
                 "GITHUB_RUN_ID": "1", "GITHUB_STEP_SUMMARY": str(summary),
                 "ENGINE_COVERAGE_FILE": str(coverage_file), "BENCHMARK_OUTCOME": outcome,
             }
+            if extra_env:
+                env.update(extra_env)
             result = subprocess.run(["bash", str(REPORTER)], text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
-            return summary.read_text()
+            return result.stdout if extra_env and extra_env.get("DRY_RUN") == "1" else summary.read_text()
 
     def passing(self):
         expected = coverage.expected_experiments(experiments_text())
@@ -245,6 +293,42 @@ class ReporterTest(unittest.TestCase):
 
     def test_green_only_when_benchmark_and_coverage_pass(self):
         self.assertIn("✅ **Every engine completed every batch**", self.report(self.passing()))
+
+    def test_chart_is_in_dry_run_comment_before_parameter_table(self):
+        body = self.report(self.passing(), extra_env={
+            "PR_NUMBER": "17",
+            "DRY_RUN": "1",
+            "ENGINE_CHART_PYTHON": sys.executable,
+            "GITHUB_RUN_ATTEMPT": "2",
+        })
+        image = '<img src="https://raw.githubusercontent.com/o/r/ci-assets/pr-17/run-1-2/experiment-01.png"'
+        self.assertIn(image, body)
+        self.assertLess(body.index(image), body.index("| Parameter | Value |"))
+        self.assertIn("Dry run; no PR comment was posted.", body)
+
+    def test_chart_upload_failure_keeps_comment_and_tables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake_bin = Path(directory) / "bin"
+            fake_bin.mkdir()
+            log = Path(directory) / "curl.log"
+            curl = fake_bin / "curl"
+            curl.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
+                "case \"$*\" in *'/contents/'*) exit 22 ;; *) exit 0 ;; esac\n"
+            )
+            curl.chmod(0o755)
+            body = self.report(self.passing(), extra_env={
+                "PR_NUMBER": "17",
+                "GITHUB_TOKEN": "test-token",
+                "CURL_LOG": str(log),
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            })
+            self.assertIn("✅ **Every engine completed every batch**", body)
+            self.assertIn("| Parameter | Value |", body)
+            self.assertNotIn("<img src=", body)
+            calls = log.read_text()
+            self.assertIn("/contents/pr-17/run-1-1/experiment-01.png", calls)
+            self.assertIn("/issues/17/comments", calls)
 
     def test_red_when_benchmark_step_failed(self):
         self.assertIn("❌ **Benchmark failed: benchmark step failure**",
