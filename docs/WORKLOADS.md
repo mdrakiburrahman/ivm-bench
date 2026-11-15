@@ -154,7 +154,13 @@ Model concurrency is distinct from execution threads within an engine:
 | Databricks Enzyme / Databricks OpenIVM | 8 | Managed Databricks compute; local container limits describe the orchestration client. |
 | DuckDB / DuckDB OpenIVM | Serial model execution | SQL threads use the allocated CPU count; engine memory is capped at 80% of the container allocation. |
 | Feldera | 1 | 12 execution workers; maximum RSS is 95% of the container allocation. |
-| RisingWave | 1 | Four DuckDB staging-load workers; source parallelism is 4 and backfill batch parallelism is 32. |
+| RisingWave | 4 | Four DuckDB staging-load workers; source parallelism is 4, source-load batch parallelism is 32, and materialized-view backfill parallelism is 8. |
+
+RisingWave materializes `market_volatility_by_symbol` before building
+`market_volatility`. This engine-only helper prevents the global rankings from
+processing every intermediate daily-market backfill update. Both views remain
+incrementally maintained, and their creation and storage are included in the
+benchmark measurements.
 
 `spark_tunables.dbt_threads` caps only Spark/Fabric model concurrency. The SF10
 all-engine repeated preset and the existing augmented/sweep presets set it to
