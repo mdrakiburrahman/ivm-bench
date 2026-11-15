@@ -17,6 +17,12 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 
 BATCH_COLORS = {1: "#3498db", 2: "#e67e22", 3: "#2ecc71"}
+ENGINE_COLORS = {"risingwave": "#00a3e0"}
+ENGINE_ORDER = (
+    "spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "dbspnet",
+    "databricks-enzyme", "databricks-openivm", "fabric-jvm-35",
+    "fabric-openivm-jvm-35", "risingwave",
+)
 FALLBACK_BATCH_COLOR = "#8c959f"
 INK, MUTED, BORDER = "#1f2328", "#656d76", "#d0d7de"
 WIDTH_IN, ROW_IN, BOTTOM_IN = 8.0, 0.44, 0.3
@@ -56,7 +62,8 @@ def _rows(experiment: Dict[str, Any]) -> List[Dict[str, Any]]:
         ):
             return []
         rows.append({"engine": name, "durations_s": durations, "total_s": sum(durations)})
-    return sorted(rows, key=lambda row: row["total_s"])
+    order = {engine: index for index, engine in enumerate(ENGINE_ORDER)}
+    return sorted(rows, key=lambda row: (row["total_s"], order.get(row["engine"], len(order)), row["engine"]))
 
 
 def _render(rows: List[Dict[str, Any]], experiment: Dict[str, Any], output: Path) -> None:
@@ -106,7 +113,9 @@ def _render(rows: List[Dict[str, Any]], experiment: Dict[str, Any], output: Path
     ])
     ax.set_ylim(count - 0.5, -0.5)
     ax.set_yticks(range(count))
-    ax.set_yticklabels(names, fontsize=11, fontweight="bold", color=INK)
+    labels = ax.set_yticklabels(names, fontsize=11, fontweight="bold", color=INK)
+    for label, row in zip(labels, rows):
+        label.set_color(ENGINE_COLORS.get(row["engine"].lower(), INK))
     ax.tick_params(axis="y", length=0, pad=8)
     ax.set_xticks([])
     for side in ("top", "right", "bottom"):

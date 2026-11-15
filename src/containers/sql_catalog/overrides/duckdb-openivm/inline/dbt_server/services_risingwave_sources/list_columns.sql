@@ -1,1 +1,0 @@
--- catalog-skip: risingwave-only SQL is not used by duckdb-openivm.

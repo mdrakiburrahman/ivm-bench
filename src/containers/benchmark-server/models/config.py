@@ -105,6 +105,7 @@ ENGINE_PORTS = {
     "fabric-jvm-35": 5008,
     "databricks-openivm": 5010,
     "dbspnet": 5009,
+    "risingwave": 5011,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -118,6 +119,7 @@ ENGINE_COMPOSE_FILES = {
     "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
     "databricks-openivm": "docker/docker-compose.benchmark.databricks-openivm.yml",
     "dbspnet": "docker/docker-compose.benchmark.dbspnet.yml",
+    "risingwave": "docker/docker-compose.benchmark.risingwave.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine).
@@ -135,6 +137,7 @@ ENGINE_MAIN_SERVICES = {
     "fabric-jvm-35": None,
     "databricks-openivm": None,  # The schema-only compiler is a helper; execution is remote.
     "dbspnet": "dbspnet-server",
+    "risingwave": "risingwave",
 }
 
 # Containers whose CPU contributes to the controlled local-system metric.
@@ -147,6 +150,7 @@ ENGINE_COMPUTE_SERVICES = {
     "feldera": ("pipeline-manager",),
     "spark-openivm": ("spark-openivm", "mssql-metastore"),
     "dbspnet": ("dbspnet-server",),
+    "risingwave": ("risingwave",),
 }
 
 # Cloud-consuming engines: the heavy query compute is offloaded to a remote
@@ -198,6 +202,7 @@ class BenchmarkConfig:
             "duckdb-openivm",
             "feldera",
             "spark-openivm",
+            "risingwave",
         ]
     )
     host_cores: Optional[int] = None

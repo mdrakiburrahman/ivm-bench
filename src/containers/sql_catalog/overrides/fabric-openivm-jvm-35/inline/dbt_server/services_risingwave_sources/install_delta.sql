@@ -1,1 +1,0 @@
--- catalog-skip: duckdb-only SQL is not used by fabric-openivm-jvm-35.

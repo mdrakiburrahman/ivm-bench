@@ -1,1 +1,0 @@
--- catalog-skip: DuckDB-only Parquet export is not used by databricks-openivm.
