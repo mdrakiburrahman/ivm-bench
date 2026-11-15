@@ -5,7 +5,8 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import ModuleType
+from unittest.mock import Mock, patch
 
 DBT_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DBT_SERVER))
@@ -27,7 +28,12 @@ class FakeInsertCursor:
 
 class RisingWaveSourceLoaderTest(unittest.TestCase):
     def test_source_init_endpoint_is_registered(self):
-        from app import app
+        import databricks
+
+        sql_module = ModuleType("databricks.sql")
+        sql_module.connect = Mock()
+        with patch.object(databricks, "sql", sql_module, create=True):
+            from app import app
 
         routes = {rule.rule for rule in app.url_map.iter_rules()}
 
