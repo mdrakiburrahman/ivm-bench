@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from databricks.sdk import WorkspaceClient
 
+from sql_catalog import load_sql
 from services import databricks_enzyme_sources as src
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,11 @@ def _list_mvs_in_schema(conn, schema: str) -> List[Dict[str, str]]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT table_name FROM {catalog}.information_schema.tables "
-                f"WHERE table_schema = ? AND table_type = 'MATERIALIZED_VIEW'",
+                load_sql(
+                    "databricks-enzyme", "inline",
+                    "dbt_server/services_databricks_enzyme_pipeline_events/list_materialized_views",
+                    catalog=catalog,
+                ),
                 [schema],
             )
             for r in cur.fetchall():
@@ -78,7 +82,11 @@ def _extract_pipeline_id(conn, schema: str, table: str) -> Optional[str]:
     fq = f"`{catalog}`.`{schema}`.`{table}`"
     try:
         with conn.cursor() as cur:
-            cur.execute(f"DESCRIBE EXTENDED {fq}")
+            cur.execute(load_sql(
+                "databricks-enzyme", "inline",
+                "dbt_server/services_databricks_enzyme_pipeline_events/describe_table",
+                table=fq,
+            ))
             for row in cur.fetchall():
                 col = (row[0] or "").strip() if len(row) > 0 else ""
                 val = (row[1] or "") if len(row) > 1 else ""

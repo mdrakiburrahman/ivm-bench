@@ -72,6 +72,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config, oauth_service_principal
 from databricks.sdk.errors import NotFound
 
+from sql_catalog import load_sql
 from services.source_cache import (
     STAGING_TABLES,
     batch_cache_root,
@@ -465,10 +466,16 @@ def _delete_volume_dir(ws: WorkspaceClient, path: str) -> None:
 def _ensure_cache_schema(ws: WorkspaceClient) -> None:
     """Idempotent: create the shared cache schema + volume if they don't
     already exist. Safe to call from every experiment."""
-    _execute(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{CACHE_SCHEMA}`")
-    _execute(
-        f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{CACHE_SCHEMA}`.`{CACHE_VOLUME}`"
-    )
+    _execute(load_sql(
+        "databricks-enzyme", "inline",
+        "dbt_server/services_databricks_enzyme_sources/create_cache_schema",
+        catalog=f"`{CATALOG}`", schema=f"`{CACHE_SCHEMA}`",
+    ))
+    _execute(load_sql(
+        "databricks-enzyme", "inline",
+        "dbt_server/services_databricks_enzyme_sources/create_cache_volume",
+        catalog=f"`{CATALOG}`", schema=f"`{CACHE_SCHEMA}`", volume=f"`{CACHE_VOLUME}`",
+    ))
 
 
 def _ensure_experiment_schemas() -> None:
@@ -485,7 +492,11 @@ def _ensure_experiment_schemas() -> None:
     `SCHEMA_NOT_FOUND` per model).
     """
     for schema in all_experiment_schemas():
-        _execute(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{schema}`")
+        _execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_sources/create_experiment_schema",
+            catalog=f"`{CATALOG}`", schema=f"`{schema}`",
+        ))
 
 
 def sweep_stale_schemas(
@@ -513,9 +524,11 @@ def sweep_stale_schemas(
     scanned: List[str] = []
     by_ts: Dict[int, List[str]] = {}
     try:
-        df = _execute(
-            f"SHOW SCHEMAS IN `{CATALOG}` LIKE '{_EXP_PREFIX}*'"
-        )
+        df = _execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_sources/list_experiment_schemas",
+            catalog=f"`{CATALOG}`", pattern=f"'{_EXP_PREFIX}*'",
+        ))
     except Exception as exc:
         logger.warning(
             "[databricks-enzyme/sweep] SHOW SCHEMAS LIKE '%s*' failed: %s",
@@ -566,7 +579,11 @@ def sweep_stale_schemas(
             continue
         for schema in sorted(by_ts[ts]):
             try:
-                _execute(f"DROP SCHEMA IF EXISTS `{CATALOG}`.`{schema}` CASCADE")
+                _execute(load_sql(
+                    "databricks-enzyme", "inline",
+                    "dbt_server/services_databricks_enzyme_sources/drop_schema",
+                    catalog=f"`{CATALOG}`", schema=f"`{schema}`",
+                ))
                 dropped.append(schema)
             except Exception as exc:
                 logger.warning(
@@ -718,13 +735,15 @@ def init_sources(sf: int) -> dict:
         # Enzyme to incrementalize downstream MVs. DROP first because
         # CREATE OR REPLACE TABLE does not always reset table-level
         # TBLPROPERTIES across re-runs.
-        _execute(f"DROP TABLE IF EXISTS {fq}")
-        _execute(
-            f"CREATE TABLE {fq} "
-            f"TBLPROPERTIES ('delta.enableRowTracking' = 'true', "
-            f"                'delta.enableChangeDataFeed' = 'true') AS "
-            f"SELECT * FROM delta.`{remote}`"
-        )
+        _execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_sources/drop_table", table=fq,
+        ))
+        _execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_sources/create_source_table",
+            table=fq, path=remote,
+        ))
         tables_registered += 1
 
     logger.info(
@@ -784,10 +803,11 @@ def append_sources(batch_num: int, sf: int) -> dict:
         )
         fq = f"`{CATALOG}`.`{ds}`.`staging_{t}`"
         try:
-            _execute(
-                f"INSERT INTO {fq} "
-                f"BY NAME SELECT * FROM delta.`{remote}`"
-            )
+            _execute(load_sql(
+                "databricks-enzyme", "inline",
+                "dbt_server/services_databricks_enzyme_sources/append_source_table",
+                table=fq, path=remote,
+            ))
             tables_inserted += 1
         except Exception as exc:
             logger.warning(
@@ -834,7 +854,11 @@ def cleanup_schemas() -> dict:
         return {"status": "ok", "dropped": [], "errors": [str(exc)]}
     for s in targets:
         try:
-            _execute(f"DROP SCHEMA IF EXISTS `{CATALOG}`.`{s}` CASCADE")
+            _execute(load_sql(
+                "databricks-enzyme", "inline",
+                "dbt_server/services_databricks_enzyme_sources/drop_schema",
+                catalog=f"`{CATALOG}`", schema=f"`{s}`",
+            ))
             dropped.append(s)
         except Exception as exc:
             logger.warning(
@@ -868,7 +892,10 @@ def warmup(max_attempts: int = 6, sleep_s: float = 5.0) -> dict:
     for attempt in range(1, max_attempts + 1):
         attempt_started = time.time()
         try:
-            df = _execute("SELECT 1 AS warmup_probe")
+            df = _execute(load_sql(
+                "databricks-enzyme", "inline",
+                "dbt_server/services_databricks_enzyme_sources/warmup_probe",
+            ))
             elapsed = time.time() - started
             value = None
             if df is not None and not df.empty:

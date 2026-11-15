@@ -1,0 +1,2 @@
+-- catalog-override: engine-only: Databricks OpenIVM reads Delta Change Data Feed with table_changes and commit metadata.
+SELECT {columns}, _commit_timestamp AS openivm_timestamp, CASE WHEN _change_type IN ('insert', 'update_postimage') THEN 1 ELSE -1 END AS openivm_multiplicity FROM table_changes({table_literal}, {start_version}, {end_version}) WHERE _change_type IN ('insert', 'delete', 'update_preimage', 'update_postimage'){predicate_suffix}
