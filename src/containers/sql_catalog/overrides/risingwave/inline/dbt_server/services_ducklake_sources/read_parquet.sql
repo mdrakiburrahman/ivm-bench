@@ -1,0 +1,1 @@
+-- catalog-skip: RisingWave uses its dedicated DuckDB staging loader, not DuckLake source loading

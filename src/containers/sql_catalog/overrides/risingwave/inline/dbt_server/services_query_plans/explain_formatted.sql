@@ -1,0 +1,1 @@
+-- catalog-skip: RisingWave query plans do not use Spark EXPLAIN FORMATTED
