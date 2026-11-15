@@ -10,10 +10,12 @@ change.
 ## Porting recipe
 
 - **Model:** add one canonical `.sql` file under `sql_catalog/sql/spark/models/<layer>/`.
-  Convert the Spark version to the canonical form, then render with
-  `sql_catalog.generate_model(engine, "<layer>/<name>")`. Preserve dbt Jinja
-  expressions such as `ref()`; the renderer masks and restores them around
-  SQLGlot parsing. Check AST parity for every configured engine with
+  Convert the Spark version to the canonical form; the dbt-server image build
+  generates every catalog model with `generate_models(engine)`. Use
+  `generate_model(engine, "<layer>/<name>")` to render one model manually.
+  Preserve dbt Jinja expressions such as `ref()`; the renderer masks and
+  restores them around SQLGlot parsing. Check AST parity for every configured
+  engine with
   `python -m unittest discover -s src/containers/dbt-server/tests -p test_sql_catalog.py -v`.
 - **Macro:** move the dbt macro to `sql_catalog/sql/spark/macros/` and load it with
   `load_sql(engine, "macros", "<name>")`. Macro Jinja is returned intact; SQL

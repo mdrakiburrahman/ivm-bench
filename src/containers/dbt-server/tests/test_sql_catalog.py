@@ -9,7 +9,13 @@ CONTAINERS_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CONTAINERS_DIR))
 ENGINES = json.loads((CONTAINERS_DIR / "sql_catalog" / "engines.json").read_text(encoding="utf-8"))
 
-from sql_catalog.generator import _mask_jinja, generate_model, is_sql_candidate, load_sql
+from sql_catalog.generator import (
+    _mask_jinja,
+    generate_model,
+    generate_models,
+    is_sql_candidate,
+    load_sql,
+)
 
 
 class SqlCatalogTests(unittest.TestCase):
@@ -47,6 +53,13 @@ class SqlCatalogTests(unittest.TestCase):
             path = generate_model("duckdb", "silver/date", output)
             self.assertEqual(Path(output) / "silver" / "date.sql", path)
             self.assertIn("{{ ref('reference_date') }}", path.read_text(encoding="utf-8"))
+
+    def test_bulk_generation_includes_all_catalog_models(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as output:
+            paths = generate_models("duckdb", output)
+            self.assertEqual([Path(output) / "silver" / "date.sql"], paths)
 
     def test_build_inputs_match_catalog_output_for_existing_engines(self):
         projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"

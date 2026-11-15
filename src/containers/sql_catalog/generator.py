@@ -99,5 +99,24 @@ def generate_model(engine, model, output_dir=None):
     return destination
 
 
+def generate_models(engine, output_dir=None):
+    """Render every catalog model that has a matching existing dbt project file."""
+    catalog_root = PACKAGE_DIR / "sql" / "spark" / "models"
+    project_models = Path(output_dir) if output_dir else (
+        DBT_PROJECT_ROOT / "dbt-projects" / engine / "models"
+    )
+    if output_dir is None and not project_models.is_dir():
+        return []
+
+    generated = []
+    for source in sorted(catalog_root.rglob("*.sql")):
+        relative = source.relative_to(catalog_root)
+        if output_dir is None and not (project_models / relative).is_file():
+            continue
+        model = relative.with_suffix("").as_posix()
+        generated.append(generate_model(engine, model, output_dir))
+    return generated
+
+
 def is_sql_candidate(line):
     return bool(_SQL_KEYWORDS.search(line))
