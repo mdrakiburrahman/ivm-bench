@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 DBT_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DBT_SERVER))
 
+import services  # noqa: E402
 from services import storage_metrics  # noqa: E402
 
 
@@ -58,7 +59,7 @@ def run_collector(by_view, fail_on=(), deadline_offset=60):
     conn = FakeConn(cursor)
     fake_sources = Mock()
     fake_sources._connect = Mock(return_value=conn)
-    with patch.dict(sys.modules, {"services.risingwave_sources": fake_sources}):
+    with patch.object(services, "risingwave_sources", fake_sources, create=True):
         # The meta-store directory does not exist under test, so only the
         # catalog-derived items are produced.
         return storage_metrics._collect_risingwave_storage(
@@ -114,7 +115,7 @@ class RisingWaveStorageTest(unittest.TestCase):
     def test_unreachable_engine_reports_an_error(self):
         fake_sources = Mock()
         fake_sources._connect = Mock(side_effect=RuntimeError("connection refused"))
-        with patch.dict(sys.modules, {"services.risingwave_sources": fake_sources}):
+        with patch.object(services, "risingwave_sources", fake_sources, create=True):
             items, totals, errors = storage_metrics._collect_risingwave_storage(
                 deadline=time.monotonic() + 60
             )
@@ -142,7 +143,7 @@ class RisingWaveStorageTest(unittest.TestCase):
         conn = FakeConn(cursor)
         fake_sources = Mock()
         fake_sources._connect = Mock(return_value=conn)
-        with patch.dict(sys.modules, {"services.risingwave_sources": fake_sources}):
+        with patch.object(services, "risingwave_sources", fake_sources, create=True):
             summary, errors = storage_metrics._collect_risingwave_current_ssts(
                 deadline=time.monotonic() + 60
             )
