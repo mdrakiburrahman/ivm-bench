@@ -8,6 +8,7 @@
         "fabric-jvm-35",
         "fabric-openivm-jvm-35",
         "feldera",
+        "risingwave",
         "spark",
         "spark-openivm"
       ],
@@ -70,6 +71,7 @@
         "duckdb-openivm",
         "fabric-jvm-35",
         "fabric-openivm-jvm-35",
+        "risingwave",
         "spark",
         "spark-openivm"
       ],
@@ -104,6 +106,14 @@
         "sources/staging_trade",
         "sources/staging_watch_history"
       ]
+    },
+    {
+      "engines": [
+        "risingwave"
+      ],
+      "paths": [
+        "gold/analytics/market_volatility_by_symbol"
+      ]
     }
   ],
   "macros": [
@@ -116,6 +126,7 @@
         "fabric-jvm-35",
         "fabric-openivm-jvm-35",
         "feldera",
+        "risingwave",
         "spark",
         "spark-openivm"
       ],

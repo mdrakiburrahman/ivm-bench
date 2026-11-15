@@ -1,1 +1,0 @@
--- catalog-skip: RisingWave verifies compiler-bench results with a Python multiset because it does not use the shared SQL float projection probe.
