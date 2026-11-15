@@ -22,6 +22,7 @@ RUN curl -sL https://aka.ms/downloadazcopy-v10-linux -o /tmp/azcopy.tgz && \
 ENV OPENIVM_SNAPSHOT_PUBLICATION=1
 
 WORKDIR /app
+ENV PYTHONPATH=/app
 
 COPY dbt-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
