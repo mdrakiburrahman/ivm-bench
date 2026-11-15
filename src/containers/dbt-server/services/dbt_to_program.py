@@ -29,8 +29,8 @@ from sql_catalog import load_sql
 
 SURROGATE_NULL = "_dbt_utils_surrogate_key_null_"
 
-_REF = re.compile(r"\{\{\s*ref\(\s*'([^']+)'\s*\)\s*\}\}")
-_SOURCE = re.compile(r"\{\{\s*source\(\s*'[^']+'\s*,\s*'([^']+)'\s*\)\s*\}\}")
+_REF = re.compile(r"""\{\{\s*ref\(\s*['"]([^'"]+)['"]\s*\)\s*\}\}""")
+_SOURCE = re.compile(r"""\{\{\s*source\(\s*['"][^'"]+['"]\s*,\s*['"]([^'"]+)['"]\s*\)\s*\}\}""")
 
 
 def _surrogate_key(fields):
