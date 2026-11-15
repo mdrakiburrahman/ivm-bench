@@ -1,7 +1,8 @@
 services:
   benchmark-server:
     build:
-      context: ../src/containers/benchmark-server
+      context: ../src/containers
+      dockerfile: benchmark-server/Dockerfile
     ports:
       - "9000:9000"
     extra_hosts:

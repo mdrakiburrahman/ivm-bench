@@ -13,14 +13,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY benchmark-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY handlers/ /app/handlers/
-COPY services/ /app/services/
-COPY models/ /app/models/
-COPY experiments/ /app/experiments/
-COPY app.py /app/app.py
+COPY benchmark-server/handlers/ /app/handlers/
+COPY benchmark-server/services/ /app/services/
+COPY benchmark-server/models/ /app/models/
+COPY benchmark-server/experiments/ /app/experiments/
+COPY sql_catalog/ /app/sql_catalog/
+COPY benchmark-server/app.py /app/app.py
 
 EXPOSE 9000
 
