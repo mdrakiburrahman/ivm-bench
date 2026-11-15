@@ -1,2 +1,3 @@
-select *
-from {{ source('tpcdi', 'batch1_hr') }}
+SELECT
+  *
+FROM {{ source('tpcdi', 'batch1_hr') }}

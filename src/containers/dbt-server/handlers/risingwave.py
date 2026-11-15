@@ -13,6 +13,7 @@ import logging
 from flask import Blueprint, Flask, jsonify
 
 from handlers.base import BaseHandler
+from sql_catalog import load_sql
 
 from services import risingwave_sources
 
@@ -61,7 +62,7 @@ def risingwave_flush():
     try:
         conn = risingwave_sources._connect()
         try:
-            conn.cursor().execute("FLUSH")
+            conn.cursor().execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/flush"))
         finally:
             conn.close()
         return jsonify({"status": "ok"}), 200

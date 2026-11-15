@@ -27,6 +27,8 @@ import re
 from typing import List, Optional, Sequence
 
 from services.compiler_bench.corpus import Corpus
+from services.ducklake_sources import quote_literal
+from sql_catalog import load_sql
 from services.compiler_bench.engines import (
     INCREMENTAL,
     UNKNOWN,
@@ -179,7 +181,7 @@ class RisingWaveAdapter(EngineAdapter):
         """Run one statement, mapping RisingWave's failure modes onto the runner's."""
         cur = self._cursor()
         try:
-            cur.execute(f"SET statement_timeout = '{max(1, int(timeout_s))}s'")
+            cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/set_statement_timeout", timeout=quote_literal(f"{max(1, int(timeout_s))}s")))
         except Exception:
             pass
         try:
@@ -204,7 +206,7 @@ class RisingWaveAdapter(EngineAdapter):
             table = re.search(r"CREATE TABLE\s+([A-Za-z0-9_]+)", stmt, re.I)
             if table:
                 try:
-                    cur.execute(f"DROP TABLE IF EXISTS {table.group(1)} CASCADE")
+                    cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/drop_table", relation=table.group(1)))
                 except Exception:
                     self.reset()
                     cur = self._cursor()
@@ -230,22 +232,22 @@ class RisingWaveAdapter(EngineAdapter):
                 path = f"{data_dir}/{table}.parquet"
                 if not os.path.exists(path):
                     continue
-                described = duck.execute(f"SELECT * FROM read_parquet('{path}') LIMIT 0")
+                described = duck.execute(load_sql("duckdb", "inline", "compiler_bench/engines_risingwave/read_parquet_schema", path=quote_literal(path)))
                 ncols = len(described.description or ())
                 if not ncols:
                     continue
                 batch = max(1, self.MAX_BIND_PARAMS // ncols)
                 placeholder = "(" + ",".join(["%s"] * ncols) + ")"
-                reader = duck.execute(f"SELECT * FROM read_parquet('{path}')")
+                reader = duck.execute(load_sql("duckdb", "inline", "compiler_bench/engines_risingwave/read_parquet", path=quote_literal(path)))
                 while True:
                     chunk = reader.fetchmany(20000)
                     if not chunk:
                         break
                     for i in range(0, len(chunk), batch):
                         rows = chunk[i : i + batch]
-                        sql = (
-                            f"INSERT INTO {table} VALUES "
-                            + ",".join([placeholder] * len(rows))
+                        sql = load_sql(
+                            "risingwave", "inline", "compiler_bench/engines_risingwave/insert_values",
+                            relation=table, values=",".join([placeholder] * len(rows)),
                         )
                         self._execute(
                             sql, timeout_s=600, params=[v for r in rows for v in r]
@@ -253,22 +255,29 @@ class RisingWaveAdapter(EngineAdapter):
         finally:
             duck.close()
         # INSERT is asynchronous: without this the rows are not yet readable.
-        self._execute("FLUSH", timeout_s=600)
+        self._execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/flush"), timeout_s=600)
 
     def run_base_query(self, sql: str, *, timeout_s: float) -> None:
         cur = self._execute(
-            f"SELECT * FROM ({to_risingwave_sql(sql)}) __cb LIMIT 0", timeout_s=timeout_s
+            load_sql("risingwave", "inline", "compiler_bench/engines_risingwave/validate_query", query=to_risingwave_sql(sql)),
+            timeout_s=timeout_s,
         )
         cur.fetchall()
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         sql = to_risingwave_sql(sql)
-        cur = self._execute(f"SELECT * FROM ({sql}) __cb LIMIT 0", timeout_s=timeout_s)
+        cur = self._execute(
+            load_sql("risingwave", "inline", "compiler_bench/engines_risingwave/validate_query", query=sql),
+            timeout_s=timeout_s,
+        )
         cur.fetchall()
         ncols = len(cur.description or ())
         columns = f" ({','.join(f'c{i}' for i in range(ncols))})" if ncols else ""
         self._execute(
-            f"CREATE MATERIALIZED VIEW {mv_name}{columns} AS {sql}", timeout_s=timeout_s
+            load_sql(
+                "risingwave", "inline", "compiler_bench/engines_risingwave/create_materialized_view",
+                mv_name=mv_name, columns=columns, query=sql,
+            ), timeout_s=timeout_s
         )
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
@@ -293,7 +302,7 @@ class RisingWaveAdapter(EngineAdapter):
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         # Maintenance is continuous. FLUSH returns once every pending barrier has
         # been applied, which is the point the view is up to date.
-        self._execute("FLUSH", timeout_s=timeout_s)
+        self._execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/flush"), timeout_s=timeout_s)
 
     def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
         """Compare the view against a re-run of the query, positionally.
@@ -302,10 +311,16 @@ class RisingWaveAdapter(EngineAdapter):
         cannot be used; the comparison is done here as a multiset instead.
         """
         self._last_verification_error = ""
-        cur = self._execute(f"SELECT * FROM {mv_name}", timeout_s=timeout_s)
+        cur = self._execute(
+            load_sql("risingwave", "inline", "compiler_bench/engines_risingwave/select_materialized_view", mv_name=mv_name),
+            timeout_s=timeout_s,
+        )
         got = self._multiset(cur.fetchall())
         cur = self._execute(
-            f"SELECT * FROM ({to_risingwave_sql(sql)}) __q", timeout_s=timeout_s
+            load_sql(
+                "risingwave", "inline", "compiler_bench/engines_risingwave/verify_query",
+                query=to_risingwave_sql(sql),
+            ), timeout_s=timeout_s
         )
         want = self._multiset(cur.fetchall())
         if got == want:
@@ -351,6 +366,9 @@ class RisingWaveAdapter(EngineAdapter):
 
     def drop_mv(self, mv_name: str) -> None:
         try:
-            self._execute(f"DROP MATERIALIZED VIEW IF EXISTS {mv_name}", timeout_s=120)
+            self._execute(
+                load_sql("risingwave", "inline", "compiler_bench/engines_risingwave/drop_materialized_view", mv_name=mv_name),
+                timeout_s=120,
+            )
         except Exception:
             self.reset()

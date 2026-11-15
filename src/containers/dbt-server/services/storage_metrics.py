@@ -25,7 +25,8 @@ CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
 LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "databricks-openivm"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
-SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES
+RISINGWAVE_ENGINES = {"risingwave"}
+SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES | RISINGWAVE_ENGINES
 
 PROCESSED_ROOTS = {
     "spark": Path("/data/processed/spark"),
@@ -34,6 +35,7 @@ PROCESSED_ROOTS = {
     "duckdb-openivm": Path("/data/processed/duckdb-openivm"),
     "feldera": Path("/data/processed/feldera"),
     "dbspnet": Path("/data/processed/dbspnet"),
+    "risingwave": Path("/data/processed/risingwave"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
     "databricks-openivm": Path("/data/processed/databricks-openivm"),
 }
@@ -956,14 +958,10 @@ def _collect_risingwave_storage(
                 errors.append(f"deadline reached before reading {view}")
                 break
             try:
-                cur.execute(
-                    "SELECT c.id, c.name, "
-                    "       COALESCE(st.total_key_size, 0) "
-                    "     + COALESCE(st.total_value_size, 0) AS bytes, "
-                    "       COALESCE(st.total_key_count, 0) AS rows "
-                    f"FROM rw_catalog.{view} c "
-                    "JOIN rw_catalog.rw_table_stats st ON st.id = c.id"
-                )
+                cur.execute(load_sql(
+                    "risingwave", "inline", "dbt_server/services_storage_metrics/risingwave_table_bytes",
+                    view=view,
+                ))
                 rows = cur.fetchall()
             except Exception as exc:
                 errors.append(f"cannot read rw_catalog.{view}: {exc}")
@@ -1021,16 +1019,9 @@ def _collect_risingwave_current_ssts(
         return None, [f"RisingWave SST storage unavailable: {exc}"]
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT CAST(table_ids AS VARCHAR), "
-            "       COALESCE(SUM(file_size), 0), "
-            "       COALESCE(SUM(uncompressed_file_size), 0), "
-            "       COALESCE(SUM(total_key_count), 0), "
-            "       COUNT(*) "
-            "FROM rw_catalog.rw_hummock_sstables "
-            "GROUP BY table_ids "
-            "ORDER BY SUM(file_size) DESC"
-        )
+        cur.execute(load_sql(
+            "risingwave", "inline", "dbt_server/services_storage_metrics/risingwave_sstables"
+        ))
         rows = cur.fetchall()
         if not rows:
             return None, ["rw_catalog.rw_hummock_sstables returned no rows"]

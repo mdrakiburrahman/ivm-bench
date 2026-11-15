@@ -1,0 +1,1 @@
+-- catalog-skip: DuckDB-only Parquet export is not used by spark-openivm.

@@ -1,0 +1,1 @@
+-- catalog-skip: Spark OpenIVM-only continuous projection validation is not executed by RisingWave.

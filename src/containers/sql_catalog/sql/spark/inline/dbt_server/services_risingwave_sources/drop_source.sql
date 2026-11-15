@@ -1,0 +1,1 @@
+DROP SOURCE IF EXISTS {relation}

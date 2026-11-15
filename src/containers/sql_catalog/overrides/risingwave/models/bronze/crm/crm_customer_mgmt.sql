@@ -1,3 +1,4 @@
+-- catalog-override: RisingWave source loading flattens nested customer_mgmt STRUCT fields, so select scalar columns instead of dotted struct paths
 -- Bronze: flatten customer_mgmt XML struct + union with staging customer/account data
 -- RisingWave variant: the batch1 customer_mgmt Delta table arrives from spark-xml
 -- as one deeply nested struct. services/risingwave_sources.py flattens that

@@ -1,0 +1,1 @@
+-- catalog-skip: RisingWave verifies compiler-bench results with a Python multiset because it does not support EXCEPT ALL; the shared SQL diff probe is unused.

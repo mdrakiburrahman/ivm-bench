@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from sql_catalog import load_sql
+
 from services.ducklake_sources import (
     BATCH1_ONLY_TABLES,
     CATEGORY_B_SCHEMAS,
@@ -34,7 +36,6 @@ from services.ducklake_sources import (
     STAGING_CATEGORY_A,
     STAGING_CATEGORY_B,
     _mutation_buckets,
-    _score_predicate,
     quote_ident,
     quote_literal,
 )
@@ -156,18 +157,19 @@ def _duckdb():
     import duckdb
 
     con = duckdb.connect(":memory:")
-    con.execute(f"SET threads={RW_STAGE_THREADS}")
-    con.execute("SET preserve_insertion_order=false")
+    con.execute(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/set_threads", threads=RW_STAGE_THREADS))
+    con.execute(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/set_preserve_insertion_order"))
     try:
-        con.execute("LOAD delta")
+        con.execute(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/load_delta"))
     except Exception:
         # The image preinstalls delta. Keep this fallback for local development
         # and for old cached images, but never make every worker install it.
         with _DUCKDB_EXTENSION_LOCK:
             try:
-                con.execute("LOAD delta")
+                con.execute(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/load_delta"))
             except Exception:
-                con.execute("INSTALL delta; LOAD delta")
+                con.execute(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/install_delta"))
+                con.execute(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/load_delta"))
     return con
 
 
@@ -192,7 +194,7 @@ def _source_path(batch: int, table: str) -> Path:
 
 
 def _scan_sql(path: Path, projection: str = "*") -> str:
-    return f"SELECT {projection} FROM delta_scan('{path}')"
+    return load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/scan_delta", projection=projection, path=quote_literal(str(path)))
 
 
 @dataclass(frozen=True)
@@ -211,11 +213,11 @@ def _bulk_scan_sql(spec: LoadSpec) -> str:
         f"CAST(NULL AS {data_type}) AS {quote_ident(name)}"
         for name, data_type in spec.extra_cols
     )
-    return f"SELECT {prefix}, source.* FROM ({spec.scan_sql}) AS source"
+    return load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/bulk_scan", prefix=prefix, scan_sql=spec.scan_sql)
 
 
 def _columns_from_scan(duck, scan_sql: str) -> list[tuple[str, str]]:
-    described = duck.sql(f"{scan_sql} LIMIT 0")
+    described = duck.sql(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/describe_scan", scan_sql=scan_sql))
     return [(c, _rw_type(t)) for c, t in zip(described.columns, described.types)]
 
 
@@ -246,9 +248,9 @@ def _insert_rows(rw_cur, table: str, columns: Sequence[str], rows: Iterable[Sequ
 
 
 def _flush(rw_cur, table: str, collist: str, placeholder: str, rows: list) -> int:
-    sql = (
-        f"INSERT INTO {_rel(table)} ({collist}) VALUES "
-        + ",".join([placeholder] * len(rows))
+    sql = load_sql(
+        "risingwave", "inline", "dbt_server/services_risingwave_sources/insert_values",
+        relation=_rel(table), columns=collist, values=",".join([placeholder] * len(rows)),
     )
     rw_cur.execute(sql, [v for r in rows for v in r])
     return len(rows)
@@ -280,8 +282,13 @@ def _load(rw_cur, duck, table: str, scan_sql: str, columns: Sequence[str],
 
 def _create_table_from_columns(rw_cur, table: str, columns: Sequence[tuple[str, str]]) -> list[str]:
     ddl_cols = ", ".join(f"{quote_ident(name)} {data_type}" for name, data_type in columns)
-    rw_cur.execute(f"DROP TABLE IF EXISTS {_rel(table)} CASCADE")
-    rw_cur.execute(f"CREATE TABLE {_rel(table)} ({ddl_cols})")
+    rw_cur.execute(load_sql(
+        "risingwave", "inline", "dbt_server/services_risingwave_sources/drop_table", relation=_rel(table)
+    ))
+    rw_cur.execute(load_sql(
+        "risingwave", "inline", "dbt_server/services_risingwave_sources/create_table",
+        relation=_rel(table), columns=ddl_cols,
+    ))
     return [name for name, _ in columns]
 
 
@@ -363,11 +370,10 @@ def _export_parquet(duck, scan_sql: str, directory: Path) -> tuple[list[tuple[st
     """Materialize a resolved Delta snapshot as parallel-readable Parquet."""
     columns = _columns_from_scan(duck, scan_sql)
     output = directory / "parts"
-    result = duck.execute(
-        f"COPY ({scan_sql}) TO {quote_literal(str(output))} "
-        "(FORMAT PARQUET, COMPRESSION SNAPPY, PER_THREAD_OUTPUT TRUE, "
-        "ROW_GROUP_SIZE 122880)"
-    ).fetchone()
+    result = duck.execute(load_sql(
+        "duckdb", "inline", "dbt_server/services_risingwave_sources/export_parquet",
+        scan_sql=scan_sql, destination=quote_literal(str(output)),
+    )).fetchone()
     row_count = int(result[0]) if result else 0
     files = sorted(output.glob("*.parquet")) if output.is_dir() else []
     if row_count and not files:
@@ -387,9 +393,9 @@ def _external_source_sql(source_name: str, columns: Sequence[tuple[str, str]], p
         f"s3.endpoint_url = {quote_literal(S3_ENDPOINT)}",
         "refresh.interval.sec = '1'",
     ])
-    return (
-        f"CREATE SOURCE {_rel(source_name)} ({ddl_cols}) "
-        f"WITH ({properties}) FORMAT PLAIN ENCODE PARQUET"
+    return load_sql(
+        "risingwave", "inline", "dbt_server/services_risingwave_sources/create_external_source",
+        relation=_rel(source_name), columns=ddl_cols, properties=properties,
     )
 
 
@@ -412,19 +418,19 @@ def _bulk_load_spec(spec: LoadSpec) -> int:
             if not row_count:
                 return 0
             keys = _upload_parquet(client, files, prefix)
-            cur.execute(f"SET batch_parallelism = {RW_BATCH_PARALLELISM}")
-            cur.execute(f"SET streaming_parallelism_for_source = {RW_SOURCE_PARALLELISM}")
-            cur.execute("SET statement_timeout = '4h'")
+            cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/set_batch_parallelism", value=RW_BATCH_PARALLELISM))
+            cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/set_source_parallelism", value=RW_SOURCE_PARALLELISM))
+            cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/set_statement_timeout", timeout=quote_literal("4h")))
             cur.execute(_external_source_sql(source_name, columns, prefix))
             collist = ", ".join(quote_ident(name) for name in names)
-            cur.execute(
-                f"INSERT INTO {_rel(spec.table)} ({collist}) "
-                f"SELECT {collist} FROM {_rel(source_name)}"
-            )
+            cur.execute(load_sql(
+                "risingwave", "inline", "dbt_server/services_risingwave_sources/insert_from_source",
+                target_relation=_rel(spec.table), source_relation=_rel(source_name), columns=collist,
+            ))
             return row_count
     finally:
         try:
-            cur.execute(f"DROP SOURCE IF EXISTS {_rel(source_name)}")
+            cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/drop_source", relation=_rel(source_name)))
         except Exception as exc:
             logger.warning("[risingwave] failed to drop staging source %s: %s", source_name, exc)
         if keys:
@@ -446,13 +452,12 @@ def _pgwire_load_spec(spec: LoadSpec, *, create: bool = True) -> int:
                 cur, duck, spec.table, spec.scan_sql, extra_cols=spec.extra_cols
             )
         else:
-            cur.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
-                (RW_SCHEMA, spec.table),
-            )
+            cur.execute(load_sql(
+                "risingwave", "inline", "dbt_server/services_risingwave_sources/list_columns",
+                schema=quote_literal(RW_SCHEMA), table=quote_literal(spec.table),
+            ))
             columns = [row[0] for row in cur.fetchall()]
-            scan_columns = list(duck.sql(f"{spec.scan_sql} LIMIT 0").columns)
+            scan_columns = list(duck.sql(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/describe_scan", scan_sql=spec.scan_sql)).columns)
             if len(scan_columns) != len(columns):
                 raise ValueError(
                     f"{spec.table}: input has {len(scan_columns)} columns, "
@@ -512,7 +517,7 @@ def _verify_loaded_counts(expected: Sequence[tuple[str, int]]) -> None:
     cur = conn.cursor()
     try:
         for table, expected_rows in expected:
-            cur.execute(f"SELECT COUNT(*) FROM {_rel(table)}")
+            cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/count_rows", relation=_rel(table)))
             actual = int(cur.fetchone()[0])
             if actual != expected_rows:
                 raise RuntimeError(
@@ -530,7 +535,7 @@ def init_sources() -> dict:
     conn = _connect()
     cur = conn.cursor()
     try:
-        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_ident(RW_SCHEMA)}")
+        cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/create_schema", schema=quote_ident(RW_SCHEMA)))
         # These tables are empty at batch 1 and populated by later CDC batches.
         for table in STAGING_CATEGORY_B:
             name = f"staging_{table}"
@@ -569,7 +574,7 @@ def init_sources() -> dict:
     loaded = _parallel_load(specs, _initial_load_spec)
     conn = _connect()
     try:
-        conn.cursor().execute("FLUSH")
+        conn.cursor().execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/flush"))
     finally:
         conn.close()
     _verify_loaded_counts([(table, rows) for table, rows, _, _ in loaded])
@@ -592,7 +597,7 @@ def init_sources() -> dict:
 
 
 def _mutation_statements(batch_num: int) -> tuple[list[str], list[dict]]:
-    """Same score-bucketed UPDATE/DELETE mix as the DuckLake engines."""
+    """Build RisingWave mutations from the shared catalog templates."""
     buckets = _mutation_buckets(batch_num)
     if not buckets or all(start == end for start, end, _ in buckets.values()):
         return [], []
@@ -600,15 +605,23 @@ def _mutation_statements(batch_num: int) -> tuple[list[str], list[dict]]:
     stmts: list[str] = []
     summaries: list[dict] = []
     for spec in MUTATION_SPECS:
-        rel = _rel(f"staging_{spec.table}")
+        table_relation = _rel(f"staging_{spec.table}")
         update_start, update_end, update_pct = buckets["update"]
         delete_start, delete_end, delete_pct = buckets["delete"]
-        if update_start != update_end:
-            pred = _score_predicate(spec, batch_num, update_start, update_end)
-            stmts.append(f"UPDATE {rel} SET {spec.update_assignments} WHERE {pred}")
-        if delete_start != delete_end:
-            pred = _score_predicate(spec, batch_num, delete_start, delete_end)
-            stmts.append(f"DELETE FROM {rel} WHERE {pred}")
+        for operation, start, end in (
+            ("update", update_start, update_end),
+            ("delete", delete_start, delete_end),
+        ):
+            if start != end:
+                stmts.append(load_sql(
+                    "risingwave",
+                    "inline",
+                    f"dbt_server/services_ducklake_sources/mutation_{spec.table}_{operation}",
+                    table_relation=table_relation,
+                    batch_offset=batch_num * 7919,
+                    start=start,
+                    end=end,
+                ))
         summaries.append({
             "table": f"staging_{spec.table}",
             "update_pct": str(update_pct),
@@ -647,13 +660,12 @@ def append_sources(batch_num: int, flush: bool = True) -> dict:
             for stmt in mutation_stmts:
                 cur.execute(stmt)
             for spec in specs:
-                cur.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
-                    (RW_SCHEMA, spec.table),
-                )
+                cur.execute(load_sql(
+                "risingwave", "inline", "dbt_server/services_risingwave_sources/list_columns",
+                schema=quote_literal(RW_SCHEMA), table=quote_literal(spec.table),
+            ))
                 columns = [row[0] for row in cur.fetchall()]
-                scan_columns = list(duck.sql(f"{spec.scan_sql} LIMIT 0").columns)
+                scan_columns = list(duck.sql(load_sql("duckdb", "inline", "dbt_server/services_risingwave_sources/describe_scan", scan_sql=spec.scan_sql)).columns)
                 if len(scan_columns) != len(columns):
                     raise ValueError(
                         f"{spec.table}: input has {len(scan_columns)} columns, "
@@ -662,7 +674,7 @@ def append_sources(batch_num: int, flush: bool = True) -> dict:
                 rows = _load(cur, duck, spec.table, spec.scan_sql, columns)
                 appended_rows.append((spec.table, rows))
             if flush:
-                cur.execute("FLUSH")
+                cur.execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/flush"))
         finally:
             conn.close()
             duck.close()
@@ -683,7 +695,7 @@ def append_sources(batch_num: int, flush: bool = True) -> dict:
         if flush:
             conn = _connect()
             try:
-                conn.cursor().execute("FLUSH")
+                conn.cursor().execute(load_sql("risingwave", "inline", "dbt_server/services_risingwave_sources/flush"))
             finally:
                 conn.close()
 

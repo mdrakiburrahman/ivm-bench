@@ -1,3 +1,4 @@
+-- catalog-override: RisingWave rejects USING across BIGINT/VARCHAR broker_id columns; cast both sides to STRING and use ON
 -- Gold: dim_account
 -- RisingWave variant: `using (broker_id)` cannot be used here. The two sides
 -- disagree on type — accounts.broker_id comes from the customer_mgmt XML as

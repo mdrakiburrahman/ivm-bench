@@ -1,22 +1,17 @@
-with s1 as (
-    select
-        *,
-        cast(transaction_timestamp as date) as sk_transaction_date
-    from
-        {{ ref('cash_transactions') }}
+WITH s1 AS (
+  SELECT
+    *,
+    CAST(transaction_timestamp AS DATE) AS sk_transaction_date
+  FROM {{ ref('cash_transactions') }}
 )
-select
-    sk_customer_id,
-    sk_account_id,
-    sk_transaction_date,
-    transaction_timestamp,
-    amount,
-    description
-from
-    s1
-join
-    {{ ref('dim_account') }} a
-on
-    s1.account_id = a.account_id
-and
-    s1.transaction_timestamp between a.effective_timestamp and a.end_timestamp
+SELECT
+  sk_customer_id,
+  sk_account_id,
+  sk_transaction_date,
+  transaction_timestamp,
+  amount,
+  description
+FROM s1
+JOIN {{ ref('dim_account') }} AS a
+  ON s1.account_id = a.account_id
+  AND s1.transaction_timestamp BETWEEN a.effective_timestamp AND a.end_timestamp

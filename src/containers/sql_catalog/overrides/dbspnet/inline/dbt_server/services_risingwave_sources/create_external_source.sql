@@ -1,0 +1,1 @@
+-- catalog-skip: RisingWave-only source connector DDL is not used by dbspnet.

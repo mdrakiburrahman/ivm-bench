@@ -210,7 +210,7 @@ CALL_REWRITES = [rewrite_round, rewrite_regexp_matches]
 
 #: Models whose port is a rewrite of the model itself rather than a regex over
 #: the DuckDB text. Copied over the generated file after the rewrites run.
-OVERRIDES = HERE / ".rw-overrides"
+OVERRIDES = HERE.parents[1] / "sql_catalog" / "overrides" / "risingwave" / "models"
 
 
 PROFILES_YML = """tpcdi:
@@ -303,7 +303,12 @@ def main() -> int:
             if not dst.exists():
                 print(f"override targets a model that does not exist: {rel}", file=sys.stderr)
                 return 1
-            shutil.copyfile(src, dst)
+            contents = src.read_bytes()
+            header, separator, body = contents.partition(b"\n")
+            if not separator or not header.startswith(b"-- catalog-override: "):
+                print(f"invalid catalog override header: {src}", file=sys.stderr)
+                return 1
+            dst.write_bytes(body)
             overridden.append(rel.as_posix())
 
     write_project_config(DST)

@@ -9,5 +9,6 @@
   "fabric-jvm-35": "spark",
   "fabric-openivm-jvm-35": "spark",
   "feldera": "postgres",
-  "dbspnet": "postgres"
+  "dbspnet": "postgres",
+  "risingwave": "risingwave"
 }
