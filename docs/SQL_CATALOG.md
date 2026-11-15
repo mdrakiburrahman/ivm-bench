@@ -66,10 +66,13 @@ PYTHONPATH=src/containers python -m sql_catalog overrides
 `check` verifies generated-file byte parity, stale skips, missing catalog
 sources for project SQL, override reasons, and unnecessary AST-equal overrides.
 `parity` parses each engine's final SQL with its configured dialect and compares
-the normalized Spark AST with the canonical source. Jinja control-block models
-are excluded from AST comparison. `generate` writes a model or macro when its
-project destination already exists or an engine override is present; inline
-SQL is loaded at runtime.
+the normalized Spark AST with the canonical source. It normalizes one-argument
+`TO_DATE(value)` and implicit descending null ordering (Spark/PostgreSQL default
+to `NULLS FIRST`); explicit `NULLS LAST` remains distinct. Byte-identical Spark
+SQL is equal without parsing, including syntax unsupported by SQLGlot.
+Jinja control-block models are excluded from AST comparison. `generate` writes
+a model or macro when its project destination already exists or an engine
+override is present; inline SQL is loaded at runtime.
 
 Exceptions are reasoned JSON entries under
 `src/containers/sql_catalog/exceptions/*.json`. Test paths (`*/tests/**`) are

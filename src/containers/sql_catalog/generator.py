@@ -37,6 +37,8 @@ _SQL_KEYWORDS = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+_NULL_ORDERING = re.compile(r"\bNULLS\s+(?:FIRST|LAST)\b", re.IGNORECASE)
+_SQL_CATALOG_CALL = re.compile(r"\bload_sql\s*\(")
 _EXEMPT_MARKER = re.compile(r"(?:^|\s)#\s*sql-catalog:\s*exempt\s+(\S.*?)\s*$")
 _EXEMPT_PREFIX = re.compile(r"(?:^|\s)#\s*sql-catalog:\s*exempt\b")
 
@@ -232,6 +234,11 @@ def _transpile_sql(source, dialect):
             rendered.append(statement.sql(dialect="spark", pretty=True))
             continue
         source_statement = statement.sql(dialect="spark")
+        if not _NULL_ORDERING.search(masked):
+            for ordered in statement.find_all(exp.Ordered):
+                if ordered.args.get("desc"):
+                    ordered.set("nulls_first", True)
+            source_statement = statement.sql(dialect="spark")
         output = sqlglot.transpile(
             source_statement,
             read="spark",
@@ -449,6 +456,14 @@ def _normalized_sql(sql, dialect):
         if isinstance(statement, exp.Command):
             text = re.sub(r"\s+", " ", statement.sql(dialect=dialect)).strip()
         else:
+            if dialect in {"spark", "postgres"} and not _NULL_ORDERING.search(masked):
+                for ordered in statement.find_all(exp.Ordered):
+                    if ordered.args.get("desc"):
+                        ordered.set("nulls_first", True)
+            for node in list(statement.find_all(exp.TsOrDsToDate)):
+                node.replace(
+                    exp.Cast(this=node.this.copy(), to=exp.DataType.build("DATE"))
+                )
             text = statement.sql(dialect="spark")
         normalized.append(_restore_tokens(text, tokens))
     return ";\n".join(normalized)
@@ -581,12 +596,15 @@ def parity_report(prefixes=()):
                 try:
                     final_sql = render_sql(engine, category, name)
                     canonical_sql = render_sql("spark", category, name)
-                    final_ast = _normalized_sql(final_sql, dialect)
-                    canonical_ast = _normalized_sql(canonical_sql, "spark")
-                    if final_ast is None or canonical_ast is None:
-                        status = "equal" if final_sql == canonical_sql else "DIFF"
+                    if dialect == "spark" and final_sql == canonical_sql:
+                        status = "equal"
                     else:
-                        status = "equal" if final_ast == canonical_ast else "DIFF"
+                        final_ast = _normalized_sql(final_sql, dialect)
+                        canonical_ast = _normalized_sql(canonical_sql, "spark")
+                        if final_ast is None or canonical_ast is None:
+                            status = "equal" if final_sql == canonical_sql else "DIFF"
+                        else:
+                            status = "equal" if final_ast == canonical_ast else "DIFF"
                 except (OSError, ValueError, sqlglot.ParseError) as error:
                     status = "DIFF"
                     differences.append(f"{engine}:{category}/{name}: {error}")
@@ -605,7 +623,7 @@ def overrides_ledger():
 
 
 def is_sql_candidate(line):
-    return bool(_SQL_KEYWORDS.search(line))
+    return not _SQL_CATALOG_CALL.search(line) and bool(_SQL_KEYWORDS.search(line))
 
 
 def _print_rows(rows):

@@ -15,6 +15,7 @@ from sql_catalog.generator import (
     _line_marker,
     _mask_jinja,
     _normalized_sql,
+    _override_is_unnecessary,
     _parse_override,
     _transpile_sql,
     check_catalog,
@@ -229,14 +230,80 @@ class SqlCatalogTests(unittest.TestCase):
         self.assertTrue(rendered.rstrip().endswith(";"))
         self.assertIn("DESCRIBE HISTORY source", _transpile_sql("DESCRIBE HISTORY source", "duckdb"))
 
-    def test_desc_null_order_is_preserved_for_postgres(self):
+    def test_desc_null_order_defaults_match_and_explicit_last_is_preserved(self):
         source = "SELECT x FROM t ORDER BY x DESC"
         rendered = _transpile_sql(source, "postgres")
-        self.assertIn("NULLS LAST", rendered)
+        self.assertNotIn("NULLS LAST", rendered)
+        self.assertEqual(
+            _normalized_sql(source, "spark"),
+            _normalized_sql(source, "postgres"),
+        )
         self.assertEqual(
             _normalized_sql(source, "spark"),
             _normalized_sql(rendered, "postgres"),
         )
+        explicit_last = _transpile_sql(f"{source} NULLS LAST", "postgres")
+        self.assertIn("NULLS LAST", explicit_last)
+        self.assertNotEqual(
+            _normalized_sql(source, "spark"),
+            _normalized_sql(explicit_last, "postgres"),
+        )
+
+    def test_to_date_and_cast_are_normalized_as_equivalent(self):
+        source = "SELECT TO_DATE(ts) AS d FROM t"
+        rendered = _transpile_sql(source, "postgres")
+        self.assertIn("CAST(ts AS DATE)", rendered)
+        self.assertEqual(
+            _normalized_sql(source, "spark"),
+            _normalized_sql(rendered, "postgres"),
+        )
+
+    def test_semantically_different_override_is_not_unnecessary(self):
+        source = "SELECT CAST(x AS BIGINT), 1 / NULLIF(n, 0) FROM t"
+        with tempfile.TemporaryDirectory() as directory:
+            canonical_path = Path(directory) / "canonical.sql"
+            canonical_path.write_text(source, encoding="utf-8")
+            override = {"sql": source, "skip": False}
+            with (
+                patch("sql_catalog.generator._catalog_path", return_value=canonical_path),
+                patch("sql_catalog.generator._load_engines", return_value={"duckdb": "duckdb"}),
+            ):
+                self.assertFalse(
+                    _override_is_unnecessary("duckdb", "models", "example", override)
+                )
+
+    def test_identical_spark_sql_skips_unsupported_parity_parse(self):
+        source = (
+            "SELECT COUNT(*) FROM ((SELECT c FROM mv EXCEPT ALL SELECT c FROM expected) "
+            "UNION ALL (SELECT c FROM expected EXCEPT ALL SELECT c FROM mv)) AS __ivm_diff"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            catalog_path = Path(directory) / "source.sql"
+            catalog_path.write_text(source, encoding="utf-8")
+            with (
+                patch("sql_catalog.generator._load_engines", return_value={"spark": "spark"}),
+                patch(
+                    "sql_catalog.generator._catalog_entries",
+                    return_value=[("inline", "diff_exact")],
+                ),
+                patch("sql_catalog.generator._catalog_path", return_value=catalog_path),
+                patch(
+                    "sql_catalog.generator._override_path",
+                    return_value=Path(directory) / "missing.sql",
+                ),
+                patch(
+                    "sql_catalog.generator._destination",
+                    return_value=Path(directory) / "project.sql",
+                ),
+                patch("sql_catalog.generator.render_sql", side_effect=[source, source]),
+                patch(
+                    "sql_catalog.generator._normalized_sql",
+                    side_effect=sqlglot.ParseError("unsupported Spark syntax"),
+                ),
+            ):
+                rows, differences = parity_report()
+        self.assertEqual([("spark", "inline", "diff_exact", "equal")], rows)
+        self.assertEqual([], differences)
 
     def test_jinja_control_blocks_require_overrides_for_other_dialects(self):
         source = "select * from source\n{% if condition %}\nwhere id = 1\n{% endif %}\n"
@@ -292,6 +359,12 @@ class SqlCatalogTests(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertTrue(is_sql_candidate(line))
+        self.assertFalse(
+            is_sql_candidate(
+                'desc = con.execute(load_sql("duckdb", "inline", '
+                'f"{SQL}/describe", relation=d)).fetchall()'
+            )
+        )
 
     def test_loader_rejects_path_traversal(self):
         with self.assertRaises(ValueError):
