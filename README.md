@@ -2,13 +2,15 @@
   <img src="https://rakirahman.blob.core.windows.net/public/images/Misc/dbt-incremental.png" alt="dbt Incremental View Maintenance Benchmark" width="30%">
 </p>
 
-# dbt - Incremental View Maintenance Benchmark
+<h3 align="center">dbt - Incremental View Maintenance Benchmark</h3>
 
 <p align="center">
 Benchmarking engine-specific IVM implementations using a TPC-DI dbt project, <em>without</em> using <a href="https://docs.getdbt.com/docs/build/incremental-models">dbt incremental</a> (because watermark columns are unreliable).
 </p>
 
-[dbt Docs](https://docs.getdbt.com/) · [Everything You Need to Know About Incremental View Maintenance](https://materializedview.io/p/everything-to-know-incremental-view-maintenance) · [Short doc on IVM](https://rakirahman.blob.core.windows.net/public/books/INCREMENTAL_VIEW_MAINTENANCE.pdf) · [DBSP Paper](https://bit.ly/dbsp-paper-full) · [OpenIVM Paper](https://bit.ly/openivm-paper)
+<p align="center">
+<a href="https://docs.getdbt.com/">dbt Docs</a> · <a href="https://materializedview.io/p/everything-to-know-incremental-view-maintenance">Everything You Need to Know About Incremental View Maintenance</a> · <a href="https://rakirahman.blob.core.windows.net/public/books/INCREMENTAL_VIEW_MAINTENANCE.pdf">Short doc on IVM</a> · <a href="https://bit.ly/dbsp-paper-full">DBSP Paper</a> · <a href="https://bit.ly/openivm-paper">OpenIVM Paper</a>
+</p>
 
 Benchmarks Incremental View Maintenance capabilities on various Open Source engines with [the TPC-DI-based data model](https://www.tpc.org/tpcdi/) for **educational purposes**.
 

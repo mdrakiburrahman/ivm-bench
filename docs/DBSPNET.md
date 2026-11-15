@@ -2,8 +2,6 @@
 
 [Back to README](../README.md)
 
-[Back to README](../README.md)
-
 Adds **DbspNet** — a .NET DBSP implementation ([clast-project/dbsp-net](https://github.com/clast-project/dbsp-net))
 — as an ivm-bench engine. Same class as Feldera (streaming IVM / DBSP, view-only SQL,
 Delta input/output), so it slots in the same way.

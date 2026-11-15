@@ -342,5 +342,6 @@ jobs:
       - name: "🧹 Docker cleanup"
         if: always()
         run: |
-          docker compose -f docker/docker-compose.benchmark-server.yml down --remove-orphans 2>/dev/null || true
-          docker system prune -f 2>/dev/null || true
+          if [[ -n "${IVM_BENCH_RUN_ID:-}" ]]; then
+            bash tools/scripts/cleanup-benchmark-run.sh "$IVM_BENCH_RUN_ID"
+          fi
