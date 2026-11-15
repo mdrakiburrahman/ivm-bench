@@ -1,0 +1,1 @@
+SELECT (SELECT count(*) FROM ((SELECT * FROM {mv_name}) EXCEPT ALL (SELECT * FROM ({sql}) __q)) __d1) + (SELECT count(*) FROM ((SELECT * FROM ({sql}) __q2) EXCEPT ALL (SELECT * FROM {mv_name})) __d2) AS diff
