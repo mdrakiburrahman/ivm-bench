@@ -21,8 +21,10 @@ from sql_catalog.generator import (
     _mask_jinja,
     _normalized_sql,
     _override_is_unnecessary,
+    _override_path,
     _parse_override,
     _project_targets,
+    _skips,
     _transpile_sql,
     check_catalog,
     generate_macro,
@@ -167,7 +169,7 @@ class SqlCatalogTests(unittest.TestCase):
             duckdb_override = root / "duckdb" / "models" / "only-override.sql"
             duckdb_override.parent.mkdir(parents=True)
             duckdb_override.write_text(
-                "-- catalog-skip: intentionally unsupported\n",
+                "-- catalog-override: engine-only test fixture\nSELECT 1\n",
                 encoding="utf-8",
             )
             with (
@@ -367,9 +369,26 @@ class SqlCatalogTests(unittest.TestCase):
             self.assertEqual("uses engine-specific syntax", override["reason"])
             self.assertEqual("SELECT 1\n", override["sql"])
             path.write_text("-- catalog-skip: intentionally unsupported\n", encoding="utf-8")
-            skipped = _parse_override(path)
-            self.assertTrue(skipped["skip"])
-            self.assertIsNone(skipped["sql"])
+            with self.assertRaisesRegex(ValueError, "skips.json"):
+                _parse_override(path)
+
+    def test_skip_metadata_prevents_rendering(self):
+        engine, category, name = (
+            "duckdb", "inline", "dbt_server/services_query_plans/explain_formatted"
+        )
+        self.assertTrue(_skips()[(engine, category, name)])
+        with self.assertRaisesRegex(ValueError, "is skipped"):
+            load_sql(engine, category, name)
+
+    def test_identical_engine_overrides_share_one_source(self):
+        name = "gold/analytics/trade_volume_stats"
+        spark = _override_path("spark-openivm", "models", name)
+        fabric = _override_path("fabric-jvm-35", "models", name)
+        self.assertEqual(spark, fabric)
+        self.assertEqual(
+            load_sql("spark-openivm", "models", name),
+            load_sql("fabric-jvm-35", "models", name),
+        )
 
     def test_line_exemption_requires_a_reason_and_supports_both_positions(self):
         lines = [

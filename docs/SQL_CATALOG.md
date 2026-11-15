@@ -16,8 +16,13 @@ service that executes it. Never commit generated project SQL.
   The first line must be `-- catalog-override: <specific reason>`. The generator
   strips that line and emits the remaining SQL verbatim; overrides are never
   transpiled.
-- An intentional absence uses a file at the same override path containing only
-  `-- catalog-skip: <reason>`. Generation emits nothing, and `check` reports a
+- When engines need exactly the same override, store it once under
+  `overrides/shared/<engine-group>/<category>/<path>.sql` and list the engines
+  and paths in `shared_overrides.json`. A group name joins sorted engine names
+  with `__`. Engine-specific SQL and a shared override for the same target are
+  rejected as duplicates.
+- Intentional absences are grouped by engine and reason in `skips.json` rather
+  than stored as SQL files. Generation emits nothing, and `check` reports a
   stale dbt project file if one remains.
 
 An override reason names the engine constraint and SQL construct; avoid generic
@@ -27,6 +32,10 @@ ledger. `engines.json` maps every configured engine ID to its SQLGlot dialect.
 it contains paths only, not SQL. Add a target there when introducing a dbt
 model or macro. An engine's absence from a group means that project does not
 use that entry; a reasoned skip describes an intentional unsupported case.
+Exceptions cover engine-only commands and source models, adapter/Jinja syntax,
+and semantic differences SQLGlot cannot preserve (such as casts and ordering).
+The ledger distinguishes these SQL overrides from intentional skips; it is not
+an assertion that every exception is permanently required.
 
 ## Rendering and porting
 

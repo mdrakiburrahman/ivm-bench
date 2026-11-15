@@ -1,1 +1,0 @@
--- catalog-skip: The engine does not use this Spark and DuckDB adapter verification probe.

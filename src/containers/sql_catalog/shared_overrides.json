@@ -1,0 +1,117 @@
+[
+  {
+    "category": "inline",
+    "engines": [
+      "databricks-enzyme",
+      "spark",
+      "spark-openivm"
+    ],
+    "paths": [
+      "compiler_bench/engines/spark_insert_parquet"
+    ]
+  },
+  {
+    "category": "inline",
+    "engines": [
+      "duckdb",
+      "duckdb-openivm"
+    ],
+    "paths": [
+      "compiler_bench/benchmark_server_corpus/tpcc_delta_insert_history",
+      "compiler_bench/benchmark_server_corpus/tpcc_delta_update_order_line",
+      "compiler_bench/engines/duckdb_attach_ducklake",
+      "compiler_bench/engines/duckdb_describe",
+      "compiler_bench/engines/duckdb_drop_table",
+      "compiler_bench/engines/duckdb_execute",
+      "compiler_bench/engines/duckdb_insert_parquet",
+      "compiler_bench/engines/duckdb_install_ducklake",
+      "compiler_bench/engines/duckdb_load_ducklake",
+      "compiler_bench/engines/duckdb_load_icu",
+      "compiler_bench/engines/duckdb_ready",
+      "compiler_bench/engines/duckdb_set_memory_limit",
+      "compiler_bench/engines/duckdb_set_temp_directory",
+      "compiler_bench/engines/duckdb_set_threads",
+      "compiler_bench/engines/duckdb_use_ducklake",
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float",
+      "dbt_server/services_ducklake_sources/attach_ducklake",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/install_ducklake",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update"
+    ]
+  },
+  {
+    "category": "inline",
+    "engines": [
+      "spark",
+      "spark-openivm"
+    ],
+    "paths": [
+      "compiler_bench/engines/spark_create_database",
+      "compiler_bench/engines/spark_create_delta_table",
+      "compiler_bench/engines/spark_describe",
+      "compiler_bench/engines/spark_drop_database",
+      "compiler_bench/engines/spark_use_database"
+    ]
+  },
+  {
+    "category": "macros",
+    "engines": [
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35"
+    ],
+    "paths": [
+      "generate_schema_name"
+    ]
+  },
+  {
+    "category": "models",
+    "engines": [
+      "databricks-enzyme",
+      "fabric-jvm-35",
+      "fabric-openivm-jvm-35",
+      "spark-openivm"
+    ],
+    "paths": [
+      "gold/analytics/broker_performance",
+      "gold/analytics/daily_market_pulse",
+      "gold/analytics/trade_volume_stats",
+      "silver/financials"
+    ]
+  },
+  {
+    "category": "models",
+    "engines": [
+      "duckdb",
+      "duckdb-openivm"
+    ],
+    "paths": [
+      "bronze/brokerage/brokerage_trade",
+      "bronze/brokerage/brokerage_trade_history",
+      "bronze/crm/crm_customer_mgmt",
+      "bronze/finwire/finwire_company",
+      "bronze/finwire/finwire_financial",
+      "bronze/finwire/finwire_security",
+      "gold/analytics/broker_performance",
+      "gold/analytics/customer_concentration",
+      "gold/analytics/daily_market_pulse",
+      "gold/analytics/market_volatility",
+      "gold/analytics/trade_volume_stats",
+      "gold/dim_customer",
+      "gold/fact_cash_transactions",
+      "gold/fact_holdings",
+      "gold/fact_market_history",
+      "gold/fact_trade",
+      "gold/fact_watches",
+      "silver/accounts",
+      "silver/companies",
+      "silver/customers",
+      "silver/daily_market",
+      "silver/financials",
+      "silver/securities",
+      "silver/trades_history"
+    ]
+  }
+]

@@ -1,1 +1,0 @@
--- catalog-skip: duckdb-openivm does not use the Spark query-plan EXPLAIN FORMATTED command.

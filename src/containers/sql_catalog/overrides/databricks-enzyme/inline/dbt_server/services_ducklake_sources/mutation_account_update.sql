@@ -1,1 +1,0 @@
--- catalog-skip: not used by databricks-enzyme; only duckdb and duckdb-openivm use the DuckLake source loader.

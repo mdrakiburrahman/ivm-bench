@@ -6,6 +6,7 @@ import re
 import sys
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 import sqlglot
@@ -113,7 +114,12 @@ def _catalog_path(category, name):
 def _override_path(engine, category, name):
     if category not in _CATEGORIES:
         raise ValueError(f"Unsupported SQL category: {category!r}")
-    return _sql_path(PACKAGE_DIR / "overrides" / engine / category, name)
+    name = _relative_sql_path(name).as_posix()
+    shared = _shared_overrides().get((engine, category, name))
+    root = PACKAGE_DIR / "overrides"
+    if shared is not None:
+        return _sql_path(root / "shared" / shared / category, name)
+    return _sql_path(root / engine / category, name)
 
 
 def _load_engines():
@@ -122,6 +128,46 @@ def _load_engines():
     if not isinstance(engines, dict) or not engines:
         raise ValueError("engines.json must contain a non-empty engine-to-dialect mapping")
     return engines
+
+
+@lru_cache(maxsize=1)
+def _shared_overrides():
+    with (PACKAGE_DIR / "shared_overrides.json").open(encoding="utf-8") as file:
+        groups = json.load(file)
+    if not isinstance(groups, list):
+        raise ValueError("shared_overrides.json must contain a list")
+    shared = {}
+    sources = set()
+    for group in groups:
+        if not isinstance(group, dict) or set(group) != {"engines", "category", "paths"}:
+            raise ValueError("shared_overrides.json: invalid group")
+        engines, category, paths = group["engines"], group["category"], group["paths"]
+        if not isinstance(engines, list) or len(engines) < 2 or engines != sorted(set(engines)):
+            raise ValueError("shared_overrides.json: engines must be sorted and distinct")
+        if any(engine not in _load_engines() for engine in engines) or category not in _CATEGORIES:
+            raise ValueError("shared_overrides.json: unknown engine or category")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("shared_overrides.json: group needs paths")
+        group_name = "__".join(engines)
+        for name in paths:
+            if _relative_sql_path(name).as_posix() != name:
+                raise ValueError(f"shared_overrides.json: invalid path {name!r}")
+            source = _sql_path(PACKAGE_DIR / "overrides" / "shared" / group_name / category, name)
+            if not source.is_file():
+                raise ValueError(f"shared_overrides.json: missing SQL source {source}")
+            sources.add(source)
+            for engine in engines:
+                key = (engine, category, name)
+                if key in shared or key in _skips():
+                    raise ValueError(f"shared_overrides.json: conflicting target {key!r}")
+                if _sql_path(PACKAGE_DIR / "overrides" / engine / category, name).is_file():
+                    raise ValueError(f"shared_overrides.json: duplicate engine SQL for {key!r}")
+                shared[key] = group_name
+    root = PACKAGE_DIR / "overrides" / "shared"
+    for path in root.rglob("*.sql"):
+        if path.resolve() not in sources:
+            raise ValueError(f"shared_overrides.json: undeclared shared SQL source {path}")
+    return shared
 
 
 def _project_targets():
@@ -155,7 +201,48 @@ def _project_targets():
     return targets
 
 
+@lru_cache(maxsize=1)
+def _skips():
+    with (PACKAGE_DIR / "skips.json").open(encoding="utf-8") as file:
+        groups = json.load(file)
+    if not isinstance(groups, list):
+        raise ValueError("skips.json must contain a list")
+    skips = {}
+    for group in groups:
+        if not isinstance(group, dict) or set(group) != {"engine", "category", "reason", "paths"}:
+            raise ValueError("skips.json: invalid skip group")
+        engine, category, reason, paths = (
+            group["engine"], group["category"], group["reason"], group["paths"]
+        )
+        if engine not in _load_engines() or category not in _CATEGORIES:
+            raise ValueError(f"skips.json: unknown engine or category: {engine!r}, {category!r}")
+        if not isinstance(reason, str) or not reason.strip() or not isinstance(paths, list) or not paths:
+            raise ValueError("skips.json: each group needs a reason and paths")
+        for name in paths:
+            if _relative_sql_path(name).as_posix() != name:
+                raise ValueError(f"skips.json: invalid path {name!r}")
+            key = (engine, category, name)
+            if key in skips:
+                raise ValueError(f"skips.json: duplicate skip {key!r}")
+            skips[key] = reason
+    return skips
+
+
 def _parse_override(path):
+    root = (PACKAGE_DIR / "overrides").resolve()
+    try:
+        relative = path.resolve().relative_to(root)
+    except ValueError:
+        relative = None
+    reason = None
+    if relative is not None and len(relative.parts) >= 3 and relative.suffix == ".sql":
+        engine, category = relative.parts[:2]
+        name = Path(*relative.parts[2:]).with_suffix("").as_posix()
+        reason = _skips().get((engine, category, name))
+    if reason is not None:
+        if path.is_file():
+            raise ValueError(f"{path}: SQL override conflicts with skips.json")
+        return {"reason": reason, "sql": None, "skip": True}
     if not path.is_file():
         return None
     content = path.read_text(encoding="utf-8")
@@ -169,15 +256,9 @@ def _parse_override(path):
             raise ValueError(f"{path}: catalog override requires SQL after its header")
         return {"reason": reason, "sql": body, "skip": False}
     if header.startswith("-- catalog-skip:"):
-        reason = header.removeprefix("-- catalog-skip:").strip()
-        if not reason:
-            raise ValueError(f"{path}: catalog skip requires a reason")
-        if separator and body.strip():
-            raise ValueError(f"{path}: catalog skip may contain only its header")
-        return {"reason": reason, "sql": None, "skip": True}
+        raise ValueError(f"{path}: put reasoned skips in skips.json, not SQL files")
     raise ValueError(
-        f"{path}: first line must be '-- catalog-override: <reason>' "
-        "or '-- catalog-skip: <reason>'"
+        f"{path}: first line must be '-- catalog-override: <reason>'"
     )
 
 
@@ -211,6 +292,8 @@ def _override_names(engine=None, category=None):
         if len(relative.parts) < 3:
             continue
         path_engine, path_category = relative.parts[:2]
+        if path_engine == "shared":
+            continue
         if engine is not None and path_engine != engine:
             continue
         if category is not None and path_category != category:
@@ -224,6 +307,22 @@ def _override_names(engine=None, category=None):
                 .as_posix(),
                 path,
             )
+        )
+    for path_engine, path_category, name in _shared_overrides():
+        if engine is not None and path_engine != engine:
+            continue
+        if category is not None and path_category != category:
+            continue
+        names.append(
+            (path_engine, path_category, name, _override_path(path_engine, path_category, name))
+        )
+    for path_engine, path_category, name in _skips():
+        if engine is not None and path_engine != engine:
+            continue
+        if category is not None and path_category != category:
+            continue
+        names.append(
+            (path_engine, path_category, name, _override_path(path_engine, path_category, name))
         )
     return sorted(names)
 

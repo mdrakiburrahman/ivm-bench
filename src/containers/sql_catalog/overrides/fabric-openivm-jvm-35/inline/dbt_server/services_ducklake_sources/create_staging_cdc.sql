@@ -1,1 +1,0 @@
--- catalog-skip: not used by fabric-openivm-jvm-35; only duckdb and duckdb-openivm use the DuckLake source loader.

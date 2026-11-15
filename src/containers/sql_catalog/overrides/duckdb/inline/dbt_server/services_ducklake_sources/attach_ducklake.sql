@@ -1,2 +1,0 @@
--- catalog-override: engine-only: DuckDB's DuckLake SQLite-URI ATTACH syntax is not valid Spark SQL.
-ATTACH 'ducklake:sqlite:{metadata_path}' AS ducklake (DATA_PATH {data_path}, data_inlining_row_limit 0){terminator}

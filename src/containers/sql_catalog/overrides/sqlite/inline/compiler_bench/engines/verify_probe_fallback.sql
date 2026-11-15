@@ -1,1 +1,0 @@
--- catalog-skip: SQLite metadata access does not run the compiler-bench EXCEPT ALL verifier.

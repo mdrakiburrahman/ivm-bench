@@ -1,1 +1,0 @@
--- catalog-skip: not used by databricks-enzyme; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.
