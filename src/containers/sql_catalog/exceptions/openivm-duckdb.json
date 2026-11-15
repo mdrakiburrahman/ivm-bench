@@ -1,0 +1,14 @@
+[
+  {
+    "path": "src/containers/dbt-server/services/openivm_validation.py",
+    "reason": "The SELECT statements against runs and run_nodes query the harness-internal SQLite results database, not the benchmark SQL engine."
+  },
+  {
+    "path": "src/containers/dbt-server/services/spark_openivm_validation.py",
+    "reason": "The SELECT statements against runs and run_nodes query the harness-internal SQLite results database, not the benchmark SQL engine."
+  },
+  {
+    "path": "src/containers/dbt-server/services/fabric_dbt_profile.py",
+    "reason": "This file only classifies SQL statements already emitted by dbt for Fabric timing logs; its SQL-prefix tokens are not executed here."
+  }
+]
