@@ -60,23 +60,22 @@ class SqlCatalogTests(unittest.TestCase):
             paths = generate_models("duckdb", output)
             self.assertEqual([Path(output) / "silver" / "date.sql"], paths)
 
-    def test_generate_schema_name_macro_matches_each_engine(self):
+    def test_catalog_macros_match_existing_engine_copies(self):
         projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"
-        engines = [
-            engine
-            for engine in ENGINES
-            if (projects / engine / "macros" / "generate_schema_name.sql").is_file()
-        ]
-        self.assertTrue(engines)
-        for engine in engines:
-            with self.subTest(engine=engine):
-                current = (projects / engine / "macros" / "generate_schema_name.sql").read_text(
-                    encoding="utf-8"
-                )
-                self.assertEqual(
-                    current,
-                    load_sql(engine, "macros", "generate_schema_name"),
-                )
+        catalog = CONTAINERS_DIR / "sql_catalog" / "sql" / "spark" / "macros"
+        checked = 0
+        for source in sorted(catalog.rglob("*.sql")):
+            relative = source.relative_to(catalog)
+            macro = relative.with_suffix("").as_posix()
+            for engine in ENGINES:
+                project_macro = projects / engine / "macros" / relative
+                if not project_macro.is_file():
+                    continue
+                with self.subTest(engine=engine, macro=macro):
+                    current = project_macro.read_text(encoding="utf-8")
+                    self.assertEqual(current, load_sql(engine, "macros", macro))
+                checked += 1
+        self.assertGreater(checked, 0)
 
     def test_macro_generation_preserves_project_relative_path(self):
         with tempfile.TemporaryDirectory() as output:
@@ -87,8 +86,23 @@ class SqlCatalogTests(unittest.TestCase):
     def test_bulk_macro_generation_applies_known_overrides(self):
         with tempfile.TemporaryDirectory() as output:
             paths = generate_macros("databricks-enzyme", output)
-            self.assertEqual([Path(output) / "generate_schema_name.sql"], paths)
-            self.assertIn("DATABRICKS_EXPERIMENT_ID", paths[0].read_text(encoding="utf-8"))
+            self.assertEqual(
+                [
+                    Path(output) / "generate_schema_name.sql",
+                    Path(output) / "load_fabric_sources.sql",
+                    Path(output) / "materializations" / "materialized_view.sql",
+                    Path(output) / "materializations" / "table.sql",
+                    Path(output) / "openivm_setup.sql",
+                    Path(output) / "register_sources.sql",
+                ],
+                paths,
+            )
+            rendered = {
+                path.relative_to(output).as_posix(): path.read_text(encoding="utf-8")
+                for path in paths
+            }
+            self.assertIn("DATABRICKS_EXPERIMENT_ID", rendered["generate_schema_name.sql"])
+            self.assertIn("REFRESH POLICY", rendered["materializations/materialized_view.sql"])
 
     def test_build_inputs_match_catalog_output_for_existing_engines(self):
         projects = CONTAINERS_DIR / "dbt-server" / "dbt-projects"
