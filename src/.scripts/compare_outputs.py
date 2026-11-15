@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Correctness check: diff DbspNet's gold output tables against Feldera's.
 
-Both engines write full-state (mode: truncate) Delta tables to
-mount/results/<SF>/<engine>/gold/<view>. We resolve each table's CURRENT live
-parquet files straight from its _delta_log (replaying add/remove across commits,
-so superseded truncate files are dropped) and read those with DuckDB's plain
-read_parquet — NO delta extension, so engineered-wood's / Feldera's _delta_log
-quirks (which delta-kernel-rs rejects) don't matter.
+Both engines write Delta tables to mount/results/<SF>/<engine>/gold/<view>. Each is read
+as its CURRENT logical contents by gold_tables.py: DbspNet's deletion vectors applied,
+Feldera's __feldera_op change log netted, timestamps compared as UTC instants. Read raw,
+both engines' retractions look like extra rows. That raw read is what produced July 2026's
+false "Feldera duplicates" and "SCD tie" verdicts (dbsp-net issue #6).
 
 For each of the 16 gold views it reports:
   * row counts on each side
@@ -20,19 +19,19 @@ correctness problem. data_diff>0 is a real divergence.
 
 Run (from repo root, after a run with PRESERVE_RESULTS=1):
 
-    docker run --rm -w /work \
-      -v "$PWD/mount:/mount:ro" \
-      -v "$PWD/src/.scripts/compare_outputs.py:/work/compare_outputs.py:ro" \
-      python:3.11-slim bash -c "pip install --quiet duckdb "pyarrow==17.0.0" "numpy<2" && SF=3 python3 compare_outputs.py"
+    docker run --rm -w /work/src/.scripts \
+      -v "$PWD/mount:/mount:ro" -v "$PWD/src/.scripts:/work/src/.scripts:ro" \
+      python:3.11-slim bash -c "pip install --quiet 'duckdb<2' && SF=3 python3 compare_outputs.py"
+
+or natively, in any venv with ``duckdb<2``:
+``RESULTS_BASE=$PWD/mount/results/3 python src/.scripts/compare_outputs.py``.
+DuckDB 2.0 changed its connection API and breaks these scripts, hence the pin.
 """
-import glob
-import json
 import os
 import sys
-import urllib.parse
 
-import duckdb
-import pyarrow.parquet as pq
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gold_tables  # noqa: E402
 
 SF = os.environ.get("SF", "3")
 BASE = os.environ.get("RESULTS_BASE", f"/mount/results/{SF}")
@@ -46,37 +45,12 @@ VIEWS = [
 ]
 
 
-def live_files(table_dir):
-    """Current live parquet files, from replaying the _delta_log add/remove log."""
-    log = os.path.join(table_dir, "_delta_log")
-    live = {}
-    for commit in sorted(glob.glob(os.path.join(log, "*.json"))):
-        with open(commit) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                act = json.loads(line)
-                if "add" in act:
-                    live[act["add"]["path"]] = True
-                elif "remove" in act:
-                    live.pop(act["remove"]["path"], None)
-    return [os.path.join(table_dir, urllib.parse.unquote(p)) for p in live]
-
 
 def main() -> int:
-    con = duckdb.connect()
+    con = gold_tables.connect()
 
     def rel(engine, view):
-        # Read via pyarrow (DuckDB's parquet reader rejects engineered-wood's Thrift
-        # footer) and hand DuckDB the Arrow table for the set diff.
-        files = live_files(f"{BASE}/{engine}/gold/{view}")
-        if not files:
-            return None
-        tbl = pq.read_table(files)  # noqa: F841 — referenced by name in the SQL below
-        name = f"{engine}_{view}"
-        con.register(name, tbl)
-        return name
+        return gold_tables.register(con, BASE, engine, view)
 
     def project(r, cols, types):
         sel = []

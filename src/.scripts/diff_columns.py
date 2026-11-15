@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Per-column drill-down for views that compare_outputs.py flags as different.
 
-For each view it registers both engines' current live parquet (via _delta_log replay,
-read through pyarrow) and, for every column, compares the *multiset* of values on each
+For each view it registers both engines' current table contents (see gold_tables.py)
+and, for every column, compares the *multiset* of values on each
 side — order-independent, no row alignment needed:
 
     diff(col) = |dbspnet.col EXCEPT ALL feldera.col| + |feldera.col EXCEPT ALL dbspnet.col|
@@ -16,25 +16,24 @@ few example values from each side are printed. This separates:
 FLOAT/DOUBLE columns are rounded to FLOAT_ROUND (default 6). DECIMAL columns are compared
 as-is, so a scale/precision mismatch shows up here (that's the point).
 
+Tables are read through gold_tables.py, the same as compare_outputs.py: DbspNet's deletion
+vectors applied, Feldera's __feldera_op change log netted, timestamps compared as UTC instants.
+
 Run (from repo root, after a run with PRESERVE_RESULTS=1). VIEWS defaults to the views
 compare_outputs.py flagged; override by passing names as args or via the VIEWS env:
 
-    docker run --rm -w /work \
-      -v "$PWD/mount:/mount:ro" \
-      -v "$PWD/src/.scripts/diff_columns.py:/work/diff_columns.py:ro" \
+    docker run --rm -w /work/src/.scripts \
+      -v "$PWD/mount:/mount:ro" -v "$PWD/src/.scripts:/work/src/.scripts:ro" \
       python:3.11-slim \
-      bash -c "pip install --quiet duckdb 'pyarrow==17.0.0' 'numpy<2' && \
-               SF=3 python3 diff_columns.py dim_account market_volatility trade_volume_stats \
-                                            customer_concentration broker_performance dim_trade fact_watches"
+      bash -c "pip install --quiet 'duckdb<2' && SF=3 python3 diff_columns.py dim_account market_volatility"
+
+or natively with ``RESULTS_BASE=$PWD/mount/results/3``, in a venv with ``duckdb<2``.
 """
-import glob
-import json
 import os
 import sys
-import urllib.parse
 
-import duckdb
-import pyarrow.parquet as pq
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gold_tables  # noqa: E402
 
 SF = os.environ.get("SF", "3")
 BASE = os.environ.get("RESULTS_BASE", f"/mount/results/{SF}")
@@ -46,22 +45,6 @@ DEFAULT_VIEWS = [
 ]
 
 
-def live_files(table_dir):
-    log = os.path.join(table_dir, "_delta_log")
-    live = {}
-    for commit in sorted(glob.glob(os.path.join(log, "*.json"))):
-        with open(commit) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                act = json.loads(line)
-                if "add" in act:
-                    live[act["add"]["path"]] = True
-                elif "remove" in act:
-                    live.pop(act["remove"]["path"], None)
-    return [os.path.join(table_dir, urllib.parse.unquote(p)) for p in live]
-
 
 def expr(col, typ):
     if FLOAT_ROUND > 0 and typ.upper() in ("FLOAT", "DOUBLE", "REAL"):
@@ -72,15 +55,10 @@ def expr(col, typ):
 def main():
     views = [a for a in sys.argv[1:] if not a.startswith("-")] or \
         os.environ.get("VIEWS", "").split() or DEFAULT_VIEWS
-    con = duckdb.connect()
+    con = gold_tables.connect()
 
     def reg(engine, view):
-        files = live_files(f"{BASE}/{engine}/gold/{view}")
-        if not files:
-            return None
-        name = f"{engine}_{view}"
-        con.register(name, pq.read_table(files))
-        return name
+        return gold_tables.register(con, BASE, engine, view)
 
     for v in views:
         print("=" * 72)
