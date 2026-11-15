@@ -22,6 +22,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from services import databricks_enzyme_sources as src
+from sql_catalog import load_sql
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,11 @@ def _list_relations_in_schema(
     out: List[Dict[str, str]] = []
     try:
         df = execute(
-            "SELECT table_schema, table_name, table_type "
-            f"FROM `{catalog}`.information_schema.tables "
-            f"WHERE table_schema = '{schema}'"
+            load_sql(
+                "databricks-enzyme", "inline",
+                "dbt_server/services_databricks_enzyme_metrics/list_relations_in_schema",
+                catalog=catalog, schema=schema,
+            )
         )
         if df is not None and not df.empty:
             for _, row in df.iterrows():
@@ -74,7 +77,11 @@ def _list_relations_in_schema(
             exc,
         )
     try:
-        df = execute(f"SHOW TABLES IN `{catalog}`.`{schema}`")
+        df = execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_metrics/show_tables",
+            catalog=catalog, schema=schema,
+        ))
         if df is None or df.empty:
             return out
         for _, row in df.iterrows():
@@ -100,7 +107,11 @@ def _list_relations_in_schema(
     # explicitly so storage collection does not issue ANALYZE TABLE against
     # them and turn an expected zero-byte relation into a false probe failure.
     try:
-        views = execute(f"SHOW VIEWS IN `{catalog}`.`{schema}`")
+        views = execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_metrics/show_views",
+            catalog=catalog, schema=schema,
+        ))
         if views is not None and not views.empty:
             view_names = {
                 str(
@@ -136,10 +147,10 @@ def list_relations(deadline: Optional[float] = None) -> List[Dict[str, str]]:
     """Return all experiment relations, normally with one catalog query."""
     schemas = _candidate_schemas()
     quoted = ", ".join(f"'{schema}'" for schema in schemas)
-    sql = (
-        "SELECT table_schema, table_name, table_type "
-        f"FROM `{src.CATALOG}`.information_schema.tables "
-        f"WHERE table_schema IN ({quoted})"
+    sql = load_sql(
+        "databricks-enzyme", "inline",
+        "dbt_server/services_databricks_enzyme_metrics/list_relations",
+        catalog=src.CATALOG, schemas=quoted,
     )
     execute = src._execute
     if deadline is not None:
@@ -176,14 +187,21 @@ def analyze_storage(rel: Dict[str, str], deadline: Optional[float] = None):
     """Return complete storage metrics for one relation on an isolated connection."""
     fqn = f"`{src.CATALOG}`.`{rel['schema']}`.`{rel['name']}`"
     return src.execute_isolated(
-        f"ANALYZE TABLE {fqn} COMPUTE STORAGE METRICS",
+        load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_metrics/analyze_storage", fqn=fqn,
+        ),
         timeout_s=_remaining(deadline, default=1800.0),
     )
 
 
 def _describe_history(fqn: str, limit: int = 10) -> List[Dict[str, Any]]:
     try:
-        df = src._execute(f"DESCRIBE HISTORY {fqn} LIMIT {limit}")
+        df = src._execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_metrics/describe_history",
+            fqn=fqn, limit=limit,
+        ))
     except Exception as exc:
         logger.warning(
             "[databricks-enzyme/metrics] DESCRIBE HISTORY %s failed: %s",
