@@ -26,6 +26,9 @@ synthesises one experiment from its per-knob inputs.
 Manual dispatches write results to the job summary by default. Set the optional
 string input `pr_number` (for example, `-f pr_number=100`) to also post a results
 comment, including the best-effort per-batch chart, on that pull request.
+Dispatch uses `batch_1_pct` for the initial insert percentage; the duplicate
+`batch_1_insert_pct` input is omitted to stay within GitHub's 25-input limit.
+Experiments JSON files still accept `batch_1_insert_pct`.
 
 To compare OpenIVM revisions, change both `ARG OPENIVM_COMMIT` defaults in
 [`src/containers/duckdb-openivm/Dockerfile`](../src/containers/duckdb-openivm/Dockerfile)
