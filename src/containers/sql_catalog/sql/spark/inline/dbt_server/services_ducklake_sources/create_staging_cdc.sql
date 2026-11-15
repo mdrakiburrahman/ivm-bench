@@ -1,0 +1,1 @@
+CREATE TABLE {relation} AS SELECT NULL::VARCHAR AS cdc_flag, NULL::BIGINT AS cdc_dsn, * FROM {source};

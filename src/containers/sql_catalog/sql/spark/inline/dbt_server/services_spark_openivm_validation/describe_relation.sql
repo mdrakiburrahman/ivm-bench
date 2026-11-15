@@ -1,0 +1,1 @@
+DESCRIBE {relation}
