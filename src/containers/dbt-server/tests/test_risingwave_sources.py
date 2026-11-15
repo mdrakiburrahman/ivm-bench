@@ -26,6 +26,13 @@ class FakeInsertCursor:
 
 
 class RisingWaveSourceLoaderTest(unittest.TestCase):
+    def test_source_init_endpoint_is_registered(self):
+        from app import app
+
+        routes = {rule.rule for rule in app.url_map.iter_rules()}
+
+        self.assertIn("/sources/risingwave/init", routes)
+
     def test_bulk_scan_materializes_cdc_prefix_columns(self):
         spec = sources.LoadSpec(
             "staging_trade",
