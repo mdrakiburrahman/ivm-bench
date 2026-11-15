@@ -1,29 +1,24 @@
-with s1 as (
-    select
-        symbol,
-        issue_type as issue,
-        s.status,
-        s.name,
-        exchange_id,
-        sk_company_id,
-        shares_outstanding,
-        first_trade_date,
-        first_exchange_date,
-        dividend,
-        s.effective_timestamp,
-        s.end_timestamp,
-        s.is_current
-    from
-        {{ ref('securities') }} s
-    join
-        {{ ref('dim_company') }} c
-    on
-        s.company_id = c.company_id
-    and
-        s.effective_timestamp between c.effective_timestamp and c.end_timestamp
+WITH s1 AS (
+  SELECT
+    symbol,
+    issue_type AS issue,
+    s.status,
+    s.name,
+    exchange_id,
+    sk_company_id,
+    shares_outstanding,
+    first_trade_date,
+    first_exchange_date,
+    dividend,
+    s.effective_timestamp,
+    s.end_timestamp,
+    s.is_current
+  FROM {{ ref("securities") }} AS s
+  JOIN {{ ref("dim_company") }} AS c
+    ON s.company_id = c.company_id
+    AND s.effective_timestamp BETWEEN c.effective_timestamp AND c.end_timestamp
 )
-select
-    {{ dbt_utils.generate_surrogate_key(['symbol', 'effective_timestamp']) }} as sk_security_id,
-    *
-from
-    s1
+SELECT
+  {{ dbt_utils.generate_surrogate_key(['symbol', 'effective_timestamp']) }} AS sk_security_id,
+  *
+FROM s1
