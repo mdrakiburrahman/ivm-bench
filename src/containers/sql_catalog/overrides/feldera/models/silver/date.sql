@@ -1,1 +1,0 @@
--- catalog-skip: Feldera exposes the reference date under its engine-specific silver_date model name.

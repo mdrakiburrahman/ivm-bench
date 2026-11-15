@@ -1,47 +1,36 @@
-with s1 as (
-    select
-        customer_id,
-        symbol,
-        watch_timestamp,
-        action_type,
-        company_id,
-        company_name,
-        exchange_id,
-        security_status,
-        case action_type
-            when 'Activate' then watch_timestamp
-            else null
-        end as placed_timestamp,
-        case action_type
-            when 'Cancelled' then watch_timestamp
-            else null
-        end as removed_timestamp
-    from
-        {{ ref('watches_history') }}
-),
-s2 as (
-    select
-        customer_id,
-        symbol,
-        company_id,
-        company_name,
-        exchange_id,
-        security_status,
-        min(placed_timestamp) as placed_timestamp,
-        max(removed_timestamp) as removed_timestamp
-    from s1
-    group by
-        customer_id,
-        symbol,
-        company_id,
-        company_name,
-        exchange_id,
-        security_status
+WITH s1 AS (
+  SELECT
+    customer_id,
+    symbol,
+    watch_timestamp,
+    action_type,
+    company_id,
+    company_name,
+    exchange_id,
+    security_status,
+    CASE action_type WHEN 'Activate' THEN watch_timestamp ELSE NULL END AS placed_timestamp,
+    CASE action_type WHEN 'Cancelled' THEN watch_timestamp ELSE NULL END AS removed_timestamp
+  FROM {{ ref('watches_history') }}
+), s2 AS (
+  SELECT
+    customer_id,
+    symbol,
+    company_id,
+    company_name,
+    exchange_id,
+    security_status,
+    MIN(placed_timestamp) AS placed_timestamp,
+    MAX(removed_timestamp) AS removed_timestamp
+  FROM s1
+  GROUP BY
+    customer_id,
+    symbol,
+    company_id,
+    company_name,
+    exchange_id,
+    security_status
 )
-select
-    *,
-    case
-        when removed_timestamp is null then 'Active'
-        else 'Inactive'
-    end as watch_status
-from s2
+SELECT
+  *,
+  CASE WHEN removed_timestamp IS NULL THEN 'Active' ELSE 'Inactive' END AS watch_status
+FROM s2
