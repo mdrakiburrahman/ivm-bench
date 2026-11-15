@@ -20,6 +20,8 @@ from typing import Iterable, List, Optional
 
 import requests
 
+from sql_catalog import load_sql
+
 logger = logging.getLogger(__name__)
 
 LIVY_URL = os.environ.get("SPARK_OPENIVM_LIVY_URL", "http://spark-openivm:8998")
@@ -349,18 +351,20 @@ def init_sources() -> dict:
     INSERT statements — caller (benchmark orchestrator) is expected to clean
     the work dir before re-running.
     """
-    statements: List[str] = ["CREATE DATABASE IF NOT EXISTS tpcdi"]
+    statements: List[str] = [load_sql("spark-openivm", "inline", "dbt_server/services_spark_openivm_sources/create_database")]
 
     tables_created = 0
     for _logical, src_subdir, tname in _all_tables():
         src_path = os.path.join(RAW_DELTA_DIR, src_subdir)
         dst_path = os.path.join(SOURCES_DIR, tname)
-        statements.append(
-            f"CREATE TABLE IF NOT EXISTS tpcdi.{tname} "
-            f"USING DELTA LOCATION '{dst_path}' "
-            f"TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true') AS "
-            f"SELECT * FROM delta.`{src_path}`"
-        )
+        statements.append(load_sql(
+            "spark-openivm",
+            "inline",
+            "dbt_server/services_spark_openivm_sources/create_table",
+            table_name=tname,
+            destination_path=dst_path,
+            source_path=src_path,
+        ))
         tables_created += 1
 
     with LivyClient() as livy:
@@ -397,10 +401,13 @@ def append_sources(batch_num: int) -> dict:
                 "[spark-openivm] batch %d: skipping %s (no data)", batch_num, t
             )
             continue
-        statements.append(
-            f"INSERT INTO tpcdi.staging_{t} "
-            f"BY NAME SELECT * FROM delta.`{src_path}`"
-        )
+        statements.append(load_sql(
+            "spark-openivm",
+            "inline",
+            "dbt_server/services_spark_openivm_sources/insert_batch",
+            table_name=t,
+            source_path=src_path,
+        ))
         tables_appended += 1
 
     if not statements:

@@ -1,0 +1,1 @@
+-- catalog-skip: not used by duckdb; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.

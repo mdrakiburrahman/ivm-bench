@@ -4,6 +4,8 @@ import logging
 import os
 from pathlib import Path
 
+from sql_catalog import load_sql
+
 from services.ducklake_sources import (
     append_sources as append_ducklake_sources,
     init_sources as init_ducklake_sources,
@@ -27,12 +29,19 @@ def _run_openivm_sql(sql: str, label: str) -> str:
 
     prefix = ".bail on\n.timer off\n"
     attach = (
-        f"LOAD openivm;\n"
-        f"SET openivm_cascade_refresh='off';\n"
-        f"INSTALL icu; LOAD icu;\n"
-        f"INSTALL ducklake; LOAD ducklake;\n"
-        f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "
-        f"(DATA_PATH {quote_literal(data_path)}, data_inlining_row_limit 0);\n"
+        load_sql("duckdb-openivm", "inline", "dbt_server/services_duckdb_openivm_sources/setup")
+        + "\n"
+        + load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/install_ducklake",
+            terminator=";",
+        )
+        + "\n"
+        + load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/attach_ducklake",
+            metadata_path=meta_path,
+            data_path=quote_literal(data_path),
+            terminator=";\n",
+        )
     )
 
     import subprocess

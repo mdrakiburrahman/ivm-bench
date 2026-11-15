@@ -1,0 +1,1 @@
+-- catalog-skip: not used by sqlite; only duckdb and duckdb-openivm use the DuckLake source loader.
