@@ -190,7 +190,10 @@ def _open_source(cur, spec: LoadSpec, snapshot: int) -> tuple[str, int, list[str
         projection = _source_projection(cur, source, spec.customer_projection)
         return source, rows, projection
     except Exception:
-        _execute(cur, "drop_source", relation=_rel(source))
+        try:
+            _execute(cur, "drop_source", relation=_rel(source))
+        except Exception:
+            logger.exception("Failed to remove Iceberg source %s after initialization failure", source)
         raise
 
 
@@ -200,7 +203,7 @@ def _prepare_session(cur) -> None:
     _execute(cur, "set_timezone_utc")
 
 
-def _validate_snapshot(spec: LoadSpec) -> int:
+def _validate_snapshot(spec: LoadSpec, expected: dict | None = None) -> tuple[int, dict]:
     import boto3
 
     with (RAW_DELTA_DIR / ".iceberg-snapshots.json").open(encoding="utf-8") as handle:
@@ -208,7 +211,10 @@ def _validate_snapshot(spec: LoadSpec) -> int:
     key = f"{spec.namespace}.{spec.source_table}"
     if key not in manifest:
         raise RuntimeError(f"Missing immutable Iceberg snapshot identity for {key}")
-    expected = manifest[key]
+    current = manifest[key]
+    if expected is not None and current != expected:
+        raise RuntimeError(f"Iceberg snapshot manifest changed for {key}: {current} != {expected}")
+    expected = current if expected is None else expected
     client = boto3.client(
         "s3", endpoint_url=S3_ENDPOINT, region_name=S3_REGION,
         aws_access_key_id=S3_ACCESS_KEY, aws_secret_access_key=S3_SECRET_KEY,
@@ -230,18 +236,19 @@ def _validate_snapshot(spec: LoadSpec) -> int:
     snapshot = int(expected["snapshot_id"])
     if snapshot <= 0:
         raise RuntimeError(f"Invalid Iceberg snapshot id for {key}: {snapshot}")
-    return snapshot
+    return snapshot, expected
 
 
 def _load_one(spec: LoadSpec, create: bool, cur=None) -> tuple[str, int]:
     own_connection = cur is None
     conn = _connect() if own_connection else None
     source = None
+    failed = False
     try:
         if own_connection:
             cur = conn.cursor()
             _prepare_session(cur)
-        snapshot = _validate_snapshot(spec)
+        snapshot, expected = _validate_snapshot(spec)
         source, rows, projection = _open_source(cur, spec, snapshot)
         if create:
             prefix = [
@@ -261,13 +268,27 @@ def _load_one(spec: LoadSpec, create: bool, cur=None) -> tuple[str, int]:
                      columns=", ".join(map(quote_ident, columns)),
                      projection=", ".join(projection), source_relation=_rel(source),
                      snapshot=snapshot)
-        _validate_snapshot(spec)
+        _validate_snapshot(spec, expected)
         return spec.table, rows
+    except BaseException:
+        failed = True
+        raise
     finally:
+        cleanup_errors = []
         if source is not None:
-            _execute(cur, "drop_source", relation=_rel(source))
+            try:
+                _execute(cur, "drop_source", relation=_rel(source))
+            except Exception as exc:
+                logger.exception("Failed to remove Iceberg source %s", source)
+                cleanup_errors.append(exc)
         if conn is not None:
-            conn.close()
+            try:
+                conn.close()
+            except Exception as exc:
+                logger.exception("Failed to close Iceberg loader connection for %s", spec.table)
+                cleanup_errors.append(exc)
+        if cleanup_errors and not failed:
+            raise cleanup_errors[0]
 
 
 def _parallel_load(specs: Sequence[LoadSpec], loader) -> list:

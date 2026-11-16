@@ -57,6 +57,9 @@ class EngineConfig:
             "DBT_SERVER_MEM": self.dbt_server_resources.mem_str,
             "DBT_SERVER_PORT": str(self.port),
         }
+        if self.name == "risingwave":
+            env["MINIO_CPUS"] = "4"
+            env["MINIO_MEM"] = "4g"
         # MSSQL for Spark — must match defaults in
         # docker/docker-compose.benchmark.spark{,-openivm}.yml. At SF=400+
         # cpus=4/mem=8g triggered SQL Server's SOS scheduler ASSERT

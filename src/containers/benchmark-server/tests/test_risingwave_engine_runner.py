@@ -11,9 +11,24 @@ BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from services.engine_runner import EngineRunner  # noqa: E402
+from models.config import BenchmarkConfig
+from services.resource_calc import compute_engine_configs  # noqa: E402
 
 
 class RisingWaveEngineRunnerTest(unittest.TestCase):
+    def test_auxiliary_services_fit_within_host_budget(self):
+        config = BenchmarkConfig(engines=["risingwave"], host_cores=32, host_memory_gb=256)
+        engine = compute_engine_configs(config)["risingwave"]
+        env = engine.env_dict()
+        self.assertLessEqual(engine.main_resources.cpus + engine.dbt_server_resources.cpus + 4.25, 32)
+        self.assertLessEqual(engine.main_resources.memory_gb + engine.dbt_server_resources.memory_gb + 4.25, 256)
+        self.assertEqual((env["MINIO_CPUS"], env["MINIO_MEM"]), ("4", "4g"))
+
+    def test_insufficient_auxiliary_budget_fails_explicitly(self):
+        config = BenchmarkConfig(engines=["risingwave"], host_cores=4, host_memory_gb=8)
+        with self.assertRaisesRegex(ValueError, "RisingWave allocation must fit"):
+            compute_engine_configs(config)
+
     def test_initial_load_metrics_are_emitted_for_artifacts(self):
         response = Mock()
         response.json.return_value = {

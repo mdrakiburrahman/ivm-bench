@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 MIN_DBT_SERVER_CPUS = 2
 MIN_DBT_SERVER_MEM_GB = 4
+RISINGWAVE_AUX_CPUS = 5
+RISINGWAVE_AUX_MEM_GB = 5
 
 
 def detect_host_cores() -> int:
@@ -81,6 +83,13 @@ def compute_engine_configs(config: BenchmarkConfig) -> Dict[str, EngineConfig]:
             main_mem = per_engine_mem
             dbt_cpus = per_engine_cores
             dbt_mem = per_engine_mem
+
+        if engine == "risingwave":
+            # MinIO is capped at 4 CPUs/4 GiB; its tuner uses 0.25 CPU/256 MiB.
+            if main_cpus <= RISINGWAVE_AUX_CPUS or main_mem <= RISINGWAVE_AUX_MEM_GB:
+                raise ValueError("RisingWave allocation must fit dbt-server, MinIO, tuner, and the engine")
+            main_cpus -= RISINGWAVE_AUX_CPUS
+            main_mem -= RISINGWAVE_AUX_MEM_GB
 
         staging = "staging"
         if config.parallel and engine not in ("duckdb", "duckdb-openivm"):

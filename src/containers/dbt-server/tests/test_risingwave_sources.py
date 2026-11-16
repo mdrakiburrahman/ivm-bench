@@ -1,8 +1,11 @@
 """Behavior tests for the RisingWave source-loading paths."""
 
 import importlib.util
+import io
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -100,13 +103,63 @@ class RisingWaveSourceLoaderTest(unittest.TestCase):
         with (
             patch.object(sources, "_connect", return_value=connection),
             patch.object(sources, "_prepare_session"),
-            patch.object(sources, "_validate_snapshot", return_value=123),
+            patch.object(sources, "_validate_snapshot", return_value=(123, {})),
             patch.object(sources, "_open_source", return_value=("iceberg_source", 1, ['"id"'])),
             patch.object(sources, "_execute", side_effect=execute),
         ):
             with self.assertRaisesRegex(RuntimeError, "unknown progress"):
                 sources._load_one(spec, create=False)
         self.assertEqual(operations, ["list_columns", "insert_iceberg", "drop_source"])
+        connection.close.assert_called_once()
+
+    def test_replacing_manifest_and_snapshot_during_copy_is_rejected(self):
+        spec = sources.LoadSpec("staging_trade", "batch2", "trade")
+        identity = {
+            "table_uuid": "table-1", "snapshot_id": "123", "schema_id": "0",
+            "delta_id": "delta-1", "delta_version": "0",
+        }
+        metadata = {
+            "table-uuid": identity["table_uuid"], "current-snapshot-id": 123,
+            "current-schema-id": 0,
+            "properties": {"ivm.delta.id": "delta-1", "ivm.delta.version": "0"},
+        }
+        client = Mock()
+        client.get_object.side_effect = [
+            {"Body": io.BytesIO(b"1")},
+            {"Body": io.BytesIO(json.dumps(metadata).encode())},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / ".iceberg-snapshots.json"
+            manifest.write_text(json.dumps({"batch2.trade": identity}))
+            with patch.object(sources, "RAW_DELTA_DIR", Path(directory)), patch("boto3.client", return_value=client):
+                snapshot, captured = sources._validate_snapshot(spec)
+                self.assertEqual(snapshot, 123)
+                manifest.write_text(json.dumps({"batch2.trade": {**identity, "snapshot_id": "456"}}))
+                with self.assertRaisesRegex(RuntimeError, "manifest changed"):
+                    sources._validate_snapshot(spec, captured)
+
+    def test_drop_failure_preserves_copy_error_and_closes_connection(self):
+        spec = sources.LoadSpec("staging_trade", "batch2", "trade")
+        connection = Mock()
+        connection.cursor.return_value.fetchall.return_value = [("id",)]
+
+        def execute(cur, name, **params):
+            if name == "insert_iceberg":
+                raise RuntimeError("copy failed")
+            if name == "drop_source":
+                raise RuntimeError("cleanup failed")
+
+        with (
+            patch.object(sources, "_connect", return_value=connection),
+            patch.object(sources, "_prepare_session"),
+            patch.object(sources, "_validate_snapshot", return_value=(123, {})),
+            patch.object(sources, "_open_source", return_value=("iceberg_source", 1, ['"id"'])),
+            patch.object(sources, "_execute", side_effect=execute),
+            self.assertLogs(sources.logger, level="ERROR") as logged,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "copy failed"):
+                sources._load_one(spec, create=False)
+        self.assertIn("cleanup failed", "\n".join(logged.output))
         connection.close.assert_called_once()
 
 
