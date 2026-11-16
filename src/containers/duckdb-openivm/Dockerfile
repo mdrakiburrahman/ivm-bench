@@ -23,7 +23,7 @@ FROM toolchain AS builder
 
 WORKDIR /src
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=f9a49cf1f648ecf8f696c683ee1c61248ae459ff
+ARG OPENIVM_COMMIT=487344fd069b2c83fcdce1aadf141299775ea104
 RUN git clone "${OPENIVM_REPO}" . && \
     git checkout "${OPENIVM_COMMIT}" && \
     git submodule update --init --recursive
@@ -43,7 +43,7 @@ RUN GEN=ninja EXTRA_EXTENSION_CONFIGS=/tmp/icu_extension_config.cmake make -j$(n
 
 FROM debian:bookworm-slim
 
-ARG OPENIVM_COMMIT=f9a49cf1f648ecf8f696c683ee1c61248ae459ff
+ARG OPENIVM_COMMIT=487344fd069b2c83fcdce1aadf141299775ea104
 LABEL org.openivm.commit="${OPENIVM_COMMIT}"
 
 ARG DUCKDB_OPENIVM_DOCKERFILE_HASH=""
