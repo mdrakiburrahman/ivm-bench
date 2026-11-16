@@ -36,6 +36,7 @@ See [Quickstart](docs/QUICKSTART.md) for setup and benchmark options.
 
 - [Quickstart](docs/QUICKSTART.md)
 - [Docker, cloud, CI and GCI](docs/CI_VS_GCI.md)
+- [Manual cloud CI](docs/CI.md)
 - [Benchmark workloads](docs/WORKLOADS.md)
 - [Engines and compiler benchmark](docs/ENGINES.md)
 - [Mount layout](docs/MOUNT_LAYOUT.md)
