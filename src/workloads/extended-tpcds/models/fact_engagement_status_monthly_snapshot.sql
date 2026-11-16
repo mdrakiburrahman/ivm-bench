@@ -66,7 +66,9 @@ WITH latest AS (
     engagement_type_key,
     mode_key,
     COUNT(DISTINCT engagement_path) AS engagement_total_count,
-    SUM(CAST(ROUND(effective_units, 10) AS DECIMAL(28,10))) AS effective_units_count
+    -- Round in decimal arithmetic: scaling a rounded DOUBLE back to scale 10
+    -- can put an exact decimal boundary just below its intended integer.
+    SUM(CAST(ROUND(CAST(effective_units AS DECIMAL(38,20)), 10) AS DECIMAL(28,10))) AS effective_units_count
   FROM deduped
   GROUP BY
     dim_date_key,

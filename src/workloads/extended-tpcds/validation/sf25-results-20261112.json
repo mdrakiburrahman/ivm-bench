@@ -362,6 +362,28 @@
           "duckdb_before_after_bag_differences": 0,
           "scope": "Local DuckDB query with Python Decimal emulation of Feldera cast semantics; not an actual Feldera run."
         }
+      },
+      "decimal_round_followup": {
+        "run_id": 43514997770,
+        "bench_commit": "b56c88050c990b590f1b6a982cb71f7370780168",
+        "stage": "initial model validation",
+        "models_checked": 96,
+        "models_matched": 95,
+        "nonzero_differences": {
+          "fact_engagement_status_monthly_snapshot": 14
+        },
+        "remaining_model_rows": {
+          "actual": 15159841,
+          "reference": 15159841
+        },
+        "interpretation": "Rounding before decimal conversion reduced differences from 32028 to 14. Remaining samples have eleven engagements and units 1 versus 2. No refresh executed.",
+        "next_fix": {
+          "method": "Convert to DECIMAL(38,20), round in decimal arithmetic to 10 places, then narrow to DECIMAL(28,10) before summation.",
+          "regression": "Eleven positive or negative 3/22 values; ROUND(double,10)*1e10 falls just below the intended integer before a truncating scaled cast.",
+          "local_reference_rows": 165616,
+          "local_reference_before_after_bag_differences": 0,
+          "acceptance": "SF25 end-to-end validation pending"
+        }
       }
     }
   },

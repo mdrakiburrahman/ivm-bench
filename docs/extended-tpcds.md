@@ -1,9 +1,11 @@
-# Extended TPC-DS workload
+# Fabric-DS workload
 
-Extended TPC-DS combines TPC-DS retail data with generated metadata and a
+Fabric-DS combines TPC-DS retail data with generated metadata and a
 materialized analytical pipeline patterned after Insights. It is an experimental
 IVM workload derived from TPC-DS, with its own queries, data profiles and update
 streams. Its results are not comparable to officially published TPC-DS results.
+
+The existing `extended-tpcds` configuration key and file paths are retained.
 
 ### Source-size contract and expansion audit (2026-11-10)
 
@@ -206,6 +208,31 @@ not Feldera end-to-end acceptance. The eight successful engine timings above
 precede this SQL clarification; source data, cardinalities, query structure,
 validation tolerance and upstream engine code are unchanged. SF25 validation
 of initialization and both refreshes remains required.
+
+Run [43514997770](https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43514997770)
+reduced the monthly snapshot's symmetric bag differences from 32,028 to 14.
+All 96 initialization models were checked and 95 matched; refreshes did not
+execute. Remaining samples have eleven engagements and integer units of 1 in
+Feldera versus 2 in the reference, with matching keys and row counts.
+
+There is still a binary scaling boundary after floating-point rounding:
+`ROUND(3/22, 10) * 1e10` evaluates to `1363636363.9999998`.
+A truncating scaled cast loses the last decimal unit; eleven such values sum
+below 1.5 instead of above it. A deterministic fixture reproduces both signs
+of this eleven-row failure. The model now converts to `DECIMAL(38,20)` first,
+rounds in decimal arithmetic, then narrows to `DECIMAL(28,10)` before summation.
+This retains the original 18 integer digits and adds ten fractional guard
+digits for the initial conversion. It removes the floating-point round-trip
+at the target scale without changing the validation tolerance. The local
+165,616-row snapshot is unchanged; full SF25 acceptance is pending.
+
+The branch incorporates `main` at `fef6041`, including its shared SQL catalog,
+CI/GCI entry points, cleanup isolation and default engine updates. Fabric-DS
+retains its standalone query catalog; its adapters select DuckDB or Spark SQL explicitly
+when using the shared comparison templates. The Spark WF test pin is
+still required until that feature is merged upstream. Local checks cover 151
+benchmark-server tests, 305 dbt-server tests and 51 workload tests, plus catalog
+generation, checks, parity and guard validation.
 
 The early SF1/SF25 engine runs used the `native` control profile. They
 preserve the translated query roles, but are **not a cardinality-calibrated

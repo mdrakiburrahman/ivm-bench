@@ -374,7 +374,7 @@ def validate_batch(engine,batch_num,manifest_path,work_dir,options):
                                      f'actual={[r[0] for r in actual_columns]}, reference={[r[0] for r in columns]}')
                 progress['stage']='full bag comparison'
                 save_progress()
-                checks[name]=reference.execute(_verify_probe('xt_actual','SELECT * FROM '+name,[(r[0],r[1]) for r in columns])).fetchall()[0][0]
+                checks[name]=reference.execute(_verify_probe('xt_actual','SELECT * FROM '+name,[(r[0],r[1]) for r in columns],engine='duckdb')).fetchall()[0][0]
                 if checks[name]:
                     samples[name]={'actual_rows':reference.execute('SELECT count(*) FROM xt_actual').fetchone()[0],
                                    'reference_rows':reference.execute('SELECT count(*) FROM '+name).fetchone()[0],

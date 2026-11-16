@@ -1,13 +1,14 @@
 import importlib.util
 import json
 import hashlib
+import math
 import os
 import stat
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, localcontext
 from unittest.mock import Mock,patch
 
 APP=Path(__file__).parents[1]
@@ -53,19 +54,27 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
             c.execute("INSERT INTO int_engagement_status_transaction SELECT '2002-01-02'::TIMESTAMP, 5, "
                       + ', '.join('1' for _ in dimensions)
                       + ", 'fraction-'||n, 1.0/6 FROM range(3) t(n)")
-            expected = [(1,1,1),(2,1,3),(3,1,-1),(4,1,-3),(5,3,1)]
-            # Feldera converts DOUBLE via its shortest decimal string, then
-            # truncates to the target scale; DuckDB's cast rounds instead.
-            c.create_function('feldera_decimal',lambda value: Decimal(str(value)).quantize(
-                Decimal('0.0000000001'),rounding=ROUND_DOWN),['DOUBLE'],'DECIMAL(28,10)')
-            decimal_cast = 'CAST("effective_units" AS DECIMAL(28, 10))'
-            unrounded = rendered.replace('ROUND("effective_units", 10)', '"effective_units"')
-            unrounded = unrounded.replace(decimal_cast, 'feldera_decimal("effective_units")')
+            for key, sign in [(6,1),(7,-1)]:
+                c.execute("INSERT INTO int_engagement_status_transaction SELECT '2002-01-02'::TIMESTAMP, "
+                          + str(key)+', '+', '.join('1' for _ in dimensions)
+                          + ", 'eleven-"+str(key)+"-'||n, "+str(sign)+'.0*3/22 FROM range(11) t(n)')
+            expected = [(1,1,1),(2,1,3),(3,1,-1),(4,1,-3),(5,3,1),(6,11,2),(7,11,-2)]
+            # Model a truncating cast implemented by scaling the binary DOUBLE.
+            # ROUND(3/22,10)*1e10 is 1363636363.9999998, losing the last unit.
+            def scaled_cast(value,scale):
+                with localcontext() as context:
+                    context.prec=50
+                    return Decimal(math.trunc(value*10**scale)).scaleb(-scale)
+            c.create_function('decimal10',lambda value: scaled_cast(value,10),['DOUBLE'],'DECIMAL(28,10)')
+            c.create_function('decimal20',lambda value: scaled_cast(value,20),['DOUBLE'],'DECIMAL(38,20)')
+            old = rendered.replace('CAST("effective_units" AS DECIMAL(38, 20))','"effective_units"')
+            old = old.replace('CAST(ROUND("effective_units", 10) AS DECIMAL(28, 10))',
+                              'decimal10(ROUND("effective_units", 10))')
             self.assertEqual(c.execute('SELECT effective_units_count FROM ('
-                + unrounded.replace('SAFE_CAST(', 'TRY_CAST(')
-                + ') WHERE household_key=5').fetchone()[0],0)
-            feldera_cast = rendered.replace('CAST(ROUND("effective_units", 10) AS DECIMAL(28, 10))',
-                                             'feldera_decimal(ROUND("effective_units", 10))')
+                + old.replace('SAFE_CAST(', 'TRY_CAST(')
+                + ') WHERE household_key IN (6,7) ORDER BY household_key').fetchall(),[(1,),(-1,)])
+            feldera_cast = rendered.replace('CAST("effective_units" AS DECIMAL(38, 20))',
+                                             'decimal20("effective_units")')
             for sql in (query,rendered.replace('SAFE_CAST(', 'TRY_CAST('),
                         feldera_cast.replace('SAFE_CAST(', 'TRY_CAST(')):
                 rows = c.execute('SELECT household_key, engagement_total_count, effective_units_count '
@@ -87,7 +96,7 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
                     self.assertEqual(reference.execute('SELECT current_database()').fetchone()[0],'reference')
                     reference.execute("CREATE TABLE v AS SELECT 2::BIGINT AS key, 'new' AS value")
                 original_probe=engines._verify_probe
-                def probe(actual,sql,columns):
+                def probe(actual,sql,columns,**kwargs):
                     self.assertEqual(actual,'xt_actual')
                     # The output advances after its snapshot. Both EXCEPT ALL
                     # directions must still read the same captured rows.
@@ -95,7 +104,7 @@ class ExtendedTPCDSStreamingTest(unittest.TestCase):
                         '__feldera_op':['d','i'],'__feldera_ts':[2,2]}),mode='append')
                     if fail:
                         raise RuntimeError('forced comparison failure')
-                    return original_probe(actual,sql,columns)
+                    return original_probe(actual,sql,columns,**kwargs)
                 with patch.object(workload.mutations,'load_initial'), \
                      patch.object(workload.pipeline,'build',side_effect=build), \
                      patch.object(workload.pipeline,'selected_models',return_value=['v']), \

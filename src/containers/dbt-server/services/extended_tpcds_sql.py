@@ -348,7 +348,8 @@ def validate_batch(engine, batch_num, manifest_path, work_dir, options):
             actual = identifier(state['namespace']+'.'+name)
             expected = identifier(reference+'.'+name)
             columns = [(r[0],r[1]) for r in connection.execute('DESCRIBE '+actual) if r[0] and not str(r[0]).startswith('#')]
-            probe = _verify_probe(actual, 'SELECT * FROM '+expected, columns)
+            # Spark, Fabric and Photon all execute the Spark SQL comparison form.
+            probe = _verify_probe(actual, 'SELECT * FROM '+expected, columns,engine='spark')
             checks[name] = int(connection.execute(probe)[0][0])
         return {'status':'passed' if not any(checks.values()) else 'failed', 'models_checked':len(checks),
                 'differences':checks, 'comparison':'independent source replay and full DAG recomputation; EXCEPT ALL; floats rounded to 10 decimals'}

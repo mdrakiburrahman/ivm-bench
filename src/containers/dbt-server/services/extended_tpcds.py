@@ -184,7 +184,7 @@ def validate(connection, manifest, directory, batch_num, cohort):
         for name in pipeline.selected_models():
             actual = '"' + actual_catalog.replace('"','""') + f'".main.{name}'
             columns = connection.execute(f"DESCRIBE {actual}").fetchall()
-            difference = connection.execute(_verify_probe(actual, f"SELECT * FROM xt_reference.main.{name}", [(row[0],row[1]) for row in columns])).fetchone()[0]
+            difference = connection.execute(_verify_probe(actual, f"SELECT * FROM xt_reference.main.{name}", [(row[0],row[1]) for row in columns],engine='duckdb')).fetchone()[0]
             checks[name] = difference
         return {"status":"passed" if not any(checks.values()) else "failed", "models_checked":len(checks),
                 "differences":checks, "comparison":"EXCEPT ALL by position; FLOAT/DOUBLE rounded to 10 decimals; keys and nulls retained"}
