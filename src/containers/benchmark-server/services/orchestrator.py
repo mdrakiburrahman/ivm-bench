@@ -110,6 +110,7 @@ class Orchestrator:
         # A failed small acceptance experiment must never advance to SF100.
         self._oat_fatal_error: Optional[str] = None
         self._current_source_row_counts: Optional[Dict[str, Any]] = None
+        self._engine_build_errors: Dict[str, str] = {}
 
     @property
     def config(self) -> BenchmarkConfig:
@@ -464,6 +465,7 @@ class Orchestrator:
         """
         self.emit("")
         self.emit("=== Phase 1: Data generation & build ===")
+        self._engine_build_errors = {}
 
         # Build the callable list first so the pool's max_workers can match
         # the actual number of submitted tasks. Otherwise adding a 5th build
@@ -493,9 +495,21 @@ class Orchestrator:
             callables.append(self._run_lpts_build)
 
         with ThreadPoolExecutor(max_workers=len(callables)) as pool:
-            tasks = [pool.submit(fn) for fn in callables]
+            tasks = {pool.submit(fn): fn for fn in callables}
             for future in as_completed(tasks):
-                future.result()  # Raise any exceptions
+                try:
+                    future.result()
+                except Exception as error:
+                    dependencies = {
+                        self._run_duckdb_openivm_build: {'duckdb', 'duckdb-openivm'},
+                        self._run_spark_openivm_build: {'spark-openivm', 'fabric-openivm-jvm-35', 'databricks-openivm'},
+                    }
+                    affected = dependencies.get(tasks[future])
+                    if self._config.workload != 'extended-tpcds' or affected is None:
+                        raise
+                    for engine in affected.intersection(self._config.engines):
+                        self._engine_build_errors[engine] = f'{type(error).__name__}: {error}'
+                    self.emit(f"  Build failed for {', '.join(sorted(affected))}: {error}; continuing with unaffected engines")
 
         self.emit("=== Phase 1: Complete ===")
 
@@ -1184,28 +1198,38 @@ class Orchestrator:
         """Run every engine once and return the names that failed."""
         failed = []
         for name in self._config.engines:
+            build_error = getattr(self, '_engine_build_errors', {}).get(name)
+            if build_error:
+                self._result.engines[name] = EngineResult(
+                    engine=name, status='failed', error=f'Engine build failed: {build_error}',
+                    batches=[BatchResult(batch_num=n, status='skipped', error=build_error)
+                             for n in range(1, self._config.batch_count + 1)],
+                )
+                failed.append(name)
+                self.emit(f"  [{name}] build failed; continuing with remaining engines")
+                continue
             ec = engine_configs[name]
-            runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
+            runner = None
             try:
+                runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
                 result = runner.run()
-            except OpenIvmValidationError as e:
-                # The runner has already cleaned up (compose-down + log capture
-                # in its finally). Preserve its partial result (batch
-                # statuses, durations, error) — don't build a stripped
-                # replacement. TPC-DS acceptance still checks the other engines;
-                # other workloads retain validation fail-fast behavior.
-                er = runner.result
+            except Exception as e:
+                # Preserve partial evidence when execution has started. Fabric-DS
+                # continues after setup, execution or validation errors; other
+                # workloads retain exception propagation.
+                er = runner.result if runner is not None else EngineResult(engine=name)
                 er.status = "failed"
                 er.error = str(e)
                 self._result.engines[name] = er
                 if self._config.workload == "extended-tpcds":
                     failed.append(name)
-                    self.emit(f"  [{name}] validation failed; continuing with remaining engines")
+                    self.emit(f"  [{name}] failed: {e}; continuing with remaining engines")
                     continue
                 raise
             self._result.engines[name] = result
             if result.status == "failed":
                 failed.append(name)
+                self.emit(f"  [{name}] failed; continuing with remaining engines")
         return failed
 
     def _run_engines_parallel(self, engine_configs: Dict) -> None:

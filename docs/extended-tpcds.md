@@ -7,6 +7,39 @@ streams. Its results are not comparable to officially published TPC-DS results.
 
 The existing `extended-tpcds` configuration key and file paths are retained.
 
+### SF100 all-engine run
+
+`experiments/extended-tpcds-sf100.json` selects all ten engines serially, one
+repetition, insertion `100/1/0.01`, validation ON and 256 Spark shuffle
+partitions. The 100 GB target measures initial extended-source Parquet column
+chunks before compression. Shared source preparation runs once; each engine
+replays the same immutable plan and retains its state across the two refreshes.
+
+Engine setup, execution and validation errors are recorded and the next engine
+still runs. Shared OpenIVM build failures skip only engines that need that
+artifact; independent engines continue. The experiment reports failure after all
+requested engines have been attempted if any failed. A shared source-preparation
+failure still aborts because no engine can execute the requested dataset.
+
+DBSP.NET's Fabric-DS-only Compose overlay enables spilling with 12 workers,
+262,144-row chunks, a 1,024 MiB block cache and a host-mounted scratch directory.
+No explicit heap or memory-pressure limit, alternate GC or snapshots are set.
+Spill files stay outside uploaded artifacts and are removed by per-experiment
+cleanup. Other workloads retain their existing DBSP.NET defaults.
+
+This run updates native DuckDB OpenIVM to `f9a49cf1f648ecf8f696c683ee1c61248ae459ff`
+with its DuckDB/CI-tools submodule revisions and DBSP.NET to upstream
+`ffb54826f515f360808fa1b2ce9e9a0344df74ad` (including the validated spill fixes).
+The compatible Spark/Fabric WF wrapper remains `3ac3a55` (which contains PR #62's
+current head plus integration fixes), with its DuckDB 1.5.2 JNI build.
+
+The successful SF25 DBSP.NET and Feldera runs each passed 288/288 comparisons;
+their exact timings and source revisions are retained in the acceptance JSON.
+Their runner log reports 32 host cores and 251 GiB, dynamically split into
+27 cores / 210 GiB for the streaming engine and 5 cores / 41 GiB for dbt-server.
+Compose defaults of 32 cores / 120 GiB were overridden and are not the measured
+container allocations.
+
 ### Source-size contract and expansion audit (2026-11-10)
 
 The SF1/SF25/SF100 experiment files now set `extended_tpcds.source_size_gb` to

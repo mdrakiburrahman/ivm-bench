@@ -182,6 +182,7 @@ class EngineRunner:
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
+        compose_overrides = [os.path.join(config.repo_dir, path) for path in engine_config.compose_overrides]
         if engine_config.name == "databricks-openivm":
             # Enzyme and OpenIVM may run together in one experiment wave.
             engine_env["DATABRICKS_EXPERIMENT_ID"] = str(time.time_ns() // 1000)
@@ -189,23 +190,17 @@ class EngineRunner:
         if config.workload != "extended-tpcds" and engine_config.staging_dir and engine_config.staging_dir != "staging":
             # Parallel mode: create compose overrides for staging isolation
             self._override_file = self._create_staging_override()
-            self._engine_mgr = DockerManager(
-                compose_file=engine_compose,
-                project_name=engine_config.project_name,
-                env=engine_env,
-                cwd=config.repo_dir,
-                extra_compose_files=[self._override_file],
-            )
+            compose_overrides.append(self._override_file)
             # Also create a batch-loader override so appends go to per-engine staging
             if engine_config.name not in ("duckdb-openivm",):
                 self._batch_override_file = self._create_batch_staging_override()
-        else:
-            self._engine_mgr = DockerManager(
-                compose_file=engine_compose,
-                project_name=engine_config.project_name,
-                env=engine_env,
-                cwd=config.repo_dir,
-            )
+        self._engine_mgr = DockerManager(
+            compose_file=engine_compose,
+            project_name=engine_config.project_name,
+            env=engine_env,
+            cwd=config.repo_dir,
+            extra_compose_files=compose_overrides,
+        )
 
         # Calculate JVM heap for batch_loader (60% of available memory, min 4g).
         # This is the INIT heap, used while the engine stack is still down.

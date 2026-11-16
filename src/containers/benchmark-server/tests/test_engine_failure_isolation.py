@@ -60,6 +60,7 @@ class EngineFailureIsolationTest(unittest.TestCase):
         orchestrator._config = SimpleNamespace(workload="standard", engines=["failed", "successful"])
         orchestrator._result = BenchmarkResult()
         orchestrator._benchmark_id = "test"
+        orchestrator.emit = Mock()
 
         failed = orchestrator._run_engines_serial(
             {"failed": Mock(), "successful": Mock()}

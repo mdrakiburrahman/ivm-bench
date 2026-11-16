@@ -280,6 +280,92 @@
         "default_parallelism": null,
         "dbt_threads": null
       }
+    },
+    "dbspnet": {
+      "run_id": 43848083647,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43848083647",
+      "bench_commit": "b48525331a7a267fa231aaede41ea85a54e284c4",
+      "raw_outputs_sha256": "d40cf00547a347831b2232cd44be9cea7743a4355d542bc9bbbdff73679babf4",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 4711.394454174675,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 30.960093270987272,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 4.04980041179806,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 4746.40434785746,
+      "timing_semantics": "source mutation plus whole-pipeline resume-to-drain; compilation, output row counts and validation excluded; per-model SQL time unavailable",
+      "plan_id": "69589bd87ec0e895",
+      "dataset_id": "c2724495535a6f94",
+      "revision_scope": "isolated upstream-fix retry, before main merge and final decimal rounding",
+      "host_budget": {
+        "cores": 32,
+        "memory_gib": 251
+      },
+      "engine_budget": {
+        "cores": 27,
+        "memory_gib": 210
+      },
+      "dbt_budget": {
+        "cores": 5,
+        "memory_gib": 41
+      }
+    },
+    "feldera": {
+      "run_id": 43859313436,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43859313436",
+      "bench_commit": "d84dd80e66a33ee36eec1c920c46b719d80b891a",
+      "raw_outputs_sha256": "1618d782a28799ef8ece8e27a69885e0b348464c8619786e7bfd74058c0c9c1b",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 3629.5067580314353,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 30.545274089090526,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 10.516496978700161,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3670.568529099226,
+      "timing_semantics": "source mutation plus whole-pipeline resume-to-drain; compilation, output row counts and validation excluded; per-model SQL time unavailable",
+      "plan_id": "69589bd87ec0e895",
+      "dataset_id": "c2724495535a6f94",
+      "revision_scope": "PR after main merge and final decimal rounding",
+      "host_budget": {
+        "cores": 32,
+        "memory_gib": 251
+      },
+      "engine_budget": {
+        "cores": 27,
+        "memory_gib": 210
+      },
+      "dbt_budget": {
+        "cores": 5,
+        "memory_gib": 41
+      }
     }
   },
   "failed_engines": {
@@ -384,7 +470,11 @@
           "local_reference_before_after_bag_differences": 0,
           "acceptance": "SF25 end-to-end validation pending"
         }
-      }
+      },
+      "resolved_in_run": 43859313436
+    },
+    "dbspnet": {
+      "resolved_in_run": 43848083647
     }
   },
   "source_identity": {

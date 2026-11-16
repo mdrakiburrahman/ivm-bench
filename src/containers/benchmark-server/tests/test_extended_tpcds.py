@@ -16,6 +16,82 @@ from services.oat_runner import generate_results_csv
 
 
 class ExtendedTPCDSConfigTests(unittest.TestCase):
+    def test_dbsp_spill_overlay_applies_only_to_extended_workload_and_reaches_compose(self):
+        from services.resource_calc import compute_engine_configs
+        import yaml
+        repo=Path(__file__).parents[4]
+        for workload in ('standard','extended-tpcds'):
+            config=BenchmarkConfig(workload=workload,scale_factor=100,engines=['dbspnet'],
+                                   repo_dir=str(repo),host_cores=32,host_memory_gb=251)
+            engine=compute_engine_configs(config)['dbspnet']
+            expected=['docker/docker-compose.extended-tpcds-dbspnet.yml'] if workload=='extended-tpcds' else []
+            self.assertEqual(engine.compose_overrides,expected)
+            with patch('services.engine_runner.DockerManager') as manager:
+                EngineRunner(config,engine,lambda _:None)
+            self.assertEqual(manager.call_args_list[0].kwargs['extra_compose_files'],[str(repo/p) for p in expected])
+        overlay=yaml.safe_load((repo/'docker/docker-compose.extended-tpcds-dbspnet.yml').read_text())
+        settings=overlay['services']['dbspnet-server']
+        self.assertEqual(settings['environment']['DBSPNET_WORKERS'],'12')
+        self.assertEqual(settings['environment']['DBSPNET_SPILL'],'on')
+        self.assertTrue(settings['volumes'][0].endswith(':/spill'))
+        for name in ('DOTNET_GCHeapHardLimit','DBSPNET_MEMORY_LIMIT_MIB','DOTNET_GCName','DBSPNET_SNAPSHOT_DIR'):
+            self.assertNotIn(name,settings['environment'])
+
+    def test_build_failures_skip_only_dependent_engines_and_continue_the_rest(self):
+        from services.orchestrator import Orchestrator
+        from models.result import EngineResult
+        cases=[('_run_duckdb_openivm_build',{'duckdb','duckdb-openivm'}),
+               ('_run_spark_openivm_build',{'spark-openivm','fabric-openivm-jvm-35','databricks-openivm'})]
+        engines=['duckdb','duckdb-openivm','spark','spark-openivm','fabric-openivm-jvm-35','databricks-openivm','feldera','dbspnet']
+        for build,affected in cases:
+            with self.subTest(build=build):
+                config=BenchmarkConfig(workload='extended-tpcds',scale_factor=100,engines=engines,
+                                       host_cores=32,host_memory_gb=251,schedule='serial')
+                runner=Orchestrator(config)
+                with patch.object(runner,'_run_duckdb_openivm_build'),patch.object(runner,'_run_spark_openivm_build'):
+                    getattr(runner,build).side_effect=RuntimeError('compiler failed')
+                    runner._phase1_prep(include_datagen=False,extended_tpcds=True,compiler_bench=False,cost_model_bench=False)
+                self.assertEqual(set(runner._engine_build_errors),affected)
+                def execute(config,engine,*args):
+                    result=EngineResult(engine=engine.name,status='completed')
+                    return Mock(run=Mock(return_value=result))
+                with patch('services.orchestrator.EngineRunner',side_effect=execute) as engine_runner:
+                    with self.assertRaisesRegex(RuntimeError,'Engines failed:'):
+                        runner._phase2_benchmark()
+                self.assertEqual(engine_runner.call_count,len(engines)-len(affected))
+                self.assertEqual(set(runner._result.engines),set(engines))
+                for engine in engines:
+                    result=runner._result.engines[engine]
+                    self.assertEqual(result.status,'failed' if engine in affected else 'completed')
+                    if engine in affected:
+                        self.assertTrue(all(b.status=='skipped' for b in result.batches))
+
+    def test_shared_generation_and_standard_build_failures_still_raise(self):
+        from services.orchestrator import Orchestrator
+        for workload in ('standard','extended-tpcds'):
+            runner=Orchestrator(BenchmarkConfig(workload=workload,engines=['duckdb-openivm']))
+            with patch.object(runner,'_run_datagen') as datagen, \
+                 patch.object(runner,'_build_batch_loader'),patch.object(runner,'_run_duckdb_openivm_build') as build:
+                (datagen if workload=='extended-tpcds' else build).side_effect=RuntimeError('shared setup failed')
+                with self.assertRaisesRegex(RuntimeError,'shared setup failed'):
+                    runner._phase1_prep(include_datagen=True,compiler_bench=False,cost_model_bench=False)
+
+    def test_constructor_and_uncaught_runner_errors_continue_to_next_engine(self):
+        from services.orchestrator import Orchestrator
+        from models.result import EngineResult
+        for constructor_error in (False,True):
+            runner=Orchestrator(BenchmarkConfig(workload='extended-tpcds',engines=['duckdb','spark']))
+            failed=Mock(result=EngineResult(engine='duckdb'))
+            failed.run.side_effect=RuntimeError('engine failed')
+            passed=Mock(run=Mock(return_value=EngineResult(engine='spark',status='completed')))
+            first=RuntimeError('engine failed') if constructor_error else failed
+            with patch('services.orchestrator.EngineRunner',side_effect=[first,passed]):
+                failures=runner._run_engines_serial({'duckdb':Mock(),'spark':Mock()})
+            self.assertEqual(failures,['duckdb'])
+            self.assertEqual(runner._result.engines['duckdb'].error,'engine failed')
+            self.assertEqual(runner._result.engines['spark'].status,'completed')
+            passed.run.assert_called_once()
+
     def test_source_size_target_is_validated_and_forwarded(self):
         e = self.experiment(scale_factor=25, extended_tpcds={'source_size_gb':25})
         self.assertEqual(json.loads(e.to_compose_env()['EXTENDED_TPCDS_OPTIONS'])['source_size_gb'],25)

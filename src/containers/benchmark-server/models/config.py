@@ -47,6 +47,7 @@ class EngineConfig:
     dbt_server_resources: ResourceAllocation
     project_name: str = ""
     staging_dir: str = ""
+    compose_overrides: List[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.project_name:

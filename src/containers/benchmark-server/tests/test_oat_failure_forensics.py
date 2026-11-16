@@ -8,6 +8,19 @@ from services.oat_runner import _archive_failure_forensics
 
 
 class WorkloadFailureForensicsTest(unittest.TestCase):
+    def test_spill_cleanup_removes_only_the_current_scale_and_engine(self):
+        from services.oat_runner import disk_cleanup_after_experiment
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            current=root/'mount/spill/100/dbspnet'
+            other=root/'mount/spill/25/dbspnet'
+            for path in (current,other):
+                path.mkdir(parents=True)
+                (path/'block').write_bytes(b'state')
+            disk_cleanup_after_experiment(directory,100,['dbspnet'],emit=lambda _:None)
+            self.assertFalse(current.exists())
+            self.assertTrue((other/'block').exists())
+
     def test_partial_sql_timeline_survives_cleanup_without_copying_delta_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -201,6 +201,7 @@ def disk_cleanup_after_experiment(
     # correctness (see src/.scripts/compare_outputs.py). Off by default.
     preserve_results = os.environ.get("PRESERVE_RESULTS", "0") == "1"
     for engine in engines_list:
+        targets.append(os.path.join(mount, "spill", sf, engine))
         if not preserve_results:
             targets.append(os.path.join(mount, "results", sf, engine))
         targets.append(os.path.join(mount, "logs", sf, engine))
