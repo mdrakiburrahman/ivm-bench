@@ -181,7 +181,7 @@ jobs:
             python3 -m venv --system-site-packages .runtime/ci-tests
           fi
           .runtime/ci-tests/bin/python -m pip install -r src/containers/benchmark-server/requirements.txt -r src/containers/dbt-server/requirements-test.txt
-          .runtime/ci-tests/bin/python -c "import duckdb; duckdb.connect().execute(\"INSTALL delta FROM 'https://extensions.duckdb.org'\")"
+          .runtime/ci-tests/bin/python -c "import duckdb; duckdb.connect().execute(\"FORCE INSTALL delta FROM 'https://extensions.duckdb.org'\")"
           export PYTHONPATH="$PWD/src/containers${PYTHONPATH:+:$PYTHONPATH}"
           .runtime/ci-tests/bin/python -m sql_catalog generate --all
           .runtime/ci-tests/bin/python -m sql_catalog check --all
