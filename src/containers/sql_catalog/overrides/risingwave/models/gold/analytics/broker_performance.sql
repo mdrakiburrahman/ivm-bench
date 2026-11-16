@@ -69,9 +69,9 @@ scored AS (
         ROUND(CAST(bw.total_notional * 100.0 / NULLIF(gb.total_market_notional, 0) AS NUMERIC), 4) AS pct_of_notional,
         ROUND(CAST((bw.total_notional - gb.avg_broker_notional) / NULLIF(gb.std_broker_notional, 0) AS NUMERIC), 4) AS notional_z_score,
         ROUND(CAST((bw.unique_customers - gb.avg_customers_per_broker) / NULLIF(gb.std_customers_per_broker, 0) AS NUMERIC), 4) AS customer_z_score,
-        DENSE_RANK() OVER (PARTITION BY 1 ORDER BY bw.total_notional DESC) AS rank_by_notional,
+        DENSE_RANK() OVER (PARTITION BY 1 ORDER BY bw.total_notional DESC NULLS LAST) AS rank_by_notional,
         DENSE_RANK() OVER (PARTITION BY 1 ORDER BY bw.unique_customers DESC) AS rank_by_customers,
-        DENSE_RANK() OVER (PARTITION BY 1 ORDER BY bw.total_commission DESC) AS rank_by_commission
+        DENSE_RANK() OVER (PARTITION BY 1 ORDER BY bw.total_commission DESC NULLS LAST) AS rank_by_commission
     FROM (SELECT *, 1 AS join_key FROM brokers_without_cash) bw
     JOIN (SELECT *, 1 AS join_key FROM global_broker) gb ON bw.join_key = gb.join_key
 )

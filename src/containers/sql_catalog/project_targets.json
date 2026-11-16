@@ -136,6 +136,14 @@
     },
     {
       "engines": [
+        "risingwave"
+      ],
+      "paths": [
+        "generate_surrogate_key"
+      ]
+    },
+    {
+      "engines": [
         "databricks-enzyme",
         "duckdb-openivm",
         "fabric-openivm-jvm-35",

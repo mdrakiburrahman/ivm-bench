@@ -60,7 +60,7 @@ scored AS (
         ROUND(CAST(uc.largest_position * 100.0 / NULLIF(uc.total_portfolio_value, 0) AS NUMERIC), 4) AS concentration_pct,
         ROUND(CAST((uc.total_portfolio_value - gc.avg_portfolio) / NULLIF(gc.std_portfolio, 0) AS NUMERIC), 4) AS portfolio_z_score,
         ROUND(CAST(uc.total_portfolio_value * 100.0 / NULLIF(gc.market_total, 0) AS NUMERIC), 4) AS pct_of_market,
-        DENSE_RANK() OVER (PARTITION BY 1 ORDER BY uc.total_portfolio_value DESC) AS rank_by_portfolio,
+        DENSE_RANK() OVER (PARTITION BY 1 ORDER BY uc.total_portfolio_value DESC NULLS LAST) AS rank_by_portfolio,
         DENSE_RANK() OVER (PARTITION BY 1 ORDER BY uc.num_securities DESC) AS rank_by_diversity
     FROM (SELECT *, 1 AS join_key FROM unwatched_customers) uc
     JOIN (SELECT *, 1 AS join_key FROM global_customer) gc ON uc.join_key = gc.join_key
