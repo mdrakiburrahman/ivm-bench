@@ -3,13 +3,10 @@
 
 Serves the App Service / IMDS managed-identity contract on localhost so that a
 container whose `IDENTITY_ENDPOINT` points here can `az login --identity` and
-fetch real tokens for a fake UAMI. Token requests are relayed (SAS-signed) over
+fetch real tokens for a fake UAMI. Token requests use a temporary HTTPS sender URL over
 an Azure Relay hybrid connection to the identity that actually holds the UAMI.
 """
 
-import base64
-import hashlib
-import hmac
 import json
 import os
 import random
@@ -22,9 +19,7 @@ import requests
 from urllib3.util import Timeout
 
 LISTEN_PORT = int(os.environ.get("IMDS_ROUTER_PORT", "8080"))
-RELAY_URL = os.environ.get("IMDS_RELAY_URL", "")
-RELAY_SENDER_KEY = os.environ.get("IMDS_RELAY_SENDER_KEY", "")
-RELAY_KEY_NAME = os.environ.get("IMDS_RELAY_KEY_NAME", "Send")
+RELAY_TEMPORARY_SAS_URL = os.environ.get("IMDS_RELAY_TEMPORARY_SAS_URL", "")
 IDENTITY_HEADER_VALUE = os.environ.get("IDENTITY_HEADER", "local-dev-secret")
 TOKEN_MAX_ATTEMPTS = int(os.environ.get("IMDS_TOKEN_MAX_ATTEMPTS", "10"))
 TOKEN_REQUEST_BUDGET_SEC = 50
@@ -37,20 +32,6 @@ TOKEN_EXPIRY_SKEW_SEC = int(os.environ.get("IMDS_TOKEN_EXPIRY_SKEW_SEC", "300"))
 # find it stale. Keeps the slow relay round-trip out of the hot path entirely.
 TOKEN_REFRESH_LEAD_SEC = int(os.environ.get("IMDS_TOKEN_REFRESH_LEAD_SEC", "900"))
 REFRESHER_INTERVAL_SEC = int(os.environ.get("IMDS_REFRESHER_INTERVAL_SEC", "60"))
-
-
-def _relay_sas_uri(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    path = parsed.path.rstrip("/").removesuffix("/token")
-    return f"http://{parsed.hostname}{path}"
-
-
-def _generate_sas_token(uri: str, key: str, key_name: str, expiry_seconds: int = 3600) -> str:
-    expiry = int(time.time()) + expiry_seconds
-    sts = f"{urllib.parse.quote(uri, safe='')}\n{expiry}"
-    sig = hmac.new(key.encode(), sts.encode(), hashlib.sha256).digest()
-    sig_b64 = urllib.parse.quote(base64.b64encode(sig).decode(), safe="")
-    return f"SharedAccessSignature sr={urllib.parse.quote(uri, safe='')}&sig={sig_b64}&se={expiry}&skn={key_name}"
 
 
 class TokenCache:
@@ -124,13 +105,11 @@ def _relay_session():
 
 def _relay_fetch(resource, client_id, remaining=TOKEN_REQUEST_BUDGET_SEC):
     """One relay attempt with separate connection and response timeouts."""
-    relay_uri = f"{RELAY_URL}?resource={urllib.parse.quote_plus(resource)}"
+    relay_uri = f"{RELAY_TEMPORARY_SAS_URL}&resource={urllib.parse.quote_plus(resource)}"
     if client_id:
         relay_uri += f"&client_id={urllib.parse.quote_plus(client_id)}"
-    sas = _generate_sas_token(_relay_sas_uri(RELAY_URL), RELAY_SENDER_KEY, RELAY_KEY_NAME)
     with _relay_session().get(
         relay_uri,
-        headers={"ServiceBusAuthorization": sas},
         timeout=Timeout(
             total=remaining,
             connect=min(TOKEN_CONNECT_TIMEOUT_SEC, remaining),
@@ -189,6 +168,7 @@ def _fetch_token(resource, client_id, cache_key, log=lambda *a: None):
         if body is None:
             return None, err
         expires_on = _parse_expires_on(body.get("expires_on"))
+        log("Relay token acquired (expires_on=%s)", expires_on)
         entry = {
             "access_token": body["access_token"],
             "expires_on": expires_on if expires_on is not None else 0,
@@ -268,8 +248,8 @@ class Handler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(parsed.query)
         resource = qs.get("resource", ["https://management.azure.com/"])[0]
 
-        if not RELAY_URL or not RELAY_SENDER_KEY:
-            return self._json(500, {"error": "IMDS_RELAY_URL or IMDS_RELAY_SENDER_KEY not set"})
+        if not RELAY_TEMPORARY_SAS_URL:
+            return self._json(500, {"error": "IMDS_RELAY_TEMPORARY_SAS_URL not set"})
 
         client_id = qs.get("client_id", [None])[0]
         cache_key = resource if not client_id else f"{resource}|client_id={client_id}"
