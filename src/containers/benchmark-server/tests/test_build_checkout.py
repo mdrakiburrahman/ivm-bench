@@ -72,6 +72,7 @@ fi
             git.write_text('#!/bin/bash\nprintf "%s\\n" "$REPO_ROOT"\n')
             git.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}",
+                   "GITHUB_ACTIONS": "false",
                    "CALLS": str(tmp / "calls"), "STREAMING": str(tmp / "streaming"),
                    "REPO_ROOT": str(root),
                    "GITHUB_ENV": str(tmp / "github_env"), "OPENIVM_UBUNTU_MIRROR": "unused",
