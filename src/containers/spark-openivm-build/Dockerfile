@@ -102,7 +102,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_COMMIT=243d13f5cbd9eee4f4c8975cea94d5d40f3fe6a3
+ARG OPENIVM_SPARK_COMMIT=a7a44219267284bf84956eefe99dc601934e9066
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -129,15 +129,6 @@ RUN git init . && \
     git remote add origin "${OPENIVM_SPARK_REPO}" && \
     git fetch --depth 1 origin "${OPENIVM_SPARK_COMMIT}" && \
     git checkout -q FETCH_HEAD
-
-# Keep this DuckDB 2.0 compatibility fix with the benchmark pin. The Spark
-# translator must lower qualified interval calls, and Fabric needs the native
-# compiler's C++ runtime alongside the bundled CLI and extension.
-COPY patches/duckdb2-spark-compiler.patch /tmp/duckdb2-spark-compiler.patch
-# The patch targets the exact OPENIVM_SPARK_COMMIT above; zero-context format
-# keeps the vendored diff free of whitespace-only context lines.
-RUN git apply --unidiff-zero --check /tmp/duckdb2-spark-compiler.patch && \
-    git apply --unidiff-zero /tmp/duckdb2-spark-compiler.patch
 
 WORKDIR /src/spark-ext
 
@@ -173,10 +164,10 @@ RUN test -s /tmp/openivm-extension.jar && \
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=243d13f5cbd9eee4f4c8975cea94d5d40f3fe6a3
+ARG OPENIVM_SPARK_COMMIT=a7a44219267284bf84956eefe99dc601934e9066
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
-# Cache-bust key: hash of the Dockerfile and vendored patches. The orchestrator
+# Cache-bust key: hash of the Dockerfile and any optional local patches. The orchestrator
 # reuses this builder image only when the label still matches.
 ARG SPARK_OPENIVM_DOCKERFILE_HASH=""
 LABEL org.openivm.spark.dockerfile_hash="${SPARK_OPENIVM_DOCKERFILE_HASH}"

@@ -34,12 +34,13 @@ logger = logging.getLogger(__name__)
 
 
 def _spark_builder_source_hash(dockerfile: str) -> str:
-    """Invalidate the builder whenever the Dockerfile or its copied patches change."""
+    """Invalidate the builder whenever its Dockerfile or optional patches change."""
     digest = hashlib.sha256()
     with open(dockerfile, "rb") as f:
         digest.update(f.read())
     patches = os.path.join(os.path.dirname(dockerfile), "patches")
-    for name in sorted(os.listdir(patches)):
+    patch_names = sorted(os.listdir(patches)) if os.path.isdir(patches) else ()
+    for name in patch_names:
         if name.endswith(".patch"):
             digest.update(name.encode("utf-8"))
             with open(os.path.join(patches, name), "rb") as f:
@@ -835,8 +836,7 @@ class Orchestrator:
         dockerfile = os.path.join(
             repo, "src/containers/spark-openivm-build/Dockerfile"
         )
-        # The builder COPYs local patches as well as its Dockerfile. Include
-        # both in the image key so a patch edit cannot reuse an older JAR.
+        # Include optional local patches in the image key when present.
         dockerfile_hash = _spark_builder_source_hash(dockerfile)
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.spark-openivm-build.yml"),
