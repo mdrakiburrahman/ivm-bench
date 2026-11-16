@@ -45,9 +45,6 @@ class ExperimentSelectionTest(unittest.TestCase):
             with self.subTest(event=event):
                 self.assertEqual(self.select(event, "custom.json"), "custom.json")
 
-    def test_merge_to_main_runs_the_all_engine_preset(self):
-        self.assertEqual(self.select("push"), CI_PRESET)
-
     def test_dispatch_without_a_file_uses_the_inline_knobs(self):
         self.assertEqual(self.select("workflow_dispatch"), "")
 
@@ -101,14 +98,13 @@ class PresetCoverageTest(unittest.TestCase):
         self.assertLess(ci.index("src/.scripts/benchmark.sh"), guard)
         self.assertLess(guard, ci.index("post-pr-comment.sh"))
 
-    def test_workflow_triggers_keep_pr_and_post_merge_paths_separate(self):
+    def test_workflow_triggers_keep_pr_and_manual_paths_separate(self):
         gci = yaml.load((WORKFLOWS / "gci.yaml").read_text(), Loader=yaml.BaseLoader)
         ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
         self.assertEqual(set(gci["on"]), {"pull_request"})
         self.assertIn("synchronize", gci["on"]["pull_request"]["types"])
         self.assertIn("ready_for_review", gci["on"]["pull_request"]["types"])
-        self.assertEqual(set(ci["on"]), {"push", "workflow_dispatch", "workflow_call"})
-        self.assertEqual(ci["on"]["push"]["branches"], ["main"])
+        self.assertEqual(set(ci["on"]), {"workflow_dispatch", "workflow_call"})
         self.assertEqual(len(ci["on"]["workflow_dispatch"]["inputs"]), 25)
         self.assertEqual(set(gci["jobs"]["benchmark"]["with"]), {"experiments_file", "pr_number"})
 
