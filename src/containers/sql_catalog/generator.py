@@ -1,0 +1,963 @@
+import argparse
+import fnmatch
+import json
+import logging
+import re
+import sys
+from contextvars import ContextVar
+from decimal import Decimal, InvalidOperation
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
+
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import ErrorLevel, SqlglotError
+
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+APP_ROOT = PACKAGE_DIR.parent
+DBT_PROJECT_ROOT = APP_ROOT
+if not (DBT_PROJECT_ROOT / "dbt-projects").exists() and (
+    APP_ROOT / "dbt-server" / "dbt-projects"
+).exists():
+    DBT_PROJECT_ROOT = APP_ROOT / "dbt-server"
+DBT_PROJECTS_DIR = DBT_PROJECT_ROOT / "dbt-projects"
+_CATEGORIES = ("models", "macros", "inline")
+_JINJA_EXPRESSION = re.compile(r"\{\{.*?\}\}", re.DOTALL)
+_PLACEHOLDER = re.compile(
+    r"(?<!\{)\{[A-Za-z_][A-Za-z0-9_]*\}(?!\})|%\([A-Za-z_][A-Za-z0-9_]*\)s|%s|(?<!:):[A-Za-z_][A-Za-z0-9_]*|\?"
+)
+_PARAMETER = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})")
+_SQL_KEYWORDS = re.compile(
+    r"\b(?:"
+    r"SELECT|WITH|INSERT\s+INTO|"
+    r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW|SCHEMA|DATABASE)|"
+    r"DELETE\s+FROM|UPDATE\s+\w+\s+SET|"
+    r"DROP\s+(?:TABLE|VIEW|SCHEMA|DATABASE|FUNCTION)|"
+    r"ALTER\s+(?:TABLE|VIEW|SCHEMA|DATABASE)|MERGE\s+INTO|"
+    r"REFRESH\s+(?:MATERIALIZED\s+VIEW|TABLE)|DESCRIBE(?:\s+HISTORY)?|"
+    r"SHOW\s+(?:TABLES?|VIEWS?|COLUMNS?|DATABASES?|SCHEMAS?|CREATE)|"
+    r"TRUNCATE\s+(?:TABLE\s+)?|CALL\s+\w+|EXPLAIN\s+(?:SELECT|WITH)|"
+    r"PRAGMA\s+\w+|COPY\s+\w+"
+    r")\b",
+    re.IGNORECASE,
+)
+_SQL_STRING_START = r"(?:[rubf]{1,2})?(?:'{3}|\"{3}|'|\")"
+_NULL_ORDERING = re.compile(r"\bNULLS\s+(?:FIRST|LAST)\b", re.IGNORECASE)
+# SQLGlot's Spark parser drops list arguments from DuckDB's READ_PARQUET call.
+_READ_PARQUET_ARRAY = re.compile(
+    r"\bread_parquet\s*\(\s*\[[^\]]*\]"
+    r"(?:\s*,\s*union_by_name\s*=\s*(?:true|false))?\s*\)",
+    re.IGNORECASE | re.DOTALL,
+)
+_SQL_STATEMENT_START = re.compile(
+    r"^\s*(?!WITH\b)" + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
+_SQL_WITH_START = re.compile(
+    r"^\s*WITH\s+(?:RECURSIVE\s+)?"
+    r"(?:[\w$]+|\"[^\"]+\"|`[^`]+`|\[[^\]]+\])"
+    r"(?:\s*\([^)]*\))?\s+AS\s*\(",
+    re.IGNORECASE,
+)
+_SQL_CALL_START = re.compile(
+    r"\b(?:execute|executemany|executescript|execute_sql|execute_query|query|sql)"
+    r"\s*\(\s*(?:\(\s*)*"
+    + _SQL_STRING_START
+    + r"\s*"
+    + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
+_SQL_ASSIGNMENT_START = re.compile(
+    r"^\s*[\w.]+\s*=\s*(?:\(\s*)*"
+    + _SQL_STRING_START
+    + r"\s*"
+    + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
+_SQL_RETURN_START = re.compile(
+    r"^\s*return\s+(?:\(\s*)*"
+    + _SQL_STRING_START
+    + r"\s*"
+    + _SQL_KEYWORDS.pattern,
+    re.IGNORECASE,
+)
+_EXEMPT_MARKER = re.compile(r"(?:^|\s)#\s*sql-catalog:\s*exempt\s+(\S.*?)\s*$")
+_EXEMPT_PREFIX = re.compile(r"(?:^|\s)#\s*sql-catalog:\s*exempt\b")
+
+
+def _relative_sql_path(name):
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"Invalid catalog path: {name!r}")
+    relative = PurePosixPath(name.replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise ValueError(f"Invalid catalog path: {name!r}")
+    if relative.suffix == ".sql":
+        relative = relative.with_suffix("")
+    return relative
+
+
+def _sql_path(root, name):
+    relative = _relative_sql_path(name)
+    path = (root / f"{relative.as_posix()}.sql").resolve()
+    if root.resolve() not in path.parents:
+        raise ValueError(f"Catalog path resolves outside its root: {name!r}")
+    return path
+
+
+def _catalog_path(category, name):
+    if category not in _CATEGORIES:
+        raise ValueError(f"Unsupported SQL category: {category!r}")
+    return _sql_path(PACKAGE_DIR / "sql" / "spark" / category, name)
+
+
+def _override_path(engine, category, name):
+    if category not in _CATEGORIES:
+        raise ValueError(f"Unsupported SQL category: {category!r}")
+    name = _relative_sql_path(name).as_posix()
+    shared = _shared_overrides().get((engine, category, name))
+    root = PACKAGE_DIR / "overrides"
+    if shared is not None:
+        return _sql_path(root / "shared" / shared / category, name)
+    return _sql_path(root / engine / category, name)
+
+
+def _load_engines():
+    with (PACKAGE_DIR / "engines.json").open(encoding="utf-8") as file:
+        engines = json.load(file)
+    if not isinstance(engines, dict) or not engines:
+        raise ValueError("engines.json must contain a non-empty engine-to-dialect mapping")
+    return engines
+
+
+@lru_cache(maxsize=1)
+def _shared_overrides():
+    with (PACKAGE_DIR / "shared_overrides.json").open(encoding="utf-8") as file:
+        groups = json.load(file)
+    if not isinstance(groups, list):
+        raise ValueError("shared_overrides.json must contain a list")
+    shared = {}
+    sources = set()
+    for group in groups:
+        if not isinstance(group, dict) or set(group) != {"engines", "category", "paths"}:
+            raise ValueError("shared_overrides.json: invalid group")
+        engines, category, paths = group["engines"], group["category"], group["paths"]
+        if not isinstance(engines, list) or len(engines) < 2 or engines != sorted(set(engines)):
+            raise ValueError("shared_overrides.json: engines must be sorted and distinct")
+        if any(engine not in _load_engines() for engine in engines) or category not in _CATEGORIES:
+            raise ValueError("shared_overrides.json: unknown engine or category")
+        if not isinstance(paths, list) or not paths:
+            raise ValueError("shared_overrides.json: group needs paths")
+        group_name = "__".join(engines)
+        for name in paths:
+            if _relative_sql_path(name).as_posix() != name:
+                raise ValueError(f"shared_overrides.json: invalid path {name!r}")
+            source = _sql_path(PACKAGE_DIR / "overrides" / "shared" / group_name / category, name)
+            if not source.is_file():
+                raise ValueError(f"shared_overrides.json: missing SQL source {source}")
+            sources.add(source)
+            for engine in engines:
+                key = (engine, category, name)
+                if key in shared or key in _skips():
+                    raise ValueError(f"shared_overrides.json: conflicting target {key!r}")
+                if _sql_path(PACKAGE_DIR / "overrides" / engine / category, name).is_file():
+                    raise ValueError(f"shared_overrides.json: duplicate engine SQL for {key!r}")
+                shared[key] = group_name
+    root = PACKAGE_DIR / "overrides" / "shared"
+    for path in root.rglob("*.sql"):
+        if path.resolve() not in sources:
+            raise ValueError(f"shared_overrides.json: undeclared shared SQL source {path}")
+    return shared
+
+
+def _project_targets():
+    """Return the declared dbt outputs, independent of generated files."""
+    with (PACKAGE_DIR / "project_targets.json").open(encoding="utf-8") as file:
+        groups = json.load(file)
+    if not isinstance(groups, dict) or set(groups) != {"models", "macros"}:
+        raise ValueError("project_targets.json must contain models and macros groups")
+    engines = _load_engines()
+    targets = set()
+    for category, entries in groups.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"project_targets.json: {category} must be a list")
+        for group in entries:
+            if not isinstance(group, dict) or set(group) != {"engines", "paths"}:
+                raise ValueError(f"project_targets.json: invalid {category} group")
+            group_engines, paths = group["engines"], group["paths"]
+            if not isinstance(group_engines, list) or not group_engines or not isinstance(paths, list) or not paths:
+                raise ValueError(f"project_targets.json: empty or invalid {category} group")
+            for engine in group_engines:
+                if engine not in engines:
+                    raise ValueError(f"project_targets.json: unknown engine {engine!r}")
+                for name in paths:
+                    relative = _relative_sql_path(name).as_posix()
+                    if relative != name:
+                        raise ValueError(f"project_targets.json: invalid path {name!r}")
+                    target = (engine, category, name)
+                    if target in targets:
+                        raise ValueError(f"project_targets.json: duplicate target {target!r}")
+                    targets.add(target)
+    return targets
+
+
+@lru_cache(maxsize=1)
+def _skips():
+    with (PACKAGE_DIR / "skips.json").open(encoding="utf-8") as file:
+        groups = json.load(file)
+    if not isinstance(groups, list):
+        raise ValueError("skips.json must contain a list")
+    skips = {}
+    for group in groups:
+        if not isinstance(group, dict) or set(group) != {"engine", "category", "reason", "paths"}:
+            raise ValueError("skips.json: invalid skip group")
+        engine, category, reason, paths = (
+            group["engine"], group["category"], group["reason"], group["paths"]
+        )
+        if engine not in _load_engines() or category not in _CATEGORIES:
+            raise ValueError(f"skips.json: unknown engine or category: {engine!r}, {category!r}")
+        if not isinstance(reason, str) or not reason.strip() or not isinstance(paths, list) or not paths:
+            raise ValueError("skips.json: each group needs a reason and paths")
+        for name in paths:
+            if _relative_sql_path(name).as_posix() != name:
+                raise ValueError(f"skips.json: invalid path {name!r}")
+            key = (engine, category, name)
+            if key in skips:
+                raise ValueError(f"skips.json: duplicate skip {key!r}")
+            skips[key] = reason
+    return skips
+
+
+def _parse_override(path):
+    root = (PACKAGE_DIR / "overrides").resolve()
+    try:
+        relative = path.resolve().relative_to(root)
+    except ValueError:
+        relative = None
+    reason = None
+    if relative is not None and len(relative.parts) >= 3 and relative.suffix == ".sql":
+        engine, category = relative.parts[:2]
+        name = Path(*relative.parts[2:]).with_suffix("").as_posix()
+        reason = _skips().get((engine, category, name))
+    if reason is not None:
+        if path.is_file():
+            raise ValueError(f"{path}: SQL override conflicts with skips.json")
+        return {"reason": reason, "sql": None, "skip": True}
+    if not path.is_file():
+        return None
+    content = path.read_text(encoding="utf-8")
+    header, separator, body = content.partition("\n")
+    header = header.rstrip("\r")
+    if header.startswith("-- catalog-override:"):
+        reason = header.removeprefix("-- catalog-override:").strip()
+        if not reason:
+            raise ValueError(f"{path}: catalog override requires a reason")
+        if not separator or not body.strip():
+            raise ValueError(f"{path}: catalog override requires SQL after its header")
+        return {"reason": reason, "sql": body, "skip": False}
+    if header.startswith("-- catalog-skip:"):
+        raise ValueError(f"{path}: put reasoned skips in skips.json, not SQL files")
+    raise ValueError(
+        f"{path}: first line must be '-- catalog-override: <reason>'"
+    )
+
+
+def _entry_names(prefixes=()):
+    entries = set()
+    for category in _CATEGORIES:
+        canonical_root = PACKAGE_DIR / "sql" / "spark" / category
+        if canonical_root.is_dir():
+            for path in canonical_root.rglob("*.sql"):
+                entries.add(
+                    (category, path.relative_to(canonical_root).with_suffix("").as_posix())
+                )
+        entries.update(
+            (path_category, name)
+            for _, path_category, name, _ in _override_names(category=category)
+        )
+    return sorted(
+        (category, name)
+        for category, name in entries
+        if _matches_prefix(category, name, prefixes)
+    )
+
+
+def _override_names(engine=None, category=None):
+    root = PACKAGE_DIR / "overrides"
+    if not root.is_dir():
+        return []
+    names = []
+    for path in root.rglob("*.sql"):
+        relative = path.relative_to(root)
+        if len(relative.parts) < 3:
+            continue
+        path_engine, path_category = relative.parts[:2]
+        if path_engine == "shared":
+            continue
+        if engine is not None and path_engine != engine:
+            continue
+        if category is not None and path_category != category:
+            continue
+        names.append(
+            (
+                path_engine,
+                path_category,
+                relative.relative_to(Path(path_engine) / path_category)
+                .with_suffix("")
+                .as_posix(),
+                path,
+            )
+        )
+    for path_engine, path_category, name in _shared_overrides():
+        if engine is not None and path_engine != engine:
+            continue
+        if category is not None and path_category != category:
+            continue
+        names.append(
+            (path_engine, path_category, name, _override_path(path_engine, path_category, name))
+        )
+    for path_engine, path_category, name in _skips():
+        if engine is not None and path_engine != engine:
+            continue
+        if category is not None and path_category != category:
+            continue
+        names.append(
+            (path_engine, path_category, name, _override_path(path_engine, path_category, name))
+        )
+    return sorted(names)
+
+
+def _matches_prefix(category, name, prefixes):
+    if not prefixes:
+        return True
+    relative = _relative_sql_path(name).as_posix()
+    full = f"{category}/{relative}"
+    for prefix in prefixes:
+        normalized = str(prefix).replace("\\", "/").strip("/")
+        if normalized.endswith(".sql"):
+            normalized = normalized[:-4]
+        if full == normalized or full.startswith(f"{normalized}/"):
+            return True
+        if relative == normalized or relative.startswith(f"{normalized}/"):
+            return True
+    return False
+
+
+def _mask_tokens(sql):
+    tokens = []
+
+    def replace(match):
+        token = f"SQLCATALOGTOKEN{len(tokens)}"
+        while token in sql:
+            token += "X"
+        tokens.append((token, match.group(0)))
+        return token
+
+    masked = _JINJA_EXPRESSION.sub(replace, sql)
+    masked = _PLACEHOLDER.sub(replace, masked)
+    return masked, tokens
+
+
+def _mask_opaque_read_parquet(sql):
+    tokens = []
+
+    def replace(match):
+        token = f"SQLCATALOGOPAQUE{len(tokens)}"
+        while token in sql:
+            token += "X"
+        tokens.append((token, match.group(0)))
+        return token
+
+    return _READ_PARQUET_ARRAY.sub(replace, sql), tokens
+
+
+def _mask_jinja(sql):
+    tokens = []
+
+    def replace(match):
+        token = f"SQLCATALOGTOKEN{len(tokens)}"
+        while token in sql:
+            token += "X"
+        tokens.append((token, match.group(0)))
+        return token
+
+    masked = _JINJA_EXPRESSION.sub(replace, sql)
+    if "{%" in masked or "%}" in masked:
+        raise ValueError("Jinja control blocks require an engine-specific SQL override")
+    return masked, tokens
+
+
+def _restore_tokens(sql, tokens):
+    for token, original in tokens:
+        sql = sql.replace(token, original)
+    return sql
+
+
+def _restore_jinja(sql, tokens):
+    return _restore_tokens(sql, tokens)
+
+
+def _substitute_params(sql, params):
+    if not params:
+        return sql
+    return _PARAMETER.sub(
+        lambda match: str(params[match.group(1)])
+        if match.group(1) in params
+        else match.group(0),
+        sql,
+    )
+
+
+_SQLGLOT_WARNING_MESSAGES = ContextVar("sqlglot_warning_messages", default=None)
+
+
+class _SqlglotWarningFilter(logging.Filter):
+    def filter(self, record):
+        messages = _SQLGLOT_WARNING_MESSAGES.get()
+        if messages is None:
+            return True
+        messages.append(record.getMessage())
+        return False
+
+
+logging.getLogger("sqlglot").addFilter(_SqlglotWarningFilter())
+
+
+def _strict_sqlglot(operation, action):
+    messages = []
+    token = _SQLGLOT_WARNING_MESSAGES.set(messages)
+    try:
+        result = action()
+    finally:
+        _SQLGLOT_WARNING_MESSAGES.reset(token)
+    if messages:
+        raise ValueError(f"{operation} emitted SQLGlot warning: {'; '.join(messages)}")
+    return result
+
+
+def _transpile_sql(source, dialect):
+    result = _strict_sqlglot(
+        "SQL transpilation",
+        lambda: _transpile_sql_unchecked(source, dialect),
+    )
+    if source.strip() and not result.strip():
+        raise ValueError(f"SQLGlot produced empty output for a {dialect} SQL entry")
+    return result
+
+
+def _transpile_sql_unchecked(source, dialect):
+    masked, tokens = _mask_tokens(source)
+    opaque_tokens = []
+    if dialect == "duckdb":
+        masked, opaque_tokens = _mask_opaque_read_parquet(masked)
+    statements = sqlglot.parse(masked, read="spark")
+    rendered = []
+    for statement in statements:
+        if statement is None:
+            continue
+        if isinstance(statement, exp.Command):
+            rendered.append(
+                statement.sql(
+                    dialect="spark",
+                    pretty=True,
+                    unsupported_level=ErrorLevel.RAISE,
+                )
+            )
+            continue
+        source_statement = statement.sql(
+            dialect="spark", unsupported_level=ErrorLevel.RAISE
+        )
+        if not _NULL_ORDERING.search(masked):
+            for ordered in statement.find_all(exp.Ordered):
+                if ordered.args.get("desc"):
+                    ordered.set("nulls_first", True)
+            source_statement = statement.sql(
+                dialect="spark", unsupported_level=ErrorLevel.RAISE
+            )
+        output = sqlglot.transpile(
+            source_statement,
+            read="spark",
+            write=dialect,
+            pretty=True,
+            error_level=ErrorLevel.RAISE,
+        )
+        if not output:
+            raise ValueError(f"SQLGlot produced no output for a {dialect} statement")
+        rendered.append(output[0])
+    result = ";\n".join(rendered)
+    if source.rstrip().endswith(";") and result:
+        result += ";"
+    if source.endswith(("\n", "\r")) and result:
+        result += "\n"
+    result = _restore_tokens(result, opaque_tokens)
+    return _restore_tokens(result, tokens)
+
+
+def _render_canonical(engine, category, name, source):
+    dialect = _load_engines().get(engine)
+    if dialect is None:
+        raise ValueError(f"Unknown SQL catalog engine: {engine!r}")
+    if category == "macros" or dialect == "spark":
+        return source
+    if "{%" in source or "%}" in source:
+        path = _override_path(engine, category, name)
+        raise ValueError(
+            f"{category}/{_relative_sql_path(name)} has Jinja control blocks; "
+            f"add an engine override at {path}"
+        )
+    return _transpile_sql(source, dialect)
+
+
+def _resolve_sql(engine, category, name):
+    override_path = _override_path(engine, category, name)
+    override = _parse_override(override_path)
+    if override is not None:
+        if override["skip"]:
+            return None, override
+        return override["sql"], override
+    canonical_path = _catalog_path(category, name)
+    if canonical_path.is_file():
+        return canonical_path.read_text(encoding="utf-8"), None
+    raise FileNotFoundError(
+        f"No canonical SQL or engine override for {engine}:{category}/{_relative_sql_path(name)}"
+    )
+
+
+def render_sql(engine, category, name, **params):
+    """Load catalog SQL and render it for one configured engine dialect."""
+    engines = _load_engines()
+    if engine not in engines:
+        raise ValueError(f"Unknown SQL catalog engine: {engine!r}")
+    if category not in _CATEGORIES:
+        raise ValueError(f"Unsupported SQL category: {category!r}")
+    source, override = _resolve_sql(engine, category, name)
+    if override is not None and override["skip"]:
+        raise ValueError(
+            f"SQL catalog entry {engine}:{category}/{_relative_sql_path(name)} is skipped: "
+            f"{override['reason']}"
+        )
+    if override is not None:
+        rendered = source
+    else:
+        rendered = _render_canonical(engine, category, name, source)
+    rendered = _substitute_params(rendered, params)
+    if category == "inline" and rendered.endswith("\n"):
+        rendered = rendered[:-1]
+    if source.strip() and not rendered.strip():
+        raise ValueError(
+            f"SQL catalog entry {engine}:{category}/{_relative_sql_path(name)} rendered empty SQL"
+        )
+    return rendered
+
+
+def load_sql(engine, category, name, **params):
+    """Load one catalog entry, rendering its dialect and optional Python parameters."""
+    return render_sql(engine, category, name, **params)
+
+
+def _destination(engine, category, name, output_dir=None):
+    relative = _relative_sql_path(name)
+    root = Path(output_dir) if output_dir is not None else DBT_PROJECTS_DIR / engine / category
+    return root / f"{relative.as_posix()}.sql"
+
+
+def generate_model(engine, model, output_dir=None):
+    """Render one catalog model to the existing dbt project layout."""
+    destination = _destination(engine, "models", model, output_dir)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(render_sql(engine, "models", model), encoding="utf-8")
+    return destination
+
+
+def generate_macro(engine, macro, output_dir=None):
+    """Render one catalog macro to a project directory or caller-supplied path."""
+    destination = _destination(engine, "macros", macro, output_dir)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(render_sql(engine, "macros", macro), encoding="utf-8")
+    return destination
+
+
+def _generate_catalog_files(engine, category, prefixes=(), output_dir=None):
+    if category not in {"models", "macros"}:
+        raise ValueError(f"Unsupported generated SQL category: {category!r}")
+    generated = []
+    for target_engine, target_category, name in sorted(_project_targets()):
+        if target_engine != engine or target_category != category or not _matches_prefix(category, name, prefixes):
+            continue
+        destination = _destination(engine, category, name, output_dir)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(render_sql(engine, category, name), encoding="utf-8")
+        generated.append(destination)
+    return generated
+
+
+def generate_models(engine, output_dir=None, prefixes=()):
+    """Render the declared models for an engine's project."""
+    return _generate_catalog_files(engine, "models", prefixes, output_dir)
+
+
+def generate_macros(engine, output_dir=None, prefixes=()):
+    """Render the declared macros for an engine's project."""
+    return _generate_catalog_files(engine, "macros", prefixes, output_dir)
+
+
+def generate(engine=None, prefixes=(), all_engines=False):
+    """Generate applicable catalog models and macros for one or all engines."""
+    engines = _load_engines()
+    selected = list(engines) if all_engines else [engine]
+    if not all_engines and engine not in engines:
+        raise ValueError("Pass a configured engine or set all_engines=True")
+    generated = []
+    for engine_name in selected:
+        generated.extend(generate_models(engine_name, prefixes=prefixes))
+        generated.extend(generate_macros(engine_name, prefixes=prefixes))
+    return generated
+
+
+def _catalog_entries(prefixes=()):
+    return _entry_names(prefixes)
+
+
+def _exceptions():
+    entries = []
+    root = PACKAGE_DIR / "exceptions"
+    if not root.is_dir():
+        return entries
+    for path in sorted(root.glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError(f"{path}: exceptions file must contain a JSON list")
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("path"), str)
+                or not item["path"]
+                or not isinstance(item.get("reason"), str)
+                or not item["reason"].strip()
+            ):
+                raise ValueError(f"{path}: each exception requires a path and reason")
+            entries.append(item)
+    return entries
+
+
+def _is_exempt_path(path):
+    normalized = str(path).replace("\\", "/")
+    if "/tests/" in f"/{normalized}/":
+        return True
+    return any(fnmatch.fnmatch(normalized, item["path"]) for item in _exceptions())
+
+
+def _line_marker(lines, index):
+    for candidate in (index, index - 1):
+        if candidate < 0 or candidate >= len(lines):
+            continue
+        line = lines[candidate].rstrip("\r\n")
+        marker = _EXEMPT_MARKER.search(line)
+        if marker:
+            return marker.group(1).strip()
+        if _EXEMPT_PREFIX.search(line):
+            return ""
+    return None
+
+
+def _all_project_sql():
+    engine_dirs = sorted(DBT_PROJECTS_DIR.iterdir()) if DBT_PROJECTS_DIR.is_dir() else ()
+    for engine_dir in engine_dirs:
+        if not engine_dir.is_dir():
+            continue
+        for category in ("models", "macros"):
+            root = engine_dir / category
+            if root.is_dir():
+                for path in sorted(root.rglob("*.sql")):
+                    yield (
+                        engine_dir.name,
+                        category,
+                        path.relative_to(root).with_suffix("").as_posix(),
+                        path,
+                    )
+
+
+def _numeric_literal_value(expression):
+    if not isinstance(expression, exp.Literal) or expression.is_string:
+        return None
+    try:
+        value = Decimal(expression.this)
+    except InvalidOperation:
+        return None
+    return value if value.is_finite() else None
+
+
+def _normalized_sql(sql, dialect):
+    if "{%" in sql or "%}" in sql:
+        return None
+    result = _strict_sqlglot(
+        "SQL parity normalization",
+        lambda: _normalized_sql_unchecked(sql, dialect),
+    )
+    if sql.strip() and not result.strip():
+        raise ValueError(f"SQLGlot produced empty normalized output for {dialect} SQL")
+    return result
+
+
+def _normalized_sql_unchecked(sql, dialect):
+    masked, tokens = _mask_tokens(sql)
+    masked, opaque_tokens = _mask_opaque_read_parquet(masked)
+    statements = sqlglot.parse(masked, read=dialect)
+    normalized = []
+    for statement in statements:
+        if statement is None:
+            continue
+        if isinstance(statement, exp.Command):
+            text = re.sub(
+                r"\s+",
+                " ",
+                statement.sql(dialect=dialect, unsupported_level=ErrorLevel.RAISE),
+            ).strip()
+        else:
+            for modulo in statement.find_all(exp.Mod):
+                divisor = modulo.expression
+                if isinstance(divisor, exp.Nullif):
+                    value = _numeric_literal_value(divisor.this)
+                    fallback = _numeric_literal_value(divisor.expression)
+                    if value is not None and value != 0 and fallback == 0:
+                        modulo.set("expression", divisor.this.copy())
+            if dialect in {"spark", "postgres"} and not _NULL_ORDERING.search(masked):
+                for ordered in statement.find_all(exp.Ordered):
+                    if ordered.args.get("desc"):
+                        ordered.set("nulls_first", True)
+            for node in list(statement.find_all(exp.TsOrDsToDate)):
+                node.replace(
+                    exp.Cast(this=node.this.copy(), to=exp.DataType.build("DATE"))
+                )
+            text = statement.sql(
+                dialect="spark", unsupported_level=ErrorLevel.RAISE
+            )
+        text = _restore_tokens(text, opaque_tokens)
+        normalized.append(_restore_tokens(text, tokens))
+    return ";\n".join(normalized)
+
+
+def _override_is_unnecessary(engine, category, name, override):
+    if override is None or override["skip"]:
+        return False
+    canonical_path = _catalog_path(category, name)
+    if not canonical_path.is_file():
+        return False
+    canonical = canonical_path.read_text(encoding="utf-8")
+    if category == "macros":
+        return override["sql"] == canonical
+    if "{%" in canonical or "%}" in canonical:
+        return False
+    dialect = _load_engines()[engine]
+    try:
+        expected = _render_canonical(engine, category, name, canonical)
+        return _normalized_sql(expected, dialect) == _normalized_sql(override["sql"], dialect)
+    except (ValueError, SqlglotError):
+        return False
+
+
+def check_catalog(prefixes=(), scan_project=True):
+    """Return all catalog drift, stale skips, unnecessary overrides, and loose project SQL."""
+    errors = []
+    engines = _load_engines()
+    entries = set(_catalog_entries(prefixes))
+    try:
+        _exceptions()
+        targets = _project_targets()
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return [f"Invalid catalog configuration: {error}"]
+
+    for engine, category, name in sorted(targets):
+        if not _matches_prefix(category, name, prefixes):
+            continue
+        if not _catalog_path(category, name).is_file() and not _override_path(engine, category, name).is_file():
+            errors.append(f"{engine}:{category}/{name}: target has no catalog source")
+
+    for engine, category, name, path in _override_names():
+        if engine not in engines:
+            errors.append(f"{path}: unknown engine {engine!r}")
+            continue
+        if category not in _CATEGORIES:
+            errors.append(f"{path}: unsupported category {category!r}")
+            continue
+        if not _matches_prefix(category, name, prefixes):
+            continue
+        try:
+            override = _parse_override(path)
+        except (OSError, ValueError) as error:
+            errors.append(str(error))
+            continue
+        entries.add((category, name))
+        if override is not None and _override_is_unnecessary(engine, category, name, override):
+            errors.append(f"{path}: unnecessary override; output is AST-equal to canonical SQL")
+
+    for category, name in sorted(entries):
+        canonical = _catalog_path(category, name)
+        canonical_exists = canonical.is_file()
+        for engine in engines:
+            override_path = _override_path(engine, category, name)
+            try:
+                override = _parse_override(override_path)
+            except (OSError, ValueError) as error:
+                errors.append(str(error))
+                continue
+            if not canonical_exists and override is None:
+                continue
+            destination = _destination(engine, category, name)
+            if override is not None and override["skip"]:
+                if destination.is_file():
+                    errors.append(f"{destination}: stale generated file for catalog skip")
+                if (engine, category, name) in targets:
+                    errors.append(f"{destination}: skipped entry is declared as a project target")
+                continue
+            if category == "inline":
+                try:
+                    render_sql(engine, category, name)
+                except (OSError, ValueError, FileNotFoundError, SqlglotError) as error:
+                    errors.append(f"{engine}:{category}/{name}: {error}")
+                continue
+            if (engine, category, name) not in targets:
+                continue
+            if not destination.is_file():
+                errors.append(f"{destination}: missing generated file; run sql_catalog generate")
+                continue
+            try:
+                expected = render_sql(engine, category, name)
+            except (OSError, ValueError, FileNotFoundError, SqlglotError) as error:
+                errors.append(f"{destination}: cannot render catalog SQL: {error}")
+                continue
+            actual = destination.read_text(encoding="utf-8")
+            if actual != expected:
+                errors.append(f"{destination}: differs from generated catalog output")
+
+    if scan_project:
+        for engine, category, name, path in _all_project_sql():
+            if not _matches_prefix(category, name, prefixes):
+                continue
+            if engine not in engines:
+                errors.append(f"{path}: project SQL uses unconfigured engine {engine!r}")
+                continue
+            if _is_exempt_path(path.relative_to(DBT_PROJECT_ROOT.parent).as_posix()):
+                continue
+            canonical_exists = _catalog_path(category, name).is_file()
+            engine_override_exists = _override_path(engine, category, name).is_file()
+            if not canonical_exists and not engine_override_exists:
+                errors.append(f"{path}: project SQL has no canonical source or engine override")
+            elif (engine, category, name) not in targets:
+                errors.append(f"{path}: project SQL is not a declared generation target")
+    return sorted(set(errors))
+
+
+def parity_report(prefixes=()):
+    """Return parity rows and all engine/model AST differences."""
+    engines = _load_engines()
+    targets = _project_targets()
+    rows = []
+    differences = []
+    for category, name in _catalog_entries(prefixes):
+        canonical_path = _catalog_path(category, name)
+        canonical_exists = canonical_path.is_file()
+        for engine, dialect in engines.items():
+            override_path = _override_path(engine, category, name)
+            override = _parse_override(override_path)
+            destination = _destination(engine, category, name)
+            if override is None and not canonical_exists:
+                continue
+            if category in {"models", "macros"} and (engine, category, name) not in targets and not (override and override["skip"]):
+                continue
+            if override is not None and override["skip"]:
+                status = f"override({override['reason']})"
+            elif override is not None:
+                status = f"override({override['reason']})"
+            elif category == "macros":
+                canonical = canonical_path.read_text(encoding="utf-8")
+                status = "equal" if canonical == render_sql(engine, category, name) else "DIFF"
+            else:
+                try:
+                    final_sql = render_sql(engine, category, name)
+                    canonical_sql = render_sql("spark", category, name)
+                    if dialect == "spark" and final_sql == canonical_sql:
+                        status = "equal"
+                    else:
+                        final_ast = _normalized_sql(final_sql, dialect)
+                        canonical_ast = _normalized_sql(canonical_sql, "spark")
+                        if final_ast is None or canonical_ast is None:
+                            status = "equal" if final_sql == canonical_sql else "DIFF"
+                        else:
+                            status = "equal" if final_ast == canonical_ast else "DIFF"
+                except (OSError, ValueError, SqlglotError) as error:
+                    status = "DIFF"
+                    differences.append(f"{engine}:{category}/{name}: {error}")
+            rows.append((engine, category, name, status))
+            if status == "DIFF":
+                differences.append(f"{engine}:{category}/{name}: AST differs from canonical SQL")
+    return rows, sorted(set(differences))
+
+
+def overrides_ledger():
+    ledger = []
+    for engine, category, name, path in _override_names():
+        override = _parse_override(path)
+        ledger.append((engine, category, name, override["reason"]))
+    return ledger
+
+
+def is_sql_candidate(line):
+    return any(
+        pattern.search(line)
+        for pattern in (
+            _SQL_STATEMENT_START,
+            _SQL_WITH_START,
+            _SQL_CALL_START,
+            _SQL_ASSIGNMENT_START,
+            _SQL_RETURN_START,
+        )
+    )
+
+
+def _print_rows(rows):
+    print("engine\tcategory\tpath\tstatus")
+    for engine, category, name, status in rows:
+        print(f"{engine}\t{category}\t{name}\t{status}")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Generate and validate the SQL catalog.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    generate_parser = subparsers.add_parser("generate", help="generate dbt project SQL")
+    generate_group = generate_parser.add_mutually_exclusive_group(required=True)
+    generate_group.add_argument("--engine", choices=sorted(_load_engines()))
+    generate_group.add_argument("--all", action="store_true", dest="all_engines")
+    generate_parser.add_argument("prefixes", nargs="*")
+
+    for command in ("check", "parity"):
+        command_parser = subparsers.add_parser(command, help=f"validate {command} for catalog SQL")
+        command_parser.add_argument("--all", action="store_true")
+        command_parser.add_argument("prefixes", nargs="*")
+
+    subparsers.add_parser("overrides", help="list the engine override ledger")
+    args = parser.parse_args(argv)
+
+    if args.command == "generate":
+        generated = generate(args.engine, args.prefixes, args.all_engines)
+        for path in generated:
+            print(path)
+        return 0
+    if args.command == "check":
+        errors = check_catalog(args.prefixes, scan_project=True)
+        if errors:
+            print("\n".join(errors), file=sys.stderr)
+            return 1
+        print("SQL catalog check passed.")
+        return 0
+    if args.command == "parity":
+        rows, differences = parity_report(args.prefixes)
+        _print_rows(rows)
+        if differences:
+            print("\n".join(differences), file=sys.stderr)
+            return 1
+        return 0
+    for engine, category, name, reason in overrides_ledger():
+        print(f"{engine}\t{category}/{name}\t{reason}")
+    return 0

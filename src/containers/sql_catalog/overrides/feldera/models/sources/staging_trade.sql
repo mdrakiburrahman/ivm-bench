@@ -1,0 +1,17 @@
+-- catalog-override: engine-only: Feldera-only ROW and scalar column schemas model its Delta/Parquet ingestion tables; no other engine has these models.
+cdc_flag VARCHAR,
+cdc_dsn BIGINT,
+t_id BIGINT,
+t_dts TIMESTAMP,
+t_st_id VARCHAR,
+t_tt_id VARCHAR,
+t_is_cash TINYINT,
+t_s_symb VARCHAR,
+t_qty INTEGER,
+t_bid_price DOUBLE,
+t_ca_id BIGINT,
+t_exec_name VARCHAR,
+t_trade_price DOUBLE,
+t_chrg DOUBLE,
+t_comm DOUBLE,
+t_tax DOUBLE

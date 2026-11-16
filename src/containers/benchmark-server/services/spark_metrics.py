@@ -32,6 +32,8 @@ import sqlite3
 import zipfile
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from sql_catalog import load_sql
+
 logger = logging.getLogger(__name__)
 
 ENGINES: Tuple[str, str] = ("spark", "spark-openivm")
@@ -327,6 +329,7 @@ def read_batch_windows(
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
+            # sql-catalog: exempt SQLite lookup; no SQLite benchmark-engine dialect exists
             "SELECT batch_num, result_json FROM engine_batches "
             "WHERE benchmark_id=? AND engine=?",
             (benchmark_id, engine),
@@ -489,12 +492,20 @@ def _write_parquet_and_rollup(
     con.register("ts_df", ts_df)
 
     con.execute(
-        f"COPY long_df TO '{os.path.join(processed_dir, 'metrics_long.parquet')}' "
-        "(FORMAT PARQUET)"
+        load_sql(
+            "duckdb",
+            "inline",
+            "benchmark_server/services_spark_metrics/copy_long_df",
+            path=os.path.join(processed_dir, "metrics_long.parquet"),
+        )
     )
     con.execute(
-        f"COPY ts_df TO '{os.path.join(processed_dir, 'timeseries.parquet')}' "
-        "(FORMAT PARQUET)"
+        load_sql(
+            "duckdb",
+            "inline",
+            "benchmark_server/services_spark_metrics/copy_timeseries_df",
+            path=os.path.join(processed_dir, "timeseries.parquet"),
+        )
     )
 
     # metrics_by_model — pivot the headline KPIs. SUM for additive metrics,
@@ -509,10 +520,11 @@ def _write_parquet_and_rollup(
         agg_exprs.append(
             f"COALESCE({fn}(CASE WHEN metric_name='{kpi}' THEN metric_value END), 0) AS {kpi}"
         )
-    by_model_sql = (
-        "SELECT engine, sf, run_id, batch, dbt_model, "
-        + ", ".join(agg_exprs)
-        + " FROM long_df GROUP BY engine, sf, run_id, batch, dbt_model"
+    by_model_sql = load_sql(
+        "duckdb",
+        "inline",
+        "benchmark_server/services_spark_metrics/select_by_model",
+        aggregates=", ".join(agg_exprs),
     )
     by_model = con.execute(by_model_sql).fetchdf()
 
@@ -521,9 +533,11 @@ def _write_parquet_and_rollup(
     if not exec_df.empty:
         con.register("exec_df", exec_df)
         wall = con.execute(
-            "SELECT engine, batch, dbt_model, "
-            "COALESCE(SUM(duration_ms), 0) AS wall_clock_ms "
-            "FROM exec_df GROUP BY engine, batch, dbt_model"
+            load_sql(
+                "duckdb",
+                "inline",
+                "benchmark_server/services_spark_metrics/select_wall_clock",
+            )
         ).fetchdf()
         by_model = by_model.merge(
             wall, on=["engine", "batch", "dbt_model"], how="left"
@@ -536,8 +550,12 @@ def _write_parquet_and_rollup(
     by_model = by_model[[c for c in ordered if c in by_model.columns]]
     con.register("by_model_df", by_model)
     con.execute(
-        f"COPY by_model_df TO '{os.path.join(processed_dir, 'metrics_by_model.parquet')}' "
-        "(FORMAT PARQUET)"
+        load_sql(
+            "duckdb",
+            "inline",
+            "benchmark_server/services_spark_metrics/copy_by_model_df",
+            path=os.path.join(processed_dir, "metrics_by_model.parquet"),
+        )
     )
     con.close()
     return by_model.to_dict("records")
@@ -606,40 +624,69 @@ def _render_diff_png(processed_dir: str, out_path: str, max_models: int = 24) ->
     rp = f"read_parquet('{long_p}')"
 
     batch_row = con.execute(
-        f"WITH t AS (SELECT batch, dbt_model, count(DISTINCT engine) ne FROM {rp} "
-        f"WHERE event_ts IS NOT NULL AND dbt_model IS NOT NULL AND batch IS NOT NULL "
-        f"GROUP BY batch, dbt_model) "
-        f"SELECT batch FROM t GROUP BY batch HAVING count(*) FILTER (WHERE ne>=2)>=2 "
-        f"ORDER BY (batch>1) DESC, count(*) FILTER (WHERE ne>=2) DESC, batch DESC LIMIT 1"
+        load_sql(
+            "duckdb",
+            "inline",
+            "benchmark_server/services_spark_metrics/select_comparison_batch",
+            rp=rp,
+        )
     ).fetchone()
     if not batch_row:
         con.close()
         return False
     batch = batch_row[0]
 
-    models = [r[0] for r in con.execute(
-        f"SELECT dbt_model FROM {rp} WHERE batch={batch} AND metric_name='input_bytes' "
-        f"AND dbt_model IN (SELECT dbt_model FROM {rp} WHERE batch={batch} "
-        f"  AND dbt_model IS NOT NULL AND event_ts IS NOT NULL "
-        f"  GROUP BY dbt_model HAVING count(DISTINCT engine)>=2) "
-        f"GROUP BY dbt_model ORDER BY sum(metric_value) DESC LIMIT {max_models}"
-    ).fetchall()]
+    models = [
+        r[0]
+        for r in con.execute(
+            load_sql(
+                "duckdb",
+                "inline",
+                "benchmark_server/services_spark_metrics/select_comparison_models",
+                rp=rp,
+                batch=batch,
+                max_models=max_models,
+            )
+        ).fetchall()
+    ]
     if not models:
         con.close()
         return False
 
-    present = {r[0] for r in con.execute(
-        f"SELECT DISTINCT metric_name FROM {rp} WHERE batch={batch} AND event_ts IS NOT NULL"
-    ).fetchall()}
+    present = {
+        r[0]
+        for r in con.execute(
+            load_sql(
+                "duckdb",
+                "inline",
+                "benchmark_server/services_spark_metrics/select_present_metrics",
+                rp=rp,
+                batch=batch,
+            )
+        ).fetchall()
+    }
     metrics = [m for m in _METRIC_ROW_ORDER if m in present] + \
               sorted(m for m in present if m not in _METRIC_ROW_ORDER)
 
     model_list = ",".join("'" + m.replace("'", "''") + "'" for m in models)
     df = con.execute(
-        f"SELECT engine, dbt_model, metric_name, event_ts, metric_value FROM {rp} "
-        f"WHERE batch={batch} AND event_ts IS NOT NULL AND dbt_model IN ({model_list})"
+        load_sql(
+            "duckdb",
+            "inline",
+            "benchmark_server/services_spark_metrics/select_comparison_timeseries",
+            rp=rp,
+            batch=batch,
+            model_list=model_list,
+        )
     ).df()
-    sf = con.execute(f"SELECT sf FROM {rp} LIMIT 1").fetchone()[0]
+    sf = con.execute(
+        load_sql(
+            "duckdb",
+            "inline",
+            "benchmark_server/services_spark_metrics/select_scale_factor",
+            rp=rp,
+        )
+    ).fetchone()[0]
     con.close()
     if df.empty:
         return False

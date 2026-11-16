@@ -39,6 +39,8 @@ from pathlib import Path
 
 from services.db import get_db
 from services.dbt_compiler import get_compiled_models
+from services.ducklake_sources import quote_literal
+from sql_catalog import load_sql
 
 logger = logging.getLogger(__name__)
 
@@ -86,18 +88,32 @@ def _build_preamble() -> str:
         ".timer off",
         ".headers off",
         ".mode csv",
-        f"SET memory_limit='{MEM_LIMIT}';",
-        f"SET temp_directory='{TEMP_DIR}';",
+        load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/set_memory_limit",
+            memory_limit=quote_literal(MEM_LIMIT),
+        ),
+        load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/set_temp_directory",
+            temp_directory=quote_literal(str(TEMP_DIR)),
+        ),
     ]
     if THREADS:
-        lines.append(f"SET threads={int(THREADS)};")
+        lines.append(load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/set_threads",
+            threads=int(THREADS),
+        ))
     lines.extend([
-        "LOAD openivm;",
-        "SET openivm_cascade_refresh='off';",
-        "INSTALL icu; LOAD icu;",
-        "INSTALL ducklake; LOAD ducklake;",
-        f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "
-        f"(DATA_PATH '{data_path}', data_inlining_row_limit 0);",
+        load_sql("duckdb-openivm", "inline", "dbt_server/services_openivm_validation/setup"),
+        load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/install_ducklake",
+            terminator=";",
+        ),
+        load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/attach_ducklake",
+            metadata_path=str(meta_path),
+            data_path=quote_literal(str(data_path)),
+            terminator=";",
+        ),
     ])
     return "\n".join(lines) + "\n"
 
@@ -116,15 +132,14 @@ def _build_model_block(unique_id: str, schema: str, name: str, compiled_sql: str
     # We embed the literal as a single-quoted SQL string; SQL string
     # escaping: replace single quotes with two single quotes.
     uid_sql_literal = "'" + unique_id.replace("'", "''") + "'"
-    return (
-        f"CREATE OR REPLACE TEMP TABLE {expected_name} AS\n"
-        f"{compiled_sql};\n"
-        f"SELECT {uid_sql_literal} AS unique_id, COUNT(*) AS diff_count FROM (\n"
-        f"    (SELECT * FROM {relation} EXCEPT ALL SELECT * FROM {expected_name})\n"
-        f"    UNION ALL\n"
-        f"    (SELECT * FROM {expected_name} EXCEPT ALL SELECT * FROM {relation})\n"
-        f") AS openivm_diff;\n"
-        f"DROP TABLE IF EXISTS {expected_name};\n"
+    return load_sql(
+        "duckdb-openivm",
+        "inline",
+        "dbt_server/services_openivm_validation/model_block",
+        expected_name=expected_name,
+        compiled_sql=compiled_sql,
+        unique_id_sql=uid_sql_literal,
+        relation=relation,
     )
 
 

@@ -22,12 +22,13 @@ RUN curl -sL https://aka.ms/downloadazcopy-v10-linux -o /tmp/azcopy.tgz && \
 ENV OPENIVM_SNAPSHOT_PUBLICATION=1
 
 WORKDIR /app
+ENV PYTHONPATH=/app
 
-COPY requirements.txt .
+COPY dbt-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install the custom dbt-duckdb-openivm adapter
-COPY adapters/dbt-duckdb-openivm /tmp/dbt-duckdb-openivm
+COPY dbt-server/adapters/dbt-duckdb-openivm /tmp/dbt-duckdb-openivm
 RUN pip install --no-cache-dir /tmp/dbt-duckdb-openivm && rm -rf /tmp/dbt-duckdb-openivm
 
 # dbt-fabricspark's CLI auth constructs AzureCliCredential() with the default
@@ -40,11 +41,13 @@ RUN LIVY=$(python -c "import dbt.adapters.fabricspark as m,os;print(os.path.join
     sed -i 's/AzureCliCredential()\.get_token/AzureCliCredential(process_timeout=60).get_token/g' "$LIVY" && \
     grep -q "process_timeout=60" "$LIVY"
 
-COPY dbt-projects/ /app/dbt-projects/
-COPY handlers/ /app/handlers/
-COPY services/ /app/services/
-COPY models/ /app/models/
-COPY app.py /app/app.py
+COPY dbt-server/dbt-projects/ /app/dbt-projects/
+COPY dbt-server/handlers/ /app/handlers/
+COPY dbt-server/services/ /app/services/
+COPY dbt-server/models/ /app/models/
+COPY sql_catalog/ /app/sql_catalog/
+COPY dbt-server/app.py /app/app.py
+RUN python -m sql_catalog generate --all
 
 # Install dbt deps for each project at build time
 RUN cd /app/dbt-projects/spark && dbt deps --profiles-dir . 2>/dev/null || true

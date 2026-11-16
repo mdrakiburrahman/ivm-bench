@@ -1,0 +1,2 @@
+-- catalog-override: engine-only: DuckDB read_parquet and FILTER syntax select shared comparison models
+SELECT dbt_model FROM {rp} WHERE batch={batch} AND metric_name='input_bytes' AND dbt_model IN (SELECT dbt_model FROM {rp} WHERE batch={batch}   AND dbt_model IS NOT NULL AND event_ts IS NOT NULL   GROUP BY dbt_model HAVING count(DISTINCT engine)>=2) GROUP BY dbt_model ORDER BY sum(metric_value) DESC LIMIT {max_models}

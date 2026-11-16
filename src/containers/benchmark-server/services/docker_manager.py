@@ -4,8 +4,10 @@ import http.client
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -102,10 +104,15 @@ class DockerManager:
         extra_compose_files: Optional[List[str]] = None,
     ) -> None:
         self._compose_file = str(Path(compose_file).resolve())
-        self._project_name = project_name
+        self._original_project_name = project_name
         self._env = self._build_env(env)
+        self._run_id = self._env.get("IVM_BENCH_RUN_ID", "")
+        if self._run_id and not re.fullmatch(r"[0-9a-f]{32}", self._run_id):
+            raise ValueError("Invalid IVM_BENCH_RUN_ID")
+        self._project_name = f"ivm-{self._run_id}-{project_name}" if self._run_id else project_name
         self._cwd = cwd or str(Path(compose_file).resolve().parent)
         self._extra_compose_files = extra_compose_files or []
+        self._ownership_overlay: Optional[str] = None
 
     def _build_env(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Merge OS environment with extra vars."""
@@ -126,8 +133,37 @@ class DockerManager:
         ]
         for f in self._extra_compose_files:
             cmd.extend(["-f", f])
+        if self._run_id:
+            cmd.extend(["-f", self._ensure_ownership_overlay(cmd)])
         cmd.extend(["-p", self._project_name])
         return cmd
+
+    def _ensure_ownership_overlay(self, cmd: List[str]) -> str:
+        if self._ownership_overlay:
+            return self._ownership_overlay
+        result = subprocess.run(
+            cmd + ["-p", self._project_name, "config", "--format", "json"],
+            capture_output=True, text=True, timeout=120, env=self._env, cwd=self._cwd,
+        )
+        if result.returncode:
+            raise RuntimeError(f"Cannot resolve Compose services for run ownership: {result.stderr[-4000:]}")
+        config = json.loads(result.stdout)
+        label = {"org.ivm-bench.run-id": self._run_id}
+        services = {}
+        for name, service in config["services"].items():
+            override = {"labels": label}
+            if service.get("build") and not service.get("image"):
+                override["image"] = f"{self._original_project_name}-{name}"
+            services[name] = override
+        networks = {
+            name: {"labels": label}
+            for name, network in config.get("networks", {}).items()
+            if not (network or {}).get("external")
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as file:
+            json.dump({"services": services, "networks": networks}, file)
+            self._ownership_overlay = file.name
+        return self._ownership_overlay
 
     def _run(
         self,

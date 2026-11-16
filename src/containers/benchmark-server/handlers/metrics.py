@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, Flask, jsonify, request, send_file
 
+from sql_catalog import load_sql
+
 from handlers.base import BaseHandler
 
 bp = Blueprint("metrics", __name__)
@@ -57,6 +59,16 @@ def _open_con(sf: str):
     """
     import duckdb
 
+    disable_external_access_sql = load_sql(
+        "duckdb",
+        "inline",
+        "benchmark_server/handlers_metrics/disable_external_access",
+    )
+    lock_configuration_sql = load_sql(
+        "duckdb",
+        "inline",
+        "benchmark_server/handlers_metrics/lock_configuration",
+    )
     processed = _processed_dir(sf)
     con = duckdb.connect(database=":memory:")
     missing: List[str] = []
@@ -64,15 +76,28 @@ def _open_con(sf: str):
         path = os.path.join(processed, f"{tbl}.parquet")
         if os.path.exists(path):
             con.execute(
-                f"CREATE TABLE {tbl} AS SELECT * FROM read_parquet(?)", [path]
+                load_sql(
+                    "duckdb",
+                    "inline",
+                    "benchmark_server/handlers_metrics/create_table_from_parquet",
+                    table=tbl,
+                ),
+                [path],
             )
         else:
-            con.execute(f"CREATE TABLE {tbl} (dummy INTEGER)")
+            con.execute(
+                load_sql(
+                    "duckdb",
+                    "inline",
+                    "benchmark_server/handlers_metrics/create_empty_table",
+                    table=tbl,
+                )
+            )
             missing.append(tbl)
     # Lock the connection down: no external access, no config changes.
     try:
-        con.execute("SET enable_external_access=false")
-        con.execute("SET lock_configuration=true")
+        con.execute(disable_external_access_sql)
+        con.execute(lock_configuration_sql)
     except Exception:  # pragma: no cover - older duckdb
         pass
     return con, missing
@@ -110,8 +135,12 @@ def _kpis() -> Any:
             params.append(int(batch))
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         df = con.execute(
-            "SELECT * FROM metrics_by_model" + where
-            + " ORDER BY engine, batch, dbt_model",
+            load_sql(
+                "duckdb",
+                "inline",
+                "benchmark_server/handlers_metrics/select_kpis",
+                where=where,
+            ),
             params,
         ).df()
     finally:
@@ -131,9 +160,11 @@ def _diff() -> Any:
     try:
         kpi_cols = [
             r[0] for r in con.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name='metrics_by_model' "
-                "AND column_name NOT IN ('engine','sf','run_id','batch','dbt_model')"
+                load_sql(
+                    "duckdb",
+                    "inline",
+                    "benchmark_server/handlers_metrics/select_kpi_columns",
+                )
             ).fetchall()
         ]
         clauses: List[str] = []
@@ -158,13 +189,12 @@ def _diff() -> Any:
                 f"CASE WHEN s.{c} IS NULL OR s.{c} = 0 THEN NULL "
                 f"ELSE o.{c} / s.{c} END AS ratio_{c}"
             )
-        sql = (
-            "SELECT " + ", ".join(selects)
-            + " FROM (SELECT * FROM metrics_by_model WHERE engine='spark') s "
-            + "FULL OUTER JOIN (SELECT * FROM metrics_by_model "
-            + "WHERE engine='spark-openivm') o "
-            + "ON s.batch = o.batch AND s.dbt_model = o.dbt_model"
-            + where + " ORDER BY batch, dbt_model"
+        sql = load_sql(
+            "duckdb",
+            "inline",
+            "benchmark_server/handlers_metrics/select_diff",
+            selects=", ".join(selects),
+            where=where,
         )
         df = con.execute(sql, params).df()
     finally:
@@ -199,9 +229,16 @@ def _query() -> Any:
         cap = _ROW_CAP_DEFAULT
     cap = max(1, min(cap, _ROW_CAP_MAX))
 
+    query_sql = load_sql(
+        "duckdb",
+        "inline",
+        "benchmark_server/handlers_metrics/wrap_query",
+        query=sql,
+        cap=cap,
+    )
     con, _missing = _open_con(sf)
     try:
-        df = con.execute(f"SELECT * FROM ({sql}) AS _q LIMIT {cap}").df()
+        df = con.execute(query_sql).df()
     except Exception as e:  # surface the DuckDB error to the caller
         con.close()
         return jsonify({"error": f"query failed: {e}"}), 400

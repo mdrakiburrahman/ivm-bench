@@ -1,0 +1,1 @@
+DELETE FROM {table_relation} WHERE abs((coalesce(age, 0) * 2654435761 + coalesce(creditrating, 0) * 9176 + coalesce(numbercars, 0) * 271 + coalesce(numberchildren, 0) + {batch_offset}) % 1000000) >= {start} AND abs((coalesce(age, 0) * 2654435761 + coalesce(creditrating, 0) * 9176 + coalesce(numbercars, 0) * 271 + coalesce(numberchildren, 0) + {batch_offset}) % 1000000) < {end};

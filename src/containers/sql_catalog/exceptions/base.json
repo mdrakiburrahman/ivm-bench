@@ -1,0 +1,18 @@
+[
+  {
+    "path": "src/containers/dbt-server/tests/**",
+    "reason": "SQL strings in unit tests are fixtures, not production SQL."
+  },
+  {
+    "path": "src/containers/benchmark-server/tests/**",
+    "reason": "SQL strings in unit tests are fixtures, not production SQL."
+  },
+  {
+    "path": "src/containers/sql_catalog/generator.py",
+    "reason": "The catalog's keyword matcher names SQL syntax but does not execute it."
+  },
+  {
+    "path": "tools/scripts/check-sql-catalog.py",
+    "reason": "The guard's keyword matcher names SQL syntax but does not execute it."
+  }
+]

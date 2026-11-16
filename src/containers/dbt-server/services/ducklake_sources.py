@@ -7,6 +7,8 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Callable
 
+from sql_catalog import load_sql
+
 BATCH1_ONLY_TABLES = [
     "customer_mgmt", "date", "finwire", "hr", "industry",
     "status_type", "tax_rate", "trade_history", "trade_type",
@@ -56,51 +58,17 @@ SCORE_MODULUS = 1_000_000
 @dataclass(frozen=True)
 class MutationSpec:
     table: str
-    score_expr: str
-    update_assignments: str
 
 
 MUTATION_SPECS = [
-    MutationSpec(
-        "cash_transaction",
-        "(coalesce(ct_ca_id, 0) % 1000000) * 2654435761",
-        "ct_amt = coalesce(ct_amt, 0) + 0.01",
-    ),
-    MutationSpec(
-        "daily_market",
-        "date_diff('day', DATE '1970-01-01', dm_date) * 2654435761 + coalesce(ascii(substr(dm_s_symb, 1, 1)), 0) * 9176 + coalesce(ascii(substr(dm_s_symb, 2, 1)), 0)",
-        "dm_close = dm_close + 0.01, dm_high = dm_high + 0.01, dm_vol = dm_vol + 1",
-    ),
-    MutationSpec(
-        "holding_history",
-        "(coalesce(hh_h_t_id, 0) % 1000000) * 2654435761 + (coalesce(hh_t_id, 0) % 1000000)",
-        "hh_after_qty = hh_after_qty + 1",
-    ),
-    MutationSpec(
-        "prospect",
-        "coalesce(age, 0) * 2654435761 + coalesce(creditrating, 0) * 9176 + coalesce(numbercars, 0) * 271 + coalesce(numberchildren, 0)",
-        "networth = networth + 1",
-    ),
-    MutationSpec(
-        "trade",
-        "(coalesce(t_id, 0) % 1000000) * 2654435761",
-        "t_qty = t_qty + 1",
-    ),
-    MutationSpec(
-        "watch_history",
-        "(coalesce(w_c_id, 0) % 1000000) * 2654435761",
-        "w_dts = w_dts + INTERVAL 1 SECOND",
-    ),
-    MutationSpec(
-        "account",
-        "(coalesce(accountid, 0) % 1000000) * 2654435761",
-        "accountdesc = accountdesc || ' upd'",
-    ),
-    MutationSpec(
-        "customer",
-        "(coalesce(customerid, 0) % 1000000) * 2654435761",
-        "tier = CASE WHEN tier IS NULL THEN NULL ELSE CAST(((CAST(tier AS INTEGER) + 1) % 100) AS TINYINT) END",
-    ),
+    MutationSpec("cash_transaction"),
+    MutationSpec("daily_market"),
+    MutationSpec("holding_history"),
+    MutationSpec("prospect"),
+    MutationSpec("trade"),
+    MutationSpec("watch_history"),
+    MutationSpec("account"),
+    MutationSpec("customer"),
 ]
 
 
@@ -126,9 +94,9 @@ def _parquet_files(path: Path) -> list[Path]:
     return files
 
 
-def _read_parquet_sql(path: Path) -> str:
+def _read_parquet_sql(path: Path, engine: str) -> str:
     files = ", ".join(quote_literal(str(f)) for f in _parquet_files(path))
-    return f"read_parquet([{files}], union_by_name = true)"
+    return load_sql(engine, "inline", "dbt_server/services_ducklake_sources/read_parquet", files=files)
 
 
 def _source_path(raw_delta_dir: Path, batch: int, table: str) -> Path:
@@ -182,14 +150,7 @@ def _mutation_buckets(batch_num: int) -> dict[str, tuple[int, int, Decimal]]:
     return buckets
 
 
-def _score_predicate(spec: MutationSpec, batch_num: int, start: int, end: int) -> str:
-    if start == end:
-        return "false"
-    score = f"abs(({spec.score_expr} + {batch_num * 7919}) % {SCORE_MODULUS})"
-    return f"{score} >= {start} AND {score} < {end}"
-
-
-def _mutation_sql(batch_num: int) -> tuple[list[str], list[dict]]:
+def _mutation_sql(batch_num: int, engine: str) -> tuple[list[str], list[dict]]:
     buckets = _mutation_buckets(batch_num)
     if not buckets or all(start == end for start, end, _ in buckets.values()):
         return [], []
@@ -201,12 +162,20 @@ def _mutation_sql(batch_num: int) -> tuple[list[str], list[dict]]:
         update_start, update_end, update_pct = buckets["update"]
         delete_start, delete_end, delete_pct = buckets["delete"]
 
-        if update_start != update_end:
-            pred = _score_predicate(spec, batch_num, update_start, update_end)
-            stmts.append(f"UPDATE {table_rel} SET {spec.update_assignments} WHERE {pred};")
-        if delete_start != delete_end:
-            pred = _score_predicate(spec, batch_num, delete_start, delete_end)
-            stmts.append(f"DELETE FROM {table_rel} WHERE {pred};")
+        for operation, start, end in (
+            ("update", update_start, update_end),
+            ("delete", delete_start, delete_end),
+        ):
+            if start != end:
+                stmts.append(load_sql(
+                    engine,
+                    "inline",
+                    f"dbt_server/services_ducklake_sources/mutation_{spec.table}_{operation}",
+                    table_relation=table_rel,
+                    batch_offset=batch_num * 7919,
+                    start=start,
+                    end=end,
+                ))
 
         summaries.append({
             "table": f"staging_{spec.table}",
@@ -215,7 +184,6 @@ def _mutation_sql(batch_num: int) -> tuple[list[str], list[dict]]:
         })
 
     return stmts, summaries
-
 
 def init_sources(
     raw_delta_dir: Path,
@@ -233,47 +201,63 @@ def init_sources(
 
     stmts = []
     for schema in ("tpcdi", "bronze", "silver", "gold"):
-        stmts.append(f"CREATE SCHEMA IF NOT EXISTS ducklake.{schema};")
+        stmts.append(load_sql(
+            label,
+            "inline",
+            "dbt_server/services_ducklake_sources/create_schema",
+            schema=schema,
+        ))
 
     created = []
     for table in BATCH1_ONLY_TABLES:
         path = _source_path(raw_delta_dir, 1, table)
         if not path.exists():
             raise FileNotFoundError(f"Missing batch1/{table}: {path}")
-        stmts.append(
-            f"CREATE TABLE {relation('ducklake', 'tpcdi', f'batch1_{table}')} AS "
-            f"SELECT * FROM {_read_parquet_sql(path)};"
-        )
+        stmts.append(load_sql(
+            label,
+            "inline",
+            "dbt_server/services_ducklake_sources/create_table",
+            relation=relation("ducklake", "tpcdi", f"batch1_{table}"),
+            source=_read_parquet_sql(path, label),
+        ))
         created.append(f"batch1_{table}")
 
     audit_path = raw_delta_dir / "audit"
     if audit_path.exists():
-        stmts.append(
-            f"CREATE TABLE {relation('ducklake', 'tpcdi', 'audit')} AS "
-            f"SELECT * FROM {_read_parquet_sql(audit_path)};"
-        )
+        stmts.append(load_sql(
+            label,
+            "inline",
+            "dbt_server/services_ducklake_sources/create_table",
+            relation=relation("ducklake", "tpcdi", "audit"),
+            source=_read_parquet_sql(audit_path, label),
+        ))
         created.append("audit")
 
     for table in STAGING_CATEGORY_A:
         path = _source_path(raw_delta_dir, 1, table)
         if not path.exists():
             raise FileNotFoundError(f"Missing batch1/{table}: {path}")
-        prefix = ""
-        if table in CDC_TABLES:
-            prefix = "NULL::VARCHAR AS cdc_flag, NULL::BIGINT AS cdc_dsn, "
-        stmts.append(
-            f"CREATE TABLE {relation('ducklake', 'tpcdi', f'staging_{table}')} AS "
-            f"SELECT {prefix}* FROM {_read_parquet_sql(path)};"
-        )
+        template = "create_staging_cdc" if table in CDC_TABLES else "create_table"
+        stmts.append(load_sql(
+            label,
+            "inline",
+            f"dbt_server/services_ducklake_sources/{template}",
+            relation=relation("ducklake", "tpcdi", f"staging_{table}"),
+            source=_read_parquet_sql(path, label),
+        ))
         created.append(f"staging_{table}")
 
     for table in STAGING_CATEGORY_B:
         cols = ", ".join(
             f"{quote_ident(n)} {t}" for n, t in CATEGORY_B_SCHEMAS[table]
         )
-        stmts.append(
-            f"CREATE TABLE {relation('ducklake', 'tpcdi', f'staging_{table}')} ({cols});"
-        )
+        stmts.append(load_sql(
+            label,
+            "inline",
+            "dbt_server/services_ducklake_sources/create_empty_staging",
+            relation=relation("ducklake", "tpcdi", f"staging_{table}"),
+            columns=cols,
+        ))
         created.append(f"staging_{table}")
 
     execute_sql("\n".join(stmts), f"{label} source init")
@@ -293,7 +277,7 @@ def append_sources(
         raise RuntimeError("No DuckLake state found. Run source init first.")
 
     stmts = []
-    mutation_stmts, mutations = _mutation_sql(batch_num)
+    mutation_stmts, mutations = _mutation_sql(batch_num, label)
     stmts.extend(mutation_stmts)
 
     appended = []
@@ -301,10 +285,13 @@ def append_sources(
         path = _source_path(raw_delta_dir, batch_num, table)
         if not path.exists():
             continue
-        stmts.append(
-            f"INSERT INTO {relation('ducklake', 'tpcdi', f'staging_{table}')} "
-            f"BY NAME SELECT * FROM {_read_parquet_sql(path)};"
-        )
+        stmts.append(load_sql(
+            label,
+            "inline",
+            "dbt_server/services_ducklake_sources/insert_batch",
+            relation=relation("ducklake", "tpcdi", f"staging_{table}"),
+            source=_read_parquet_sql(path, label),
+        ))
         appended.append(f"staging_{table}")
 
     if stmts:

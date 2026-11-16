@@ -52,9 +52,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from sql_catalog import load_sql
+
 logger = logging.getLogger(__name__)
 
 CORPUS_SUBDIR = "tpcc"
+
+
+def _sql(engine: str, name: str, **params) -> str:
+    return load_sql(
+        engine, "inline", f"compiler_bench/benchmark_server_corpus/{name}", **params
+    )
 
 # Engine -> LPTS output dialect. Spark SQL covers the Spark-family engines
 # (Databricks SQL and Fabric Spark are Spark SQL supersets for the constructs
@@ -172,13 +180,21 @@ def _render_type(portable_type: str, dialect: str) -> str:
     return portable_type
 
 
-def tpcc_schema_ddl(dialect: str, *, table_suffix: str = "") -> List[str]:
-    """CREATE TABLE statements for the TPC-C schema in ``dialect``."""
-    stmts = []
-    for table, columns in TPCC_TABLES.items():
-        cols = ", ".join(f"{name} {_render_type(t, dialect)}" for name, t in columns)
-        stmts.append(f"CREATE TABLE {table}{table_suffix} ({cols})")
-    return stmts
+def tpcc_schema_ddl(engine: str, *, table_suffix: str = "") -> List[str]:
+    # sql-catalog: exempt This docstring names the generated DDL, not executable SQL.
+    """CREATE TABLE statements for the TPC-C schema in ``engine``."""
+    dialect = ENGINE_DIALECTS[engine]
+    return [
+        _sql(
+            engine,
+            "tpcc_create_table",
+            table=f"{table}{table_suffix}",
+            columns=", ".join(
+                f"{name} {_render_type(t, dialect)}" for name, t in columns
+            ),
+        )
+        for table, columns in TPCC_TABLES.items()
+    ]
 
 
 def tpcc_load_sql_duckdb(scale_factor: int) -> List[str]:
@@ -194,29 +210,19 @@ def tpcc_load_sql_duckdb(scale_factor: int) -> List[str]:
     o = TPCC_ORDERS_PER_DISTRICT + 1
     ol = TPCC_ORDER_LINES_PER_ORDER + 1
     i = TPCC_NUM_ITEMS + 1
+    engine = "duckdb-openivm"
     return [
-        f"INSERT INTO WAREHOUSE SELECT w, 300000.00, 0.0500, 'WH'||w, 'Street1', "
-        f"'Street2', 'City', 'ST', '123456789' FROM range(1, {n}) t(w)",
-        f"INSERT INTO DISTRICT SELECT w, d, 30000.00, 0.0500, 1, 'D'||d, 'Street1', "
-        f"'Street2', 'City', 'ST', '123456789' FROM range(1, {n}) t(w), range(1, {d}) g(d)",
-        f"INSERT INTO CUSTOMER SELECT w, d, c, 0.05, 'GC', 'LastName', 'FirstName', "
-        f"50000.00, 10000.00, 0.0, 0, 0, 'St1', 'St2', 'City', 'ST', '123456789', "
-        f"'1234567890123456', NOW(), 'M', 'data' FROM range(1, {n}) t(w), "
-        f"range(1, {d}) g(d), range(1, {c}) cc(c)",
-        f"INSERT INTO ITEM SELECT i, 'Item'||i, (10 + (i % 90)) + 0.99, 'ItemData', "
-        f"(i % 10) + 1 FROM range(1, {i}) t(i)",
-        f"INSERT INTO STOCK SELECT w, i, 50 + (i % 50), 0.00, 0, 0, 'StockData', "
-        f"'Dist1', 'Dist2', 'Dist3', 'Dist4', 'Dist5', 'Dist6', 'Dist7', 'Dist8', "
-        f"'Dist9', 'Dist10' FROM range(1, {n}) t(w), range(1, {i}) g(i)",
-        f"INSERT INTO OORDER SELECT w, d, o, (o % {c}) + 1, NULL, 5, 1, NOW() "
-        f"FROM range(1, {n}) t(w), range(1, {d}) g(d), range(1, {o}) oo(o)",
-        f"INSERT INTO ORDER_LINE SELECT w, d, o, ol, (ol % 10) + 1, NULL, "
-        f"(10 + ol * 5) + 0.00, w, 5.00, 'DistInfo' FROM range(1, {n}) t(w), "
-        f"range(1, {d}) g(d), range(1, {o}) oo(o), range(1, {ol}) l(ol)",
+        _sql(engine, "tpcc_load_warehouse", n=n),
+        _sql(engine, "tpcc_load_district", n=n, d=d),
+        _sql(engine, "tpcc_load_customer", n=n, d=d, c=c),
+        _sql(engine, "tpcc_load_item", i=i),
+        _sql(engine, "tpcc_load_stock", n=n, i=i),
+        _sql(engine, "tpcc_load_oorder", n=n, d=d, c=c, o=o),
+        _sql(engine, "tpcc_load_order_line", n=n, d=d, o=o, ol=ol),
     ]
 
 
-def tpcc_delta_pool(scale_factor: int, dialect: str) -> List[str]:
+def tpcc_delta_pool(scale_factor: int, engine: str) -> List[str]:
     """Portable delta pool mirroring openivm's GenerateDeltaPool.
 
     Same 500 statements, same mt19937-equivalent mix ratios and seed-42
@@ -241,40 +247,39 @@ def tpcc_delta_pool(scale_factor: int, dialect: str) -> List[str]:
         qty = 50 + (i % 50)
         if kind < 40:
             deltas.append(
-                f"UPDATE CUSTOMER SET C_BALANCE = {balance}, C_PAYMENT_CNT = {i % 10} "
-                f"WHERE C_W_ID = {w} AND C_D_ID = {d} AND C_ID = {c}"
+                _sql(
+                    engine, "tpcc_delta_update_customer", balance=balance,
+                    payment_count=i % 10, w=w, d=d, c=c,
+                )
             )
         elif kind < 60:
             deltas.append(
-                f"UPDATE STOCK SET S_QUANTITY = {qty}, S_ORDER_CNT = {i % 20} "
-                f"WHERE S_W_ID = {w} AND S_I_ID = {item}"
+                _sql(
+                    engine, "tpcc_delta_update_stock", quantity=qty,
+                    order_count=i % 20, w=w, item=item,
+                )
             )
         elif kind < 75:
             deltas.append(
-                "UPDATE ORDER_LINE SET OL_DELIVERY_D = "
-                f"{_timestamp_literal('2026-01-01 00:00:00', dialect)} "
-                f"WHERE OL_W_ID = {w} AND OL_D_ID = {d} AND OL_O_ID = 1 AND OL_NUMBER = 1"
+                _sql(
+                    engine, "tpcc_delta_update_order_line", w=w, d=d,
+                    date="2026-01-01 00:00:00",
+                )
             )
         elif kind < 85:
             deltas.append(
-                f"INSERT INTO HISTORY VALUES ({c}, {d}, {w}, {d}, {w}, "
-                f"{_timestamp_literal('2026-01-01 00:00:00', dialect)}, {amt}.00, 'Payment')"
+                _sql(
+                    engine, "tpcc_delta_insert_history", c=c, d=d,
+                    date="2026-01-01 00:00:00", amt=amt,
+                )
             )
         elif kind < 90:
-            deltas.append(f"INSERT INTO NEW_ORDER VALUES ({w}, {d}, 1)")
+            deltas.append(_sql(engine, "tpcc_delta_insert_new_order", w=w, d=d))
         elif kind < 95:
-            deltas.append(
-                f"DELETE FROM NEW_ORDER WHERE NO_W_ID = {w} AND NO_D_ID = {d} AND NO_O_ID = 1"
-            )
+            deltas.append(_sql(engine, "tpcc_delta_delete_new_order", w=w, d=d))
         else:
-            deltas.append(f"UPDATE WAREHOUSE SET W_YTD = {amt * 100}.00 WHERE W_ID = {w}")
+            deltas.append(_sql(engine, "tpcc_delta_update_warehouse", ytd=amt * 100, w=w))
     return deltas
-
-
-def _timestamp_literal(value: str, dialect: str) -> str:
-    if dialect == "spark":
-        return f"TIMESTAMP'{value}'"
-    return f"'{value}'"
 
 
 # ---------------------------------------------------------------------------
@@ -372,26 +377,27 @@ class Translator:
             # it mid-statement fails when the extension is absent and the host is
             # offline, which would cost those queries their translation. Try up
             # front and let it fail harmlessly under `.bail off` if unavailable.
-            "INSTALL icu;",
-            "LOAD icu;",
-            f"LOAD '{self._ext}';",
-            f"SET lpts_dialect = '{dialect}';",
-            # Bare table names: one corpus per dialect serves every engine that
-            # speaks it, whatever its catalog/schema layout.
-            "SET lpts_output_unqualified = true;",
+            _sql("duckdb-openivm", "lpts_install_icu"),
+            _sql("duckdb-openivm", "lpts_load_icu"),
+            _sql("duckdb-openivm", "lpts_load_extension", extension=self._ext),
+            _sql("duckdb-openivm", "lpts_set_dialect", dialect=dialect),
+            _sql("duckdb-openivm", "lpts_unqualified"),
         ]
         lines += [stmt.rstrip(";") + ";" for stmt in self._setup]
         lines.append(".mode json")
         for query in queries:
             escaped = query.sql.replace("'", "''")
-            lines.append(f"SELECT '{_TRANSLATE_MARKER}{query.name}' AS marker;")
+            lines.append(
+                _sql(
+                    "duckdb-openivm", "lpts_marker",
+                    marker=_TRANSLATE_MARKER + query.name,
+                )
+            )
             # A SELECT may legally expose the same name more than once, while
             # Spark tables and Feldera verifier subqueries require unique names.
             # DuckDB assigns stable positional suffixes at this subquery boundary
             # (a, a_1, ...); LPTS then preserves those aliases in every target.
-            lines.append(
-                f"PRAGMA lpts('SELECT * FROM ({escaped}) AS __lpts_input');"
-            )
+            lines.append(_sql("duckdb-openivm", "lpts_translate", sql=escaped))
         return "\n".join(lines) + "\n"
 
     def _run_chunk(
@@ -619,7 +625,7 @@ def prepare(
             cached["cached"] = True
             return cached
 
-    setup_sql = tpcc_schema_ddl("duckdb")
+    setup_sql = tpcc_schema_ddl("duckdb-openivm")
 
     translator = (
         Translator(str(paths.duckdb_bin), str(paths.lpts_extension), setup_sql)
@@ -632,6 +638,10 @@ def prepare(
     translatable: Dict[str, set] = {}
 
     for dialect in dialects:
+        engine = next(
+            name for name, target in ENGINE_DIALECTS.items()
+            if target == dialect and name in engines
+        )
         if dialect == "duckdb":
             # DuckDB and DuckDB-OpenIVM are the native source engines for this
             # corpus. Replanning and re-rendering their already-valid SQL via
@@ -677,10 +687,10 @@ def prepare(
         (dialect_dir / "translation.csv").write_text(buf.getvalue(), encoding="utf-8")
 
         (dialect_dir / "schema.sql").write_text(
-            ";\n".join(tpcc_schema_ddl(dialect)) + ";\n", encoding="utf-8"
+            ";\n".join(tpcc_schema_ddl(engine)) + ";\n", encoding="utf-8"
         )
         (dialect_dir / "deltas.sql").write_text(
-            ";\n".join(tpcc_delta_pool(scale_factor, dialect)) + ";\n", encoding="utf-8"
+            ";\n".join(tpcc_delta_pool(scale_factor, engine)) + ";\n", encoding="utf-8"
         )
 
         per_dialect[dialect] = {
@@ -760,15 +770,19 @@ def generate_tpcc_parquet(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     stmts = [".bail on"]
-    stmts += [s + ";" for s in tpcc_schema_ddl("duckdb")]
+    stmts += [s + ";" for s in tpcc_schema_ddl("duckdb-openivm")]
     stmts += [s + ";" for s in tpcc_load_sql_duckdb(scale_factor)]
     for table in TPCC_TABLES:
         target = str(out_dir / f"{table}.parquet").replace("'", "''")
-        stmts.append(f"COPY {table} TO '{target}' (FORMAT PARQUET);")
+        stmts.append(
+            _sql("duckdb-openivm", "tpcc_copy_parquet", table=table, target=target)
+        )
         # CSV as well: Feldera ingests over HTTP and takes CSV/JSON, not Parquet.
         # Same generated rows, so every engine still loads identical data.
         csv_target = str(out_dir / f"{table}.csv").replace("'", "''")
-        stmts.append(f"COPY {table} TO '{csv_target}' (FORMAT CSV, HEADER FALSE);")
+        stmts.append(
+            _sql("duckdb-openivm", "tpcc_copy_csv", table=table, target=csv_target)
+        )
 
     proc = subprocess.run(
         [str(duckdb_bin), "-unsigned"],

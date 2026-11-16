@@ -26,7 +26,7 @@ class ExactValidationTest(unittest.TestCase):
             sql.append(statement)
             if statement.startswith("DESCRIBE"):
                 return output([["amount", "double"], ["id", "bigint"]])
-            if statement.startswith("SELECT COUNT(*) FROM"):
+            if "COUNT(*)" in statement and "EXCEPT ALL" in statement:
                 if error:
                     raise RuntimeError(error)
                 return output([[diff]])
@@ -43,7 +43,7 @@ class ExactValidationTest(unittest.TestCase):
 
     def test_exact_comparison_preserves_bags_and_does_not_round(self):
         result, sql = self.validate()
-        comparison = next(s for s in sql if s.startswith("SELECT COUNT(*) FROM"))
+        comparison = next(s for s in sql if "COUNT(*)" in s and "EXCEPT ALL" in s)
         self.assertEqual(comparison.count("EXCEPT ALL"), 2)
         self.assertIn("UNION ALL", comparison)
         self.assertIn("SELECT `amount`, `id` FROM `silver`.`example`", comparison)

@@ -9,3 +9,7 @@ __pycache__/
 
 # CI engine coverage verdict (tools/scripts/github/check-engine-coverage.py)
 ci-results/
+
+# SQL catalog build outputs; catalog sources and overrides remain tracked.
+src/containers/dbt-server/dbt-projects/*/models/**/*.sql
+src/containers/dbt-server/dbt-projects/*/macros/**/*.sql
