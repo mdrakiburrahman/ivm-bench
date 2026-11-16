@@ -18,14 +18,6 @@ sys.modules[SPEC.name] = sources
 SPEC.loader.exec_module(sources)
 
 
-class FakeInsertCursor:
-    def __init__(self):
-        self.calls = []
-
-    def execute(self, sql, params=None):
-        self.calls.append((sql, params))
-
-
 class RisingWaveSourceLoaderTest(unittest.TestCase):
     def test_source_init_endpoint_is_registered(self):
         import databricks
@@ -41,32 +33,14 @@ class RisingWaveSourceLoaderTest(unittest.TestCase):
 
         self.assertIn("/sources/risingwave/init", routes)
 
-    def test_bulk_scan_materializes_cdc_prefix_columns(self):
-        spec = sources.LoadSpec(
-            "staging_trade",
-            "SELECT t_id FROM delta_scan('/data/trade')",
-            extra_cols=(("cdc_flag", "VARCHAR"), ("cdc_dsn", "BIGINT")),
-            prefix_values=(None, None),
+    def test_timestamp_projection_uses_utc_independent_of_session_timezone(self):
+        cursor = Mock()
+        cursor.fetchall.return_value = [("event_ts", "timestamp with time zone"), ("id", "bigint")]
+        self.assertEqual(
+            sources._source_projection(cursor, "fixture", False),
+            ['("event_ts" AT TIME ZONE \'UTC\') AS "event_ts"', '"id"'],
         )
-
-        sql = sources._bulk_scan_sql(spec)
-
-        self.assertIn('CAST(NULL AS VARCHAR) AS "cdc_flag"', sql)
-        self.assertIn('CAST(NULL AS BIGINT) AS "cdc_dsn"', sql)
-        self.assertIn("source.*", sql)
-
-    def test_external_source_uses_parquet_and_s3_compatible_endpoint(self):
-        sql = sources._external_source_sql(
-            "load_trade",
-            [("id", "BIGINT"), ("amount", "DECIMAL")],
-            "tpcdi/trade/run-id",
-        )
-
-        self.assertIn("CREATE SOURCE", sql)
-        self.assertIn("connector = 's3'", sql)
-        self.assertIn("match_pattern = 'tpcdi/trade/run-id/*.parquet'", sql)
-        self.assertIn("s3.endpoint_url = 'http://minio:9000'", sql)
-        self.assertIn("FORMAT PLAIN ENCODE PARQUET", sql)
+        self.assertIn('("_ActionTS" AT TIME ZONE \'UTC\') AS "action_ts"', sources._customer_projection())
 
     def test_unlicensed_locality_backfill_is_disabled_by_default(self):
         project = (DBT_SERVER / "dbt-projects" / "risingwave" / "dbt_project.yml").read_text()
@@ -93,47 +67,47 @@ class RisingWaveSourceLoaderTest(unittest.TestCase):
         self.assertEqual(compose.count(f"${{RISINGWAVE_IMAGE:-{image}}}"), 2)
         self.assertIn("build-pinned-image.sh", workflow)
 
-    def test_initial_load_falls_back_to_pgwire_before_returning(self):
-        spec = sources.LoadSpec("staging_trade", "SELECT 1")
+    def test_snapshot_failure_is_not_hidden_by_a_fallback(self):
+        spec = sources.LoadSpec("staging_trade", "batch1", "trade")
+        connection = Mock()
         with (
-            patch.object(sources, "RW_BULK_LOAD", True),
-            patch.object(sources, "RW_BULK_FALLBACK", True),
-            patch.object(sources, "_bulk_load_spec", side_effect=RuntimeError("no s3")),
-            patch.object(sources, "_pgwire_load_spec", return_value=17) as fallback,
-            patch.object(sources.logger, "exception"),
+            patch.object(sources, "_connect", return_value=connection),
+            patch.object(sources, "_prepare_session"),
+            patch.object(sources, "_validate_snapshot", side_effect=RuntimeError("snapshot changed")),
         ):
-            result = sources._initial_load_spec(spec)
-
-        self.assertEqual(result[:3], ("staging_trade", 17, "pgwire"))
-        self.assertGreaterEqual(result[3], 0)
-        fallback.assert_called_once_with(spec)
-
-    def test_bulk_failure_is_not_hidden_when_fallback_is_disabled(self):
-        spec = sources.LoadSpec("staging_trade", "SELECT 1")
-        with (
-            patch.object(sources, "RW_BULK_LOAD", True),
-            patch.object(sources, "RW_BULK_FALLBACK", False),
-            patch.object(sources, "_bulk_load_spec", side_effect=RuntimeError("bad parquet")),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "bad parquet"):
-                sources._initial_load_spec(spec)
-
-    def test_pgwire_fallback_respects_parameter_cap(self):
-        cursor = FakeInsertCursor()
-        rows = [(idx, idx + 1, idx + 2) for idx in range(5)]
-        with patch.object(sources, "MAX_BIND_PARAMS", 6):
-            inserted = sources._insert_rows(cursor, "t", ["a", "b", "c"], rows)
-
-        self.assertEqual(inserted, 5)
-        self.assertEqual(len(cursor.calls), 3)
-        self.assertEqual([len(params) for _, params in cursor.calls], [6, 6, 3])
+            with self.assertRaisesRegex(RuntimeError, "snapshot changed"):
+                sources._load_one(spec, create=True)
+        connection.close.assert_called_once()
 
     def test_parallel_loader_returns_every_result(self):
-        specs = [sources.LoadSpec(f"t{idx}", "SELECT 1") for idx in range(6)]
+        specs = [sources.LoadSpec(f"t{idx}", "batch1", f"t{idx}") for idx in range(6)]
         with patch.object(sources, "RW_LOAD_WORKERS", 4):
             result = sources._parallel_load(specs, lambda spec: spec.table)
 
         self.assertCountEqual(result, [spec.table for spec in specs])
+
+    def test_failed_append_copy_is_not_replayed(self):
+        spec = sources.LoadSpec("staging_trade", "batch2", "trade")
+        connection = Mock()
+        connection.cursor.return_value.fetchall.return_value = [("id",)]
+        operations = []
+
+        def execute(cur, name, **params):
+            operations.append(name)
+            if name == "insert_iceberg":
+                raise RuntimeError("copy failed after unknown progress")
+
+        with (
+            patch.object(sources, "_connect", return_value=connection),
+            patch.object(sources, "_prepare_session"),
+            patch.object(sources, "_validate_snapshot", return_value=123),
+            patch.object(sources, "_open_source", return_value=("iceberg_source", 1, ['"id"'])),
+            patch.object(sources, "_execute", side_effect=execute),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unknown progress"):
+                sources._load_one(spec, create=False)
+        self.assertEqual(operations, ["list_columns", "insert_iceberg", "drop_source"])
+        connection.close.assert_called_once()
 
 
 if __name__ == "__main__":

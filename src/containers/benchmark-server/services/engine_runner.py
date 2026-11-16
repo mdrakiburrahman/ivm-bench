@@ -1044,12 +1044,12 @@ class EngineRunner:
             return self._run_dbt(batch_num)
 
         self._emit(f"[risingwave] Appending batch {batch_num} sources")
-        resp = _post_with_retry(
-            f"{self._dbt_url}/sources/risingwave/append/{batch_num}",
-            timeout=14400,
-            emit=self._emit,
-            label="risingwave",
+        # A lost response can follow a partial or complete non-idempotent
+        # append. Fail the run instead of replaying mutations and inserts.
+        resp = requests.post(
+            f"{self._dbt_url}/sources/risingwave/append/{batch_num}", timeout=14400,
         )
+        resp.raise_for_status()
         src_result = resp.json()
         self._emit(
             f"[risingwave] Batch {batch_num} appended: "

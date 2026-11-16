@@ -12,8 +12,15 @@
 | DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, initializes DuckLake source tables from generated Parquet files, then full-refreshes the dbt model DAG on each batch                                                                                                                                                              |
 | DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA refresh`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1`                                                          |
 | Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                                                                                                                   |
-| RisingWave     | `docker/docker-compose.benchmark.risingwave.yml`     | Streaming IVM        | Native materialized views; DuckDB stages Delta batches, then bulk-loads over S3/MinIO with a pgwire fallback                                                                                                                                                                                 |
+| RisingWave     | `docker/docker-compose.benchmark.risingwave.yml`     | Streaming IVM        | Native materialized views; immutable Iceberg snapshots are copied into RisingWave-owned mutable tables through its Iceberg connector                                                                                                                                                            |
 | Spark-OpenIVM  | `docker/docker-compose.benchmark.spark-openivm.yml`  | Spark IVM            | Spark + MSSQL metastore + the openivm-spark SQL extension. Built from source in a container (`docker/docker-compose.spark-openivm-build.yml`) at a pinned `mdrakiburrahman/openivm-spark` commit. dbt issues `CREATE MATERIALIZED VIEW` (batch 1) / `REFRESH MATERIALIZED VIEW` (batches 2-3) |
+
+The existing Spark data generator defaults to Delta output. When RisingWave is
+selected, the orchestrator configures `DATAGEN_OUTPUT_FORMATS=delta,iceberg`:
+Spark writes batch-scoped Iceberg tables from the committed Delta snapshots to
+MinIO, so other engines keep their existing Delta input. Snapshot IDs are
+recorded alongside the Delta data and pinned during RisingWave loads. Later
+batches mutate the owned tables before appending their batch-specific snapshots.
 
 ### Compiler bench (incrementalizability survey)
 

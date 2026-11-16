@@ -6,9 +6,8 @@ services:
       MINIO_ROOT_USER: ${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}
       MINIO_ROOT_PASSWORD: ${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}
     volumes:
-      # Object storage is only a transient bulk-load transport. The loader
-      # deletes every object after RisingWave has copied it into Hummock.
-      - ../mount/results/${SCALE_FACTOR:-3}/risingwave/minio:/data
+      # The data generator populates this warehouse before the engine starts.
+      - ../mount/raw/${SCALE_FACTOR:-3}/iceberg:/data
     cpus: ${MINIO_CPUS:-4}
     mem_limit: ${MINIO_MEM:-4g}
 
@@ -20,23 +19,14 @@ services:
     # fails on a local volume. See src/containers/risingwave/risingwave.toml for
     # the three defaults it overrides and the failure each one causes.
     command: single_node --config-path /risingwave.toml
-    # Matches the other host engines (feldera, duckdb, spark all take 32 cpus /
-    # 120g) so cross-engine batch timings are comparable. These were held at
-    # 8/32g while the Hummock write-timeout bug was unfixed; risingwave.toml now
-    # addresses that directly with 120 s object-store timeouts, so the cap is
-    # redundant — and it made RisingWave's batch 1 look far worse than a
-    # like-for-like comparison. RisingWave also sizes actor parallelism from the
-    # host rather than the cgroup, so an 8-cpu limit left ~24 actors
-    # oversubscribed on 8 cores.
+    # Main-engine limits exclude the separately limited MinIO and tuner services.
     cpus: ${RISINGWAVE_CPUS:-32}
     mem_limit: ${RISINGWAVE_MEM:-120g}
     ports:
       - "4566:4566"
     volumes:
       # RisingWave keeps its own state (hummock object store + meta) here. It
-      # never reads the raw Delta payload directly: DuckDB resolves the Delta
-      # snapshots and MinIO exposes temporary Parquet through RisingWave's S3
-      # connector. The resulting source tables themselves live in Hummock.
+      # reads immutable Iceberg snapshots from MinIO into Hummock-owned tables.
       - ../mount/results/${SCALE_FACTOR:-3}/risingwave/state:/root/.risingwave
       - ../src/containers/risingwave/risingwave.toml:/risingwave.toml:ro
     healthcheck:
@@ -96,28 +86,14 @@ services:
       RISINGWAVE_PORT: "4566"
       RISINGWAVE_USER: root
       RISINGWAVE_DATABASE: dev
-      # Resolve Delta snapshots with DuckDB, stage Parquet in local MinIO, and
-      # let RisingWave perform a parallel INSERT ... SELECT from its documented
-      # S3 connector. The fallback uses the same workers over pgwire.
-      RISINGWAVE_BULK_LOAD: "${RISINGWAVE_BULK_LOAD:-1}"
-      RISINGWAVE_BULK_FALLBACK: "${RISINGWAVE_BULK_FALLBACK:-1}"
       RISINGWAVE_LOAD_WORKERS: "${RISINGWAVE_LOAD_WORKERS:-4}"
-      RISINGWAVE_STAGE_THREADS: "${RISINGWAVE_STAGE_THREADS:-4}"
       RISINGWAVE_BATCH_PARALLELISM: "${RISINGWAVE_BATCH_PARALLELISM:-32}"
-      RISINGWAVE_SOURCE_PARALLELISM: "${RISINGWAVE_SOURCE_PARALLELISM:-4}"
-      RISINGWAVE_MAX_BIND_PARAMS: "${RISINGWAVE_MAX_BIND_PARAMS:-20000}"
       RISINGWAVE_S3_ENDPOINT: http://minio:9000
       RISINGWAVE_S3_ACCESS_KEY: "${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}"
       RISINGWAVE_S3_SECRET_KEY: "${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}"
       RISINGWAVE_S3_BUCKET: ivm-bench
-      # dbt build concurrency. Unlike duckdb (in-process, parallel via
-      # DUCKDB_THREADS) and feldera (one compiled program, so dbt threads do
-      # nothing), RisingWave's 49 models are independent CREATE MATERIALIZED VIEW
-      # statements and dbt threads is the only thing that lets their backfills
-      # overlap. At 1, batch 1 used 3.95 of 8 allocated cores (49 %) — it was
-      # serialised, not compute-bound. Four concurrent jobs at backfill
-      # parallelism eight supply 32 actor slots without the 8 x 16 = 128-way
-      # oversubscription used by the failed SF100 run.
+      # dbt connections can submit concurrent models; the server's streaming-job
+      # admission limit separately controls how many backfills can run.
       RISINGWAVE_THREADS: "${RISINGWAVE_THREADS:-4}"
       # Backfill parallelism, the documented knob for MV-creation speed. Set here
       # so it can be swept without rebuilding the image. Steady-state parallelism

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
 
 BENCHMARK_SERVER = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCHMARK_SERVER))
@@ -21,7 +22,7 @@ class RisingWaveEngineRunnerTest(unittest.TestCase):
                 {
                     "table": "staging_trade",
                     "rows": 42,
-                    "mode": "minio-parquet",
+                    "mode": "iceberg",
                     "duration_s": 1.25,
                 }
             ],
@@ -37,9 +38,18 @@ class RisingWaveEngineRunnerTest(unittest.TestCase):
         self.assertEqual(result, "done")
         runner._emit.assert_any_call(
             "[risingwave] Source load staging_trade: "
-            "42 rows via minio-parquet in 1.25s"
+            "42 rows via iceberg in 1.25s"
         )
         response.raise_for_status.assert_called_once_with()
+
+    def test_ambiguous_append_failure_is_not_replayed(self):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._dbt_url = "http://dbt-server:5000"
+        runner._emit = Mock()
+        with patch("services.engine_runner.requests.post", side_effect=requests.ConnectionError()) as post:
+            with self.assertRaises(requests.ConnectionError):
+                runner._run_risingwave(2)
+        post.assert_called_once_with("http://dbt-server:5000/sources/risingwave/append/2", timeout=14400)
 
 
 if __name__ == "__main__":
