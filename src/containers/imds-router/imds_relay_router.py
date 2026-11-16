@@ -105,9 +105,18 @@ def _relay_session():
 
 def _relay_fetch(resource, client_id, remaining=TOKEN_REQUEST_BUDGET_SEC):
     """One relay attempt with separate connection and response timeouts."""
-    relay_uri = f"{RELAY_TEMPORARY_SAS_URL}&resource={urllib.parse.quote_plus(resource)}"
+    sender = urllib.parse.urlsplit(RELAY_TEMPORARY_SAS_URL)
+    path = sender.path.rstrip("/")
+    if not path.endswith("/token"):
+        path += "/token"
+    query = dict(urllib.parse.parse_qsl(sender.query, keep_blank_values=True))
+    query["resource"] = resource
+    query.pop("client_id", None)
     if client_id:
-        relay_uri += f"&client_id={urllib.parse.quote_plus(client_id)}"
+        query["client_id"] = client_id
+    relay_uri = urllib.parse.urlunsplit(
+        sender._replace(path=path, query=urllib.parse.urlencode(query))
+    )
     with _relay_session().get(
         relay_uri,
         timeout=Timeout(

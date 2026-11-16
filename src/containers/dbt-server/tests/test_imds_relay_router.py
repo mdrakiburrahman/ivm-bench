@@ -61,8 +61,10 @@ class RelayTokenTests(unittest.TestCase):
             self.assertEqual(token, cached)
             self.assertEqual(len(calls), 4)
             for path in calls:
-                self.assertTrue(path.startswith(f"/token?{sender_query}&resource="))
-                query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+                parsed = urllib.parse.urlparse(path)
+                self.assertEqual(parsed.path, "/token")
+                query = urllib.parse.parse_qs(parsed.query)
+                self.assertEqual(query["sb-hc-token"], urllib.parse.parse_qs(sender_query)["sb-hc-token"])
                 self.assertEqual(query["resource"], ["https://scope/a?b=c&d=e"])
                 self.assertEqual(query["client_id"], ["client+id"])
             self.assertEqual(authorization, [None] * 4)
@@ -71,6 +73,27 @@ class RelayTokenTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_sender_url_routes_to_token_and_merges_identity_query(self):
+        token = "SharedAccessSignature sr=relay&sig=a+b%2Fc=&se=123"
+        for path in ("/connection", "/connection/token/"):
+            for client_id in (None, "client+id"):
+                with self.subTest(path=path, client_id=client_id), \
+                        patch.object(router, "RELAY_TEMPORARY_SAS_URL",
+                                     f"https://example.invalid{path}?"
+                                     + urllib.parse.urlencode({"sb-hc-token": token,
+                                                               "resource": "stale", "client_id": "stale"})), \
+                        patch.object(router, "_relay_session") as session:
+                    response = session.return_value.get.return_value.__enter__.return_value
+                    response.status_code = 200
+                    response.json.return_value = {"access_token": "test-token"}
+                    router._relay_fetch("https://scope/?a=b&c=d", client_id)
+                    parsed = urllib.parse.urlsplit(session.return_value.get.call_args.args[0])
+                    self.assertEqual(parsed.path, "/connection/token")
+                    query = urllib.parse.parse_qs(parsed.query)
+                    self.assertEqual(query["sb-hc-token"], [token])
+                    self.assertEqual(query["resource"], ["https://scope/?a=b&c=d"])
+                    self.assertEqual(query.get("client_id"), [client_id] if client_id else None)
 
     def test_missing_sender_url_fails_without_contacting_relay(self):
         handler = object.__new__(router.Handler)
