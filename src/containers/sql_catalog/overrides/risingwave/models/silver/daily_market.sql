@@ -1,4 +1,6 @@
 -- catalog-override: RisingWave ascending time-series window ordering needs explicit NULLS LAST to preserve LAG and MAX semantics
+{{ config(pre_hook="CREATE INDEX IF NOT EXISTS rw_daily_market_symbol_date ON {{ ref('brokerage_daily_market') }} (dm_s_symb, dm_date) DISTRIBUTED BY (dm_s_symb)") }}
+
 -- Silver: daily_market with cumulative highs/lows
 with cumulative as (
     select
