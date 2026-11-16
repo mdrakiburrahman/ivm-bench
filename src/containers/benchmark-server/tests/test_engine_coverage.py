@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[4]
 SCRIPT = REPO / "tools/scripts/github/check-engine-coverage.py"
@@ -278,7 +279,8 @@ class ReporterTest(unittest.TestCase):
             env = {
                 **{k: v for k, v in os.environ.items() if k != "PR_NUMBER"},
                 "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
-                "GITHUB_RUN_ID": "1", "GITHUB_STEP_SUMMARY": str(summary),
+                "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_STEP_SUMMARY": str(summary),
                 "ENGINE_COVERAGE_FILE": str(coverage_file), "BENCHMARK_OUTCOME": outcome,
             }
             if extra_env:
@@ -306,6 +308,7 @@ class ReporterTest(unittest.TestCase):
         self.assertLess(body.index(image), body.index("| Parameter | Value |"))
         self.assertIn("Dry run; no PR comment was posted.", body)
 
+    @patch.dict(os.environ, {"GITHUB_RUN_ATTEMPT": "2"})
     def test_chart_upload_failure_keeps_comment_and_tables(self):
         for branch_state in ("existing", "missing", "tree-failure"):
             with self.subTest(branch_state=branch_state), tempfile.TemporaryDirectory() as directory:
