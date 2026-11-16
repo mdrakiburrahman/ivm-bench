@@ -24,6 +24,7 @@ from handlers.fabric import FabricHandler
 from handlers.feldera import FelderaHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
+from handlers.materialize_emulator import MaterializeEmulatorHandler
 from handlers.duckdb_openivm import DuckDBOpenIVMHandler
 from handlers.query_plans import QueryPlansHandler
 from handlers.compiler_bench import CompilerBenchHandler
@@ -70,6 +71,7 @@ def register_handlers(flask_app: Flask) -> None:
     """Register all route handlers."""
     handlers = [
         HealthHandler(),
+        MaterializeEmulatorHandler(),
         DuckDBOpenIVMHandler(),
         SparkOpenIVMHandler(),
         DatabricksEnzymeHandler(),

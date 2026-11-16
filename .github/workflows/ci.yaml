@@ -95,7 +95,7 @@ on:
         type: string
       engines:
         description: "Comma-separated engine list"
-        default: "databricks-enzyme,databricks-openivm,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35,dbspnet"
+        default: "databricks-enzyme,databricks-openivm,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35,dbspnet,materialize-emulator"
         type: string
       preserve_raw:
         description: "Reuse mount/raw/ and mount/bin/ across runs (0 or 1)"
@@ -155,7 +155,7 @@ jobs:
       BATCH_3_DELETE_PCT: ${{ inputs.batch_3_delete_pct || '0' }}
       PARALLEL: ${{ inputs.parallel || '0' }}
       SCHEDULE: ${{ inputs.schedule || 'serial-host-parallel-cloud' }}
-      ENGINES: ${{ inputs.engines || 'databricks-enzyme,databricks-openivm,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35,dbspnet' }}
+      ENGINES: ${{ inputs.engines || 'databricks-enzyme,databricks-openivm,spark,spark-openivm,duckdb,duckdb-openivm,feldera,fabric-jvm-35,fabric-openivm-jvm-35,dbspnet,materialize-emulator' }}
       PRESERVE_RAW: ${{ inputs.preserve_raw || '1' }}
       OPENIVM_VALIDATE: ${{ inputs.openivm_validate || '0' }}
       OPENIVM_PROFILE_REFRESH: ${{ inputs.openivm_profile_refresh || '1' }}
