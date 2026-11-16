@@ -1,0 +1,1 @@
+UPDATE WAREHOUSE SET W_YTD = {ytd}.00 WHERE W_ID = {w}

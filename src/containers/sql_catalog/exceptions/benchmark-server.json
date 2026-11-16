@@ -1,0 +1,18 @@
+[
+  {
+    "path": "src/containers/benchmark-server/services/db.py",
+    "reason": "SQLite WAL and benchmark-state schema SQL manage private harness storage; SQLite is not a configured benchmark-engine dialect."
+  },
+  {
+    "path": "src/containers/benchmark-server/services/oat_db.py",
+    "reason": "SQLite WAL and OAT bookkeeping DDL manage private harness storage; SQLite is not a configured benchmark-engine dialect."
+  },
+  {
+    "path": "src/containers/benchmark-server/services/engine_runner.py",
+    "reason": "SQLite UPDATE persists engine batch results in benchmark-server state; it is not workload SQL and SQLite has no catalog engine id."
+  },
+  {
+    "path": "src/containers/benchmark-server/services/orchestrator.py",
+    "reason": "SQLite INSERT and UPDATE persist benchmark and OAT state; they are not workload SQL and SQLite has no catalog engine id."
+  }
+]

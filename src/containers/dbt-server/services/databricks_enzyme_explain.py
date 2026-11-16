@@ -25,6 +25,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from sql_catalog import load_sql
 from services import databricks_enzyme_sources as src
 from services.databricks_enzyme_plan import classify_incrementalization_plan
 from services.dbt_compiler import get_manifest
@@ -149,16 +150,20 @@ def _select_models(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _ensure_sandbox() -> None:
     src._ensure_experiment_schemas()
-    src._execute(
-        f"CREATE SCHEMA IF NOT EXISTS `{src.CATALOG}`.`{_sandbox_schema()}`"
-    )
+    src._execute(load_sql(
+        "databricks-enzyme", "inline",
+        "dbt_server/services_databricks_enzyme_explain/create_sandbox_schema",
+        catalog=f"`{src.CATALOG}`", schema=f"`{_sandbox_schema()}`",
+    ))
 
 
 def _drop_sandbox() -> None:
     try:
-        src._execute(
-            f"DROP SCHEMA IF EXISTS `{src.CATALOG}`.`{_sandbox_schema()}` CASCADE"
-        )
+        src._execute(load_sql(
+            "databricks-enzyme", "inline",
+            "dbt_server/services_databricks_enzyme_explain/drop_sandbox_schema",
+            catalog=f"`{src.CATALOG}`", schema=f"`{_sandbox_schema()}`",
+        ))
     except Exception as exc:
         logger.warning(
             "[databricks-enzyme] DROP sandbox schema %s failed: %s",
@@ -171,7 +176,11 @@ def _drop_stub_views(stubs: List[Tuple[str, str]]) -> None:
     """`stubs` is a list of (schema, name) pairs to DROP VIEW IF EXISTS."""
     for schema, name in stubs:
         try:
-            src._execute(f"DROP VIEW IF EXISTS {_fq_real(schema, name)}")
+            src._execute(load_sql(
+                "databricks-enzyme", "inline",
+                "dbt_server/services_databricks_enzyme_explain/drop_stub_view",
+                view=_fq_real(schema, name),
+            ))
         except Exception as exc:
             logger.warning(
                 "[databricks-enzyme] DROP stub VIEW %s.%s failed: %s",
@@ -198,9 +207,10 @@ def _explain_one(model: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     sandbox_target = _fq_sandbox(sanitized)
     compiled_sql = _strip_trailing_semicolon(model["compiled_sql"])
 
-    explain_sql = (
-        f"EXPLAIN CREATE MATERIALIZED VIEW {sandbox_target} "
-        f"REFRESH POLICY INCREMENTAL STRICT AS\n{compiled_sql}"
+    explain_sql = load_sql(
+        "databricks-enzyme", "inline",
+        "dbt_server/services_databricks_enzyme_explain/explain_materialized_view",
+        target=sandbox_target, compiled_sql=compiled_sql,
     )
     try:
         df = src._execute(explain_sql)
@@ -224,7 +234,11 @@ def _register_stub_view(model: Dict[str, Any]) -> None:
     """
     fq = _fq_real(model["schema"], model["name"])
     compiled_sql = _strip_trailing_semicolon(model["compiled_sql"])
-    src._execute(f"CREATE OR REPLACE VIEW {fq} AS\n{compiled_sql}")
+    src._execute(load_sql(
+        "databricks-enzyme", "inline",
+        "dbt_server/services_databricks_enzyme_explain/register_stub_view",
+        view=fq, compiled_sql=compiled_sql,
+    ))
 
 
 # ---------------------------------------------------------------------------

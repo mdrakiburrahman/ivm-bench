@@ -1,0 +1,1 @@
+SELECT (SELECT count(*) FROM ((SELECT {projection} FROM (SELECT * FROM {mv_name}) AS __m({alias})) EXCEPT ALL (SELECT {projection} FROM ({sql}) AS __q({alias}))) __d1) + (SELECT count(*) FROM ((SELECT {projection} FROM ({sql}) AS __q({alias})) EXCEPT ALL (SELECT {projection} FROM (SELECT * FROM {mv_name}) AS __m({alias}))) __d2) AS diff

@@ -26,8 +26,13 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from services.compiler_bench.corpus import Corpus
+from sql_catalog import load_sql
 
 logger = logging.getLogger(__name__)
+
+
+def _sql(engine: str, template: str, **params) -> str:
+    return load_sql(engine, "inline", f"compiler_bench/engines/{template}", **params)
 
 INCREMENTAL = "incremental"
 FULL = "full"
@@ -130,37 +135,34 @@ def _is_float_type(sql_type: str) -> bool:
 
 
 def _verify_probe(
-    mv_name: str, sql: str, columns: Optional[Sequence[tuple]] = None
+    mv_name: str,
+    sql: str,
+    columns: Optional[Sequence[tuple]] = None,
+    *,
+    engine: str = "spark",
 ) -> str:
-    """Symmetric EXCEPT ALL, compared by position with float tolerance.
+    """Compare both directions by position, rounding float columns to 10 decimals.
 
-    The view's column names are engine-sanitised and no longer match the query's
-    output names, so both sides are aliased to synthetic names (c0, c1, …) and
-    compared positionally. Float columns are rounded to 10 decimals — without
-    that, every AVG-over-DECIMAL query reports a spurious correctness failure
-    (the C++ benchmark applies the same tolerance).
-
-    Falls back to a plain positional comparison when column types are unknown.
+    The view's output names are engine-sanitized, so both sides use synthetic
+    aliases. Decimal columns remain exact.
     """
     if not columns:
-        return (
-            f"SELECT (SELECT count(*) FROM ((SELECT * FROM {mv_name}) "
-            f"EXCEPT ALL (SELECT * FROM ({sql}) __q)) __d1) "
-            f"+ (SELECT count(*) FROM ((SELECT * FROM ({sql}) __q2) "
-            f"EXCEPT ALL (SELECT * FROM {mv_name})) __d2) AS diff"
-        )
+        return _sql(engine, "verify_probe_fallback", mv_name=mv_name, sql=sql)
 
     alias = ", ".join(f"c{i}" for i in range(len(columns)))
     projection = ", ".join(
-        f"round(CAST(c{i} AS DOUBLE), 10) AS c{i}" if _is_float_type(col_type)
+        _sql(engine, "verify_projection_float", column=f"c{i}")
+        if _is_float_type(col_type)
         else f"c{i}"
         for i, (_, col_type) in enumerate(columns)
     )
-    left = f"SELECT {projection} FROM (SELECT * FROM {mv_name}) AS __m({alias})"
-    right = f"SELECT {projection} FROM ({sql}) AS __q({alias})"
-    return (
-        f"SELECT (SELECT count(*) FROM (({left}) EXCEPT ALL ({right})) __d1) "
-        f"+ (SELECT count(*) FROM (({right}) EXCEPT ALL ({left})) __d2) AS diff"
+    return _sql(
+        engine,
+        "verify_probe_columns",
+        mv_name=mv_name,
+        sql=sql,
+        alias=alias,
+        projection=projection,
     )
 
 
@@ -189,9 +191,10 @@ class _DuckDBSession:
     #: trail its closing stdout marker by a hair.
     _STDERR_GRACE_S = 0.05
 
-    def __init__(self, binary: str, db_path: str, preamble: Sequence[str], *, capture_sql_timing: bool = False) -> None:
+    def __init__(self, binary: str, db_path: str, preamble: Sequence[str], engine: str, *, capture_sql_timing: bool = False) -> None:
         self._binary = binary
         self._db_path = db_path
+        self._engine = engine
         self._preamble = list(preamble)
         self._proc: Optional[subprocess.Popen] = None
         self._stdout: "queue.Queue" = queue.Queue()
@@ -230,7 +233,7 @@ class _DuckDBSession:
             self._write(statement.rstrip(";") + ";\n")
         # Preamble errors are tolerated (icu may be unavailable) and its output is
         # drained here so it cannot be mistaken for the first statement's.
-        self.execute("SELECT 1 AS __ready", timeout_s=300, tolerate_errors=True)
+        self.execute(_sql(self._engine, "duckdb_ready"), timeout_s=300, tolerate_errors=True)
 
     def close(self) -> None:
         proc, self._proc = self._proc, None
@@ -292,8 +295,14 @@ class _DuckDBSession:
         self._seq += 1
         begin, end = f"<<<B{self._seq}>>>", f"<<<E{self._seq}>>>"
         self._write(
-            f"SELECT '{begin}' AS __m;\n{sql.rstrip().rstrip(';')};\n"
-            f"SELECT '{end}' AS __m;\n"
+            _sql(
+                self._engine,
+                "duckdb_execute",
+                begin=begin,
+                sql=sql.rstrip().rstrip(";"),
+                end=end,
+            )
+            + "\n"
         )
 
         deadline = time.monotonic() + max(1.0, timeout_s)
@@ -392,15 +401,15 @@ class _DuckDBCliAdapter(EngineAdapter):
             "/data/bin/duckdb-openivm/icu.duckdb_extension",
         )
         lines = [
-            f"LOAD '{icu_extension}'",
-            f"SET temp_directory='{self._temp_dir}'",
+            _sql(self.name, "duckdb_load_icu", path=icu_extension),
+            _sql(self.name, "duckdb_set_temp_directory", path=self._temp_dir),
         ]
         if self._mem_limit:
-            lines.append(f"SET memory_limit='{self._mem_limit}'")
+            lines.append(_sql(self.name, "duckdb_set_memory_limit", limit=self._mem_limit))
         if self._threads:
-            lines.append(f"SET threads={int(self._threads)}")
+            lines.append(_sql(self.name, "duckdb_set_threads", threads=int(self._threads)))
         if self.load_extension:
-            lines.append(f"LOAD {self.load_extension}")
+            lines.append(_sql(self.name, "duckdb_load_extension", extension=self.load_extension))
         if self._ducklake:
             # Byte-for-byte the attach the C++ benchmark uses (rewriter_benchmark
             # .cpp: `ATTACH IF NOT EXISTS '<db>.ducklake.db' AS dl (TYPE
@@ -414,18 +423,17 @@ class _DuckDBCliAdapter(EngineAdapter):
             # regardless of openivm_cascade_refresh. The C++ benchmark avoids it
             # the same way.
             lines += [
-                "INSTALL ducklake",
-                "LOAD ducklake",
-                f"ATTACH IF NOT EXISTS '{self._ducklake_meta}' AS dl (TYPE ducklake, "
-                f"DATA_PATH '{self._ducklake_data}', data_inlining_row_limit 0)",
-                "USE dl.main",
+                _sql(self.name, "duckdb_install_ducklake"),
+                _sql(self.name, "duckdb_load_ducklake"),
+                _sql(self.name, "duckdb_attach_ducklake", meta_path=self._ducklake_meta, data_path=self._ducklake_data),
+                _sql(self.name, "duckdb_use_ducklake"),
             ]
         return lines
 
     def _session_or_start(self) -> _DuckDBSession:
         if self._session is None or not self._session.alive:
             self._session = _DuckDBSession(
-                self._binary, str(self._db_path), self._preamble()
+                self._binary, str(self._db_path), self._preamble(), self.name
             )
             self._session.start()
         return self._session
@@ -495,13 +503,13 @@ class _DuckDBCliAdapter(EngineAdapter):
         data_dir = _tpcc_data_dir(corpus)
         for table in _tpcc_table_names(corpus.schema_ddl):
             statements.append(
-                f"INSERT INTO {table} SELECT * FROM read_parquet('{data_dir}/{table}.parquet')"
+                _sql(self.name, "duckdb_insert_parquet", table=table, path=f"{data_dir}/{table}.parquet")
             )
         if statements:
             self._run(statements, timeout_s=1800)
 
     def run_base_query(self, sql: str, *, timeout_s: float) -> None:
-        self._run([f"SELECT * FROM ({sql}) __cb LIMIT 0"], timeout_s=timeout_s)
+        self._run([_sql(self.name, "run_base_query", sql=sql)], timeout_s=timeout_s)
 
     def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
         if not statements:
@@ -515,7 +523,7 @@ class _DuckDBCliAdapter(EngineAdapter):
         """(name, type) per column, in order. Empty when it cannot be read."""
         try:
             out = self._run(
-                [f"DESCRIBE SELECT * FROM {mv_name}"], timeout_s=timeout_s, json_out=True
+                [_sql(self.name, "duckdb_describe", mv_name=mv_name)], timeout_s=timeout_s, json_out=True
             )
         except (QueryFailed, EngineTimeout):
             return []
@@ -529,7 +537,7 @@ class _DuckDBCliAdapter(EngineAdapter):
     def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
         columns = self._describe(mv_name, timeout_s=timeout_s)
         out = self._run(
-            [_verify_probe(mv_name, sql, columns)], timeout_s=timeout_s, json_out=True
+            [_verify_probe(mv_name, sql, columns, engine=self.name)], timeout_s=timeout_s, json_out=True
         )
         match = re.search(r'"diff":\s*(-?\d+)', out)
         if not match:
@@ -548,7 +556,7 @@ class DuckDBOpenIVMAdapter(_DuckDBCliAdapter):
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         try:
             self._run(
-                [f"CREATE MATERIALIZED VIEW {mv_name} AS {sql}"],
+                [_sql(self.name, "duckdb_create_materialized_view", mv_name=mv_name, sql=sql)],
                 timeout_s=timeout_s,
             )
         except QueryFailed as exc:
@@ -566,8 +574,7 @@ class DuckDBOpenIVMAdapter(_DuckDBCliAdapter):
         catalog = self._db_path.stem
         out = self._run(
             [
-                f'SELECT type FROM "{catalog}".main.openivm_views '
-                f"WHERE view_name = '{mv_name}'"
+_sql(self.name, "duckdb_openivm_classify", catalog=catalog, mv_name=mv_name)
             ],
             timeout_s=timeout_s,
             json_out=True,
@@ -578,11 +585,11 @@ class DuckDBOpenIVMAdapter(_DuckDBCliAdapter):
         return FULL if int(match.group(1)) == 3 else INCREMENTAL
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        self._run([f"PRAGMA refresh('{mv_name}')"], timeout_s=timeout_s)
+        self._run([_sql(self.name, "duckdb_openivm_refresh", mv_name=mv_name)], timeout_s=timeout_s)
 
     def drop_mv(self, mv_name: str) -> None:
         try:
-            self._run([f"DROP MATERIALIZED VIEW IF EXISTS {mv_name}"], timeout_s=120)
+            self._run([_sql(self.name, "duckdb_openivm_drop_mv", mv_name=mv_name)], timeout_s=120)
         except (QueryFailed, EngineTimeout, EngineCrashed):
             pass
 
@@ -603,18 +610,18 @@ class DuckDBAdapter(_DuckDBCliAdapter):
     supports_verify = False
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        self._run([f"CREATE OR REPLACE TABLE {mv_name} AS {sql}"], timeout_s=timeout_s)
+        self._run([_sql(self.name, "duckdb_create_table", mv_name=mv_name, sql=sql)], timeout_s=timeout_s)
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
         # A fact about the engine, not a failure to interrogate it.
         return FULL
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        self._run([f"CREATE OR REPLACE TABLE {mv_name} AS {sql}"], timeout_s=timeout_s)
+        self._run([_sql(self.name, "duckdb_create_table", mv_name=mv_name, sql=sql)], timeout_s=timeout_s)
 
     def drop_mv(self, mv_name: str) -> None:
         try:
-            self._run([f"DROP TABLE IF EXISTS {mv_name}"], timeout_s=120)
+            self._run([_sql(self.name, "duckdb_drop_table", mv_name=mv_name)], timeout_s=120)
         except (QueryFailed, EngineTimeout, EngineCrashed):
             pass
 
@@ -650,8 +657,8 @@ class _LivyAdapter(EngineAdapter):
         if self._client is None:
             self._client = self._client_factory(base_url=self._livy_url)
             self._client.open()
-            self._client.execute(f"CREATE DATABASE IF NOT EXISTS {self.schema}")
-            self._client.execute(f"USE {self.schema}")
+            self._client.execute(_sql(self.name, "spark_create_database", schema=self.schema))
+            self._client.execute(_sql(self.name, "spark_use_database", schema=self.schema))
         return self._client
 
     def reset(self) -> None:
@@ -667,7 +674,7 @@ class _LivyAdapter(EngineAdapter):
         if self._client is None:
             return
         try:
-            self._client.execute(f"DROP DATABASE IF EXISTS {self.schema} CASCADE")
+            self._client.execute(_sql(self.name, "spark_drop_database", schema=self.schema))
         except Exception:
             logger.debug("[%s] dropping benchmark schema failed", self.name, exc_info=True)
         try:
@@ -717,7 +724,7 @@ class _LivyAdapter(EngineAdapter):
         data_dir = _tpcc_data_dir(corpus)
         for stmt in corpus.schema_ddl:
             table = _tpcc_table_names([stmt])[0]
-            self._execute(f"DROP TABLE IF EXISTS {table}", timeout_s=300)
+            self._execute(_sql(self.name, "spark_drop_table", table=table), timeout_s=300)
             # Delta with the change data feed on. The spark-openivm engine runs
             # with `spark.openivm.changeFeed.mode=cdf`, which refuses to create a
             # view over any source lacking `delta.enableChangeDataFeed` — without
@@ -725,17 +732,16 @@ class _LivyAdapter(EngineAdapter):
             # it, but both engines get the same table properties so the two are
             # comparing views, not storage configurations.
             self._execute(
-                f"{stmt} USING DELTA "
-                "TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')",
+_sql(self.name, "spark_create_delta_table", stmt=stmt),
                 timeout_s=300,
             )
             self._execute(
-                f"INSERT INTO {table} SELECT * FROM parquet.`{data_dir}/{table}.parquet`",
+_sql(self.name, "spark_insert_parquet", table=table, path=f"{data_dir}/{table}.parquet"),
                 timeout_s=1800,
             )
 
     def run_base_query(self, sql: str, *, timeout_s: float) -> None:
-        self._execute(f"SELECT * FROM ({sql}) __cb LIMIT 0", timeout_s=timeout_s)
+        self._execute(_sql(self.name, "run_base_query", sql=sql), timeout_s=timeout_s)
 
     def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
         for stmt in statements:
@@ -746,7 +752,7 @@ class _LivyAdapter(EngineAdapter):
 
     def _describe(self, mv_name: str, *, timeout_s: float) -> List[tuple]:
         try:
-            rows = self._rows(self._execute(f"DESCRIBE {mv_name}", timeout_s=timeout_s))
+            rows = self._rows(self._execute(_sql(self.name, "spark_describe", mv_name=mv_name), timeout_s=timeout_s))
         except (QueryFailed, EngineTimeout):
             return []
         # Spark's DESCRIBE appends partition/metadata sections after a blank row.
@@ -760,7 +766,7 @@ class _LivyAdapter(EngineAdapter):
     def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
         columns = self._describe(mv_name, timeout_s=timeout_s)
         rows = self._rows(
-            self._execute(_verify_probe(mv_name, sql, columns), timeout_s=timeout_s)
+            self._execute(_verify_probe(mv_name, sql, columns, engine=self.name), timeout_s=timeout_s)
         )
         if not rows or not rows[0]:
             raise QueryFailed(f"{self.name}: verification produced no comparable result")
@@ -786,7 +792,7 @@ class SparkOpenIVMAdapter(_LivyAdapter):
         """
         rows = self._rows(
             self._execute(
-                f"EXPLAIN CREATE MATERIALIZED VIEW {mv_name}_explain AS ({sql})",
+                _sql(self.name, "spark_openivm_explain", mv_name=mv_name, sql=sql),
                 timeout_s=timeout_s,
             )
         )
@@ -804,17 +810,17 @@ class SparkOpenIVMAdapter(_LivyAdapter):
         return FULL if int(refresh_type) == 3 else INCREMENTAL
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        self._execute(f"CREATE MATERIALIZED VIEW {mv_name} AS ({sql})", timeout_s=timeout_s)
+        self._execute(_sql(self.name, "spark_openivm_create_mv", mv_name=mv_name, sql=sql), timeout_s=timeout_s)
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
-        self._execute(f"REFRESH MATERIALIZED VIEW {mv_name}", timeout_s=timeout_s)
+        self._execute(_sql(self.name, "spark_openivm_refresh_mv", mv_name=mv_name), timeout_s=timeout_s)
 
     def observed_classification(self, mv_name: str, *, timeout_s: float) -> str:
         # SHOW OPENIVM QUERY LOG carries a `mode` per view per refresh;
         # FULL_REFRESH means the extension gave up on incremental maintenance
         # (including when per-view compilation failed).
         try:
-            rows = self._rows(self._execute("SHOW OPENIVM QUERY LOG", timeout_s=timeout_s))
+            rows = self._rows(self._execute(_sql(self.name, "spark_openivm_query_log"), timeout_s=timeout_s))
         except (QueryFailed, EngineTimeout):
             return UNKNOWN
         mode = None
@@ -828,7 +834,7 @@ class SparkOpenIVMAdapter(_LivyAdapter):
     def drop_mv(self, mv_name: str) -> None:
         try:
             self._execute(
-                f"DROP MATERIALIZED VIEW IF EXISTS {mv_name} CASCADE", timeout_s=300
+                _sql(self.name, "spark_openivm_drop_mv", mv_name=mv_name), timeout_s=300
             )
         except Exception:
             pass
@@ -842,7 +848,7 @@ class SparkAdapter(_LivyAdapter):
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         self._execute(
-            f"CREATE OR REPLACE TABLE {mv_name} USING DELTA AS {sql}", timeout_s=timeout_s
+            _sql(self.name, "spark_create_delta_mv", mv_name=mv_name, sql=sql), timeout_s=timeout_s
         )
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
@@ -850,12 +856,12 @@ class SparkAdapter(_LivyAdapter):
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         self._execute(
-            f"CREATE OR REPLACE TABLE {mv_name} USING DELTA AS {sql}", timeout_s=timeout_s
+            _sql(self.name, "spark_create_delta_mv", mv_name=mv_name, sql=sql), timeout_s=timeout_s
         )
 
     def drop_mv(self, mv_name: str) -> None:
         try:
-            self._execute(f"DROP TABLE IF EXISTS {mv_name}", timeout_s=300)
+            self._execute(_sql(self.name, "spark_drop_table", table=mv_name), timeout_s=300)
         except Exception:
             pass
 

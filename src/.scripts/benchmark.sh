@@ -161,16 +161,28 @@ if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
   fi
 fi
 HEALTH_RETRIES=60
+IVM_BENCH_RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+export IVM_BENCH_RUN_ID
+SERVER_PROJECT="ivm-${IVM_BENCH_RUN_ID}"
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  printf 'IVM_BENCH_RUN_ID=%s\n' "$IVM_BENCH_RUN_ID" >> "$GITHUB_ENV"
+fi
 
 cleanup() {
-  docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+  local original_status=$?
+  trap - EXIT INT TERM
+  set +e
+  if ! bash tools/scripts/cleanup-benchmark-run.sh "$IVM_BENCH_RUN_ID" && [[ "$original_status" -eq 0 ]]; then
+    original_status=1
+  fi
+  exit "$original_status"
 }
 trap cleanup EXIT
-
-cleanup
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "=== Starting benchmark-server ==="
-docker compose -f "$COMPOSE_FILE" up -d --build
+docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" up -d --build
 
 HEALTH_OK=0
 for i in $(seq 1 $HEALTH_RETRIES); do
@@ -184,16 +196,14 @@ done
 
 if [[ "$HEALTH_OK" != "1" ]]; then
   echo "=== FAILURE — benchmark-server did not become healthy ==="
-  docker compose -f "$COMPOSE_FILE" logs
-  docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+  docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" logs
   exit 1
 fi
 
 # Start explicitly so configuration errors reach CI before opening the SSE stream.
 if ! curl -sS --fail-with-body --request POST "http://localhost:9000/benchmark"; then
   echo "=== FAILURE — benchmark-server rejected the experiment ==="
-  docker compose -f "$COMPOSE_FILE" logs benchmark-server
-  docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+  docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" logs benchmark-server
   exit 1
 fi
 
@@ -229,8 +239,6 @@ if [[ -f "$OAT_RESULTS_CSV" ]]; then
 else
   echo "(no results.csv found at $OAT_RESULTS_CSV — check mount/oat-state/ for partial output)"
 fi
-
-docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
 
 if [[ "$FINAL_STATUS" != "completed" ]]; then
   echo "=== BENCHMARK FAILED ==="

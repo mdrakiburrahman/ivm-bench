@@ -25,17 +25,20 @@ import sys
 
 import jinja2
 import yaml
+from sql_catalog import load_sql
 
 SURROGATE_NULL = "_dbt_utils_surrogate_key_null_"
 
-_REF = re.compile(r"\{\{\s*ref\(\s*'([^']+)'\s*\)\s*\}\}")
-_SOURCE = re.compile(r"\{\{\s*source\(\s*'[^']+'\s*,\s*'([^']+)'\s*\)\s*\}\}")
+_REF = re.compile(r"""\{\{\s*ref\(\s*['"]([^'"]+)['"]\s*\)\s*\}\}""")
+_SOURCE = re.compile(r"""\{\{\s*source\(\s*['"][^'"]+['"]\s*,\s*['"]([^'"]+)['"]\s*\)\s*\}\}""")
 
 
 def _surrogate_key(fields):
-    parts = [f"coalesce(cast({f} as varchar), '{SURROGATE_NULL}')" for f in fields]
+    parts = [load_sql("dbspnet", "inline", "dbt_server/services_dbt_to_program/surrogate_key_field",
+                      field=f, null_value=SURROGATE_NULL) for f in fields]
     joiner = " || '-' || "
-    return "md5(cast(" + joiner.join(parts) + " as varchar))"
+    return load_sql("dbspnet", "inline", "dbt_server/services_dbt_to_program/surrogate_key",
+                    fields=joiner.join(parts))
 
 
 class _DbtUtils:
@@ -171,9 +174,9 @@ def build_program(project_dir):
         is_source, raw, layer = models[name]
         body = render(raw).strip()
         if is_source:
-            statements.append(f"CREATE TABLE {name} (\n{body}\n)")
+            statements.append(load_sql("dbspnet", "inline", "dbt_server/services_dbt_to_program/create_table", table_name=name, body=body))
         else:
-            statements.append(f"CREATE VIEW {name} AS\n{body}")
+            statements.append(load_sql("dbspnet", "inline", "dbt_server/services_dbt_to_program/create_view", view_name=name, body=body))
             if layer == "gold":
                 gold_views.append(name)
 

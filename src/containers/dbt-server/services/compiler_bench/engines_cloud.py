@@ -1,7 +1,7 @@
 """Cloud/managed engine adapters: databricks-enzyme, feldera, fabric.
 
 Split from engines.py because these need live credentials to exercise, so they
-are validated by a GCI run rather than on a dev box.
+are validated by a CI run rather than on a dev box.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import List, Optional, Sequence
 
 from services.compiler_bench.corpus import Corpus
+from sql_catalog import load_sql
 from services.compiler_bench.engines import (
     FULL,
     INCREMENTAL,
@@ -32,6 +33,14 @@ from services.compiler_bench.engines import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sql(engine: str, template: str, **params) -> str:
+    return load_sql(engine, "inline", f"compiler_bench/engines_cloud/{template}", **params)
+
+
+def _shared_sql(engine: str, template: str, **params) -> str:
+    return load_sql(engine, "inline", f"compiler_bench/engines/{template}", **params)
 
 _NOT_INCREMENTALIZABLE = "MATERIALIZED_VIEW_NOT_INCREMENTALIZABLE"
 
@@ -102,7 +111,7 @@ class DatabricksEnzymeAdapter(EngineAdapter):
         except Exception:
             logger.debug("[%s] dropping connection failed", self.name, exc_info=True)
         try:
-            self._src._execute(f"USE `{self._src.CATALOG}`.`{self._schema}`")
+            self._src._execute(_sql(self.name, "databricks_use_schema", catalog=self._src.CATALOG, schema=self._schema))
         except Exception:
             logger.warning("[%s] could not restore session schema", self.name, exc_info=True)
 
@@ -143,40 +152,37 @@ class DatabricksEnzymeAdapter(EngineAdapter):
     def setup(self, corpus: Corpus) -> None:
         self._corpus = corpus
         self._execute(
-            f"CREATE SCHEMA IF NOT EXISTS `{self._src.CATALOG}`.`{self._schema}`",
+            _sql(self.name, "databricks_create_schema", catalog=self._src.CATALOG, schema=self._schema),
             timeout_s=120,
         )
-        self._execute(f"USE `{self._src.CATALOG}`.`{self._schema}`", timeout_s=60)
+        self._execute(_sql(self.name, "databricks_use_schema", catalog=self._src.CATALOG, schema=self._schema), timeout_s=60)
         data_dir = self._upload_tpcc_data(corpus)
         for stmt in corpus.schema_ddl:
             table = _tpcc_table_names([stmt])[0]
-            self._execute(f"DROP TABLE IF EXISTS {self._fq(table)}", timeout_s=300)
+            self._execute(_shared_sql(self.name, "spark_drop_table", table=self._fq(table)), timeout_s=300)
             # Row tracking is what makes Enzyme able to maintain a view
             # incrementally over this table at all.
+            prefix = _sql(self.name, "databricks_create_table_prefix", table=table)
+            qualified = _sql(self.name, "databricks_create_table_prefix", table=self._fq(table))
+            statement = stmt.replace(prefix, qualified, 1)
+            properties = _sql(self.name, "databricks_delta_properties")
+            self._execute(f"{statement} {properties}", timeout_s=600)
             self._execute(
-                f"{stmt.replace(f'CREATE TABLE {table}', f'CREATE TABLE {self._fq(table)}', 1)} "
-                "USING DELTA TBLPROPERTIES ("
-                "'delta.enableRowTracking' = 'true', "
-                "'delta.enableChangeDataFeed' = 'true')",
-                timeout_s=600,
-            )
-            self._execute(
-                f"INSERT INTO {self._fq(table)} "
-                f"SELECT * FROM parquet.`{data_dir}/{table}.parquet`",
+_sql(self.name, "databricks_insert_parquet", table=self._fq(table), path=f"{data_dir}/{table}.parquet"),
                 timeout_s=1800,
             )
 
     def teardown(self) -> None:
         try:
             self._execute(
-                f"DROP SCHEMA IF EXISTS `{self._src.CATALOG}`.`{self._schema}` CASCADE",
+_sql(self.name, "databricks_drop_schema", catalog=self._src.CATALOG, schema=self._schema),
                 timeout_s=600,
             )
         except Exception:
             logger.warning("[%s] schema cleanup failed", self.name, exc_info=True)
 
     def run_base_query(self, sql: str, *, timeout_s: float) -> None:
-        self._execute(f"SELECT * FROM ({sql}) __cb LIMIT 0", timeout_s=timeout_s)
+        self._execute(_shared_sql(self.name, "run_base_query", sql=sql), timeout_s=timeout_s)
 
     def classify(self, mv_name: str, sql: str, *, timeout_s: float) -> str:
         from services.databricks_enzyme_plan import classify_incrementalization_plan
@@ -184,8 +190,7 @@ class DatabricksEnzymeAdapter(EngineAdapter):
         probe = self._fq(f"{mv_name}_explain")
         try:
             frame = self._execute(
-                f"EXPLAIN CREATE MATERIALIZED VIEW {probe} "
-                f"REFRESH POLICY INCREMENTAL STRICT AS {sql}",
+_sql(self.name, "databricks_explain_mv", probe=probe, sql=sql),
                 timeout_s=timeout_s,
             )
         except QueryFailed as exc:
@@ -202,7 +207,7 @@ class DatabricksEnzymeAdapter(EngineAdapter):
 
     def create_mv(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         self._execute(
-            f"CREATE MATERIALIZED VIEW {self._fq(mv_name)} AS {sql}", timeout_s=timeout_s
+            _sql(self.name, "databricks_create_mv", mv_name=self._fq(mv_name), sql=sql), timeout_s=timeout_s
         )
 
     def apply_deltas(self, statements: Sequence[str], *, timeout_s: float) -> None:
@@ -214,12 +219,12 @@ class DatabricksEnzymeAdapter(EngineAdapter):
 
     def refresh(self, mv_name: str, sql: str, *, timeout_s: float) -> None:
         self._execute(
-            f"REFRESH MATERIALIZED VIEW {self._fq(mv_name)}", timeout_s=timeout_s
+            _sql(self.name, "databricks_refresh_mv", mv_name=self._fq(mv_name)), timeout_s=timeout_s
         )
 
     def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
         frame = self._execute(
-            _verify_probe(self._fq(mv_name), sql), timeout_s=timeout_s
+            _verify_probe(self._fq(mv_name), sql, engine=self.name), timeout_s=timeout_s
         )
         if frame is None or frame.empty:
             raise QueryFailed(f"{self.name}: verification produced no comparable result")
@@ -227,8 +232,8 @@ class DatabricksEnzymeAdapter(EngineAdapter):
 
     def drop_mv(self, mv_name: str) -> None:
         for stmt in (
-            f"DROP MATERIALIZED VIEW IF EXISTS {self._fq(mv_name)}",
-            f"DROP MATERIALIZED VIEW IF EXISTS {self._fq(f'{mv_name}_explain')}",
+            _sql(self.name, "databricks_drop_mv", mv_name=self._fq(mv_name)),
+            _sql(self.name, "databricks_drop_mv", mv_name=self._fq(f"{mv_name}_explain")),
         ):
             try:
                 self._execute(stmt, timeout_s=300)
@@ -368,11 +373,11 @@ class FelderaAdapter(EngineAdapter):
         # probe re-runs the base query through the ad-hoc endpoint, which refuses
         # to "SELECT from a non-materialized source".
         parts = [
-            f"{stmt.rstrip(';')} WITH ('materialized' = 'true');"
+            _sql(self.name, "feldera_materialized_table", stmt=stmt.rstrip(";"))
             for stmt in self._schema_sql
         ]
         for name, sql in views:
-            parts.append(f"CREATE MATERIALIZED VIEW {name} AS {sql};")
+            parts.append(_sql(self.name, "feldera_create_view", view_name=name, sql=sql))
         return "\n".join(parts)
 
     # ----- phases -----
@@ -651,7 +656,7 @@ class FelderaAdapter(EngineAdapter):
         response = self._request(
             "GET",
             f"/v0/pipelines/{self._pipeline}/query",
-            params={"sql": f"SELECT * FROM {table} WHERE {where}", "format": "json"},
+            params={"sql": _sql(self.name, "feldera_select_rows", table=table, where=where), "format": "json"},
             timeout_s=timeout_s,
         )
         if response.status_code >= 400:
@@ -835,7 +840,8 @@ class FelderaAdapter(EngineAdapter):
     def _view_columns(self, mv_name: str, *, timeout_s: float) -> List[str]:
         """Column names of a view, from a zero-row read."""
         rows = self._adhoc(
-            f"SELECT * FROM {mv_name} LIMIT 1", timeout_s=timeout_s, label="describe"
+            # sql-catalog: exempt "describe" is a result label, not executable SQL.
+            _sql(self.name, "feldera_view_columns", mv_name=mv_name), timeout_s=timeout_s, label="describe"
         )
         return list(rows[0].keys()) if rows else []
 
@@ -847,11 +853,18 @@ class FelderaAdapter(EngineAdapter):
 
     @classmethod
     def _hex_prefix_to_int(cls, hex_expr: str) -> str:
-        terms = [
-            f"(strpos('{cls._HEX_DIGITS}', substr({hex_expr}, {i + 1}, 1)) - 1) * {place}"
-            for i, place in enumerate(cls._HEX_PLACE_VALUES)
-        ]
-        return "(" + " + ".join(terms) + ")"
+        terms = {
+            f"term_{index}": _sql(
+                cls.name,
+                "feldera_digest_hex_term",
+                digits=cls._HEX_DIGITS,
+                hex_expr=hex_expr,
+                index=index + 1,
+                place=place,
+            )
+            for index, place in enumerate(cls._HEX_PLACE_VALUES)
+        }
+        return _sql(cls.name, "feldera_digest_hex_expression", **terms)
 
     @staticmethod
     def _decimal_type_sql(column_type) -> Optional[str]:
@@ -903,25 +916,35 @@ class FelderaAdapter(EngineAdapter):
         NULLs are coalesced to a sentinel that cannot collide with the string
         'NULL', so a NULL column and a literal 'NULL' hash differently.
         """
-        cols = ", ".join(columns)
+        separator = f"{_sql(cls.name, 'feldera_comma_separator')} "
         types = list(column_types or [])
         normalized = []
         for index, column in enumerate(columns):
             decimal_type = cls._decimal_type_sql(
                 types[index] if index < len(types) else None
             )
-            value = f"cast({column} AS {decimal_type})" if decimal_type else column
-            normalized.append(
-                f"coalesce(cast({value} AS VARCHAR), '\\x00NULL')"
+            value = (
+                _sql(
+                    cls.name,
+                    "feldera_decimal_cast",
+                    column=column,
+                    decimal_type=decimal_type,
+                )
+                if decimal_type
+                else column
             )
-        parts = ", ".join(normalized)
-        hex_expr = f"substr(md5(concat_ws(chr(1), {parts})), 1, 8)"
+            normalized.append(
+                _sql(cls.name, "feldera_digest_normalize", value=value)
+            )
+        parts = separator.join(normalized)
+        hex_expr = _sql(cls.name, "feldera_digest_md5_hex", parts=parts)
         row_hash = cls._hex_prefix_to_int(hex_expr)
-        return (
-            "SELECT count(*) AS groups, sum(__n) AS rows_total, "
-            "sum(__n * __h) AS checksum FROM "
-            f"(SELECT count(*) AS __n, {row_hash} AS __h "
-            f"FROM {relation} GROUP BY {cols}) __g"
+        return _sql(
+            cls.name,
+            "feldera_bag_digest",
+            relation=relation,
+            columns=separator.join(columns),
+            row_hash=row_hash,
         )
 
     @staticmethod
@@ -943,21 +966,19 @@ class FelderaAdapter(EngineAdapter):
         plain `=` would leave those groups unjoined and report them as
         differences.
         """
-        cols = ", ".join(columns)
-        # Each predicate parenthesised: IS NOT DISTINCT FROM binds looser than
-        # AND in DataFusion, so without them this parses as
-        # `v.a IS NOT DISTINCT FROM (q.a AND ...)` and fails type coercion with
-        # "Cannot infer common argument type for logical boolean operation".
-        on = " AND ".join(
-            f"(v.{c} IS NOT DISTINCT FROM q.{c})" for c in columns
-        )
-        return (
-            "SELECT count(*) AS diff FROM "
-            f"(SELECT {cols}, count(*) AS __n FROM {mv_name} GROUP BY {cols}) v "
-            "FULL JOIN "
-            f"(SELECT {cols}, count(*) AS __n FROM ({sql}) __cb GROUP BY {cols}) q "
-            f"ON {on} "
-            "WHERE v.__n IS DISTINCT FROM q.__n"
+        separator = f"{_sql('feldera', 'feldera_comma_separator')} "
+        cols = separator.join(columns)
+        predicates = [
+            _sql("feldera", "feldera_bag_compare_predicate", column=column)
+            for column in columns
+        ]
+        return _sql(
+            "feldera",
+            "feldera_bag_compare",
+            mv_name=mv_name,
+            sql=sql,
+            columns=cols,
+            predicates=f" {_sql('feldera', 'feldera_and_separator')} ".join(predicates),
         )
 
     def verify(self, mv_name: str, sql: str, *, timeout_s: float) -> bool:
@@ -980,10 +1001,10 @@ class FelderaAdapter(EngineAdapter):
             column_types = []
         if not columns:
             view_rows = self._adhoc(
-                f"SELECT * FROM {mv_name}", timeout_s=timeout_s, label="view-read"
+                _sql(self.name, "feldera_view_read_all", mv_name=mv_name), timeout_s=timeout_s, label="view-read"
             )
             expected_rows = self._adhoc(
-                f"SELECT * FROM ({sql}) __cb", timeout_s=timeout_s, label="base-query"
+                _sql(self.name, "feldera_base_read_all", sql=sql), timeout_s=timeout_s, label="base-query"
             )
             return self._normalize(view_rows) == self._normalize(expected_rows)
 

@@ -17,9 +17,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from sql_catalog import load_sql
+
 
 CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
-LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "databricks-enzyme", "databricks-openivm"}
+LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "databricks-openivm"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
 SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES
@@ -30,11 +32,14 @@ PROCESSED_ROOTS = {
     "duckdb": Path("/data/processed/duckdb"),
     "duckdb-openivm": Path("/data/processed/duckdb-openivm"),
     "feldera": Path("/data/processed/feldera"),
+    "dbspnet": Path("/data/processed/dbspnet"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
     "databricks-openivm": Path("/data/processed/databricks-openivm"),
 }
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
-RAW_BACKED_ENGINES = {"spark", "feldera"}
+# DbspNet, like Feldera, reads its inputs straight from the shared raw Delta tables
+# and writes its outputs as Delta under /data/processed/dbspnet; its state is in memory.
+RAW_BACKED_ENGINES = {"spark", "feldera", "dbspnet"}
 RAW_REFERENCE_ENGINES = RAW_BACKED_ENGINES | {"databricks-enzyme", "databricks-openivm"}
 DATABRICKS_BACKING_TABLE = re.compile(
     r"^__materialization_mat_"
@@ -399,20 +404,7 @@ def _collect_ducklake_storage(
     relation_totals: Dict[Tuple[str, str, str], List[int]] = {}
     table_directories: List[Tuple[Path, str, str, str]] = []
     inline_catalog_bytes = 0
-    sql = """
-        SELECT s.schema_name, s.path, s.path_is_relative,
-               t.table_name, t.path, t.path_is_relative,
-               f.path, f.path_is_relative, f.file_size_bytes, f.file_kind
-        FROM ducklake_schema s
-        JOIN ducklake_table t USING (schema_id)
-        JOIN (
-            SELECT table_id, path, path_is_relative, file_size_bytes, 'data' AS file_kind
-            FROM ducklake_data_file
-            UNION ALL
-            SELECT table_id, path, path_is_relative, file_size_bytes, 'delete' AS file_kind
-            FROM ducklake_delete_file
-        ) f USING (table_id)
-    """
+    sql = load_sql("sqlite", "inline", "dbt_server/services_storage_metrics/ducklake_files")
     try:
         connection = sqlite3.connect(f"file:{catalog}?mode=ro", uri=True)
         try:
@@ -421,9 +413,7 @@ def _collect_ducklake_storage(
             )
             rows = connection.execute(sql).fetchall()
             table_rows = connection.execute(
-                "SELECT t.table_id, s.schema_name, s.path, s.path_is_relative, "
-                "t.table_name, t.path, t.path_is_relative "
-                "FROM ducklake_table t JOIN ducklake_schema s USING (schema_id)"
+                load_sql("sqlite", "inline", "dbt_server/services_storage_metrics/ducklake_tables")
             ).fetchall()
             table_lookup = {
                 int(table_id): (str(schema), str(table))
@@ -431,12 +421,12 @@ def _collect_ducklake_storage(
             }
             try:
                 inline_tables = connection.execute(
-                    "SELECT table_id, table_name FROM ducklake_inlined_data_tables"
+                    load_sql("sqlite", "inline", "dbt_server/services_storage_metrics/ducklake_inline_tables")
                 ).fetchall()
                 page_bytes = {
                     str(name): int(bytes_ or 0)
                     for name, bytes_ in connection.execute(
-                        "SELECT name, SUM(pgsize) FROM dbstat GROUP BY name"
+                        load_sql("sqlite", "inline", "dbt_server/services_storage_metrics/dbstat")
                     ).fetchall()
                 }
             except sqlite3.Error:

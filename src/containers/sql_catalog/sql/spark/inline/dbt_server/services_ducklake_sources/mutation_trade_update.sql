@@ -1,0 +1,1 @@
+UPDATE {table_relation} SET t_qty = t_qty + 1 WHERE abs(((coalesce(t_id, 0) % 1000000) * 2654435761 + {batch_offset}) % 1000000) >= {start} AND abs(((coalesce(t_id, 0) % 1000000) * 2654435761 + {batch_offset}) % 1000000) < {end};

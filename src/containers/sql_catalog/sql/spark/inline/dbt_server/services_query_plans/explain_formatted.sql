@@ -1,0 +1,1 @@
+EXPLAIN FORMATTED {sql}

@@ -41,7 +41,9 @@ class CliConnection:
         temp_directory = os.environ.get("DUCKDB_OPENIVM_TEMP_DIR" if openivm else "DUCKDB_TEMP_DIR")
         if temp_directory:
             settings.append("SET temp_directory=" + quote(temp_directory))
-        self.session = _DuckDBSession(binary, str(path), [], capture_sql_timing=True)
+        self.session = _DuckDBSession(binary, str(path), [],
+                                      engine='duckdb-openivm' if openivm else 'duckdb',
+                                      capture_sql_timing=True)
         self.timeout_s = timeout_s
         try:
             self.session.start()

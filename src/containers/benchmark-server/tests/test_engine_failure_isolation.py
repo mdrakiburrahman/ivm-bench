@@ -99,7 +99,6 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
         for batch_num in (1, 2):
             with self.subTest(batch_num=batch_num):
                 runner = EngineRunner.__new__(EngineRunner)
-                runner._config = SimpleNamespace(workload="standard")
                 runner._engine = SimpleNamespace(name="databricks-enzyme")
                 runner._config = SimpleNamespace(workload="standard", scale_factor=10)
                 runner._result = EngineResult(engine="databricks-enzyme")
