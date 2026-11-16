@@ -12,7 +12,7 @@ branch='<branch>'
 gh api --method PUT "repos/$repo/environments/manual-run" --silent # admin, once
 gh secret set IMDS_RELAY_TEMPORARY_SAS_URL --env manual-run --repo "$repo"
 gh workflow run ci.yaml --repo "$repo" --ref "$branch" \
-  -f engines=fabric-jvm-35 -f scale_factor=1 \
+  -f engines=fabric-jvm-35 -f scale_factor=3 \
   -f batch_1_pct=1 -f batch_2_pct=0.001 -f batch_3_pct=0.002 \
   -f timeout_minutes=90
 gh run list --repo "$repo" --workflow ci.yaml --branch "$branch" --event workflow_dispatch --limit 1
