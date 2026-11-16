@@ -19,13 +19,26 @@ services:
     build:
       context: ../src/containers/dbspnet
       args:
-        DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/ila/dbsp-net.git}"
-        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-e256f5c435dcc8bb5ed5ea088137a3234234c51f}"
+        DBSPNET_REPO: "${DBSPNET_REPO:-https://github.com/clast-project/dbsp-net.git}"
+        DBSPNET_COMMIT: "${DBSPNET_COMMIT:-81d352fb37d7e67e0e6a6ae1651b363c233db071}"
     cpus: ${DBSPNET_CPUS:-32}
     mem_limit: ${DBSPNET_MEM:-120g}
+    # Isolated Extended TPC-DS retry, not a TPC-DI default change.
+    # https://github.com/clast-project/dbsp-net/issues/2#issuecomment-6894978413
+    # No explicit heap/pressure cap: derive them from the container memory limit.
+    environment:
+      DBSPNET_WORKERS: "12"
+      DBSPNET_SPILL: "on"
+      DBSPNET_STEP_SPILL_ROWS: "262144"
+      DBSPNET_BLOCK_SPILL_DIR: "/spill"
+      DBSPNET_BLOCK_CACHE_MIB: "1024"
+      DOTNET_gcServer: "1"
+      DOTNET_gcConcurrent: "0"
     volumes:
       - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta
       - ../mount/results/${SCALE_FACTOR:-3}/dbspnet:/data/processed/dbspnet
+      # Keep large temporary spill files outside uploaded artifacts.
+      - ../mount/spill/${SCALE_FACTOR:-3}/dbspnet:/spill
     ports:
       - "8081:8080"
     healthcheck:
