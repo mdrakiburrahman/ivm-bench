@@ -169,7 +169,11 @@ class EngineRunner:
         self._benchmark_id = benchmark_id
         self._storage_barrier = storage_barrier
         docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
+        self._docker_host = docker_host
         self._dbt_url = f"http://{docker_host}:{engine_config.port}"
+        self._dynamic_dbt_port = os.environ.get(
+            "DBT_SERVER_DYNAMIC_PORT", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
         self._override_file: Optional[str] = None
         self._batch_override_file: Optional[str] = None
         self._parallel = config.parallel
@@ -183,6 +187,8 @@ class EngineRunner:
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
+        if self._dynamic_dbt_port:
+            engine_env["DBT_SERVER_PORT"] = "0"
         if engine_config.name == "materialize-emulator":
             run_instance = uuid.uuid4().hex
             engine_env["MATERIALIZE_EMULATOR_RUN_ID"] = run_instance
@@ -350,6 +356,7 @@ class EngineRunner:
             self._emit(f"[{name}] Building and starting compose stack")
             self._engine_mgr.build()
             self._up_with_retry()
+            self._resolve_dbt_server_port()
 
             # Wait for dbt-server health
             self._emit(f"[{name}] Waiting for dbt-server health")
@@ -3356,6 +3363,13 @@ class EngineRunner:
             logger.warning("Failed to capture logs: %s", e)
 
     # ----- Health checking -----
+
+    def _resolve_dbt_server_port(self) -> None:
+        if not getattr(self, "_dynamic_dbt_port", False):
+            return
+        port = self._engine_mgr.published_port("dbt-server", 5000)
+        self._dbt_url = f"http://{self._docker_host}:{port}"
+        self._emit(f"[{self._engine.name}] dbt-server published on host port {port}")
 
     def _wait_for_dbt_health(self) -> None:
         """Wait for the dbt-server to become healthy."""

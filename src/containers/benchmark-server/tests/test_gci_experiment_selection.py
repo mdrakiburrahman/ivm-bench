@@ -98,6 +98,18 @@ class PresetCoverageTest(unittest.TestCase):
         self.assertLess(ci.index("src/.scripts/benchmark.sh"), guard)
         self.assertLess(guard, ci.index("post-pr-comment.sh"))
 
+    def test_ci_uses_docker_assigned_dbt_server_ports(self):
+        ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
+        compose = yaml.load(
+            (REPO / "docker/docker-compose.benchmark-server.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(ci["jobs"]["benchmark"]["env"]["DBT_SERVER_DYNAMIC_PORT"], "1")
+        self.assertEqual(
+            compose["services"]["benchmark-server"]["environment"]["DBT_SERVER_DYNAMIC_PORT"],
+            "${DBT_SERVER_DYNAMIC_PORT:-0}",
+        )
+
     def test_workflow_triggers_keep_pr_and_manual_paths_separate(self):
         gci = yaml.load((WORKFLOWS / "gci.yaml").read_text(), Loader=yaml.BaseLoader)
         ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)

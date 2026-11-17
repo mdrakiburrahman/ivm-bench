@@ -18,6 +18,21 @@ from services.storage_sync import storage_snapshot_barrier  # noqa: E402
 
 
 class EngineFailureIsolationTest(unittest.TestCase):
+    def test_dynamic_dbt_port_updates_the_health_check_url(self):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._dynamic_dbt_port = True
+        runner._docker_host = "host.docker.internal"
+        runner._dbt_url = "http://host.docker.internal:5000"
+        runner._engine = SimpleNamespace(name="spark")
+        runner._engine_mgr = Mock()
+        runner._engine_mgr.published_port.return_value = 32768
+        runner._emit = Mock()
+
+        runner._resolve_dbt_server_port()
+
+        runner._engine_mgr.published_port.assert_called_once_with("dbt-server", 5000)
+        self.assertEqual(runner._dbt_url, "http://host.docker.internal:32768")
+
     def test_materialize_fence_timeout_fails_batch_and_tears_down(self):
         import requests
 
