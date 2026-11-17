@@ -224,6 +224,27 @@ def queries(manifest, options, namespace):
     return {name:translate(pipeline.render_model(name, manifest['source_configuration'], options['query_cohort']), relations) for name in names}
 
 
+def full_recompute_query(query):
+    """Keep the two grouped fact branches out of Spark's broadcast exchange."""
+    tree = sqlglot.parse_one(query, read='spark')
+    for select in tree.find_all(exp.Select):
+        source = select.args.get('from_')
+        if not (source and isinstance(source.this, exp.Subquery)
+                and isinstance(source.this.this, exp.Select)
+                and source.this.this.args.get('group')):
+            continue
+        for join in select.args.get('joins', []):
+            right = join.this
+            if (isinstance(right, exp.Subquery) and isinstance(right.this, exp.Select)
+                    and right.this.args.get('group') and right.alias):
+                # These aggregates exceed Spark's 8 GiB broadcast limit at
+                # SF100. Leave small lookup/affected-partition joins alone.
+                hint = select.args.get('hint') or exp.Hint(expressions=[])
+                hint.append('expressions', exp.JoinHint(this='MERGE', expressions=[exp.to_table(right.alias)]))
+                select.set('hint', hint)
+    return tree.sql(dialect='spark')
+
+
 def build(connection, model_queries, state, *, initial=False, reference=False):
     materializations = state.setdefault('materializations', {})
     durations = {}
@@ -241,6 +262,9 @@ def build(connection, model_queries, state, *, initial=False, reference=False):
                 connection.execute(f'REFRESH MATERIALIZED VIEW {target}')
             classification = 'unknown'
         else:
+            # Full materializations and independent validation use the same
+            # strategy; compiler input and incremental helper joins stay intact.
+            query = full_recompute_query(query)
             if initial:
                 connection.execute(f"CREATE TABLE {target} USING DELTA TBLPROPERTIES ('delta.enableChangeDataFeed'='true') AS {query}")
             else:

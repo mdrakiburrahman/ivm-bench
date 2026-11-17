@@ -198,6 +198,40 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
         self.assertEqual(c.execute.call_args.args[0],'INSERT OVERWRITE `model` SELECT 2 AS a')
         self.assertEqual(state['materializations']['model']['classification'],'full')
 
+    def test_grouped_fact_joins_use_merge_only_for_full_materializations(self):
+        import duckdb
+        query = '''SELECT a.k, a.n, m.total FROM
+            (SELECT k, count(*) n FROM events GROUP BY k) a LEFT JOIN
+            (SELECT k, sum(v) total FROM events GROUP BY k) m ON a.k <=> m.k'''
+        planned = module.full_recompute_query(query)
+        self.assertIn('/*+ MERGE(m) */', planned)
+        # Hints must preserve duplicate and NULL-key semantics.
+        db = duckdb.connect()
+        try:
+            db.execute('CREATE TABLE events(k INTEGER, v INTEGER)')
+            db.execute('INSERT INTO events VALUES (1,2),(1,2),(NULL,3),(NULL,3),(2,NULL)')
+            actual = db.execute(module.sqlglot.transpile(planned, read='spark', write='duckdb')[0]).fetchall()
+            expected = db.execute(module.sqlglot.transpile(query, read='spark', write='duckdb')[0]).fetchall()
+            self.assertCountEqual(actual, expected)
+        finally:
+            db.close()
+        for engine in module.SQL_ENGINES:
+            c = Mock(engine=engine, namespace='cat.xt')
+            # Every engine's independent reference uses full recomputation.
+            module.build(c, {'m':query}, {}, initial=True, reference=True)
+            self.assertIn('/*+ MERGE(m) */', c.execute.call_args.args[0])
+            if engine != 'databricks-openivm':
+                module.build(c, {'m':query}, {}, initial=True)
+                self.assertEqual('/*+ MERGE(m) */' in c.execute.call_args.args[0],
+                                 engine in ('spark', 'fabric-jvm-35'))
+        c = Mock(engine='spark')
+        module.build(c, {'m':query}, {})
+        self.assertIn('/*+ MERGE(m) */', c.execute.call_args.args[0])
+
+    def test_small_lookup_joins_keep_their_strategy(self):
+        query = 'SELECT a.k FROM (SELECT k, count(*) n FROM events GROUP BY k) a JOIN lookup m ON a.k=m.k'
+        self.assertNotIn('MERGE', module.full_recompute_query(query))
+
     def test_enzyme_and_spark_openivm_use_their_own_materialization_commands(self):
         for engine in ('spark-openivm','fabric-openivm-jvm-35','databricks-enzyme'):
             c=Mock(engine=engine, namespace='cat.xt')
@@ -261,13 +295,21 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
         import sqlglot
         root=Path(__file__).parents[3]/'workloads/extended-tpcds'
         count=0
+        hinted=[]
         for p in (root/'models').glob('*.sql'):
             sql=p.read_text().replace('__REPORT_DATE__','2002-12-31').replace('__history_months__','12').replace('__COHORT__','all')
             with self.subTest(model=p.stem):
                 translated=module.translate(sql)
                 sqlglot.parse_one(translated,read='spark')
+                if '/*+ MERGE(m) */' in module.full_recompute_query(translated):
+                    hinted.append(p.stem)
             count+=1
         self.assertEqual(count,96)
+        expected = {'fact_engagement_status_'+kind+'_'+window+suffix
+                    for kind in ('active','evaluated','channel_eligibility')
+                    for window in ('daily','7d_rolling','28d_rolling')
+                    for suffix in ('','_hist_12m')}
+        self.assertEqual(set(hinted),expected)
 
 
 if __name__=='__main__':unittest.main()

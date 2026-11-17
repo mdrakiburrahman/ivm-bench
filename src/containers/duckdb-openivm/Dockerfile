@@ -37,10 +37,8 @@ ENV CC=gcc-13 \
     CXX=g++-13 \
     LDFLAGS="-static-libstdc++ -static-libgcc"
 COPY icu_extension_config.cmake /tmp/icu_extension_config.cmake
-# Build ICU as a loadable-only extension. Linking it statically through
-# CORE_EXTENSIONS changes generated loader symbols for every OpenIVM benchmark
-# helper, whose link lines intentionally contain only OpenIVM's normal static
-# dependencies.
+# Build the revision-matched ICU/JSON artifacts copied below. OpenIVM's pinned
+# config owns static registration, including its benchmark helper executables.
 RUN GEN=ninja EXTRA_EXTENSION_CONFIGS=/tmp/icu_extension_config.cmake make -j$(nproc)
 
 FROM debian:bookworm-slim

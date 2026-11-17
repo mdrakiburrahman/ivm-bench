@@ -270,6 +270,9 @@ class CoverageCliTest(unittest.TestCase):
 class ReporterTest(unittest.TestCase):
     def report(self, verdict, outcome="success", extra_env=None):
         with tempfile.TemporaryDirectory() as directory:
+            # Reporter chart paths are relative to its working directory.
+            # Keep fixture charts out of the real CI artifact directory.
+            (Path(directory) / 'tools').symlink_to(REPO / 'tools', target_is_directory=True)
             summary = Path(directory) / "summary.md"
             coverage_file = Path(directory) / "engine-coverage.json"
             if verdict is not None:
@@ -283,7 +286,7 @@ class ReporterTest(unittest.TestCase):
             }
             if extra_env:
                 env.update(extra_env)
-            result = subprocess.run(["bash", str(REPORTER)], text=True, capture_output=True, env=env)
+            result = subprocess.run(["bash", str(REPORTER)], text=True, capture_output=True, env=env, cwd=directory)
             self.assertEqual(result.returncode, 0, result.stderr)
             return result.stdout if extra_env and extra_env.get("DRY_RUN") == "1" else summary.read_text()
 
