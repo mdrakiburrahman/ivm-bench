@@ -236,19 +236,21 @@ class _DuckDBSession:
         self.execute(_sql(self._engine, "duckdb_ready"), timeout_s=300, tolerate_errors=True)
 
     def close(self) -> None:
-        proc, self._proc = self._proc, None
+        proc = self._proc
         if proc is None:
             return
         try:
             if proc.stdin:
                 proc.stdin.close()
             proc.wait(timeout=5)
-        except Exception:
+        except (BrokenPipeError, subprocess.TimeoutExpired):
+            logger.warning('DuckDB CLI worker %s did not close cleanly; killing and waiting for exit', proc.pid)
             proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
+            # SIGKILL can return before the kernel finishes tearing down a
+            # large address space. Do not reopen its database until it exits
+            # and releases the file lock; retain the handle if waiting fails.
+            proc.wait()
+        self._proc = None
 
     @property
     def alive(self) -> bool:
@@ -319,7 +321,7 @@ class _DuckDBSession:
                 continue
             if line is None:
                 error = self._take_stderr()
-                self._proc = None
+                self.close()
                 raise EngineCrashed(f"session died: {error[:800] or 'no output'}")
             if end in line:
                 break

@@ -8,8 +8,10 @@ test is the cheapest thing that would have caught it.
 """
 
 import os
+import subprocess
 import sys
 import unittest
+from unittest.mock import Mock, call
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -27,6 +29,8 @@ from services.compiler_bench.engines import (  # noqa: E402
     _tpcc_table_names,
     _verify_probe,
     _LivyAdapter,
+    _DuckDBSession,
+    EngineCrashed,
 )
 from services.compiler_bench.corpus import Corpus, Query  # noqa: E402
 from services.compiler_bench.determinism import nondeterminism_reason  # noqa: E402
@@ -108,6 +112,47 @@ class LivyTimeoutPropagationTest(unittest.TestCase):
         adapter._execute("SELECT 1", timeout_s=12.5)
 
         self.assertEqual(adapter._client.calls, [("SELECT 1", 12.5)])
+
+
+class DuckDBSessionShutdownTest(unittest.TestCase):
+    def test_close_reaps_slow_killed_worker_before_database_can_reopen(self):
+        session = _DuckDBSession('duckdb', 'state.duckdb', [], engine='duckdb')
+        proc = session._proc = Mock()
+        lock_held = True
+
+        def wait(timeout=None):
+            nonlocal lock_held
+            self.assertIs(session._proc, proc)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired('duckdb', timeout)
+            proc.kill.assert_called_once_with()
+            lock_held = False
+
+        proc.wait.side_effect = wait
+        session.close()
+        self.assertFalse(lock_held)
+        self.assertIsNone(session._proc)
+        self.assertEqual(proc.wait.call_args_list, [call(timeout=5), call()])
+        session.close()
+        self.assertEqual(proc.wait.call_count, 2)
+
+    def test_wait_failure_retains_process_handle_and_propagates(self):
+        session = _DuckDBSession('duckdb', 'state.duckdb', [], engine='duckdb')
+        proc = session._proc = Mock()
+        proc.wait.side_effect = [subprocess.TimeoutExpired('duckdb', 5), OSError('wait failed')]
+        with self.assertRaisesRegex(OSError, 'wait failed'):
+            session.close()
+        self.assertIs(session._proc, proc)
+
+    def test_stdout_eof_does_not_abandon_worker(self):
+        session = _DuckDBSession('duckdb', 'state.duckdb', [], engine='duckdb')
+        proc = session._proc = Mock()
+        proc.poll.return_value = None
+        session._stdout.put(None)
+        with self.assertRaisesRegex(EngineCrashed, 'session died'):
+            session.execute('SELECT 1', timeout_s=1)
+        proc.wait.assert_called_once_with(timeout=5)
+        self.assertIsNone(session._proc)
 
 
 class DuckDBNativePreambleTest(unittest.TestCase):
