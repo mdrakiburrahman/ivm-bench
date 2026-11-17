@@ -9,10 +9,11 @@
 | Workflow | When | What | Knobs |
 |---|---|---|---|
 | [`gci.yaml`](../.github/workflows/gci.yaml) | Every non-draft PR | SF10 TPC-DI on every local engine ([`gci-sf10-local-engines.json`](../src/containers/benchmark-server/experiments/gci-sf10-local-engines.json)) | None |
-| [`ci.yaml`](../.github/workflows/ci.yaml) | After every merge to `main`, or ad hoc | Every engine ([`ci-sf10-all-engines.json`](../src/containers/benchmark-server/experiments/ci-sf10-all-engines.json)), or any experiments file | All dispatch inputs |
+| [`ci.yaml`](../.github/workflows/ci.yaml) | Ad hoc only | Every engine ([`ci-sf10-all-engines.json`](../src/containers/benchmark-server/experiments/ci-sf10-all-engines.json)), or any experiments file | All dispatch inputs |
 
 Both fail unless every requested engine completes every batch. Run anything
-else, such as cloud engines or the cost-model sweep, through CI:
+else, such as cloud engines or the cost-model sweep, through CI. For cloud
+credentials and dispatch commands, see [manual CI](CI.md):
 
 ```bash
 gh workflow run ci.yaml --ref <branch> \
@@ -58,7 +59,7 @@ on their respective cloud services; the local Docker containers orchestrate
 those runs.
 
 GCI is the fixed SF10 pull-request gate for the seven local engines listed above.
-CI is the configurable workflow used after merges or by manual dispatch; its
+CI is the configurable workflow used by manual dispatch; its
 default SF10 preset adds Databricks and Fabric for eleven engines total. CI can
 also run other experiment files, including cloud-engine and cost-model sweeps.
 

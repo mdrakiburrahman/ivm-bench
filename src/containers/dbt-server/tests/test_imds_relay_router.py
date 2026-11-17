@@ -5,7 +5,8 @@ from pathlib import Path
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+import urllib.parse
 
 import requests
 
@@ -26,10 +27,13 @@ class RelayTokenTests(unittest.TestCase):
 
     def test_real_http_server_errors_recover_and_warm_cache_avoids_relay(self):
         calls = []
+        authorization = []
+        sender_query = "sb-hc-token=SharedAccessSignature%20sr%3Drelay%26sig%3Da%2Bb%252Fc%3D"
         class Relay(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
             def do_GET(self):
                 calls.append(self.path)
+                authorization.append(self.headers.get("ServiceBusAuthorization"))
                 status = 500 if len(calls) < 4 else 200
                 payload = json.dumps({
                     "access_token": "test-token",
@@ -47,19 +51,59 @@ class RelayTokenTests(unittest.TestCase):
         session = requests.Session()
         session.trust_env = False
         try:
-            with patch.object(router, "RELAY_URL", f"http://127.0.0.1:{server.server_port}/token"), \
+            with patch.object(router, "RELAY_TEMPORARY_SAS_URL",
+                              f"http://127.0.0.1:{server.server_port}/token?{sender_query}"), \
                     patch.object(router, "_relay_session", return_value=session), \
                     patch.object(router.random, "uniform", return_value=0):
-                token, error = router._fetch_token("a", None, "a")
-                cached, _ = router._fetch_token("a", None, "a")
+                token, error = router._fetch_token("https://scope/a?b=c&d=e", "client+id", "a")
+                cached, _ = router._fetch_token("https://scope/a?b=c&d=e", "client+id", "a")
             self.assertEqual(error, "")
             self.assertEqual(token, cached)
             self.assertEqual(len(calls), 4)
+            for path in calls:
+                parsed = urllib.parse.urlparse(path)
+                self.assertEqual(parsed.path, "/token")
+                query = urllib.parse.parse_qs(parsed.query)
+                self.assertEqual(query["sb-hc-token"], urllib.parse.parse_qs(sender_query)["sb-hc-token"])
+                self.assertEqual(query["resource"], ["https://scope/a?b=c&d=e"])
+                self.assertEqual(query["client_id"], ["client+id"])
+            self.assertEqual(authorization, [None] * 4)
         finally:
             session.close()
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_sender_url_routes_to_token_and_merges_identity_query(self):
+        token = "SharedAccessSignature sr=relay&sig=a+b%2Fc=&se=123"
+        for path in ("/connection", "/connection/token/"):
+            for client_id in (None, "client+id"):
+                with self.subTest(path=path, client_id=client_id), \
+                        patch.object(router, "RELAY_TEMPORARY_SAS_URL",
+                                     f"https://example.invalid{path}?"
+                                     + urllib.parse.urlencode({"sb-hc-token": token,
+                                                               "resource": "stale", "client_id": "stale"})), \
+                        patch.object(router, "_relay_session") as session:
+                    response = session.return_value.get.return_value.__enter__.return_value
+                    response.status_code = 200
+                    response.json.return_value = {"access_token": "test-token"}
+                    router._relay_fetch("https://scope/?a=b&c=d", client_id)
+                    parsed = urllib.parse.urlsplit(session.return_value.get.call_args.args[0])
+                    self.assertEqual(parsed.path, "/connection/token")
+                    query = urllib.parse.parse_qs(parsed.query)
+                    self.assertEqual(query["sb-hc-token"], [token])
+                    self.assertEqual(query["resource"], ["https://scope/?a=b&c=d"])
+                    self.assertEqual(query.get("client_id"), [client_id] if client_id else None)
+
+    def test_missing_sender_url_fails_without_contacting_relay(self):
+        handler = object.__new__(router.Handler)
+        handler.headers = {"X-IDENTITY-HEADER": router.IDENTITY_HEADER_VALUE}
+        handler._json = Mock()
+        with patch.object(router, "RELAY_TEMPORARY_SAS_URL", ""), \
+                patch.object(router, "_fetch_token") as fetch:
+            handler._handle_token(urllib.parse.urlparse("/token?resource=a"))
+        handler._json.assert_called_once_with(500, {"error": "IMDS_RELAY_TEMPORARY_SAS_URL not set"})
+        fetch.assert_not_called()
 
     def test_connect_loss_and_server_errors_recover_on_tenth_attempt(self):
         response = requests.Response()

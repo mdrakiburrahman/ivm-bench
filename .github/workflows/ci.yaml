@@ -1,18 +1,16 @@
 # =============================================================================
 # CI: CONTINUOUS INTEGRATION (ALL ENGINES)
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# - Runs after every merge to main, or ad hoc:
+# - Runs ad hoc with a temporary Relay HTTPS sender URL in manual-run:
 #     gh workflow run ci.yaml --ref <branch> -f experiments_file=<path>
 # - Every engine, local and cloud. Tunable through the inputs below.
-# - Merges run experiments/ci-sf10-all-engines.json; active main runs are not cancelled.
+# - Active main runs are not cancelled.
 # - Fails unless every requested engine completes every batch.
 # - Also the engine behind gci.yaml (workflow_call): keep both entry points working.
 # =============================================================================
 name: CI
 
 on:
-  push:
-    branches: [main]
   workflow_call:
     inputs:
       experiments_file:
@@ -138,6 +136,7 @@ permissions:
 jobs:
   benchmark:
     runs-on: [self-hosted, Linux, X64, ivm-bench-azure]
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'manual-run' || '' }}
     timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '500') }}
 
     env:
@@ -293,6 +292,8 @@ jobs:
 
       - name: "🏁 Run benchmark"
         id: benchmark
+        env:
+          IMDS_RELAY_TEMPORARY_SAS_URL: ${{ secrets.IMDS_RELAY_TEMPORARY_SAS_URL }}
         run: bash src/.scripts/benchmark.sh
 
       - name: "🛡️ Check engine coverage"
