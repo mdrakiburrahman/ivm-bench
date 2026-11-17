@@ -71,6 +71,8 @@ from typing import Any
 from services.db import get_db
 from services.spark_openivm_sources import LivyClient
 
+from sql_catalog import load_sql
+
 logger = logging.getLogger(__name__)
 
 LAKEHOUSE = os.environ.get("SPARK_OPENIVM_LAKEHOUSE", "tpcdi")
@@ -262,6 +264,7 @@ def _build_canonical_projection(
     user_cols: list[str],
     mv_types: dict[str, str],
     exp_types: dict[str, str],
+    engine: str = "spark-openivm",
 ) -> tuple[str, list[str]]:
     """Build a canonical projection used to neutralize Spark `xxhash64`
     type-metadata sensitivity between the MV's stored schema and the
@@ -319,17 +322,35 @@ def _build_canonical_projection(
             # values). Round-then-CAST normalizes both sides to the
             # same canonical bytes when values agree at 0.01 tolerance.
             # Real value mismatches (>0.005 in any row) still surface.
-            inner_parts.append(
-                f"CAST(ROUND(CAST({_quote_ident(c)} AS DOUBLE), 2) "
-                f"AS DECIMAL(38, 2)) AS {_quote_ident(c)}"
-            )
+            inner_parts.append(load_sql(
+                engine,
+                "inline",
+                "dbt_server/services_spark_openivm_validation/projection_continuous",
+                identifier=_quote_ident(c),
+            ))
         elif not same and both_numeric:
-            inner_parts.append(
-                f"CAST({_quote_ident(c)} AS DOUBLE) AS {_quote_ident(c)}"
-            )
+            inner_parts.append(load_sql(
+                engine,
+                "inline",
+                "dbt_server/services_spark_openivm_validation/projection_numeric",
+                identifier=_quote_ident(c),
+            ))
         else:
-            inner_parts.append(_quote_ident(c))
-    hash_args = [_quote_ident(c) for c in user_cols]
+            inner_parts.append(load_sql(
+                engine,
+                "inline",
+                "dbt_server/services_spark_openivm_validation/projection_column",
+                identifier=_quote_ident(c),
+            ))
+    hash_args = [
+        load_sql(
+            engine,
+            "inline",
+            "dbt_server/services_spark_openivm_validation/projection_column",
+            identifier=_quote_ident(c),
+        )
+        for c in user_cols
+    ]
     return ", ".join(inner_parts), hash_args
 
 
@@ -386,6 +407,7 @@ def _validate_one(
     schema: str,
     compiled_sql: str,
     exact: bool = False,
+    engine: str = "spark-openivm",
 ) -> dict[str, Any]:
     """Validate a model with an exact bag comparison or rounded digest.
 
@@ -403,11 +425,19 @@ def _validate_one(
     error_msg: str | None = None
     sample_payload: dict | None = None
     schema_drift: list[dict[str, str]] = []
-    create_expected_sql = (
-        f"CREATE OR REPLACE TEMPORARY VIEW {expected_name} AS\n"
-        f"{compiled_sql}"
+    create_expected_sql = load_sql(
+        engine,
+        "inline",
+        "dbt_server/services_spark_openivm_validation/create_expected_view",
+        expected_name=expected_name,
+        compiled_sql=compiled_sql,
     )
-    drop_sql = f"DROP VIEW IF EXISTS {expected_name}"
+    drop_sql = load_sql(
+        engine,
+        "inline",
+        "dbt_server/services_spark_openivm_validation/drop_expected_view",
+        expected_name=expected_name,
+    )
     execute_read = getattr(livy, "execute_read", livy.execute)
     try:
         livy.execute(create_expected_sql)
@@ -433,14 +463,24 @@ def _validate_one(
         # canonical projection: both sides project those columns
         # in that order, so EXCEPT ALL only ever reports a true
         # value-bag difference.
-        describe_mv_out = execute_read(f"DESCRIBE {relation}")
+        describe_mv_out = execute_read(load_sql(
+            engine,
+            "inline",
+            "dbt_server/services_spark_openivm_validation/describe_relation",
+            relation=relation,
+        ))
         mv_col_pairs = _extract_columns_with_types(
             describe_mv_out.get("output") or {},
             f"describe {schema}.{name}",
         )
         mv_cols = [c for c, _ in mv_col_pairs]
         mv_types = {c: t for c, t in mv_col_pairs}
-        describe_exp_out = execute_read(f"DESCRIBE {expected_name}")
+        describe_exp_out = execute_read(load_sql(
+            engine,
+            "inline",
+            "dbt_server/services_spark_openivm_validation/describe_relation",
+            relation=expected_name,
+        ))
         exp_col_pairs = _extract_columns_with_types(
             describe_exp_out.get("output") or {},
             f"describe {expected_name}",
@@ -477,37 +517,66 @@ def _validate_one(
                 f"missing on expected: {missing_from_expected}"
             )
         schema_drift = _detect_schema_drift(user_cols, mv_types, expected_types)
-        raw_proj = ", ".join(_quote_ident(c) for c in user_cols)
-        mv_raw_subquery = f"SELECT {raw_proj} FROM {relation}"
-        expected_raw_subquery = f"SELECT {raw_proj} FROM {expected_name}"
+        raw_proj = ", ".join(
+            load_sql(
+                engine,
+                "inline",
+                "dbt_server/services_spark_openivm_validation/projection_column",
+                identifier=_quote_ident(c),
+            )
+            for c in user_cols
+        )
+        mv_raw_subquery = load_sql(
+            engine,
+            "inline",
+            "dbt_server/services_spark_openivm_validation/raw_subquery",
+            projection=raw_proj,
+            relation=relation,
+        )
+        expected_raw_subquery = load_sql(
+            engine,
+            "inline",
+            "dbt_server/services_spark_openivm_validation/raw_subquery",
+            projection=raw_proj,
+            relation=expected_name,
+        )
         comparison = {}
         if exact:
             # Preserve duplicates and nulls in both directions. Do not round
             # values or hash rows when exact comparison is explicitly requested.
-            diff_sql = (
-                "SELECT COUNT(*) FROM ("
-                f"({mv_raw_subquery} EXCEPT ALL {expected_raw_subquery}) "
-                "UNION ALL "
-                f"({expected_raw_subquery} EXCEPT ALL {mv_raw_subquery})"
-                ") AS __ivm_diff"
+            diff_sql = load_sql(
+                engine,
+                "inline",
+                "dbt_server/services_spark_openivm_validation/diff_exact",
+                projection=raw_proj,
+                mv_relation=relation,
+                expected_relation=expected_name,
             )
             output = execute_read(diff_sql)
             diff_count = _extract_diff_count(output.get("output") or {}, label)
         else:
             inner_proj, hash_args = _build_canonical_projection(
-                user_cols, mv_types, expected_types
+                user_cols, mv_types, expected_types, engine
             )
-            digest_select = (
-                "SELECT COUNT(*) AS __ivm_cnt, "
-                f"COALESCE(SUM(xxhash64({', '.join(hash_args)})), 0L) AS __ivm_hash"
-            )
-            mv_out = execute_read(
-                f"{digest_select} FROM (SELECT {inner_proj} FROM {relation}) AS __ivm_mv"
-            )
+            mv_out = execute_read(load_sql(
+                engine,
+                "inline",
+                "dbt_server/services_spark_openivm_validation/digest_select",
+                hash_args=", ".join(hash_args),
+                inner_projection=inner_proj,
+                relation=relation,
+                alias="__ivm_mv",
+            ))
             mv_cnt, mv_hash = _extract_two_longs(mv_out.get("output") or {}, label)
-            exp_out = execute_read(
-                f"{digest_select} FROM (SELECT {inner_proj} FROM {expected_name}) AS __ivm_exp"
-            )
+            exp_out = execute_read(load_sql(
+                engine,
+                "inline",
+                "dbt_server/services_spark_openivm_validation/digest_select",
+                hash_args=", ".join(hash_args),
+                inner_projection=inner_proj,
+                relation=expected_name,
+                alias="__ivm_exp",
+            ))
             exp_cnt, exp_hash = _extract_two_longs(exp_out.get("output") or {}, label)
             diff_count = (0 if (mv_cnt, mv_hash) == (exp_cnt, exp_hash)
                           else max(abs(mv_cnt - exp_cnt), 1))
@@ -523,17 +592,25 @@ def _validate_one(
         # break validation of subsequent models.
         if diff_count != 0:
             try:
-                sample_sql = (
-                    f"SELECT 'mv' AS side, * FROM "
-                    f"({mv_raw_subquery}) AS __ivm_mv_sample LIMIT 5"
+                sample_sql = load_sql(
+                    engine,
+                    "inline",
+                    "dbt_server/services_spark_openivm_validation/sample_rows",
+                    side="mv",
+                    raw_subquery=mv_raw_subquery,
+                    alias="__ivm_mv_sample",
                 )
                 mv_extra = execute_read(sample_sql)
                 sample_payload_mv = (
                     (mv_extra.get("output") or {}).get("data") or {}
                 ).get("application/json") or {}
-                sample_sql2 = (
-                    f"SELECT 'expected' AS side, * FROM "
-                    f"({expected_raw_subquery}) AS __ivm_exp_sample LIMIT 5"
+                sample_sql2 = load_sql(
+                    engine,
+                    "inline",
+                    "dbt_server/services_spark_openivm_validation/sample_rows",
+                    side="expected",
+                    raw_subquery=expected_raw_subquery,
+                    alias="__ivm_exp_sample",
                 )
                 exp_extra = execute_read(sample_sql2)
                 sample_payload_exp = (
@@ -700,7 +777,12 @@ def validate_run(run_id: str, *, exact: bool = False, client=None, engine=None) 
         # the same default database.
         if not is_fabric:
             try:
-                livy.execute(f"USE {LAKEHOUSE}")
+                livy.execute(load_sql(
+                    "spark-openivm",
+                    "inline",
+                    "dbt_server/services_spark_openivm_validation/use_lakehouse",
+                    lakehouse=LAKEHOUSE,
+                ))
             except RuntimeError as e:
                 logger.warning("[spark-openivm] USE %s failed: %s", LAKEHOUSE, e)
 
@@ -725,7 +807,7 @@ def validate_run(run_id: str, *, exact: bool = False, client=None, engine=None) 
                 # Submit by input index, then collect in input order
                 # (so `results` stays deterministic).
                 futures = [
-                    executor.submit(_validate_one, livy, **item, exact=exact)
+                    executor.submit(_validate_one, livy, **item, exact=exact, engine=run["engine"])
                     for item in work
                 ]
                 results = []

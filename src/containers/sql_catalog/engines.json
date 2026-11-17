@@ -1,0 +1,13 @@
+{
+  "spark": "spark",
+  "spark-openivm": "spark",
+  "databricks-enzyme": "spark",
+  "databricks-openivm": "databricks",
+  "duckdb": "duckdb",
+  "duckdb-openivm": "duckdb",
+  "sqlite": "sqlite",
+  "fabric-jvm-35": "spark",
+  "fabric-openivm-jvm-35": "spark",
+  "feldera": "postgres",
+  "dbspnet": "postgres"
+}

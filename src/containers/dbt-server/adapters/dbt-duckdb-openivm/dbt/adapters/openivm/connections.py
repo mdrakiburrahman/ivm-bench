@@ -16,6 +16,7 @@ import agate
 from dbt.adapters.contracts.connection import AdapterResponse, Connection, ConnectionState
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.exceptions import DbtDatabaseError
+from sql_catalog import load_sql
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,13 @@ _pipeline_error = None
 MAX_RETRIES = int(os.environ.get("OPENIVM_MAX_RETRIES", "10"))
 RETRY_BACKOFF = float(os.environ.get("OPENIVM_RETRY_BACKOFF", "3.0"))
 
+def _setup_sql(name, **params):
+    return load_sql(
+        "duckdb-openivm", "inline",
+        f"dbt_server/adapters_dbt-duckdb-openivm_dbt_adapters_openivm_connections/{name}",
+        **params,
+    )
+
 
 def _run_cli(sql: str, expect_output: bool = False) -> str:
     """Retry setup locks only: SQL may commit writes before returning an error."""
@@ -60,27 +68,26 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     preamble_lines = [
         ".bail on",
         ".timer on" if PROFILE_REFRESH else ".timer off",
-        f"SET memory_limit='{MEM_LIMIT}';",
-        f"SET temp_directory='{TEMP_DIR}';",
+        _setup_sql("set_memory_limit", memory_limit=MEM_LIMIT),
+        _setup_sql("set_temp_directory", temp_directory=TEMP_DIR),
     ]
     if THREADS:
-        preamble_lines.append(f"SET threads={int(THREADS)};")
+        preamble_lines.append(_setup_sql("set_threads", threads=int(THREADS)))
     preamble_lines.extend([
-        "LOAD openivm;",
+        _setup_sql("load_openivm"),
     ])
     if SNAPSHOT_PUBLICATION:
-        preamble_lines.append("SET openivm_snapshot_publication=true;")
+        preamble_lines.append(_setup_sql("set_snapshot_publication"))
     if PROFILE_REFRESH:
-        preamble_lines.append("SET openivm_profile_refresh=true;")
+        preamble_lines.append(_setup_sql("set_profile_refresh"))
     if DIAGNOSTIC_VIEW and (REFRESH_PIPELINE and sql.lstrip().lower().startswith("pragma refresh_pipeline(")
                             or _refresh_target(sql) == DIAGNOSTIC_VIEW.lower()):
-        preamble_lines.append("SET openivm_archive_compiled_sql=true;")
+        preamble_lines.append(_setup_sql("set_archive_compiled_sql"))
     preamble_lines.extend([
-        "SET openivm_cascade_refresh='off';",
-        "INSTALL icu; LOAD icu;",
-        "INSTALL ducklake; LOAD ducklake;",
-        f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "
-        f"(DATA_PATH '{data_path}', data_inlining_row_limit 0);",
+        _setup_sql("set_cascade_refresh"),
+        _setup_sql("install_icu"),
+        _setup_sql("install_ducklake"),
+        _setup_sql("attach_ducklake", meta_path=meta_path, data_path=data_path),
     ])
     preamble = "\n".join(preamble_lines) + "\n"
 

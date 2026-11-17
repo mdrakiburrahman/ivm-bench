@@ -1,0 +1,46 @@
+[
+  {
+    "path": "src/containers/dbt-server/handlers/runs.py",
+    "reason": "SQLite queries persist and retrieve dbt-server run bookkeeping, not benchmark engine SQL."
+  },
+  {
+    "path": "src/containers/dbt-server/services/db.py",
+    "reason": "SQLite schema and PRAGMAs configure the internal dbt-server run bookkeeping database."
+  },
+  {
+    "path": "src/containers/dbt-server/services/dbt_runner.py",
+    "reason": "SQLite statements persist dbt-server run status and node results, not benchmark engine SQL."
+  },
+  {
+    "path": "src/containers/dbt-server/adapters/dbt-duckdb-openivm/dbt/include/openivm/macros/adapters.sql",
+    "reason": "Adapter-distributed dbt macros must remain in the adapter package for dbt discovery."
+  },
+  {
+    "path": "src/containers/spark/config/hive-schema-4.0.0.mssql.sql",
+    "reason": "Vendored Apache Hive metastore schema must remain intact for JDBC schema initialization."
+  },
+  {
+    "path": "src/containers/spark-openivm/config/hive-schema-4.0.0.mssql.sql",
+    "reason": "Vendored Apache Hive metastore schema must remain intact for JDBC schema initialization."
+  },
+  {
+    "path": "src/containers/spark/entrypoint.sh",
+    "reason": "Embedded Java initializes the MSSQL Hive metastore through JDBC before Python or the SQL catalog is available."
+  },
+  {
+    "path": "src/containers/spark-openivm/entrypoint.sh",
+    "reason": "Embedded Java initializes the MSSQL Hive metastore through JDBC before Python or the SQL catalog is available."
+  },
+  {
+    "path": "src/containers/spark-digen-delta/src/test/scala/datagen/TpcdiToDeltaTest.scala",
+    "reason": "Scala test fixture creates and populates an isolated temporary Spark table."
+  },
+  {
+    "path": "src/containers/openivm-sql-compiler/Compiler.scala",
+    "reason": "The standalone Scala compiler constructs temporary Spark tables from dynamic input schemas inside its JVM."
+  },
+  {
+    "path": "src/containers/spark-batch-loader/src/main/scala/batchloader/BatchLoader.scala",
+    "reason": "The standalone Scala Spark batch loader constructs Delta UPDATE and DELETE from dynamic mutation specifications."
+  }
+]

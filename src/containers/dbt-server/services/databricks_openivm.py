@@ -22,6 +22,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.dialects.databricks import Databricks
 
+from sql_catalog import load_sql
 from services.db import DB_LOCK, get_db
 from services.dbt_compiler import get_manifest
 from services.dbt_runner import _fail_run
@@ -159,7 +160,14 @@ class SqlExecutor:
             self._delta_views[short] = sql
 
     def schema(self, table):
-        rows = self.execute(f"DESCRIBE TABLE {quote(table)}", phase="metadata")
+        rows = self.execute(
+            load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/describe_table",
+                table=quote(table),
+            ),
+            phase="metadata",
+        )
         fields = []
         for row in rows:
             if not row[0] or row[0].startswith("#"):
@@ -169,7 +177,14 @@ class SqlExecutor:
         return fields
 
     def version(self, table):
-        rows = self.execute(f"DESCRIBE HISTORY {quote(table)} LIMIT 1", phase="metadata")
+        rows = self.execute(
+            load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/describe_history",
+                table=quote(table),
+            ),
+            phase="metadata",
+        )
         if not rows:
             raise RuntimeError(f"No Delta version for {table}")
         return int(rows[0][0])
@@ -217,18 +232,26 @@ def compiler(payload, *, timings=None):
 
 
 def _cdf_sql(short, table, fields, start, end, predicate=None):
-    cols = ", ".join(quote(f["name"]) for f in fields)
+    columns = ", ".join(quote(f["name"]) for f in fields)
     if start == end:
-        body = (f"SELECT {cols}, CAST(NULL AS TIMESTAMP) AS openivm_timestamp, "
-                f"CAST(0 AS INT) AS openivm_multiplicity FROM {quote(table)} WHERE FALSE")
+        body = load_sql(
+            "databricks-openivm", "inline",
+            "dbt_server/services_databricks_openivm/cdf_empty_query",
+            columns=columns, table=quote(table),
+        )
     else:
-        body = (f"SELECT {cols}, _commit_timestamp AS openivm_timestamp, "
-                "CASE WHEN _change_type IN ('insert', 'update_postimage') THEN 1 ELSE -1 END "
-                f"AS openivm_multiplicity FROM table_changes({literal(table)}, {start + 1}, {end}) "
-                "WHERE _change_type IN ('insert', 'delete', 'update_preimage', 'update_postimage')")
-        if predicate:
-            body += " AND (" + predicate + ")"
-    return f"CREATE OR REPLACE TEMP VIEW {quote('openivm_delta_' + short)} AS {body}"
+        body = load_sql(
+            "databricks-openivm", "inline",
+            "dbt_server/services_databricks_openivm/cdf_changes_query",
+            columns=columns, table_literal=literal(table), start_version=start + 1,
+            end_version=end,
+            predicate_suffix=f" AND ({predicate})" if predicate else "",
+        )
+    return load_sql(
+        "databricks-openivm", "inline",
+        "dbt_server/services_databricks_openivm/create_cdf_view",
+        view=quote("openivm_delta_" + short), query=body,
+    )
 
 
 def build_models(manifest, checkpoint, *, full_refresh, batch_num, threads=None, executor_factory=None):
@@ -371,12 +394,19 @@ def _build_model(executor, metadata, uid, node, known, state, by_relation, run_i
                              # names; it cannot bind backtick-quoted UC refs.
                              "query": remap_sql(query, mapping, for_compiler=True), "schemas": schemas}, timings=timings)
         initial = remap_sql(compiled["initial_sql"], {v: k for k, v in mapping.items()})
-        executor.execute(f"CREATE TABLE {quote(target)} USING DELTA "
-                         "TBLPROPERTIES ('delta.enableChangeDataFeed'='true') AS " + initial)
+        executor.execute(load_sql(
+            "databricks-openivm", "inline",
+            "dbt_server/services_databricks_openivm/create_model_table",
+            table=quote(target), query=initial,
+        ))
         columns = ", ".join(quote(f["name"]) for f in compiled["output_schema"]["fields"])
         having = compiled.get("having_predicate")
-        executor.execute(f"CREATE VIEW {quote(public)} AS SELECT {columns} FROM {quote(target)}"
-                         + (" WHERE " + having if having else ""))
+        executor.execute(load_sql(
+            "databricks-openivm", "inline",
+            "dbt_server/services_databricks_openivm/create_public_view",
+            view=quote(public), columns=columns, table=quote(target),
+            where_clause=f" WHERE {having}" if having else "",
+        ))
         saved = {**compiled, "query": query, "schemas": schemas,
                       "source_versions": {dep: metadata.read(executor, "version", known[dep]) for dep in deps}}
     else:
@@ -387,7 +417,11 @@ def _build_model(executor, metadata, uid, node, known, state, by_relation, run_i
         if any(ends[dep] < saved["source_versions"][dep] for dep in deps):
             raise RuntimeError(f"Source version moved backwards for {uid}")
         if saved["refresh_type"] == 3:
-            executor.execute(f"INSERT OVERWRITE {quote(target)} " + query)
+            executor.execute(load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/insert_overwrite",
+                table=quote(target), query=query,
+            ))
         elif any(ends[d] != saved["source_versions"][d] for d in deps):
             for dep in deps:
                 short = dep.split(".")[-1]
@@ -399,7 +433,11 @@ def _build_model(executor, metadata, uid, node, known, state, by_relation, run_i
                                   "source_versions": {d.split(".")[-1]: v for d, v in saved["source_versions"].items()},
                                   "mv_version": metadata.read(executor, "version", target)}, timings=timings)
             scratch = ".".join(target.split(".")[:-1] + ["_openivm_delta_" + name])
-            executor.execute(f"DROP TABLE IF EXISTS {quote(scratch)}")
+            executor.execute(load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/drop_table",
+                table=quote(scratch),
+            ))
             remote = {v: k for k, v in mapping.items()}
             remote["openivm_compile." + name] = target
             paths = {"delta.openivm-mv": target, "delta.openivm-view-delta": scratch}
@@ -409,6 +447,7 @@ def _build_model(executor, metadata, uid, node, known, state, by_relation, run_i
                 for k, v in mapping.items()
             }
             for sql in rewritten["statements"]:
+                # sql-catalog: exempt compiler output is generated per model and rewritten before execution.
                 executor.execute(remap_sql(sql, remote, paths, snapshots))
         saved["source_versions"] = ends
     _record_node(run_id, uid, node, time.monotonic() - started)
@@ -422,6 +461,7 @@ def _build_model(executor, metadata, uid, node, known, state, by_relation, run_i
 def _record_node(run_id, uid, node, duration, status="success", message=""):
     with DB_LOCK:
         conn = get_db()
+        # sql-catalog: exempt SQLite stores dbt-server run-node metadata, not Databricks workload data.
         conn.execute("""INSERT OR REPLACE INTO run_nodes
             (run_id, unique_id, name, resource_type, execution_time_s, status, compiled_sql, depends_on, message)
             VALUES (?,?,?,?,?,?,?,?,?)""", (run_id, uid, node["name"], "model", duration, status,
@@ -438,6 +478,7 @@ def run(run_id, scale_factor, full_refresh, batch_num):
         try:
             with DB_LOCK:
                 conn = get_db()
+                # sql-catalog: exempt SQLite updates dbt-server run metadata, not Databricks workload data.
                 conn.execute("UPDATE runs SET status='running', started_at=? WHERE run_id=?",
                              (datetime.now(timezone.utc).isoformat(), run_id))
                 conn.commit()
@@ -463,6 +504,7 @@ def run(run_id, scale_factor, full_refresh, batch_num):
             _save(path, checkpoint)
             with DB_LOCK:
                 conn = get_db()
+                # sql-catalog: exempt SQLite updates dbt-server run metadata, not Databricks workload data.
                 conn.execute("UPDATE runs SET status='completed', completed_at=?, duration_s=? WHERE run_id=?",
                              (datetime.now(timezone.utc).isoformat(), time.monotonic() - started, run_id))
                 conn.commit()
@@ -481,18 +523,49 @@ def _validation_diagnostics(executor, query, node):
     tables = [physical(relation(node)) + "_validation_" + suffix for suffix in ("expected", "repeat")]
     with ExitStack() as cleanup:
         for table in tables:
-            cleanup.callback(executor.execute, f"DROP TABLE IF EXISTS {quote(table)}")
-            executor.execute(f"CREATE TABLE {quote(table)} USING DELTA AS {query}")
-        expected = "SELECT * FROM " + quote(tables[0])
+            cleanup.callback(executor.execute, load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/drop_validation_table",
+                table=quote(table),
+            ))
+            executor.execute(load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/create_validation_table",
+                table=quote(table), query=query,
+            ))
+        expected = load_sql(
+            "databricks-openivm", "inline",
+            "dbt_server/services_databricks_openivm/select_all",
+            table=quote(tables[0]),
+        )
         comparisons = {}
-        for label, actual in (("expected_vs_actual", "SELECT * FROM " + quote(relation(node))),
-                              ("expected_vs_repeat", "SELECT * FROM " + quote(tables[1]))):
+        for label, actual in (("expected_vs_actual", load_sql(
+                                   "databricks-openivm", "inline",
+                                   "dbt_server/services_databricks_openivm/select_all",
+                                   table=quote(relation(node)),
+                               )),
+                              ("expected_vs_repeat", load_sql(
+                                   "databricks-openivm", "inline",
+                                   "dbt_server/services_databricks_openivm/select_all",
+                                   table=quote(tables[1]),
+                               ))):
             differences = {}
             for direction, left, right in (("missing", expected, actual), ("extra", actual, expected)):
-                difference = f"(({left}) EXCEPT ALL ({right}))"
-                differences[direction + "_rows"] = executor.execute(f"SELECT COUNT(*) FROM {difference}")[0][0]
-                differences[direction + "_samples"] = [r[0] for r in executor.execute(
-                    "SELECT to_json(struct(*), map('ignoreNullFields', 'false')) FROM " + difference + " LIMIT 5")]
+                difference = load_sql(
+                    "databricks-openivm", "inline",
+                    "dbt_server/services_databricks_openivm/except_all",
+                    left=left, right=right,
+                )
+                differences[direction + "_rows"] = executor.execute(load_sql(
+                    "databricks-openivm", "inline",
+                    "dbt_server/services_databricks_openivm/count_query",
+                    query=difference,
+                ))[0][0]
+                differences[direction + "_samples"] = [r[0] for r in executor.execute(load_sql(
+                    "databricks-openivm", "inline",
+                    "dbt_server/services_databricks_openivm/sample_query",
+                    query=difference,
+                ))]
             comparisons[label] = differences
         return comparisons
 
@@ -510,9 +583,21 @@ def validate(batch_num):
     try:
         for uid, node in models:
             query = checkpoint["models"][uid]["query"]
-            actual = "SELECT * FROM " + quote(relation(node))
-            missing = executor.execute(f"SELECT COUNT(*) FROM (({query}) EXCEPT ALL ({actual}))")[0][0]
-            extra = executor.execute(f"SELECT COUNT(*) FROM (({actual}) EXCEPT ALL ({query}))")[0][0]
+            actual = load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/select_all",
+                table=quote(relation(node)),
+            )
+            missing = executor.execute(load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/count_except_all",
+                left=query, right=actual,
+            ))[0][0]
+            extra = executor.execute(load_sql(
+                "databricks-openivm", "inline",
+                "dbt_server/services_databricks_openivm/count_except_all",
+                left=actual, right=query,
+            ))[0][0]
             result = {"model": node["name"], "missing_rows": missing, "extra_rows": extra}
             results.append(result)
             if missing or extra:

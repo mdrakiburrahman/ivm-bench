@@ -1,7 +1,11 @@
 services:
   benchmark-server:
+    image: ivm-bench-benchmark-server:latest
+    labels:
+      org.ivm-bench.run-id: "${IVM_BENCH_RUN_ID:-}"
     build:
-      context: ../src/containers/benchmark-server
+      context: ../src/containers
+      dockerfile: benchmark-server/Dockerfile
     ports:
       - "9000:9000"
     extra_hosts:
@@ -12,6 +16,7 @@ services:
       - ../mount/benchmark-state:/data/state
     environment:
       REPO_DIR: "${REPO_HOST_PATH:-.}"
+      IVM_BENCH_RUN_ID: "${IVM_BENCH_RUN_ID:-}"
       DOCKER_HOST_ADDRESS: "host.docker.internal"
       SCALE_FACTOR: "${SCALE_FACTOR:-3}"
       BENCHMARK_RUNS: "${BENCHMARK_RUNS:-1}"
@@ -73,9 +78,7 @@ services:
       FABRIC_OPENIVM_JVM_35_CPUS: "${FABRIC_OPENIVM_JVM_35_CPUS:-4}"
       FABRIC_OPENIVM_JVM_35_MEM: "${FABRIC_OPENIVM_JVM_35_MEM:-8g}"
       IMDS_ROUTER_PORT: "${IMDS_ROUTER_PORT:-8080}"
-      IMDS_RELAY_URL: "${IMDS_RELAY_URL:-}"
-      IMDS_RELAY_SENDER_KEY: "${IMDS_RELAY_SENDER_KEY:-}"
-      IMDS_RELAY_KEY_NAME: "${IMDS_RELAY_KEY_NAME:-Send}"
+      IMDS_RELAY_TEMPORARY_SAS_URL: "${IMDS_RELAY_TEMPORARY_SAS_URL:-}"
       IDENTITY_HEADER: "${IDENTITY_HEADER:-local-dev-secret}"
       UAMI_CLIENT_ID: "${UAMI_CLIENT_ID:-}"
       UAMI_SUBSCRIPTION: "${UAMI_SUBSCRIPTION:-}"
@@ -85,3 +88,8 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+networks:
+  default:
+    labels:
+      org.ivm-bench.run-id: "${IVM_BENCH_RUN_ID:-}"

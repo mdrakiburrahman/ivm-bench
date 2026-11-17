@@ -1,0 +1,2 @@
+-- catalog-override: DuckDB's SQLGlot dialect writer rewrites Spark NULL::VARCHAR as TRY_CAST(NULL AS TEXT); preserve the original typed CDC null.
+CREATE TABLE {relation} AS SELECT NULL::VARCHAR AS cdc_flag, NULL::BIGINT AS cdc_dsn, * FROM {source};

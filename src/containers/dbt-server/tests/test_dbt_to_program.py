@@ -57,6 +57,26 @@ class RenderTest(unittest.TestCase):
             render("select {{ var('not_provided') }}")
 
 
+class DependencyTest(unittest.TestCase):
+    def test_double_quoted_ref_is_sorted_after_its_dependency(self):
+        sql = 'select * from {{ ref("securities") }}'
+        self.assertEqual(dbt_to_program.refs_of(sql), {"securities"})
+        models = {
+            "dim_security": (False, sql, "gold"),
+            "securities": (False, "select 1", "silver"),
+        }
+        self.assertEqual(dbt_to_program._topo_sort(models), ["securities", "dim_security"])
+
+    def test_double_quoted_source_is_sorted_after_its_dependency(self):
+        sql = 'select * from {{ source("raw", "upstream") }}'
+        self.assertEqual(dbt_to_program.refs_of(sql), {"upstream"})
+        models = {
+            "downstream": (False, sql, "silver"),
+            "upstream": (True, "x integer", "sources"),
+        }
+        self.assertEqual(dbt_to_program._topo_sort(models), ["upstream", "downstream"])
+
+
 class BuildProgramTest(unittest.TestCase):
     def test_dbspnet_project_renders_to_plain_sql(self):
         # Every statement the DbspNet engine receives must be Jinja-free; an unrendered

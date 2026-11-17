@@ -36,9 +36,14 @@ ENGINE_COLORS = {
     "fabric-jvm-35": "#8e44ad",
     "fabric-openivm-jvm-35": "#16a085",
     "dbspnet": "#2c3e50",
+    "risingwave": "#00a3e0",
 }
 
-ENGINE_ORDER = ["duckdb", "spark", "duckdb-openivm", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "fabric-jvm-35", "fabric-openivm-jvm-35"]
+ENGINE_ORDER = [
+    "duckdb", "spark", "duckdb-openivm", "spark-openivm", "feldera",
+    "dbspnet", "databricks-enzyme", "fabric-jvm-35",
+    "fabric-openivm-jvm-35", "risingwave",
+]
 
 BATCH_COLORS = {1: "#3498db", 2: "#e67e22", 3: "#2ecc71"}
 

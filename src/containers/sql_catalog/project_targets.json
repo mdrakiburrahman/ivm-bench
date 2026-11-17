@@ -1,0 +1,164 @@
+{
+  "models": [
+    {
+      "engines": [
+        "databricks-enzyme",
+        "duckdb",
+        "duckdb-openivm",
+        "fabric-jvm-35",
+        "fabric-openivm-jvm-35",
+        "feldera",
+        "spark",
+        "spark-openivm"
+      ],
+      "paths": [
+        "bronze/brokerage/brokerage_cash_transaction",
+        "bronze/brokerage/brokerage_daily_market",
+        "bronze/brokerage/brokerage_holding_history",
+        "bronze/brokerage/brokerage_trade",
+        "bronze/brokerage/brokerage_trade_history",
+        "bronze/brokerage/brokerage_watch_history",
+        "bronze/crm/crm_customer_mgmt",
+        "bronze/finwire/finwire_company",
+        "bronze/finwire/finwire_financial",
+        "bronze/finwire/finwire_security",
+        "bronze/hr/hr_employee",
+        "bronze/reference/reference_date",
+        "bronze/reference/reference_industry",
+        "bronze/reference/reference_status_type",
+        "bronze/reference/reference_tax_rate",
+        "bronze/reference/reference_trade_type",
+        "bronze/syndicated/syndicated_prospect",
+        "gold/analytics/broker_performance",
+        "gold/analytics/customer_concentration",
+        "gold/analytics/daily_market_pulse",
+        "gold/analytics/market_volatility",
+        "gold/analytics/trade_volume_stats",
+        "gold/dim_account",
+        "gold/dim_broker",
+        "gold/dim_company",
+        "gold/dim_customer",
+        "gold/dim_date",
+        "gold/dim_security",
+        "gold/dim_trade",
+        "gold/fact_cash_balances",
+        "gold/fact_cash_transactions",
+        "gold/fact_holdings",
+        "gold/fact_market_history",
+        "gold/fact_trade",
+        "gold/fact_watches",
+        "silver/accounts",
+        "silver/cash_transactions",
+        "silver/companies",
+        "silver/customers",
+        "silver/daily_market",
+        "silver/employees",
+        "silver/financials",
+        "silver/holdings_history",
+        "silver/securities",
+        "silver/trades",
+        "silver/trades_history",
+        "silver/watches",
+        "silver/watches_history",
+        "work/wrk_company_financials"
+      ]
+    },
+    {
+      "engines": [
+        "databricks-enzyme",
+        "duckdb",
+        "duckdb-openivm",
+        "fabric-jvm-35",
+        "fabric-openivm-jvm-35",
+        "spark",
+        "spark-openivm"
+      ],
+      "paths": [
+        "silver/date"
+      ]
+    },
+    {
+      "engines": [
+        "feldera"
+      ],
+      "paths": [
+        "silver/silver_date",
+        "sources/audit",
+        "sources/batch1_customer_mgmt",
+        "sources/batch1_date",
+        "sources/batch1_finwire",
+        "sources/batch1_hr",
+        "sources/batch1_industry",
+        "sources/batch1_status_type",
+        "sources/batch1_tax_rate",
+        "sources/batch1_time",
+        "sources/batch1_trade_history",
+        "sources/batch1_trade_type",
+        "sources/staging_account",
+        "sources/staging_batch_date",
+        "sources/staging_cash_transaction",
+        "sources/staging_customer",
+        "sources/staging_daily_market",
+        "sources/staging_holding_history",
+        "sources/staging_prospect",
+        "sources/staging_trade",
+        "sources/staging_watch_history"
+      ]
+    }
+  ],
+  "macros": [
+    {
+      "engines": [
+        "databricks-enzyme",
+        "dbspnet",
+        "duckdb",
+        "duckdb-openivm",
+        "fabric-jvm-35",
+        "fabric-openivm-jvm-35",
+        "feldera",
+        "spark",
+        "spark-openivm"
+      ],
+      "paths": [
+        "generate_schema_name"
+      ]
+    },
+    {
+      "engines": [
+        "databricks-enzyme",
+        "duckdb-openivm",
+        "fabric-openivm-jvm-35",
+        "spark-openivm"
+      ],
+      "paths": [
+        "materializations/materialized_view"
+      ]
+    },
+    {
+      "engines": [
+        "duckdb-openivm"
+      ],
+      "paths": [
+        "materializations/table",
+        "openivm_setup"
+      ]
+    },
+    {
+      "engines": [
+        "fabric-jvm-35",
+        "fabric-openivm-jvm-35"
+      ],
+      "paths": [
+        "load_fabric_sources"
+      ]
+    },
+    {
+      "engines": [
+        "spark"
+      ],
+      "paths": [
+        "register_sources"
+      ]
+    }
+  ]
+}

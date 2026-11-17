@@ -1,0 +1,1 @@
+INSERT INTO NEW_ORDER VALUES ({w}, {d}, 1)

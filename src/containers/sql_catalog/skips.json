@@ -1,0 +1,504 @@
+[
+  {
+    "engine": "databricks-enzyme",
+    "category": "inline",
+    "reason": "not used by databricks-enzyme; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "databricks-enzyme",
+    "category": "inline",
+    "reason": "not used by databricks-enzyme; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "databricks-openivm",
+    "category": "inline",
+    "reason": "The engine does not use this Spark and DuckDB adapter verification probe.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float"
+    ]
+  },
+  {
+    "engine": "databricks-openivm",
+    "category": "inline",
+    "reason": "databricks-openivm does not use the Spark query-plan EXPLAIN FORMATTED command.",
+    "paths": [
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
+    "engine": "databricks-openivm",
+    "category": "inline",
+    "reason": "not used by databricks-openivm; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "databricks-openivm",
+    "category": "inline",
+    "reason": "not used by databricks-openivm; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "dbspnet",
+    "category": "inline",
+    "reason": "The engine does not use this Spark and DuckDB adapter verification probe.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float"
+    ]
+  },
+  {
+    "engine": "dbspnet",
+    "category": "inline",
+    "reason": "dbspnet does not use the Spark query-plan EXPLAIN FORMATTED command.",
+    "paths": [
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
+    "engine": "dbspnet",
+    "category": "inline",
+    "reason": "not used by dbspnet; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "dbspnet",
+    "category": "inline",
+    "reason": "not used by dbspnet; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "duckdb",
+    "category": "inline",
+    "reason": "duckdb does not use the Spark query-plan EXPLAIN FORMATTED command.",
+    "paths": [
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
+    "engine": "duckdb",
+    "category": "inline",
+    "reason": "not used by duckdb; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "duckdb-openivm",
+    "category": "inline",
+    "reason": "duckdb-openivm does not use the Spark query-plan EXPLAIN FORMATTED command.",
+    "paths": [
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
+    "engine": "duckdb-openivm",
+    "category": "inline",
+    "reason": "not used by duckdb-openivm; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "fabric-jvm-35",
+    "category": "inline",
+    "reason": "The engine does not use this Spark and DuckDB adapter verification probe.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float"
+    ]
+  },
+  {
+    "engine": "fabric-jvm-35",
+    "category": "inline",
+    "reason": "not used by fabric-jvm-35; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "fabric-jvm-35",
+    "category": "inline",
+    "reason": "not used by fabric-jvm-35; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "fabric-openivm-jvm-35",
+    "category": "inline",
+    "reason": "The engine does not use this Spark and DuckDB adapter verification probe.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float"
+    ]
+  },
+  {
+    "engine": "fabric-openivm-jvm-35",
+    "category": "inline",
+    "reason": "not used by fabric-openivm-jvm-35; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "feldera",
+    "category": "inline",
+    "reason": "The engine does not use this Spark and DuckDB adapter verification probe.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float"
+    ]
+  },
+  {
+    "engine": "feldera",
+    "category": "inline",
+    "reason": "feldera does not use the Spark query-plan EXPLAIN FORMATTED command.",
+    "paths": [
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
+    "engine": "feldera",
+    "category": "inline",
+    "reason": "not used by feldera; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "feldera",
+    "category": "inline",
+    "reason": "not used by feldera; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "spark-openivm",
+    "category": "inline",
+    "reason": "not used by spark-openivm; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "sqlite",
+    "category": "inline",
+    "reason": "SQLite metadata access does not run the compiler-bench EXCEPT ALL verifier.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_fallback"
+    ]
+  },
+  {
+    "engine": "sqlite",
+    "category": "inline",
+    "reason": "The engine does not use this Spark and DuckDB adapter verification probe.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float"
+    ]
+  },
+  {
+    "engine": "sqlite",
+    "category": "inline",
+    "reason": "not used by sqlite; only duckdb and duckdb-openivm use the DuckLake source loader.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/create_empty_staging",
+      "dbt_server/services_ducklake_sources/create_schema",
+      "dbt_server/services_ducklake_sources/create_staging_cdc",
+      "dbt_server/services_ducklake_sources/create_table",
+      "dbt_server/services_ducklake_sources/insert_batch",
+      "dbt_server/services_ducklake_sources/mutation_account_delete",
+      "dbt_server/services_ducklake_sources/mutation_account_update",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_delete",
+      "dbt_server/services_ducklake_sources/mutation_cash_transaction_update",
+      "dbt_server/services_ducklake_sources/mutation_customer_delete",
+      "dbt_server/services_ducklake_sources/mutation_customer_update",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_delete",
+      "dbt_server/services_ducklake_sources/mutation_daily_market_update",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_holding_history_update",
+      "dbt_server/services_ducklake_sources/mutation_prospect_delete",
+      "dbt_server/services_ducklake_sources/mutation_prospect_update",
+      "dbt_server/services_ducklake_sources/mutation_trade_delete",
+      "dbt_server/services_ducklake_sources/mutation_trade_update",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_delete",
+      "dbt_server/services_ducklake_sources/mutation_watch_history_update",
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_ducklake_sources/set_memory_limit",
+      "dbt_server/services_ducklake_sources/set_temp_directory",
+      "dbt_server/services_ducklake_sources/set_threads"
+    ]
+  },
+  {
+    "engine": "sqlite",
+    "category": "inline",
+    "reason": "not used by sqlite; only spark-openivm and fabric-openivm-jvm-35 execute this Spark validation SQL.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/create_expected_view",
+      "dbt_server/services_spark_openivm_validation/describe_relation",
+      "dbt_server/services_spark_openivm_validation/diff_exact",
+      "dbt_server/services_spark_openivm_validation/digest_select",
+      "dbt_server/services_spark_openivm_validation/drop_expected_view",
+      "dbt_server/services_spark_openivm_validation/projection_column",
+      "dbt_server/services_spark_openivm_validation/projection_continuous",
+      "dbt_server/services_spark_openivm_validation/projection_numeric",
+      "dbt_server/services_spark_openivm_validation/raw_subquery",
+      "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "sqlite",
+    "category": "inline",
+    "reason": "sqlite does not use the Spark query-plan EXPLAIN FORMATTED command.",
+    "paths": [
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  }
+]

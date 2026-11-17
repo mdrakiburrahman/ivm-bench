@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from sql_catalog import load_sql
+
 WORK_DIR = Path(os.environ.get("DUCKDB_OPENIVM_WORK_DIR", "/data/processed/duckdb-openivm"))
 OPENIVM_BIN = os.environ.get("DUCKDB_OPENIVM_BIN", "/data/bin/duckdb-openivm/duckdb")
 MEM_LIMIT = os.environ.get("DUCKDB_OPENIVM_MEM_LIMIT", "115GB")
@@ -26,21 +28,28 @@ def _copy_query_to_csv(query: str, output_path: Path) -> None:
     preamble = [
         ".bail on",
         ".timer off",
-        f"SET memory_limit='{MEM_LIMIT}';",
-        f"SET temp_directory='{TEMP_DIR}';",
+        load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/set_memory_limit",
+            memory_limit=_sql_literal(MEM_LIMIT),
+        ),
+        load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/set_temp_directory",
+            temp_directory=_sql_literal(str(TEMP_DIR)),
+        ),
     ]
     if THREADS:
-        preamble.append(f"SET threads={int(THREADS)};")
-    preamble.append("LOAD openivm;")
+        preamble.append(load_sql(
+            "duckdb-openivm", "inline", "dbt_server/services_ducklake_sources/set_threads",
+            threads=int(THREADS),
+        ))
+    preamble.append(load_sql("duckdb-openivm", "inline", "dbt_server/services_openivm_profile/load_extension"))
 
-    sql = (
-        "\n".join(preamble)
-        + "\nCOPY ("
-        + query
-        + ") TO "
-        + _sql_literal(str(output_path))
-        + " (HEADER, DELIMITER ',');\n"
+    copy_sql = load_sql(
+        "duckdb-openivm", "inline", "dbt_server/services_openivm_profile/copy_query",
+        query=query,
+        output_path=_sql_literal(str(output_path)),
     )
+    sql = "\n".join(preamble + [copy_sql]) + "\n"
     proc = subprocess.run(
         [OPENIVM_BIN, str(db_file)],
         input=sql,
@@ -128,40 +137,24 @@ def export_profile(run_id: str, batch_num: int) -> dict:
 
         exported_cols = f"{batch_num} AS exported_after_batch, {run_id_sql} AS exported_after_run_id"
         _copy_query_to_csv(
-            f"""
-            SELECT {exported_cols}, *
-            FROM openivm_refresh_profile
-            ORDER BY profile_timestamp, refresh_id, step_order
-            """,
+            load_sql(
+                "duckdb-openivm", "inline", "dbt_server/services_openivm_profile/profile_rows",
+                exported_columns=exported_cols,
+            ),
             profile_path,
         )
         _copy_query_to_csv(
-            f"""
-            SELECT {exported_cols},
-                   step_name,
-                   COUNT(*) AS row_count,
-                   SUM(duration_ms) AS total_ms,
-                   AVG(duration_ms) AS avg_ms,
-                   MAX(duration_ms) AS max_ms
-            FROM openivm_refresh_profile
-            GROUP BY step_name
-            ORDER BY total_ms DESC
-            """,
+            load_sql(
+                "duckdb-openivm", "inline", "dbt_server/services_openivm_profile/profile_by_step",
+                exported_columns=exported_cols,
+            ),
             by_step_path,
         )
         _copy_query_to_csv(
-            f"""
-            SELECT {exported_cols},
-                   view_name,
-                   step_name,
-                   COUNT(*) AS row_count,
-                   SUM(duration_ms) AS total_ms,
-                   AVG(duration_ms) AS avg_ms,
-                   MAX(duration_ms) AS max_ms
-            FROM openivm_refresh_profile
-            GROUP BY view_name, step_name
-            ORDER BY total_ms DESC
-            """,
+            load_sql(
+                "duckdb-openivm", "inline", "dbt_server/services_openivm_profile/profile_by_view_step",
+                exported_columns=exported_cols,
+            ),
             by_view_step_path,
         )
 

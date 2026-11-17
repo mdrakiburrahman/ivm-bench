@@ -1,8 +1,12 @@
+import json
 import os
 from pathlib import Path
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -32,6 +36,94 @@ class BuildCheckoutTest(unittest.TestCase):
             self.assertEqual(first, _spark_builder_source_hash(str(dockerfile)))
             dockerfile.write_text("FROM busybox\n")
             self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile)))
+
+    def test_run_scoped_compose_overlay(self):
+        run_id = "a" * 32
+        config = {"services": {"builder": {"build": {"context": "."}}, "worker": {"image": "example"}},
+                  "networks": {"default": {}, "external": {"external": True}}}
+        result = subprocess.CompletedProcess([], 0, json.dumps(config), "")
+        manager = DockerManager("docker-compose.yml", "original", env={"IVM_BENCH_RUN_ID": run_id})
+        with patch("services.docker_manager.subprocess.run", return_value=result) as run:
+            cmd = manager._base_cmd
+            self.assertEqual(manager._base_cmd, cmd)
+        overlay_path = Path(cmd[cmd.index("-f", 4) + 1])
+        try:
+            overlay = json.loads(overlay_path.read_text())
+            self.assertEqual(cmd[-2:], ["-p", f"ivm-{run_id}-original"])
+            self.assertEqual(overlay["services"]["builder"]["image"], "original-builder")
+            self.assertNotIn("image", overlay["services"]["worker"])
+            self.assertEqual(overlay["services"]["worker"]["labels"]["org.ivm-bench.run-id"], run_id)
+            self.assertEqual(overlay["networks"], {"default": {"labels": {"org.ivm-bench.run-id": run_id}}})
+            run.assert_called_once()
+        finally:
+            overlay_path.unlink()
+        with self.assertRaises(ValueError):
+            DockerManager("docker-compose.yml", env={"IVM_BENCH_RUN_ID": "invalid"})
+
+    def test_interrupted_server_cleans_only_run_resources_and_preserves_injected_relay_url(self):
+        source_root = BENCHMARK_SERVER.parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            root = tmp / "repo"
+            (root / "src/.scripts").mkdir(parents=True)
+            (root / "tools/scripts").mkdir(parents=True)
+            shutil.copyfile(source_root / "src/.scripts/benchmark.sh", root / "src/.scripts/benchmark.sh")
+            shutil.copyfile(source_root / "tools/scripts/cleanup-benchmark-run.sh", root / "tools/scripts/cleanup-benchmark-run.sh")
+            (root / "experiments.json").write_text("{}")
+            (root / ".env").write_text("IMDS_RELAY_TEMPORARY_SAS_URL='stale-sender-url'\n")
+            docker = tmp / "docker"
+            docker.write_text("""#!/bin/bash
+echo "$*" >> "$CALLS"
+printf '%s' "$IMDS_RELAY_TEMPORARY_SAS_URL" > "$RELAY_VALUE"
+case "$*" in
+  "ps -aq --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-container ;;
+  "network ls -q --filter label=org.ivm-bench.run-id=$IVM_BENCH_RUN_ID") echo owned-network ;;
+  "rm -f owned-container") exit 1 ;;
+esac
+""")
+            docker.chmod(0o755)
+            curl = tmp / "curl"
+            curl.write_text("""#!/bin/bash
+if [[ "$*" == *benchmark/stream* ]]; then
+  touch "$STREAMING"
+  sleep 2
+fi
+""")
+            curl.chmod(0o755)
+            git = tmp / "git"
+            git.write_text('#!/bin/bash\nprintf "%s\\n" "$REPO_ROOT"\n')
+            git.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}",
+                   "CALLS": str(tmp / "calls"), "STREAMING": str(tmp / "streaming"),
+                   "RELAY_VALUE": str(tmp / "relay_value"),
+                   "IMDS_RELAY_TEMPORARY_SAS_URL": "injected-sender-url",
+                   "REPO_ROOT": str(root),
+                   "GITHUB_ENV": str(tmp / "github_env"), "OPENIVM_UBUNTU_MIRROR": "unused",
+                   "BENCHMARK_EXPERIMENTS_FILE": str(root / "experiments.json")}
+            process = subprocess.Popen(["bash", "src/.scripts/benchmark.sh"], cwd=root,
+                                       env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                deadline = time.monotonic() + 10
+                while not (tmp / "streaming").exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue((tmp / "streaming").exists(), "benchmark did not reach streaming")
+                self.assertEqual((tmp / "relay_value").read_text(), "injected-sender-url")
+                process.send_signal(signal.SIGTERM)
+                _, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 143)
+                self.assertIn("Failed to remove this run's container", stderr)
+                run_id = (tmp / "github_env").read_text().strip().split("=", 1)[1]
+                calls = (tmp / "calls").read_text()
+                self.assertIn(f"-p ivm-{run_id} down --remove-orphans", calls)
+                self.assertIn(f"ps -aq --filter label=org.ivm-bench.run-id={run_id}", calls)
+                self.assertIn(f"network ls -q --filter label=org.ivm-bench.run-id={run_id}", calls)
+                self.assertIn("rm -f owned-container", calls)
+                self.assertIn("network rm owned-network", calls)
+                self.assertNotIn("unrelated", calls)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
 
     def test_spark_build_fetches_a_pin_outside_branch_history(self):
         with tempfile.TemporaryDirectory() as tmp:

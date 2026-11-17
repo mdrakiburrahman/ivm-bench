@@ -1,0 +1,2 @@
+-- catalog-override: engine-only: Spark OpenIVM registers Delta locations with CDF table properties.
+CREATE TABLE IF NOT EXISTS tpcdi.{table_name} USING DELTA LOCATION '{destination_path}' TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true') AS SELECT * FROM delta.`{source_path}`

@@ -1,0 +1,2 @@
+-- catalog-override: engine-only: DuckDB read_parquet and FILTER syntax select the A/B comparison batch
+WITH t AS (SELECT batch, dbt_model, count(DISTINCT engine) ne FROM {rp} WHERE event_ts IS NOT NULL AND dbt_model IS NOT NULL AND batch IS NOT NULL GROUP BY batch, dbt_model) SELECT batch FROM t GROUP BY batch HAVING count(*) FILTER (WHERE ne>=2)>=2 ORDER BY (batch>1) DESC, count(*) FILTER (WHERE ne>=2) DESC, batch DESC LIMIT 1

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import duckdb
 
+from sql_catalog import load_sql
+
 from services.ducklake_sources import (
     append_sources as append_ducklake_sources,
     init_sources as init_ducklake_sources,
@@ -30,17 +32,31 @@ def _run_duckdb_sql(sql: str, label: str) -> str:
 
     con = duckdb.connect(":memory:")
     try:
-        con.execute(f"SET preserve_insertion_order=false")
-        con.execute(f"SET memory_limit={quote_literal(MEM_LIMIT)}")
-        con.execute(f"SET temp_directory={quote_literal(TEMP_DIR)}")
+        con.execute(load_sql("duckdb", "inline", "dbt_server/services_duckdb_sources/set_preserve_insertion_order"))
+        con.execute(load_sql(
+            "duckdb", "inline", "dbt_server/services_ducklake_sources/set_memory_limit",
+            memory_limit=quote_literal(MEM_LIMIT),
+        ))
+        con.execute(load_sql(
+            "duckdb", "inline", "dbt_server/services_ducklake_sources/set_temp_directory",
+            temp_directory=quote_literal(TEMP_DIR),
+        ))
         if THREADS:
-            con.execute(f"SET threads={int(THREADS)}")
-        con.execute("INSTALL ducklake; LOAD ducklake")
-        con.execute("INSTALL sqlite; LOAD sqlite")
-        con.execute(
-            f"ATTACH 'ducklake:sqlite:{meta_path}' AS ducklake "
-            f"(DATA_PATH {quote_literal(str(data_path))}, data_inlining_row_limit 0)"
-        )
+            con.execute(load_sql(
+                "duckdb", "inline", "dbt_server/services_ducklake_sources/set_threads",
+                threads=int(THREADS),
+            ))
+        con.execute(load_sql(
+            "duckdb", "inline", "dbt_server/services_ducklake_sources/install_ducklake",
+            terminator="",
+        ))
+        con.execute(load_sql("duckdb", "inline", "dbt_server/services_duckdb_sources/install_sqlite"))
+        con.execute(load_sql(
+            "duckdb", "inline", "dbt_server/services_ducklake_sources/attach_ducklake",
+            metadata_path=str(meta_path),
+            data_path=quote_literal(str(data_path)),
+            terminator="",
+        ))
         con.execute(sql)
         return ""
     except Exception as exc:

@@ -1,5 +1,7 @@
 # Contributing
 
+For ad-hoc cloud runs, see [Manual cloud CI](docs/CI.md).
+
 ## How to use, on a Windows machine by installing WSL
 
 1. Windows pre-reqs
