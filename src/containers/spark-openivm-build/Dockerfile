@@ -42,7 +42,7 @@ FROM ubuntu:22.04 AS openivm-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=699d5f084f238b74cbca0105f5ecb0be1b99cea1
+ARG OPENIVM_COMMIT=a7fc36a680303abdba2026da53f255def87b0be0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -102,7 +102,7 @@ FROM eclipse-temurin:17-jdk AS spark-ext-builder
 
 ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 ARG OPENIVM_SPARK_REPO=https://github.com/mdrakiburrahman/openivm-spark.git
-ARG OPENIVM_SPARK_COMMIT=13de443259c131d04acde908b761592bd5a422e1
+ARG OPENIVM_SPARK_COMMIT=d7804a6840f176a60b6b6150184977fde974e495
 ARG SBT_VERSION=1.9.7
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -164,7 +164,7 @@ RUN test -s /tmp/openivm-extension.jar && \
 # -----------------------------------------------------------------------------
 FROM ubuntu:22.04
 
-ARG OPENIVM_SPARK_COMMIT=13de443259c131d04acde908b761592bd5a422e1
+ARG OPENIVM_SPARK_COMMIT=d7804a6840f176a60b6b6150184977fde974e495
 LABEL org.openivm.spark.commit="${OPENIVM_SPARK_COMMIT}"
 
 # Cache-bust key: hash of the Dockerfile and any optional local patches. The orchestrator
