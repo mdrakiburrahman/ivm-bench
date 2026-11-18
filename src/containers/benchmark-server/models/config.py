@@ -57,6 +57,9 @@ class EngineConfig:
             "DBT_SERVER_MEM": self.dbt_server_resources.mem_str,
             "DBT_SERVER_PORT": str(self.port),
         }
+        if self.name == "risingwave":
+            env["MINIO_CPUS"] = "4"
+            env["MINIO_MEM"] = "4g"
         # MSSQL for Spark — must match defaults in
         # docker/docker-compose.benchmark.spark{,-openivm}.yml. At SF=400+
         # cpus=4/mem=8g triggered SQL Server's SOS scheduler ASSERT
@@ -120,6 +123,7 @@ ENGINE_PORTS = {
     "fabric-jvm-35": 5008,
     "databricks-openivm": 5010,
     "dbspnet": 5009,
+    "risingwave": 5011,
     "materialize-emulator": 5012,
 }
 
@@ -134,6 +138,7 @@ ENGINE_COMPOSE_FILES = {
     "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
     "databricks-openivm": "docker/docker-compose.benchmark.databricks-openivm.yml",
     "dbspnet": "docker/docker-compose.benchmark.dbspnet.yml",
+    "risingwave": "docker/docker-compose.benchmark.risingwave.yml",
     "materialize-emulator": "docker/docker-compose.benchmark.materialize-emulator.yml",
 }
 
@@ -152,6 +157,7 @@ ENGINE_MAIN_SERVICES = {
     "fabric-jvm-35": None,
     "databricks-openivm": None,  # The schema-only compiler is a helper; execution is remote.
     "dbspnet": "dbspnet-server",
+    "risingwave": "risingwave",
     "materialize-emulator": "materialize-emulator",
 }
 
@@ -165,6 +171,7 @@ ENGINE_COMPUTE_SERVICES = {
     "feldera": ("pipeline-manager",),
     "spark-openivm": ("spark-openivm", "mssql-metastore"),
     "dbspnet": ("dbspnet-server",),
+    "risingwave": ("risingwave",),
     "materialize-emulator": ("materialize-emulator",),
 }
 
@@ -217,6 +224,7 @@ class BenchmarkConfig:
             "duckdb-openivm",
             "feldera",
             "spark-openivm",
+            "risingwave",
         ]
     )
     host_cores: Optional[int] = None

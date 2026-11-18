@@ -10,5 +10,6 @@
   "fabric-openivm-jvm-35": "spark",
   "feldera": "postgres",
   "materialize-emulator": "postgres",
-  "dbspnet": "postgres"
+  "dbspnet": "postgres",
+  "risingwave": "risingwave"
 }

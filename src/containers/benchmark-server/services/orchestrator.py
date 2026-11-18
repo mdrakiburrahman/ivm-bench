@@ -506,6 +506,8 @@ class Orchestrator:
             env=self._config.base_env(),
             cwd=repo,
         )
+        if "risingwave" in self._config.engines:
+            mgr.update_env({"DATAGEN_OUTPUT_FORMATS": "delta,iceberg", "COMPOSE_PROFILES": "iceberg"})
         with self._heartbeat("datagen/build"):
             mgr.build(["tpc-di-gen", "spark-digen-delta"])
 
@@ -524,6 +526,8 @@ class Orchestrator:
 
                 try:
                     with self._heartbeat("datagen/run"):
+                        if "risingwave" in self._config.engines:
+                            mgr.up(services=["iceberg-minio"], detach=True)
                         # Explicitly attach both services: dependency output is
                         # otherwise hidden while Compose waits for the generator.
                         mgr.up(

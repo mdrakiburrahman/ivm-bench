@@ -8,7 +8,7 @@
     "engines": [
       "spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "dbspnet",
       "databricks-enzyme", "databricks-openivm", "fabric-jvm-35", "fabric-openivm-jvm-35",
-      "materialize-emulator"
+      "risingwave", "materialize-emulator"
     ],
     "databricks_dbt_threads": 8,
     "schedule": "serial",
