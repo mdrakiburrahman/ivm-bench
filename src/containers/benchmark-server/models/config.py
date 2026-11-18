@@ -187,6 +187,7 @@ class ExtendedTPCDSOptions:
     mutation_cohort: str = "all"
     fallback_policy: str = "table"  # rejected CREATE MV may use an explicit table fallback
     statement_timeout_s: float = 300.0
+    validation_timeout_s: float = 14400.0
     source_size_gb: Optional[float] = None  # initial Parquet bytes before compression, decimal GB
 
     def __post_init__(self):
@@ -205,6 +206,9 @@ class ExtendedTPCDSOptions:
             raise ValueError("fallback policy must be table or strict")
         if not math.isfinite(self.statement_timeout_s) or self.statement_timeout_s <= 0:
             raise ValueError("statement timeout must be positive and finite")
+        if (isinstance(self.validation_timeout_s,bool) or not isinstance(self.validation_timeout_s,(int,float))
+                or not math.isfinite(self.validation_timeout_s) or self.validation_timeout_s <= 0):
+            raise ValueError("validation timeout must be positive and finite")
         if self.source_size_gb is not None:
             if (isinstance(self.source_size_gb, bool) or not isinstance(self.source_size_gb, (int, float))
                     or not math.isfinite(self.source_size_gb) or self.source_size_gb <= 0):
@@ -224,8 +228,11 @@ class ExtendedTPCDSOptions:
 
 
 def workload_cache_key(config):
+    options = asdict(config.extended_tpcds)
+    # Validation policy does not change the immutable source/mutation plan.
+    options.pop('validation_timeout_s')
     payload = {"workload": config.workload, "scale_factor": config.scale_factor,
-               "options": asdict(config.extended_tpcds), "initial_pct": config.batch_1_pct,
+               "options": options, "initial_pct": config.batch_1_pct,
                "steps": config.extended_tpcds.steps(config)}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 

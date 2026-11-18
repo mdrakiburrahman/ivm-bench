@@ -42,6 +42,74 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
             connection.close()
             handle.close.assert_called_once()
 
+    def test_validation_connection_uses_its_own_larger_budget(self):
+        from services import dbt_runner
+        project_root=Path(__file__).parents[1]/'dbt-projects'
+        for validation,expected in ((False,123),(True,14400)):
+            with patch.object(dbt_runner,'PROJECTS_DIR',str(project_root)), \
+                 patch('dbt.adapters.fabricspark.connections.FabricSparkConnectionManager.open') as opened:
+                opened.return_value.handle.cursor.return_value.description=None
+                connection=module.Connection('spark',Path('/plan'),{'plan_id':'p'},
+                                             {'statement_timeout_s':123,'validation_timeout_s':14400},validation=validation)
+                self.assertEqual(opened.call_args.args[0].credentials.statement_timeout,expected)
+                connection.close()
+
+    def test_compiler_compatible_window_and_position_spellings_round_trip(self):
+        sql="SELECT first_value(v IGNORE NULLS) OVER (PARTITION BY k ORDER BY t) AS latest, strpos(path,'/order-lines/') AS pos FROM s"
+        actual=module.translate(sql)
+        self.assertIn('FIRST_VALUE(v, TRUE)',actual)
+        self.assertIn("INSTR(path, '/order-lines/')",actual)
+        self.assertNotIn('LOCATE(',actual)
+        self.assertIn('FIRST_VALUE(v, TRUE)',module.full_recompute_query(actual))
+        import duckdb
+        with duckdb.connect() as db:
+            db.execute('CREATE TABLE s(k INT,t INT,v VARCHAR,path VARCHAR)')
+            db.execute("INSERT INTO s VALUES (1,1,NULL,'/a/order-lines/b'),(1,2,'ready','/x'),(2,1,NULL,NULL),(2,2,NULL,'/order-lines/'),(NULL,1,'web','🦆/order-lines/é')")
+            expected=db.execute(sql).fetchall()
+            lowered=module.sqlglot.transpile(actual,read='spark',write='duckdb')[0]
+            self.assertCountEqual(db.execute(lowered).fetchall(),expected)
+
+    def test_strict_spark_creation_checks_incrementality_and_retains_verdict_across_refresh(self):
+        for engine in ('spark-openivm','fabric-openivm-jvm-35'):
+            for eligible,sources in ((True,['source']),(False,[]),(False,['source'])):
+                with self.subTest(engine=engine,eligible=eligible,sources=sources):
+                    c=Mock(engine=engine,namespace='cat.xt')
+                    verdict={'eligible':eligible,'source_tables':sources,'refresh_type_name':'GROUP_RECOMPUTE' if eligible else 'FULL_REFRESH',
+                             'compile_refresh_type_name':'GROUP_RECOMPUTE' if eligible else 'SIMPLE_PROJECTION',
+                             'reason':'kept' if eligible else 'no_real_delta'}
+                    c.execute.return_value=[[json.dumps(verdict)]]
+                    state={}
+                    if not eligible and sources:
+                        with self.assertRaisesRegex(ValueError,'not incrementalizable'):
+                            module.build(c,{'m':'SELECT 1'},state,initial=True,fallback_policy='strict')
+                        self.assertEqual(c.execute.call_count,2)
+                        self.assertTrue(c.execute.call_args.args[0].startswith('DROP TABLE IF EXISTS'))
+                    else:
+                        module.build(c,{'m':'SELECT 1'},state,initial=True,fallback_policy='strict')
+                        self.assertTrue(c.execute.call_args_list[0].args[0].startswith('EXPLAIN CREATE MATERIALIZED VIEW'))
+                        self.assertTrue(c.execute.call_args_list[1].args[0].startswith('DROP TABLE IF EXISTS'))
+                        self.assertTrue(c.execute.call_args_list[2].args[0].startswith('CREATE MATERIALIZED VIEW'))
+                        expected='incremental' if eligible else 'static'
+                        self.assertEqual(state['materializations']['m']['classification'],expected)
+                        module.build(c,{'m':'SELECT 1'},state,fallback_policy='strict')
+                        self.assertEqual(state['materializations']['m']['preflight'],verdict)
+                        self.assertEqual(state['materializations']['m']['classification'],expected)
+
+    def test_validation_query_failure_is_not_masked_by_cleanup_sql(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);manifest=root/'manifest.json'
+            manifest.write_text(json.dumps({'plan_id':'p'}))
+            (root/'sql-checkpoint.json').write_text(json.dumps({'dirty':False,'batch_num':1,'plan_id':'p','namespace':'lake.xt'}))
+            c=Mock(namespace='lake.xt')
+            with patch.object(module,'Connection',return_value=c) as opened,patch.object(module,'replay'), \
+                 patch.object(module,'queries',return_value={'m':'SELECT 1'}), \
+                 patch.object(module,'build',side_effect=RuntimeError('original query timeout')):
+                with self.assertRaisesRegex(RuntimeError,'original query timeout'):
+                    module.validate_batch('spark',1,manifest,root,{'validation_timeout_s':14400})
+            self.assertTrue(opened.call_args.kwargs['validation'])
+            self.assertFalse(any('DROP SCHEMA' in call.args[0] for call in c.execute.call_args_list))
+            c.close.assert_called_once()
+
     def test_fabric_profile_is_parsed_before_rendering_quoted_environment_json(self):
         from services import dbt_runner
         root = Path(__file__).parents[1]/'dbt-projects'

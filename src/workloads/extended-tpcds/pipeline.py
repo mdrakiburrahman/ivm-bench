@@ -3,6 +3,7 @@
 import argparse
 import csv
 import json
+import logging
 import math
 import time
 from datetime import date
@@ -69,7 +70,12 @@ def build(connection, targets=None, cohort="all"):
             durations[name] = time.monotonic() - start
         connection.execute("COMMIT")
     except Exception:
-        connection.execute("ROLLBACK")
+        try:
+            connection.execute("ROLLBACK")
+        except Exception:
+            # A CLI statement timeout terminates its process. Cleanup cannot
+            # replace the original query/timeout error with a dead-session error.
+            logging.exception('Could not roll back failed reference construction')
         raise
     # These scans are validation artifacts and are outside the recorded build time.
     counts = {name: connection.execute(f"SELECT count(*) FROM {name}").fetchall()[0][0] for name in models}

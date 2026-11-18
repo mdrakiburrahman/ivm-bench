@@ -16,6 +16,27 @@ from services.oat_runner import generate_results_csv
 
 
 class ExtendedTPCDSConfigTests(unittest.TestCase):
+    def test_validation_timeout_is_separate_and_does_not_change_source_cache_identity(self):
+        a=BenchmarkConfig(workload='extended-tpcds',scale_factor=100,
+                          extended_tpcds=ExtendedTPCDSOptions(statement_timeout_s=3600,validation_timeout_s=14400))
+        b=BenchmarkConfig(workload='extended-tpcds',scale_factor=100,
+                          extended_tpcds=ExtendedTPCDSOptions(statement_timeout_s=3600,validation_timeout_s=28800))
+        self.assertEqual(workload_cache_key(a),workload_cache_key(b))
+        self.assertEqual(a.extended_tpcds.statement_timeout_s,3600)
+        for value in (0,-1,True,None,float('inf'),float('nan')):
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'validation timeout'):
+                ExtendedTPCDSOptions(validation_timeout_s=value)
+
+    def test_refresh_broadcast_policy_is_optional_and_round_trips_through_experiments(self):
+        from models.experiments import SparkTunables
+        self.assertNotIn('OPENIVM_REFRESH_ADAPTIVE_BROADCAST',SparkTunables().to_compose_env())
+        text=json.dumps({'baseline':{'spark_tunables':{'refresh_adaptive_broadcast':False}},'experiments':[{}]})
+        experiment,=parse_experiments_json(text)
+        self.assertEqual(experiment.spark_tunables.to_compose_env()['OPENIVM_REFRESH_ADAPTIVE_BROADCAST'],'0')
+        self.assertFalse(experiment.to_dict()['spark_tunables']['refresh_adaptive_broadcast'])
+        with self.assertRaisesRegex(ValueError,'must be a boolean'):
+            SparkTunables(refresh_adaptive_broadcast='false')
+
     def test_dbsp_spill_overlay_applies_only_to_extended_workload_and_reaches_compose(self):
         from services.resource_calc import compute_engine_configs
         import yaml

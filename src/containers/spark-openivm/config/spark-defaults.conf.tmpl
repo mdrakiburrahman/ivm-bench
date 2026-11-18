@@ -157,6 +157,10 @@ spark.sql.adaptive.skewJoin.enabled=true
 # shuffle entirely.  Larger affected sets (e.g. a full re-refresh that
 # touches the entire MV) still fall back to sort-merge automatically.
 spark.sql.autoBroadcastJoinThreshold=104857600
+# The engine already disables plan-time broadcast for large recomputation
+# statements. This controls its optional AQE promotion in those same scopes;
+# small affected-key DELETE MERGEs retain their plan-time broadcast behavior.
+spark.openivm.refresh.adaptiveBroadcast.enabled=${OPENIVM_REFRESH_ADAPTIVE_BROADCAST_BOOL}
 # Also disable Delta's MERGE source materialization to keep the
 # pre-existing 11 GiB intermediate from re-appearing.  Source plans are
 # re-evaluated per join pass instead of materialized into a scratch

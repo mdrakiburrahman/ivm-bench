@@ -128,6 +128,11 @@ class SparkTunables:
     shuffle_partitions: Optional[int] = None
     default_parallelism: Optional[int] = None
     dbt_threads: Optional[int] = None
+    refresh_adaptive_broadcast: Optional[bool] = None
+
+    def __post_init__(self):
+        if self.refresh_adaptive_broadcast is not None and not isinstance(self.refresh_adaptive_broadcast,bool):
+            raise ValueError('refresh_adaptive_broadcast must be a boolean')
 
     def to_compose_env(self) -> Dict[str, str]:
         env: Dict[str, str] = {}
@@ -141,6 +146,8 @@ class SparkTunables:
             env["SPARK_SUBMIT_DEFAULT_PARALLELISM"] = str(self.default_parallelism)
         if self.dbt_threads is not None:
             env["SPARK_DBT_THREADS"] = str(self.dbt_threads)
+        if self.refresh_adaptive_broadcast is not None:
+            env['OPENIVM_REFRESH_ADAPTIVE_BROADCAST'] = '1' if self.refresh_adaptive_broadcast else '0'
         return env
 
 
@@ -510,6 +517,7 @@ class ExperimentInputs:
             shuffle_partitions=st_d.get("shuffle_partitions", base.spark_tunables.shuffle_partitions),
             default_parallelism=st_d.get("default_parallelism", base.spark_tunables.default_parallelism),
             dbt_threads=st_d.get("dbt_threads", base.spark_tunables.dbt_threads),
+            refresh_adaptive_broadcast=st_d.get('refresh_adaptive_broadcast',base.spark_tunables.refresh_adaptive_broadcast),
         )
 
         # batch_N_pct accepts either the new explicit name or the legacy

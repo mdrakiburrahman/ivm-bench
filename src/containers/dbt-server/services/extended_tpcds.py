@@ -189,8 +189,9 @@ def validate(connection, manifest, directory, batch_num, cohort):
         return {"status":"passed" if not any(checks.values()) else "failed", "models_checked":len(checks),
                 "differences":checks, "comparison":"EXCEPT ALL by position; FLOAT/DOUBLE rounded to 10 decimals; keys and nulls retained"}
     finally:
-        connection.execute("SET search_path=" + quote(search_path))
-        connection.execute("DETACH xt_reference")
+        if connection.session.alive:
+            connection.execute("SET search_path=" + quote(search_path))
+            connection.execute("DETACH xt_reference")
 
 
 def context(engine, manifest_path=None, work_dir=None, binary=None, options=None):
@@ -218,7 +219,7 @@ def validate_batch(engine, batch_num, **kwargs):
         from services.extended_tpcds_sql import validate_batch as validate_sql_batch
         return validate_sql_batch(engine, batch_num, manifest_path, work_dir, options)
     connection = CliConnection(binary, work_dir / "state.duckdb", openivm=engine == "duckdb-openivm",
-                               timeout_s=options["statement_timeout_s"], memory_limit=os.environ.get(prefix + "_VALIDATE_MEM_LIMIT", os.environ.get(prefix + "_MEM_LIMIT")), threads=os.environ.get(prefix + "_THREADS"))
+                               timeout_s=options.get('validation_timeout_s',14400), memory_limit=os.environ.get(prefix + "_VALIDATE_MEM_LIMIT", os.environ.get(prefix + "_MEM_LIMIT")), threads=os.environ.get(prefix + "_THREADS"))
     try:
         applied, plan_id = connection.execute("SELECT number, plan_id FROM xt_applied_batch").fetchone()
         if applied != batch_num or plan_id != manifest["plan_id"]:

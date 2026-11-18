@@ -20,7 +20,7 @@ from pathlib import Path
 import requests
 import sqlglot
 from sqlglot import exp
-from sqlglot.dialects.databricks import Databricks
+from services.spark_compiler_dialect import CompilerDatabricks
 
 from sql_catalog import load_sql
 from services.db import DB_LOCK, get_db
@@ -31,30 +31,6 @@ from services.progress import LIVE_PROGRESS, PROGRESS_LOCK, cleanup_progress, in
 WORK_DIR = Path(os.environ.get("DATABRICKS_OPENIVM_WORK_DIR", "/data/processed/databricks-openivm"))
 COMPILER_URL = os.environ.get("OPENIVM_SQL_COMPILER_URL", "http://openivm-sql-compiler:8998")
 _RUN_LOCK = threading.Lock()
-
-
-class _CompilerDialect(Databricks):
-    """Keep the window null-treatment syntax understood by the Spark bridge."""
-
-    class Generator(Databricks.Generator):
-        TRANSFORMS = {
-            **Databricks.Generator.TRANSFORMS,
-            # The two-argument spelling is shared by Spark and DuckDB; LOCATE
-            # cannot bind in the native compiler. Keep explicit-start calls on
-            # their existing path rather than changing their edge semantics.
-            exp.StrPosition: lambda self, e: self.func('INSTR', e.this, e.args['substr'])
-            if e.args.get('position') is None else Databricks.Generator.TRANSFORMS[exp.StrPosition](self, e),
-        }
-
-        def ignorenulls_sql(self, expression):
-            if isinstance(expression.this, (exp.FirstValue, exp.LastValue)):
-                return self.func(expression.this.sql_name(), expression.this.this, exp.true())
-            return super().ignorenulls_sql(expression)
-
-        def respectnulls_sql(self, expression):
-            if isinstance(expression.this, (exp.FirstValue, exp.LastValue)):
-                return self.sql(expression, "this")
-            return super().respectnulls_sql(expression)
 
 
 def quote(name):
@@ -119,7 +95,7 @@ def remap_sql(sql, mapping, paths=None, snapshots=None, *, for_compiler=False):
                 if snapshot.get("predicate"):
                     query = query.where(snapshot["predicate"], dialect="databricks")
                 table.replace(query.subquery(alias=alias))
-    return tree.sql(dialect=_CompilerDialect if for_compiler else "databricks")
+    return tree.sql(dialect=CompilerDatabricks if for_compiler else "databricks")
 
 
 def _save(path, payload):

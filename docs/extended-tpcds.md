@@ -33,6 +33,30 @@ step totals can overlap and must not be added to complete-command times.
 Older Fabric-DS runs could record the flag as ON while bypassing profiling;
 the flag alone is not evidence that those runs contain native profiles.
 
+### Validation budget and Spark maintenance eligibility
+
+`extended_tpcds.validation_timeout_s` defaults to 14,400 seconds per CLI/Livy
+validation statement, independently of the measured workload's
+`statement_timeout_s`. Changing only this validation budget does not invalidate
+the source cache. Failed reference queries preserve their original error;
+abandoned SQL reference schemas are removed by engine teardown.
+
+Spark-family SQL uses compiler-compatible `FIRST_VALUE(value, true)` and
+two-argument `INSTR` forms. The canonical workload queries, data, window frames
+and output cardinalities are unchanged. With `fallback_policy: strict`, Spark
+OpenIVM and Fabric OpenIVM run `EXPLAIN CREATE MATERIALIZED VIEW` before each
+initial creation and retain its verdict. Source-dependent full-refresh verdicts
+fail rather than becoming an overwrite cascade; source-free metadata is labelled
+static. These eligibility checks are included in initial model command time.
+The pinned EXPLAIN registers an empty cold-DAG table; initialization removes its
+owned stub before creating the real MV in the fresh experiment namespace.
+
+The Fabric-DS presets set `spark_tunables.refresh_adaptive_broadcast: false`.
+This disables AQE broadcast promotion inside the engine's existing heavy-refresh
+scopes. It preserves plan-time broadcasts for small affected-key DELETE MERGEs;
+the session-wide 100 MiB threshold is unchanged. The optional knob leaves other
+workloads' default policy intact.
+
 ### SF100 all-engine run
 
 `experiments/extended-tpcds-sf100.json` selects all ten engines serially, one

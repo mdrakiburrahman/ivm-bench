@@ -12,11 +12,41 @@ os.environ['EXTENDED_TPCDS_WORKLOAD_DIR'] = str(APP.parents[1] / 'workloads' / '
 sys.path.insert(0,str(APP))
 from services.extended_tpcds import CliConnection, build
 from services.compiler_bench.engines import QueryFailed
+from services.compiler_bench.engines import EngineTimeout
 from flask import Flask
 from handlers.extended_tpcds import ExtendedTPCDSHandler
 
 
 class ExtendedServiceTests(unittest.TestCase):
+    def test_native_validation_does_not_issue_cleanup_sql_to_a_timed_out_worker(self):
+        from services import extended_tpcds as workload
+        c=Mock();c.execute.return_value=c;c.fetchone.return_value=('main',)
+        c.session.alive=True
+        def stop_worker(*args,**kwargs):
+            c.session.alive=False
+            raise EngineTimeout('original statement timeout')
+        with patch.object(workload.mutations,'load_initial'), \
+             patch.object(workload.pipeline,'build',side_effect=stop_worker):
+            with self.assertRaisesRegex(EngineTimeout,'original statement timeout'):
+                workload.validate(c,{'batches':[]},Path('/plan'),1,'all')
+        self.assertFalse(any(call.args[0].startswith('DETACH') for call in c.execute.call_args_list))
+
+    def test_reference_rollback_failure_preserves_the_original_timeout(self):
+        from services.extended_tpcds import pipeline
+        c=Mock()
+        c.fetchone.return_value=('{}',)
+        def execute(sql):
+            if sql.startswith('CREATE OR REPLACE TABLE'):
+                raise EngineTimeout('original statement timeout')
+            if sql=='ROLLBACK':
+                raise RuntimeError('worker already stopped')
+            return c
+        c.execute.side_effect=execute
+        with patch.object(pipeline,'selected_models',return_value=['m']), \
+             patch.object(pipeline,'render_model',return_value='SELECT 1'),self.assertLogs(level='ERROR'):
+            with self.assertRaisesRegex(EngineTimeout,'original statement timeout'):
+                pipeline.build(c)
+
     def test_cli_accepts_multiple_result_sets_and_dates(self):
         with patch('services.extended_tpcds._DuckDBSession') as factory:
             session=factory.return_value

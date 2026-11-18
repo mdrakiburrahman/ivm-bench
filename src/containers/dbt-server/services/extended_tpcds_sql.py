@@ -12,6 +12,7 @@ from pathlib import Path
 
 import sqlglot
 from sqlglot import exp
+from services.spark_compiler_dialect import CompilerSpark
 
 from services.compiler_bench.engines import _verify_probe
 
@@ -56,21 +57,21 @@ def translate(sql, relations=None):
                 replacement = sqlglot.to_table(identifier(relations[source.name]), dialect='spark')
                 for key in ('this', 'db', 'catalog'):
                     source.set(key, replacement.args.get(key))
-    return tree.sql(dialect='spark')
+    return tree.sql(dialect=CompilerSpark)
 
 
 class Connection:
-    def __init__(self, engine, directory, manifest, options, *, initialize=False):
+    def __init__(self, engine, directory, manifest, options, *, initialize=False, validation=False):
         self.engine = engine
         self.schemas = manifest.get('schemas', {})
-        self.timeout = options['statement_timeout_s']
+        self.timeout = options.get('validation_timeout_s',14400) if validation else options['statement_timeout_s']
         self.schema = 'xt_' + manifest['plan_id'] + '_' + engine.replace('-', '_') + '_' + str(os.environ.get('DATABRICKS_EXPERIMENT_ID') or os.environ.get('FABRIC_RUN_ID') or 'local').replace('-', '_')
         self.remote_root = str(directory)
         self.statements = []
         if engine.startswith('databricks-'):
             from services import databricks_enzyme_sources as src
             self.catalog = src.CATALOG
-            self.handle = src.open_connection()
+            self.handle = src.open_connection(self.timeout)
             if initialize:
                 ws = src._workspace_client()
                 src._ensure_cache_schema(ws)
@@ -245,10 +246,10 @@ def full_recompute_query(query):
                 hint = select.args.get('hint') or exp.Hint(expressions=[])
                 hint.append('expressions', exp.JoinHint(this='MERGE', expressions=[exp.to_table(right.alias)]))
                 select.set('hint', hint)
-    return tree.sql(dialect='spark')
+    return tree.sql(dialect=CompilerSpark)
 
 
-def build(connection, model_queries, state, *, initial=False, reference=False):
+def build(connection, model_queries, state, *, initial=False, reference=False, fallback_policy='table'):
     materializations = state.setdefault('materializations', {})
     durations = {}
     for name, query in model_queries.items():
@@ -256,15 +257,31 @@ def build(connection, model_queries, state, *, initial=False, reference=False):
         started = time.monotonic()
         target = identifier(connection.namespace+'.'+name) if connection.engine.startswith('databricks-') and not reference else identifier(name)
         maintained = not reference and ('openivm' in connection.engine or connection.engine == 'databricks-enzyme')
+        previous = materializations.get(name,{})
         if maintained:
             if connection.engine == 'databricks-openivm':
                 raise ValueError('Databricks OpenIVM must use the compiled SQL maintenance path')
             if initial:
+                if connection.engine in ('spark-openivm','fabric-openivm-jvm-35') and fallback_policy == 'strict':
+                    raw = connection.execute(f'EXPLAIN CREATE MATERIALIZED VIEW {target} AS {query}')[0][0]
+                    # The pinned EXPLAIN registers an empty cold-DAG table.
+                    # Initialization owns a fresh namespace; remove that stub
+                    # before registering the actual MV under the same name.
+                    connection.execute(f'DROP TABLE IF EXISTS {target}')
+                    verdict = json.loads(raw)
+                    required = {'eligible','source_tables','refresh_type_name','compile_refresh_type_name','reason'}
+                    if (not required <= verdict.keys() or not isinstance(verdict.get('eligible'),bool)
+                            or not isinstance(verdict.get('source_tables'),list)):
+                        raise ValueError('incomplete incremental eligibility verdict for '+name)
+                    static = not verdict['source_tables'] and verdict['compile_refresh_type_name'] not in ('COMPILE_FAILED','UNKNOWN','',None)
+                    if not verdict['eligible'] and not static:
+                        raise ValueError(f"{name} is not incrementalizable: {verdict['refresh_type_name']} ({verdict['reason']})")
+                    previous = {'preflight':verdict,'classification':'incremental' if verdict['eligible'] else 'static'}
                 policy = ' REFRESH POLICY AUTO' if connection.engine == 'databricks-enzyme' else ''
                 connection.execute(f'CREATE MATERIALIZED VIEW {target}{policy} AS {query}')
             else:
                 connection.execute(f'REFRESH MATERIALIZED VIEW {target}')
-            classification = 'unknown'
+            classification = previous.get('classification','unknown')
         else:
             # Full materializations and independent validation use the same
             # strategy; compiler input and incremental helper joins stay intact.
@@ -276,7 +293,7 @@ def build(connection, model_queries, state, *, initial=False, reference=False):
                 connection.execute(f'INSERT OVERWRITE {target} {query}')
             classification = 'full'
         durations[name] = time.monotonic() - started
-        materializations[name] = {'kind':'materialized_view' if maintained else 'table', 'classification':classification}
+        materializations[name] = {**previous,'kind':'materialized_view' if maintained else 'table', 'classification':classification}
     connection.model_id = None
     return durations
 
@@ -339,7 +356,7 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
         source_s = time.monotonic() - started
         connection.phase = 'maintenance'
         started = time.monotonic()
-        durations = (build_databricks_openivm(connection, model_queries, manifest, state, batch_num==1) if engine=='databricks-openivm' else build(connection, model_queries, state, initial=batch_num==1))
+        durations = (build_databricks_openivm(connection, model_queries, manifest, state, batch_num==1) if engine=='databricks-openivm' else build(connection, model_queries, state, initial=batch_num==1, fallback_policy=options.get('fallback_policy','table')))
         model_s = time.monotonic() - started
         connection.phase = 'observer'
         profiling = profile.finish(durations, statements=connection.statements)
@@ -370,8 +387,9 @@ def validate_batch(engine, batch_num, manifest_path, work_dir, options):
     state = json.loads((work_dir/'sql-checkpoint.json').read_text())
     if state['dirty'] or state['batch_num'] != batch_num or state['plan_id'] != manifest['plan_id']:
         raise ValueError('validation snapshot does not match the committed batch')
-    connection = Connection(engine, manifest_path.parent, manifest, options)
+    connection = Connection(engine, manifest_path.parent, manifest, options, validation=True)
     reference = state['namespace'] + '_reference'
+    compared = False
     try:
         connection.execute('CREATE SCHEMA '+identifier(reference))
         connection.use(reference)
@@ -387,12 +405,19 @@ def validate_batch(engine, batch_num, manifest_path, work_dir, options):
             # Spark, Fabric and Photon all execute the Spark SQL comparison form.
             probe = _verify_probe(actual, 'SELECT * FROM '+expected, columns,engine='spark')
             checks[name] = int(connection.execute(probe)[0][0])
+        compared = True
         return {'status':'passed' if not any(checks.values()) else 'failed', 'models_checked':len(checks),
                 'differences':checks, 'comparison':'independent source replay and full DAG recomputation; EXCEPT ALL; floats rounded to 10 decimals'}
     finally:
-        connection.use(state['namespace'])
-        connection.execute('DROP SCHEMA '+identifier(reference)+' CASCADE')
-        connection.close()
+        try:
+            # A timed-out Livy statement may still be executing. Do not queue
+            # cleanup SQL behind it and obscure the original failure. Engine
+            # teardown owns abandoned reference schemas.
+            if compared:
+                connection.use(state['namespace'])
+                connection.execute('DROP SCHEMA '+identifier(reference)+' CASCADE')
+        finally:
+            connection.close()
 
 
 def cleanup(engine, manifest_path, work_dir, options):
@@ -403,6 +428,7 @@ def cleanup(engine, manifest_path, work_dir, options):
         return fabric.teardown_run()
     connection = Connection(engine, manifest_path.parent, manifest, options)
     try:
+        connection.execute('DROP SCHEMA IF EXISTS '+identifier(connection.namespace+'_reference')+' CASCADE')
         if engine == 'spark-openivm':
             from services.extended_tpcds import pipeline
             for name in reversed(pipeline.selected_models()):

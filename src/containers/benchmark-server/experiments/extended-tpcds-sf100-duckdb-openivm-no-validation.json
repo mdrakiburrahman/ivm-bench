@@ -21,7 +21,8 @@
       "report_date": "2002-12-31",
       "batches": 3,
       "statement_timeout_s": 3600,
-      "fallback_policy": "strict"
+      "fallback_policy": "strict",
+      "validation_timeout_s": 14400
     },
     "feature_flags": {
       "openivm_validate": false,

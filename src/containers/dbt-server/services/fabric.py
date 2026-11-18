@@ -835,8 +835,8 @@ def default_openivm_spark_properties() -> Dict[str, str]:
     openivm JAR (see MaterializedViewCommands.extractBundledAssets) — no
     ``compiler.assetsUri`` / OneLake staging is required.
     """
-    def _b(env_key: str) -> str:
-        return "true" if os.environ.get(env_key, "0") == "1" else "false"
+    def _b(env_key: str, default: str = "0") -> str:
+        return "true" if os.environ.get(env_key, default) == "1" else "false"
 
     add_opens = " ".join(
         f"--add-opens=java.base/{m}=ALL-UNNAMED"
@@ -872,6 +872,7 @@ def default_openivm_spark_properties() -> Dict[str, str]:
         "spark.openivm.refresh.scd2RangeAccel.enabled": "true",
         "spark.databricks.delta.schema.autoMerge.enabled": "true",
         "spark.openivm.profile.refresh": _b("OPENIVM_PROFILE_REFRESH"),
+        "spark.openivm.refresh.adaptiveBroadcast.enabled": _b('OPENIVM_REFRESH_ADAPTIVE_BROADCAST','1'),
         "spark.openivm.queryLog.enabled": _b("OPENIVM_QUERY_LOG"),
         "spark.driver.extraJavaOptions": add_opens,
         "spark.executor.extraJavaOptions": add_opens,
