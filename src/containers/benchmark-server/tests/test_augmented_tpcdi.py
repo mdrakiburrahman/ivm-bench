@@ -47,6 +47,19 @@ def normalized_sql(sql):
 
 
 class AugmentedTpcdiTest(unittest.TestCase):
+    def test_duckdb_sql_capture_is_opt_in_and_preserves_figure_one_inputs(self):
+        config = (BENCHMARK_SERVER / "experiments" /
+                  "duckdb-openivm-sf100-sql-capture.json")
+        (experiment,) = parse_experiments_json(config.read_text(encoding="utf-8"))
+        self.assertEqual(experiment.engines, ["duckdb-openivm"])
+        self.assertEqual((experiment.scale_factor, experiment.batch_1_pct,
+                          experiment.batch_2_pct, experiment.batch_3_pct),
+                         (100, "100", "1", "0.01"))
+        self.assertEqual(experiment.to_compose_env()["OPENIVM_CAPTURE_SQL"], "1")
+        self.assertFalse(experiment.feature_flags.openivm_validate)
+        self.assertEqual(parse_experiments_json('{"experiments":[{}]}')[0]
+                         .to_compose_env()["OPENIVM_CAPTURE_SQL"], "0")
+
     def test_openivm_pipeline_and_diagnostic_are_explicit_experiment_knobs(self):
         experiment = parse_experiments_json(json.dumps({"experiments": [{
             "openivm_diagnostic_view": "ducklake.silver.watches",

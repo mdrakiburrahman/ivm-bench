@@ -34,6 +34,7 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         self.enterContext(patch.object(connections, 'PROFILE_REFRESH', False))
         self.enterContext(patch.object(connections, 'REFRESH_PIPELINE', False))
         self.enterContext(patch.object(connections, 'DIAGNOSTIC_VIEW', ''))
+        self.enterContext(patch.object(connections, 'CAPTURE_SQL', False))
         connections._pipeline_completed = False
         connections._pipeline_error = None
         self.sleep = self.enterContext(patch.object(connections.time, 'sleep'))
@@ -181,8 +182,34 @@ class OpenIVMCLIRetryTest(unittest.TestCase):
         self.assertNotIn('SET openivm_archive_compiled_sql=true;', programs[0])
         self.assertIn('SET openivm_archive_compiled_sql=true;', programs[1])
 
+    def test_full_sql_capture_enables_archive_and_reference_files(self):
+        def execute(*args, **kwargs):
+            return self.output(kwargs['input'])
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(connections, 'WORK_DIR', directory), \
+                patch.object(connections, 'CAPTURE_SQL', True), \
+                patch.object(connections.subprocess, 'run', side_effect=execute) as run:
+            connections._run_cli('SELECT 1')
+            program = run.call_args.kwargs['input']
+            self.assertIn('SET openivm_archive_compiled_sql=true;', program)
+            self.assertIn(f"SET openivm_files_path='{directory}/compiled-sql';", program)
+            self.assertTrue((Path(directory) / 'compiled-sql').is_dir())
+
 
 class OpenIVMMergeDiagnosticTest(unittest.TestCase):
+    def test_exports_full_compiled_sql_after_each_batch(self):
+        def copy(query, output):
+            output.write_text('view_name,operation,version,stmt_order,sql\n'
+                              'v,refresh,1,0,"SELECT 1"\n', encoding='utf-8')
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(profile, 'WORK_DIR', Path(directory)), \
+                patch.object(profile, 'CAPTURE_SQL', True), \
+                patch.object(profile, '_copy_query_to_csv', side_effect=copy) as run:
+            paths = profile._export_compiled_sql(2)
+            self.assertEqual(len(paths), 2)
+            self.assertIn('stmt_order', run.call_args_list[1].args[0])
+            self.assertIn('SELECT 1', (Path(directory) / paths[1]).read_text())
+
     def test_exports_full_archived_merge_and_nonexecuting_plan(self):
         full_sql = 'MERGE INTO ducklake.silver.watches USING (SELECT 1) d ON false WHEN NOT MATCHED THEN INSERT VALUES (1)'
         def copy(query, path):

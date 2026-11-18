@@ -35,6 +35,7 @@ TEMP_DIR = os.environ.get(
 )
 THREADS = os.environ.get("DUCKDB_OPENIVM_THREADS", "")
 PROFILE_REFRESH = os.environ.get("OPENIVM_PROFILE_REFRESH", "0") == "1"
+CAPTURE_SQL = os.environ.get("OPENIVM_CAPTURE_SQL", "0") == "1"
 SNAPSHOT_PUBLICATION = os.environ.get("OPENIVM_SNAPSHOT_PUBLICATION", "0") == "1"
 REFRESH_PIPELINE = os.environ.get("OPENIVM_REFRESH_PIPELINE", "0") == "1"
 DIAGNOSTIC_VIEW = os.environ.get("OPENIVM_DIAGNOSTIC_VIEW", "")
@@ -64,6 +65,9 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
     meta_path = os.path.join(WORK_DIR, "openivm.ducklake")
     data_path = os.path.join(WORK_DIR, "data")
     os.makedirs(TEMP_DIR, exist_ok=True)
+    if CAPTURE_SQL:
+        compiled_sql_dir = os.path.join(WORK_DIR, "compiled-sql")
+        os.makedirs(compiled_sql_dir, exist_ok=True)
 
     preamble_lines = [
         ".bail on",
@@ -80,8 +84,13 @@ def _run_cli(sql: str, expect_output: bool = False) -> str:
         preamble_lines.append(_setup_sql("set_snapshot_publication"))
     if PROFILE_REFRESH:
         preamble_lines.append(_setup_sql("set_profile_refresh"))
-    if DIAGNOSTIC_VIEW and (REFRESH_PIPELINE and sql.lstrip().lower().startswith("pragma refresh_pipeline(")
-                            or _refresh_target(sql) == DIAGNOSTIC_VIEW.lower()):
+    if CAPTURE_SQL:
+        preamble_lines.append(_setup_sql("set_files_path", files_path="'" + compiled_sql_dir.replace("'", "''") + "'"))
+    selected_refresh = DIAGNOSTIC_VIEW and (
+        REFRESH_PIPELINE and sql.lstrip().lower().startswith("pragma refresh_pipeline(")
+        or _refresh_target(sql) == DIAGNOSTIC_VIEW.lower()
+    )
+    if CAPTURE_SQL or selected_refresh:
         preamble_lines.append(_setup_sql("set_archive_compiled_sql"))
     preamble_lines.extend([
         _setup_sql("set_cascade_refresh"),
