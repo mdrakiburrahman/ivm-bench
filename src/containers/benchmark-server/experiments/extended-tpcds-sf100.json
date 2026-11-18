@@ -36,7 +36,8 @@
       "openivm_validate": true,
       "storage_metrics": false,
       "preserve_raw": true,
-      "spark_metrics_capture": false
+      "spark_metrics_capture": false,
+      "openivm_profile_refresh": true
     },
     "spark_tunables": {
       "shuffle_partitions": 256

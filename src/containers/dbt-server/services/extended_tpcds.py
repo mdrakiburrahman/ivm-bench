@@ -271,6 +271,8 @@ def run_batch(engine, batch_num, *, manifest_path=None, work_dir=None, binary=No
     connection = CliConnection(binary, database, openivm=engine == "duckdb-openivm",
                                timeout_s=options["statement_timeout_s"], memory_limit=os.environ.get(prefix + "_MEM_LIMIT"), threads=os.environ.get(prefix + "_THREADS"))
     try:
+        from services.extended_tpcds_profile import BatchProfile
+        profile = BatchProfile(engine, batch_num, pipeline.selected_models(), connection)
         start = time.monotonic()
         if batch_num == 1:
             mutations.load_initial(connection, manifest, manifest_path.parent)
@@ -280,6 +282,7 @@ def run_batch(engine, batch_num, *, manifest_path=None, work_dir=None, binary=No
         start = time.monotonic()
         result = build(connection, manifest["source_configuration"], options["query_cohort"], materializations, options["fallback_policy"])
         model_wall = time.monotonic() - start
+        result['profiling'] = profile.finish(result['model_sql_duration_s'])
         state_path.write_text(json.dumps(materializations, indent=2) + "\n")
         result.update({"engine":engine, "engine_version":connection.engine_version, "workload":"extended-tpcds", "plan_id":manifest["plan_id"],
                        "batch_num":batch_num, "source_storage":"duckdb_native", "configuration":manifest["source_configuration"], "options":options,

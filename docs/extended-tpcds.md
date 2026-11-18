@@ -7,6 +7,32 @@ streams. Its results are not comparable to officially published TPC-DS results.
 
 The existing `extended-tpcds` configuration key and file paths are retained.
 
+### Batch profiling
+
+`feature_flags.openivm_profile_refresh` enables Fabric-DS telemetry on every
+engine path. Collection runs on the workload's own sessions before independent
+validation and outside the reported source/model batch timer. Instrumentation
+inside the engine remains part of measured command time; container CPU counters
+also include collection before the HTTP batch request returns.
+
+DuckDB OpenIVM, Spark OpenIVM and Fabric OpenIVM export native refresh steps as
+CSV, with separate batch JSON metadata. Refresh IDs already present before the
+batch and profiles from other schemas are excluded. Photon query-history exports
+retain exact statement IDs and separate source/observer queries from maintenance;
+Enzyme also exports updates for the isolated workload schema and current batch.
+Feldera and DBSP.NET retain cumulative pipeline-statistics snapshots, and Feldera
+support bundles are saved separately per batch. These pipeline metrics do not
+claim per-model SQL or refresh-step timing. Plain DuckDB, Spark and Fabric keep
+per-model command times and explicitly report native refresh steps as unsupported.
+
+Artifacts are saved before validation, including when validation fails. Disabled,
+partial, unsupported and failed profiling are distinguished. Enabled profiling
+that returns no fresh OpenIVM steps, or fails to reach the container, fails the
+engine attempt after saving diagnostics; other engines still continue. Profile
+step totals can overlap and must not be added to complete-command times.
+Older Fabric-DS runs could record the flag as ON while bypassing profiling;
+the flag alone is not evidence that those runs contain native profiles.
+
 ### SF100 all-engine run
 
 `experiments/extended-tpcds-sf100.json` selects all ten engines serially, one

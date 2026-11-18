@@ -223,6 +223,14 @@ def export_profile(run_id: str, batch_num: int, *, client=None) -> dict:
         rows = _fetch_profile_rows(livy)
         settings = _runtime_sql_settings(livy) if batch_num == 1 else None
 
+    payload = profile_payload(rows, run_id, batch_num)
+    if settings is not None:
+        payload['runtime_sql_settings'] = settings
+    return payload
+
+
+def profile_payload(rows, run_id, batch_num):
+    """Serialize native or Spark refresh steps with the shared profile schema."""
     # ---------------- Main profile CSV ----------------
     profile_headers = [
         "exported_after_batch",
@@ -278,7 +286,6 @@ def export_profile(run_id: str, batch_num: int, *, client=None) -> dict:
         "batch_num": batch_num,
         "row_count": len(rows),
         "view_count": view_count,
-        **({"runtime_sql_settings": settings} if settings is not None else {}),
         "csv": {
             "profile": profile_csv,
             "by_step": by_step_csv,

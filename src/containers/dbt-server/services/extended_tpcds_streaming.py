@@ -281,6 +281,8 @@ def run_batch(engine,batch_num,manifest_path,work_dir,options):
     if batch_num>1 and state.get('sql_identity') != sql_identity:
         raise ValueError('streaming program changed after initialization')
     state['sql_identity']=sql_identity
+    from services.extended_tpcds_profile import BatchProfile
+    profile=BatchProfile(engine,batch_num,[output['view'] for output in spec['outputs']])
     state['dirty']=True
     checkpoint.write_text(json.dumps(state))
     if engine=='feldera' and batch_num>1:
@@ -315,6 +317,7 @@ def run_batch(engine,batch_num,manifest_path,work_dir,options):
             raise RuntimeError('Feldera did not drain all outputs')
         drain={'durationS':elapsed,'per_output_completion_s':per_output}
     elapsed=time.monotonic()-started
+    profiling=profile.finish({name:None for name in [output['view'] for output in spec['outputs']]})
     rows={}
     with duckdb.connect() as counter:
         for output in spec['outputs']:
@@ -325,6 +328,7 @@ def run_batch(engine,batch_num,manifest_path,work_dir,options):
     result={'status':'completed','engine':engine,'batch_num':batch_num,'plan_id':manifest['plan_id'],
             'duration_s':source_s+elapsed,'source_replay_wall_s_including_guards':source_s,'model_wall_s_including_cli':elapsed,
             'compile':compilation,'program':spec,'drain':drain,'model_rows':rows,'model_sql_duration_s':{name:None for name in rows},
+            'profiling':profiling,
             'classification_counts':{'incremental':len(rows)},'source_storage':'delta','options':options,
             'configuration':manifest['source_configuration'],
             'timing_semantics':'source mutation plus whole-pipeline resume-to-drain; compilation, output row counts and validation excluded; per-model SQL time unavailable'}

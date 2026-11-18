@@ -122,11 +122,14 @@ class Connection:
 
     def execute(self, sql):
         start = time.monotonic()
-        record = {'sql':sql, 'status':'failed'}
+        record = {'sql':sql, 'status':'failed', 'phase':getattr(self,'phase','setup'),
+                  'model_id':getattr(self,'model_id',None), 'started_at_ms':time.time()*1000}
         try:
             cursor = self.handle.cursor()
             try:
                 cursor.execute(sql)
+                if self.engine.startswith('databricks-'):
+                    record['query_id'] = cursor.query_id
                 rows = [list(r) for r in cursor.fetchall()] if cursor.description else []
             finally:
                 # The Livy adapter returns its connection wrapper as the cursor;
@@ -249,6 +252,7 @@ def build(connection, model_queries, state, *, initial=False, reference=False):
     materializations = state.setdefault('materializations', {})
     durations = {}
     for name, query in model_queries.items():
+        connection.model_id = name
         started = time.monotonic()
         target = identifier(connection.namespace+'.'+name) if connection.engine.startswith('databricks-') and not reference else identifier(name)
         maintained = not reference and ('openivm' in connection.engine or connection.engine == 'databricks-enzyme')
@@ -273,6 +277,7 @@ def build(connection, model_queries, state, *, initial=False, reference=False):
             classification = 'full'
         durations[name] = time.monotonic() - started
         materializations[name] = {'kind':'materialized_view' if maintained else 'table', 'classification':classification}
+    connection.model_id = None
     return durations
 
 
@@ -320,24 +325,31 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
     connection = Connection(engine, manifest_path.parent, manifest, options, initialize=batch_num==1)
     try:
         model_queries = queries(manifest, options, connection.namespace)
+        from services.extended_tpcds_profile import BatchProfile
+        profile = BatchProfile(engine, batch_num, model_queries, connection)
         sql_identity = hashlib.sha256(json.dumps(model_queries,sort_keys=True).encode()).hexdigest()
         if batch_num>1 and state.get('sql_identity') != sql_identity:
             raise ValueError('model definitions changed after initialization')
         state['sql_identity'] = sql_identity
         state['dirty'] = True
         checkpoint.write_text(json.dumps(state))
+        connection.phase = 'source'
         started = time.monotonic()
         replay(connection, manifest, manifest_path.parent, batch_num)
         source_s = time.monotonic() - started
+        connection.phase = 'maintenance'
         started = time.monotonic()
         durations = (build_databricks_openivm(connection, model_queries, manifest, state, batch_num==1) if engine=='databricks-openivm' else build(connection, model_queries, state, initial=batch_num==1))
         model_s = time.monotonic() - started
+        connection.phase = 'observer'
+        profiling = profile.finish(durations, statements=connection.statements)
         counts = {name:int(connection.execute('SELECT count(*) FROM '+identifier(name))[0][0]) for name in model_queries}
         state.update(batch_num=batch_num, dirty=False, namespace=connection.namespace)
         checkpoint.write_text(json.dumps(state, indent=2))
         result = {'status':'completed', 'engine':engine, 'batch_num':batch_num, 'plan_id':manifest['plan_id'],
                   'duration_s':source_s+model_s, 'model_concurrency':1, 'source_replay_wall_s_including_guards':source_s,
                   'model_wall_s_including_cli':model_s, 'model_sql_duration_s':durations, 'model_rows':counts,
+                  'profiling':profiling,
                   'materializations':state['materializations'], 'classification_counts':{kind:sum(m['classification']==kind for m in state['materializations'].values()) for kind in {m['classification'] for m in state['materializations'].values()}},
                   'model_queries':model_queries, 'sql_statements':connection.statements,
                   'source_storage':'delta', 'timing_semantics':'source replay and complete SQL commands; setup, row counts and validation excluded',

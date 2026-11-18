@@ -263,10 +263,15 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         from models.result import EngineResult
         runner._result=EngineResult('duckdb-openivm')
         runner._dbt_url='http://local'
+        directory=self.enterContext(tempfile.TemporaryDirectory())
+        runner._config=Mock(repo_dir=directory,scale_factor=100)
+        runner._emit=Mock()
         for name in ['_persist_batch_result','_start_cpu_measurement','_finish_cpu_measurement','_ensure_cpu_measurement_status']:
             setattr(runner,name,Mock())
         execute=Mock(status_code=200)
-        execute.json.return_value={'duration_s':1.0,'plan_id':'p','classification_counts':{'incremental':96}}
+        execute.json.return_value={'duration_s':1.0,'plan_id':'p','classification_counts':{'incremental':96},
+                                   'model_sql_duration_s':{'m':1.0},
+                                   'profiling':{'status':'ok','csv':{'profile':'refresh_id\ncurrent\n'}}}
         validate=Mock(status_code=422)
         validate.json.return_value={'status':'failed','models_checked':96,'differences':{'m':3}}
         with patch.dict(os.environ,{'OPENIVM_VALIDATE':'1'}),patch('services.engine_runner.requests.post',side_effect=[execute,validate]):
@@ -275,6 +280,36 @@ class ExtendedTPCDSConfigTests(unittest.TestCase):
         self.assertEqual(batch.status,'failed')
         self.assertEqual(batch.extra['classification_counts'],{'incremental':96})
         self.assertEqual(batch.extra['engine_result']['validation']['differences'],{'m':3})
+        root=Path(directory)/'mount/results/100/dbt-server'
+        self.assertEqual((root/'duckdb-openivm-profile-batch1.csv').read_text(),'refresh_id\ncurrent\n')
+        self.assertEqual(json.loads((root/'run-duckdb-openivm-batch1.json').read_text())['validation']['status'],'failed')
+
+    def test_profile_failure_is_archived_and_fails_before_expensive_validation(self):
+        from models.result import EngineResult
+        directory=self.enterContext(tempfile.TemporaryDirectory())
+        runner=object.__new__(EngineRunner)
+        runner._engine=Mock();runner._engine.name='feldera'
+        runner._result=EngineResult('feldera')
+        runner._collect_feldera_debug=Mock(return_value={'status':'failed','error':'bundle unavailable'})
+        runner._config=Mock(repo_dir=directory,scale_factor=100)
+        runner._dbt_url='http://local'
+        for name in ('_persist_batch_result','_start_cpu_measurement','_finish_cpu_measurement',
+                     '_ensure_cpu_measurement_status','_emit'):
+            setattr(runner,name,Mock())
+        response=Mock(status_code=200)
+        response.json.return_value={'duration_s':1.0,'plan_id':'p','classification_counts':{'incremental':1},
+                                    'model_sql_duration_s':{'m':0.5},
+                                    'profiling':{'status':'failed','enabled':True,'error':'empty profile'}}
+        with patch.dict(os.environ,{'OPENIVM_PROFILE_REFRESH':'1','OPENIVM_VALIDATE':'1'}), \
+             patch('services.engine_runner.requests.post',return_value=response) as post:
+            with self.assertRaisesRegex(RuntimeError,'empty profile'):
+                runner._run_extended_tpcds_batch(1)
+        post.assert_called_once()
+        runner._collect_feldera_debug.assert_called_once_with(batch_num=1)
+        path=Path(directory)/'mount/results/100/dbt-server/feldera-profile-batch1.json'
+        self.assertEqual(json.loads(path.read_text())['error'],'empty profile')
+        self.assertEqual(json.loads(path.read_text())['status'],'failed')
+        self.assertEqual(runner._result.batches[0].status,'failed')
 
 
     def test_serial_extended_workload_keeps_failures_and_checks_remaining_engines(self):

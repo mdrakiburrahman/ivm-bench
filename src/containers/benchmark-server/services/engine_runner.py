@@ -975,12 +975,6 @@ class EngineRunner:
                                 "classification_counts":data["classification_counts"],
                                 "engine_result":data, "source_storage":data.get("source_storage", "duckdb_native"),
                                 "storage_metrics":{"status":"not_supported", "errors":["Extended TPC-DS native storage accounting is not integrated"]}})
-            if os.environ.get("OPENIVM_VALIDATE", "1") != "0":
-                validation = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{name}/validate/{batch_num}", timeout=86400)
-                details = validation.json()
-                data["validation"] = details
-                if details.get("status") != "passed":
-                    raise OpenIvmValidationError(f"{name} Extended TPC-DS batch {batch_num} validation failed: {details}")
             results_dir = os.path.join(self._config.repo_dir,"mount","results",str(self._config.scale_factor),"dbt-server")
             os.makedirs(results_dir,exist_ok=True)
             path = os.path.join(results_dir,f"run-{name}-batch{batch_num}.json")
@@ -989,6 +983,33 @@ class EngineRunner:
                         "resource_type":"model", "status":"success", "execution_time_s":seconds, "compiled_sql":data.get("model_queries",{}).get(model, "")} for model,seconds in data["model_sql_duration_s"].items()]}
             with open(path,"w") as handle:
                 json.dump(artifact,handle,indent=2)
+            profile = data.get('profiling') or {'status':'not_collected'}
+            profile['plan_id'] = data['plan_id']
+            if name == 'feldera' and profile.get('enabled'):
+                profile['support_bundle'] = self._collect_feldera_debug(batch_num=batch_num)
+                if profile['support_bundle']['status'] != 'ok' and profile['status'] != 'failed':
+                    profile['status'] = 'partial'
+            batch.extra['profiling'] = {k:v for k,v in profile.items() if k != 'csv'}
+            with open(os.path.join(results_dir,f'{name}-profile-batch{batch_num}.json'),'w') as handle:
+                json.dump(batch.extra['profiling'],handle,indent=2)
+            for kind, content in profile.get('csv',{}).items():
+                if kind not in ('profile','by_step','by_view_step'):
+                    raise RuntimeError('unexpected profiling CSV kind: '+kind)
+                suffix = '' if kind == 'profile' else '-'+kind.replace('_','-')
+                with open(os.path.join(results_dir,f'{name}-profile{suffix}-batch{batch_num}.csv'),'w') as handle:
+                    handle.write(content)
+            self._emit(f"[{name}] Fabric-DS profiling: {profile['status']}")
+            if profile['status'] == 'failed' or (os.environ.get('OPENIVM_PROFILE_REFRESH','0') == '1'
+                                               and profile['status'] in ('not_collected','disabled')):
+                raise RuntimeError(f"{name} profiling failed: {profile.get('error','no profiling result returned')}")
+            if os.environ.get("OPENIVM_VALIDATE", "1") != "0":
+                validation = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{name}/validate/{batch_num}", timeout=86400)
+                details = validation.json()
+                data["validation"] = artifact['validation'] = details
+                with open(path,'w') as handle:
+                    json.dump(artifact,handle,indent=2)
+                if details.get("status") != "passed":
+                    raise OpenIvmValidationError(f"{name} Extended TPC-DS batch {batch_num} validation failed: {details}")
             batch.status = "completed"
             self._emit(f"[{name}] Extended TPC-DS batch {batch_num}: {data['classification_counts']}")
         except Exception as error:
@@ -3237,7 +3258,7 @@ class EngineRunner:
         except Exception as e:
             logger.warning("Failed to fetch sql analysis for %s: %s", name, e)
 
-    def _collect_feldera_debug(self) -> None:
+    def _collect_feldera_debug(self, batch_num=None):
         """Download Feldera support bundle (circuit profile, heap, metrics, etc.).
 
         Only runs for the feldera engine. The bundle includes a fresh snapshot
@@ -3257,7 +3278,8 @@ class EngineRunner:
             "mount", "debug", str(self._config.scale_factor), "feldera",
         )
         os.makedirs(debug_dir, exist_ok=True)
-        bundle_path = os.path.join(debug_dir, "support-bundle.zip")
+        filename = 'support-bundle.zip' if batch_num is None else f'support-bundle-batch{batch_num}.zip'
+        bundle_path = os.path.join(debug_dir, filename)
         part_path = bundle_path + ".part"
 
         try:
@@ -3271,12 +3293,15 @@ class EngineRunner:
             os.replace(part_path, bundle_path)
             size_mb = os.path.getsize(bundle_path) / (1024 * 1024)
             self._emit(f"[feldera] Support bundle saved ({size_mb:.1f} MB): {bundle_path}")
+            return {'status':'ok','path':os.path.relpath(bundle_path,self._config.repo_dir),
+                    'scope':'cumulative circuit/heap snapshots after batch'}
         except Exception as e:
             # Clean up partial download
             if os.path.exists(part_path):
                 os.unlink(part_path)
             logger.warning("Failed to collect Feldera debug bundle: %s", e)
             self._emit(f"[feldera] WARNING: Failed to collect debug bundle: {e}")
+            return {'status':'failed','error':str(e)}
 
     def _save_run_result(
         self, run_id: str, batch_num: int, suffix: str = ""
