@@ -1,4 +1,4 @@
--- catalog-override: DuckDB's Jinja batch-control blocks cannot be transpiled to the DuckDB dialect; preserve the existing incremental SQL.
+-- catalog-override: Jinja batch-control blocks cannot be transpiled; preserve the shared incremental SQL.
 -- Bronze: read trade from staging table (all loaded batches). The augmented
 -- feed contains one row per status transition, so expose only the latest
 -- state per trade while brokerage_trade_history retains every transition.

@@ -1,0 +1,14 @@
+tpcdi:
+  target: materialize-emulator
+  outputs:
+    materialize-emulator:
+      type: materialize
+      host: "{{ env_var('MATERIALIZE_HOST', 'materialize-emulator') }}"
+      port: "{{ env_var('MATERIALIZE_PORT', '6875') | int }}"
+      user: materialize
+      password: ''
+      dbname: materialize
+      schema: tpcdi
+      cluster: quickstart
+      threads: 1
+      sslmode: disable

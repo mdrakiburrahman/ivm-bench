@@ -1,0 +1,45 @@
+services:
+  materialize-emulator:
+    image: materialize/materialized:v26.50.0@sha256:64d54a0853e88bcfbb6ed059347d3653721fb4f8c9b43989bee2cab38fd8258e
+    cpus: ${MATERIALIZE_EMULATOR_CPUS:?Materialize Emulator CPU allocation is required}
+    mem_limit: ${MATERIALIZE_EMULATOR_MEM:?Materialize Emulator memory allocation is required}
+    environment:
+      MZ_BOOTSTRAP_DEFAULT_CLUSTER_REPLICA_SIZE: ${MATERIALIZE_EMULATOR_CLUSTER_SIZE:?Materialize Emulator cluster size is required}
+    volumes:
+      - materialize-data:/mzdata
+      - materialize-scratch:/scratch
+    healthcheck:
+      test: ["CMD", "psql", "-h", "127.0.0.1", "-p", "6875", "-U", "materialize", "-d", "materialize", "-c", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  dbt-server:
+    extends:
+      file: docker-compose.base.yml
+      service: dbt-server-base
+    depends_on:
+      materialize-emulator:
+        condition: service_healthy
+    cpus: ${DBT_SERVER_CPUS:-4}
+    mem_limit: ${DBT_SERVER_MEM:-8g}
+    environment:
+      MATERIALIZE_HOST: materialize-emulator
+      MATERIALIZE_PORT: "6875"
+      MATERIALIZE_EMULATOR_RUN_ID: ${MATERIALIZE_EMULATOR_RUN_ID:?Materialize Emulator run id is required}
+      MATERIALIZE_EMULATOR_CLUSTER_SIZE: ${MATERIALIZE_EMULATOR_CLUSTER_SIZE:?Materialize Emulator cluster size is required}
+      MATERIALIZE_EMULATOR_CPUS: ${MATERIALIZE_EMULATOR_CPUS:?Materialize Emulator CPU allocation is required}
+      MATERIALIZE_EMULATOR_MEM: ${MATERIALIZE_EMULATOR_MEM:?Materialize Emulator memory allocation is required}
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/delta:/data/raw/delta:ro
+      - ../mount/results/${SCALE_FACTOR:-3}/materialize-emulator:/data/processed/materialize-emulator
+      - ../mount/stats/${SCALE_FACTOR:-3}/materialize-emulator:/data/stats
+      - materialize-data:/data/processed/materialize-emulator/${MATERIALIZE_EMULATOR_RUN_ID:?Materialize Emulator run id is required}/mzdata:ro
+      - materialize-scratch:/data/processed/materialize-emulator/${MATERIALIZE_EMULATOR_RUN_ID:?Materialize Emulator run id is required}/scratch:ro
+
+volumes:
+  materialize-data:
+    name: ivm-materialize-${MATERIALIZE_EMULATOR_RUN_ID:?Materialize Emulator run id is required}-data
+  materialize-scratch:
+    name: ivm-materialize-${MATERIALIZE_EMULATOR_RUN_ID:?Materialize Emulator run id is required}-scratch

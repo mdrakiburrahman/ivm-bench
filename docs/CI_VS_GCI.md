@@ -52,15 +52,18 @@ dispatching the next revision if you need complete comparison results.
 GitHub Actions runs the benchmark job on the `self-hosted`, `Linux`, `X64`,
 `ivm-bench-azure` runner. The benchmark orchestrator and local engines run in
 Docker on that runner. This includes TPC-DI generation, the benchmark-server,
-dbt-server, Spark, DuckDB, Feldera, and DbspNet.
+dbt-server, Spark, DuckDB, Feldera, DbspNet, and Materialize Emulator.
 
 Databricks Enzyme and OpenIVM, and the Fabric JVM and OpenIVM engines, execute
 on their respective cloud services; the local Docker containers orchestrate
 those runs.
 
-GCI is the fixed SF10 pull-request gate for the six local engines listed above.
+GCI is the fixed SF10 pull-request gate for the seven local engines listed above.
 CI is the configurable workflow used by manual dispatch; its
-default SF10 preset adds Databricks and Fabric for ten engines total. CI can
+default SF10 preset adds Databricks and Fabric for eleven engines total. CI can
 also run other experiment files, including cloud-engine and cost-model sweeps.
+
+Materialize Emulator is a non-production deployment, not representative of
+production Materialize performance; its results retain the Emulator label.
 
 The GitHub Actions results comment includes a per-batch stacked bar chart.

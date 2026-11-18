@@ -1,0 +1,18 @@
+{
+  "baseline": {
+    "scale_factor": 3,
+    "workload": "standard",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "2",
+    "engines": ["materialize-emulator"],
+    "schedule": "serial",
+    "feature_flags": {
+      "compiler_bench": false,
+      "cost_model_bench": false,
+      "storage_metrics": true,
+      "preserve_raw": true
+    }
+  },
+  "experiments": [{"label": "Materialize Emulator three-batch TPC-DI smoke"}]
+}

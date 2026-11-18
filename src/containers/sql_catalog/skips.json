@@ -1,5 +1,24 @@
 [
   {
+    "engine": "materialize-emulator",
+    "category": "inline",
+    "reason": "Compiler-bench and Spark OpenIVM validation probes are not used by Materialize Emulator.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float",
+      "dbt_server/services_spark_openivm_validation/projection_continuous"
+    ]
+  },
+  {
+    "engine": "materialize-emulator",
+    "category": "inline",
+    "reason": "Materialize Emulator does not use DuckLake parquet reads or Spark formatted explain.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
     "engine": "databricks-enzyme",
     "category": "inline",
     "reason": "not used by databricks-enzyme; only duckdb and duckdb-openivm use the DuckLake source loader.",

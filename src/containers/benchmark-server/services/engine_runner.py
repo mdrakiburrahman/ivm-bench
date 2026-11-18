@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import time
+import uuid
 from datetime import datetime
 from threading import Barrier, Lock
 from typing import Any, Callable, Dict, List, Optional
@@ -168,7 +169,11 @@ class EngineRunner:
         self._benchmark_id = benchmark_id
         self._storage_barrier = storage_barrier
         docker_host = os.environ.get("DOCKER_HOST_ADDRESS", "localhost")
+        self._docker_host = docker_host
         self._dbt_url = f"http://{docker_host}:{engine_config.port}"
+        self._dynamic_dbt_port = os.environ.get(
+            "DBT_SERVER_DYNAMIC_PORT", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
         self._override_file: Optional[str] = None
         self._batch_override_file: Optional[str] = None
         self._parallel = config.parallel
@@ -182,6 +187,20 @@ class EngineRunner:
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
+        if self._dynamic_dbt_port:
+            engine_env["DBT_SERVER_PORT"] = "0"
+        if engine_config.name == "materialize-emulator":
+            run_instance = uuid.uuid4().hex
+            engine_env["MATERIALIZE_EMULATOR_RUN_ID"] = run_instance
+            self._result.extra["materialize_emulator"] = {
+                "version": "v26.50.0",
+                "image_digest": "sha256:64d54a0853e88bcfbb6ed059347d3653721fb4f8c9b43989bee2cab38fd8258e",
+                "cluster_size": engine_env["MATERIALIZE_EMULATOR_CLUSTER_SIZE"],
+                "cluster_workers": int(engine_env["MATERIALIZE_EMULATOR_WORKERS"]),
+                "container_cpus": engine_config.main_resources.cpus,
+                "container_memory_gb": engine_config.main_resources.memory_gb,
+                "instance": run_instance,
+            }
         if engine_config.name == "databricks-openivm":
             # Enzyme and OpenIVM may run together in one experiment wave.
             engine_env["DATABRICKS_EXPERIMENT_ID"] = str(time.time_ns() // 1000)
@@ -322,6 +341,10 @@ class EngineRunner:
             # staging them would fail on the missing input rather than merely
             # waste time.
             compiler_bench = self._compiler_bench_enabled()
+            if name == "materialize-emulator" and (
+                compiler_bench or self._config.repeated_refresh or self._config.workload != "standard"
+            ):
+                raise ValueError("Materialize Emulator supports only the standard TPC-DI three-batch workload")
             if (
                 name not in ("duckdb", "duckdb-openivm")
                 and not self._parallel
@@ -333,10 +356,23 @@ class EngineRunner:
             self._emit(f"[{name}] Building and starting compose stack")
             self._engine_mgr.build()
             self._up_with_retry()
+            self._resolve_dbt_server_port()
 
             # Wait for dbt-server health
             self._emit(f"[{name}] Waiting for dbt-server health")
             self._wait_for_dbt_health()
+
+            if name == "materialize-emulator":
+                response = requests.post(f"{self._dbt_url}/status/{name}", timeout=30)
+                response.raise_for_status()
+                replica = response.json()
+                expected_workers = self._result.extra["materialize_emulator"]["cluster_workers"]
+                actual_workers = replica["processes"] * replica["workers"]
+                if actual_workers != expected_workers:
+                    raise RuntimeError(
+                        f"Materialize replica has {actual_workers} workers, expected {expected_workers}"
+                    )
+                self._result.extra["materialize_emulator"]["actual_replica"] = replica
 
             # Start container stats
             self._start_stats()
@@ -402,7 +438,7 @@ class EngineRunner:
                 ("capture_logs", self._capture_logs),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
                 ("fabric_cleanup", self._fabric_cleanup),
-                ("engine_mgr.down", self._engine_mgr.down),
+                ("engine_mgr.down", lambda: self._engine_mgr.down(volumes=name == "materialize-emulator")),
                 ("cleanup_staging", self._cleanup_staging),
             ):
                 try:
@@ -861,6 +897,8 @@ class EngineRunner:
                 run_id = self._run_duckdb_openivm(batch_num)
             elif name == "spark-openivm":
                 run_id = self._run_spark_openivm(batch_num)
+            elif name == "materialize-emulator":
+                run_id = self._run_materialize_emulator(batch_num)
             elif name == "databricks-enzyme":
                 run_id = self._run_databricks_enzyme(batch_num)
             elif name == "databricks-openivm":
@@ -887,6 +925,13 @@ class EngineRunner:
             batch.extra["wall_window_end_ms"] = t1_ms
             if not is_cloud_engine(name) and name != "feldera":
                 self._finish_cpu_measurement(batch_num)
+
+            if name == "materialize-emulator" and run_id:
+                self._save_run_result(run_id, batch_num)
+            if name == "materialize-emulator":
+                response = requests.post(f"{self._dbt_url}/validate/materialize-emulator", timeout=7260)
+                response.raise_for_status()
+                batch.extra["correctness_validation"] = response.json()
 
             if run_id and batch.status != "failed":
                 if name == "duckdb-openivm":
@@ -1011,6 +1056,30 @@ class EngineRunner:
             )
 
         self._run_dbt(batch_num)
+
+    def _run_materialize_emulator(self, batch_num: int) -> Optional[str]:
+        name = "materialize-emulator"
+        action = "init" if batch_num == 1 else f"append/{batch_num}"
+        response = requests.post(f"{self._dbt_url}/sources/{name}/{action}", timeout=7200)
+        response.raise_for_status()
+        run_id = None
+        if batch_num == 1:
+            response = requests.post(
+                f"{self._dbt_url}/run/{name}",
+                json={"scale_factor": self._config.scale_factor, "full_refresh": False, "batch_num": 1},
+                timeout=30,
+            )
+            response.raise_for_status()
+            run_id = response.json()["run_id"]
+            self._stream_dbt_progress(run_id, batch_num)
+            self._check_run_result(run_id, batch_num)
+            batch = self._result.batches[batch_num - 1]
+            if batch.status == "failed":
+                raise RuntimeError(batch.error or "Materialize Emulator dbt build failed")
+        response = requests.post(f"{self._dbt_url}/sources/{name}/fence", timeout=7260)
+        response.raise_for_status()
+        self._result.batches[batch_num - 1].extra["completion_fence"] = response.json()
+        return run_id
 
     def _run_feldera_batch1(self) -> None:
         """Feldera batch 1: compile pipeline (paused), resume, then poll for processing.
@@ -3294,6 +3363,13 @@ class EngineRunner:
             logger.warning("Failed to capture logs: %s", e)
 
     # ----- Health checking -----
+
+    def _resolve_dbt_server_port(self) -> None:
+        if not getattr(self, "_dynamic_dbt_port", False):
+            return
+        port = self._engine_mgr.published_port("dbt-server", 5000)
+        self._dbt_url = f"http://{self._docker_host}:{port}"
+        self._emit(f"[{self._engine.name}] dbt-server published on host port {port}")
 
     def _wait_for_dbt_health(self) -> None:
         """Wait for the dbt-server to become healthy."""
