@@ -9,6 +9,7 @@
         "fabric-openivm-jvm-35",
         "feldera",
         "risingwave",
+        "materialize-emulator",
         "spark",
         "spark-openivm"
       ],
@@ -72,6 +73,7 @@
         "fabric-jvm-35",
         "fabric-openivm-jvm-35",
         "risingwave",
+        "materialize-emulator",
         "spark",
         "spark-openivm"
       ],
@@ -119,6 +121,15 @@
   "macros": [
     {
       "engines": [
+        "materialize-emulator"
+      ],
+      "paths": [
+        "materialize_finwire_date",
+        "materialize_forward_fill"
+      ]
+    },
+    {
+      "engines": [
         "databricks-enzyme",
         "dbspnet",
         "duckdb",
@@ -127,6 +138,7 @@
         "fabric-openivm-jvm-35",
         "feldera",
         "risingwave",
+        "materialize-emulator",
         "spark",
         "spark-openivm"
       ],

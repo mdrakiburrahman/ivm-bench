@@ -53,6 +53,7 @@ RUN python -m sql_catalog generate --all
 RUN cd /app/dbt-projects/spark && dbt deps --profiles-dir . 2>/dev/null || true
 RUN cd /app/dbt-projects/duckdb && dbt deps --profiles-dir . 2>/dev/null || true
 RUN cd /app/dbt-projects/feldera && dbt deps --profiles-dir . 2>/dev/null || true
+RUN cd /app/dbt-projects/materialize-emulator && dbt deps --profiles-dir .
 RUN cd /app/dbt-projects/duckdb-openivm && dbt deps --profiles-dir . 2>/dev/null || true
 RUN cd /app/dbt-projects/spark-openivm && dbt deps --profiles-dir . 2>/dev/null || true
 RUN cd /app/dbt-projects/databricks-enzyme && dbt deps --profiles-dir . 2>/dev/null || true

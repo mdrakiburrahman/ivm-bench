@@ -22,7 +22,7 @@ from sql_catalog import load_sql
 
 
 CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
-LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "databricks-openivm"}
+LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "databricks-openivm", "materialize-emulator"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
 RISINGWAVE_ENGINES = {"risingwave"}
@@ -38,6 +38,7 @@ PROCESSED_ROOTS = {
     "risingwave": Path("/data/processed/risingwave"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
     "databricks-openivm": Path("/data/processed/databricks-openivm"),
+    "materialize-emulator": Path("/data/processed/materialize-emulator"),
 }
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
 # DbspNet, like Feldera, reads its inputs straight from the shared raw Delta tables
@@ -1060,6 +1061,104 @@ def _collect_risingwave_current_ssts(
             pass
 
 
+def _materialize_storage(deadline: float):
+    import psycopg2
+    from services.materialize_fence import expected_models
+
+    engine = "materialize-emulator"
+    items, totals, errors = [], _empty_totals(), []
+    run_id = os.environ.get("MATERIALIZE_EMULATOR_RUN_ID", "")
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        return items, totals, ["Invalid or missing Materialize Emulator instance id"]
+    root = PROCESSED_ROOTS[engine] / run_id
+    blobs = root / "mzdata" / "persist" / "blob"
+    scratch = root / "scratch"
+    if not blobs.is_dir() or not scratch.is_dir():
+        return items, totals, [f"Materialize persistent blob or scratch root missing under {root}"]
+    try:
+        connection = psycopg2.connect(
+            host=os.environ.get("MATERIALIZE_HOST", "materialize-emulator"),
+            port=int(os.environ.get("MATERIALIZE_PORT", "6875")),
+            user=os.environ.get("MATERIALIZE_USER", "materialize"),
+            dbname=os.environ.get("MATERIALIZE_DATABASE", "materialize"),
+            connect_timeout=10,
+        )
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(load_sql(engine, "inline", "dbt_server/services_storage_metrics/materialize_shards"))
+                records = cursor.fetchall()
+        finally:
+            connection.close()
+    except Exception as exc:
+        return items, totals, [f"Materialize shard catalog unavailable: {exc}"]
+    shards = {}
+    output_relations = set()
+    for object_id, name, kind, schema, shard_id in records:
+        if shard_id in shards:
+            return items, totals, [f"Materialize shard belongs to multiple objects: {shard_id}"]
+        if object_id.startswith("s"):
+            category = "metadata"
+        elif kind == "materialized-view":
+            category = "visible_output"
+            output_relations.add((schema, name))
+        elif kind == "table" and schema == "tpcdi" and not name.startswith("_benchmark_"):
+            category = "source"
+        else:
+            category = "helper_data"
+        shards[shard_id] = (category, f"{schema}.{name}" if schema else name)
+    expected = {(node["schema"], node["alias"]) for node in expected_models()}
+    missing = expected - output_relations
+    if missing:
+        return items, totals, [f"Materialize catalog is missing output shards: {sorted(missing)}"]
+
+    for attempt in range(3):
+        grouped, scan_errors = {}, []
+        disappeared = 0
+        for directory, _, filenames in os.walk(root, onerror=lambda exc: scan_errors.append(str(exc))):
+            for filename in filenames:
+                if time.monotonic() >= deadline:
+                    scan_errors.append("storage collection deadline exceeded")
+                    break
+                path = Path(directory) / filename
+                try:
+                    size = path.stat().st_size
+                except FileNotFoundError as exc:
+                    disappeared += 1
+                    scan_errors.append(f"cannot stat Materialize file {path}: {exc}")
+                    continue
+                except OSError as exc:
+                    scan_errors.append(f"cannot stat Materialize file {path}: {exc}")
+                    continue
+                relative = path.relative_to(root)
+                if path.parent == blobs:
+                    if filename.endswith(".tmp"):
+                        category, name = "helper_data", "persist_temporary_files"
+                    else:
+                        shard = filename.split("\u2215", 1)[0]
+                        category, name = shards.get(shard, ("helper_data", "unmapped_persist_shards"))
+                    kind = "persist_blob"
+                elif relative.parts[0] == "scratch":
+                    category, name, kind = "helper_data", "compute_scratch", "scratch_file"
+                else:
+                    category, name, kind = "metadata", "emulator_metadata", "metadata_file"
+                pair = grouped.setdefault((category, name, kind), [0, 0])
+                pair[0] += size
+                pair[1] += 1
+            if time.monotonic() >= deadline:
+                break
+        if time.monotonic() >= deadline and "storage collection deadline exceeded" not in scan_errors:
+            scan_errors.append("storage collection deadline exceeded")
+        if not disappeared or len(scan_errors) != disappeared or attempt == 2 or time.monotonic() >= deadline:
+            errors.extend(scan_errors)
+            break
+    for (category, name, kind), (size, count) in grouped.items():
+        _add_item(items, totals, engine=engine, name=name, category=category, bytes_=size,
+                  file_count=count, path=str(root), kind=kind)
+    if totals["source_bytes"] == 0:
+        errors.append("Materialize collector found no source shard bytes")
+    return items, totals, errors
+
+
 def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     totals = _empty_totals()
@@ -1083,7 +1182,9 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
         else default_timeout_s,
     )
     deadline = time.monotonic() + timeout_s
-    if engine in DUCKLAKE_ENGINES:
+    if engine == "materialize-emulator":
+        local_items, local_totals, local_errors = _materialize_storage(deadline)
+    elif engine in DUCKLAKE_ENGINES:
         local_items, local_totals, local_errors = _collect_ducklake_storage(
             engine, PROCESSED_ROOTS[engine], deadline=deadline
         )
@@ -1168,6 +1269,11 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
         result["physical_state"] = physical_state
     if engine in PROCESSED_ROOTS:
         result["roots"] = {"processed": str(PROCESSED_ROOTS[engine])}
+    if engine == "materialize-emulator":
+        result["measurement_semantics"] = (
+            "Approximate non-atomic live scan of persistent files and compute scratch; "
+            "concurrent compaction can change per-object attribution."
+        )
     result.setdefault("roots", {})["raw_base_reference"] = str(RAW_DELTA_ROOT)
     if errors:
         result["errors"] = errors

@@ -1,0 +1,24 @@
+name: tpcdi
+version: '1.0.0'
+config-version: 2
+profile: tpcdi
+model-paths: [models]
+macro-paths: [macros]
+clean-targets: [target, dbt_packages]
+dispatch:
+  - macro_namespace: dbt_utils
+    search_order: [tpcdi, dbt_utils]
+models:
+  tpcdi:
+    bronze:
+      +schema: bronze
+      +materialized: materialized_view
+    silver:
+      +schema: silver
+      +materialized: materialized_view
+    gold:
+      +schema: gold
+      +materialized: materialized_view
+    work:
+      +schema: work
+      +materialized: ephemeral

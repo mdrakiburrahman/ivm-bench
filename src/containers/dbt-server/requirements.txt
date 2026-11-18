@@ -7,6 +7,7 @@ matplotlib>=3.8
 # a 1.11.x that satisfies both. Every adapter here already resolves to 1.11.x, so
 # this only makes the existing bound explicit.
 dbt-core~=1.11.0
+dbt-materialize==1.9.13
 https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
 dbt-duckdb>=1.9
 dbt-databricks~=1.11

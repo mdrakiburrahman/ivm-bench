@@ -1,4 +1,4 @@
--- catalog-override: DuckDB's Jinja batch-control blocks cannot be transpiled to the DuckDB dialect; preserve the existing incremental SQL.
+-- catalog-override: Jinja batch-control blocks cannot be transpiled; preserve the shared incremental SQL.
 select *
 from {{ source('tpcdi', 'batch1_trade_history') }}
 {% if env_var('TPCDI_BATCH_2_DAYS', '0') | int > 0 %}
