@@ -82,7 +82,7 @@ export function convert(root, identity) {
   const experiment = json(root, `${base}/exp-000/outputs.json`);
   if (experiment.status !== 'completed') throw new Error('Benchmark experiment did not complete.');
   const { commit_sha, committed_at } = identity;
-  if (!/^[0-9a-f]{40}$/.test(commit_sha) || !date(committed_at)) throw new Error('Missing PR head commit identity.');
+  if (!/^[0-9a-f]{40}$/.test(commit_sha) || !date(committed_at)) throw new Error('Missing benchmark commit identity.');
   const scale = experiment.scale_factor;
   const inputs = experiment.inputs;
   if (!Number.isInteger(scale) || scale < 1 || typeof inputs?.workload !== 'string') throw new Error('Missing workload or scale factor.');
@@ -103,12 +103,12 @@ export function convert(root, identity) {
     scale_factor: scale, workload, batch_insert_pct_json: JSON.stringify(percentages),
   });
   const dbt = `mount/results/${scale}/dbt-server`;
+  const log = read(root, `${base}/benchmark-server.log`, true);
+  if (log) for (const { engine, ...entry } of curatedLogs(log, new Set(Object.keys(experiment.engines)))) add('log', entry, engine);
   for (const [engine, result] of Object.entries(experiment.engines)) {
     if (!/^[a-z0-9-]+$/.test(engine) || coverage.experiments[0].engines?.[engine]?.passed !== true) {
       throw new Error('Result contains an engine that did not pass coverage.');
     }
-    const log = read(root, `${base}/benchmark-server.log`, true);
-    if (log) for (const { engine, ...entry } of curatedLogs(log, new Set(Object.keys(experiment.engines)))) add('log', entry, engine);
     const lineage = json(root, `${dbt}/lineage-${engine}.json`, true);
     const layer = new Map(lineage?.nodes?.map(node => [node.unique_id, node.schema]));
     const edges = Map.groupBy(lineage?.edges ?? [], edge => edge.to);

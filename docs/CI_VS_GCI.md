@@ -8,7 +8,7 @@
 
 | Workflow | When | What | Knobs |
 |---|---|---|---|
-| [`gci.yaml`](../.github/workflows/gci.yaml) | Every non-draft PR | SF10 TPC-DI on every local engine ([`gci-sf10-local-engines.json`](../src/containers/benchmark-server/experiments/gci-sf10-local-engines.json)) | None |
+| [`gci.yaml`](../.github/workflows/gci.yaml) | Non-draft same-repo PR, or manual dispatch on the default branch | SF10 TPC-DI on every local engine ([`gci-sf10-local-engines.json`](../src/containers/benchmark-server/experiments/gci-sf10-local-engines.json)) | None |
 | [`ci.yaml`](../.github/workflows/ci.yaml) | Ad hoc only | Every engine ([`ci-sf10-all-engines.json`](../src/containers/benchmark-server/experiments/ci-sf10-all-engines.json)), or any experiments file | All dispatch inputs |
 
 Both fail unless every requested engine completes every batch. Run anything
@@ -58,7 +58,7 @@ Databricks Enzyme and OpenIVM, and the Fabric JVM and OpenIVM engines, execute
 on their respective cloud services; the local Docker containers orchestrate
 those runs.
 
-GCI is the fixed SF10 pull-request gate for the eight local engines listed above.
+GCI is the fixed SF10 gate for the eight local engines listed above. Use `gh workflow run gci.yaml` to run the same preset on the default branch without a PR. Successful coverage-passing GCI runs publish to the benchmark dashboard; configurable manual CI runs do not.
 CI is the configurable workflow used by manual dispatch; its
 default SF10 preset adds Databricks and Fabric for twelve engines total. CI can
 also run other experiment files, including cloud-engine and cost-model sweeps.

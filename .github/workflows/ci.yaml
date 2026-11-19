@@ -349,7 +349,12 @@ jobs:
           retention-days: 30
 
       - name: Publish dashboard snapshot
-        if: ${{ success() && inputs.publish_dashboard && steps.benchmark.outcome == 'success' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        if: >-
+          success() && inputs.publish_dashboard && steps.benchmark.outcome == 'success' &&
+          ((github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository) ||
+           (github.event_name == 'workflow_dispatch' && github.repository == 'openivm/ivm-bench' &&
+            github.ref == format('refs/heads/{0}', github.event.repository.default_branch)))
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -10,7 +10,7 @@
     "preview": "node server.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src server.mjs ../tools/dashboard-*.mjs --no-warn-ignored",
-    "test": "node --disable-warning=ExperimentalWarning --test src/*.test.ts"
+    "test": "node --disable-warning=ExperimentalWarning --test src/*.test.ts ../tools/dashboard-*.test.mjs"
   },
   "dependencies": {
     "hyparquet": "1.33.0",
