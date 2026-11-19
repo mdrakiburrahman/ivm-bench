@@ -1,0 +1,63 @@
+name: Dashboard website
+
+on:
+  pull_request:
+    paths: ['website/**', 'tools/dashboard-*.mjs', 'tools/dashboard-storage.sh', '.github/workflows/dashboard-website.yaml']
+  push:
+    branches: [main]
+    paths: ['website/**', 'tools/dashboard-*.mjs', 'tools/dashboard-storage.sh', '.github/workflows/dashboard-website.yaml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+        working-directory: website
+      - run: npm run lint && npm run typecheck && npm run fixture && npm test && npm run build
+        working-directory: website
+        env:
+          VITE_PARQUET_URL: https://ivmbench.blob.core.windows.net/parquet/_server.parquet
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: dashboard-dist
+          path: website/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency: dashboard-website-deploy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: dashboard-dist
+          path: website/dist
+      - name: Deploy production assets to Azure Static Website
+        env:
+          BASE64_ENV: ${{ secrets.BASE64_ENV }}
+        run: |
+          set -euo pipefail
+          umask 077
+          env_file="$(mktemp)"
+          trap 'rm -f -- "$env_file"' EXIT
+          printf '%s' "$BASE64_ENV" | base64 -d > "$env_file"
+          node --env-file="$env_file" --input-type=module -e '
+            import { spawnSync } from "node:child_process";
+            const result = spawnSync("bash", ["tools/dashboard-storage.sh", "deploy", "website/dist"], { stdio: "inherit" });
+            process.exitCode = result.status ?? 1;
+          '

@@ -21,6 +21,10 @@ on:
         description: "PR to post the results comment on (empty: job summary only)"
         default: ""
         type: string
+      publish_dashboard:
+        description: "Publish this successful GCI run to the dashboard"
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       pr_number:
@@ -343,6 +347,19 @@ jobs:
             ci-results/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Publish dashboard snapshot
+        if: ${{ success() && inputs.publish_dashboard && steps.benchmark.outcome == 'success' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          status=0
+          bash tools/dashboard-ci.sh || status=$?
+          if (( status != 0 )); then
+            echo "::warning::Dashboard publication failed (exit $status). See this step's log for details."
+            exit "$status"
+          fi
 
       - name: "🧹 Docker cleanup"
         if: always()

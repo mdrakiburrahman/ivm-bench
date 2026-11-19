@@ -29,4 +29,5 @@ jobs:
     with:
       experiments_file: src/containers/benchmark-server/experiments/gci-sf10-local-engines.json
       pr_number: ${{ format('{0}', github.event.pull_request.number) }}
+      publish_dashboard: true
     secrets: inherit

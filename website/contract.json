@@ -1,0 +1,53 @@
+{
+  "version": "1.0",
+  "common": {
+    "section": "STRING", "commit_sha": "STRING", "committed_at": "TIMESTAMP_MILLIS",
+    "engine": "STRING", "batch": "INT32"
+  },
+  "optional": {
+    "run": { "batch_insert_pct_json": "STRING" }
+  },
+  "sections": {
+    "run": {
+      "subject": "STRING", "author": "STRING", "branch": "STRING", "pr_number": "INT32",
+      "pr_title": "STRING", "run_id": "STRING", "run_attempt": "INT32", "run_url": "STRING",
+      "runner": "STRING", "started_at": "TIMESTAMP_MILLIS", "finished_at": "TIMESTAMP_MILLIS",
+      "workflow": "STRING", "mode": "STRING", "experiments_file": "STRING", "scale_factor": "INT32",
+      "engine_versions_json": "STRING", "workload": "STRING"
+    },
+    "engine_batch": {
+      "status": "STRING", "duration_s": "DOUBLE", "compute_cpu_time_s": "DOUBLE",
+      "compute_cpu_stddev_s": "DOUBLE", "compute_repetition_count": "INT32",
+      "visible_output_bytes": "INT64", "helper_data_bytes": "INT64", "metadata_bytes": "INT64",
+      "source_bytes": "INT64", "total_bytes": "INT64", "physical_state_bytes": "INT64",
+      "helper_over_visible": "DOUBLE", "openivm_over_spark_duration_ratio": "DOUBLE",
+      "peak_memory_mb": "DOUBLE", "cpu_pct": "DOUBLE", "throttled_s": "DOUBLE",
+      "models_total": "INT32", "models_incremental": "INT32", "models_failed": "INT32",
+      "models_skipped": "INT32"
+    },
+    "model": {
+      "model_id": "STRING", "model_name": "STRING", "layer": "STRING", "resource_type": "STRING",
+      "status": "STRING", "execution_time_s": "DOUBLE", "rows_affected": "INT64",
+      "incremental": "BOOLEAN", "incremental_reason": "STRING"
+    },
+    "operator": {
+      "model_id": "STRING", "window_functions": "INT32", "join_inner": "INT32", "join_left": "INT32",
+      "join_right": "INT32", "join_full": "INT32", "join_cross": "INT32", "join_left_anti": "INT32",
+      "join_left_semi": "INT32", "join_right_anti": "INT32", "join_right_semi": "INT32",
+      "cte": "INT32", "delete_update": "INT32", "aggregates": "INT32", "distinct": "INT32",
+      "sort": "INT32", "subqueries": "INT32"
+    },
+    "lineage": {
+      "model_id": "STRING", "model_name": "STRING", "layer": "STRING", "resource_type": "STRING",
+      "role": "STRING", "depends_on": "STRING"
+    },
+    "resource": {
+      "sample_at": "TIMESTAMP_MILLIS", "sample_index": "INT32", "container": "STRING",
+      "cpu_pct": "DOUBLE", "memory_mb": "DOUBLE", "throttled_s": "DOUBLE"
+    },
+    "log": {
+      "logged_at": "TIMESTAMP_MILLIS", "level": "STRING", "source": "STRING",
+      "message": "STRING", "fingerprint": "STRING", "collapsed_count": "INT32"
+    }
+  }
+}
