@@ -20,6 +20,31 @@ class BatchProfileTest(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ,{'OPENIVM_PROFILE_REFRESH':'1'}))
 
+    def test_native_profile_resolves_internal_ids_before_filtering_models(self):
+        import duckdb
+        from sql_catalog import load_sql
+        with duckdb.connect() as db:
+            db.execute('CREATE TABLE openivm_views(view_name VARCHAR, view_sql_name VARCHAR)')
+            db.execute("INSERT INTO openivm_views VALUES ('internal_m', 'm'), ('internal_other', 'other')")
+            db.execute('CREATE TABLE openivm_refresh_profile(refresh_id VARCHAR, view_name VARCHAR, '
+                       'profile_timestamp TIMESTAMP, step_order INTEGER, step_name VARCHAR, duration_ms BIGINT, detail VARCHAR)')
+            db.execute("INSERT INTO openivm_refresh_profile VALUES ('create', 'internal_m', current_timestamp, 0, 'create_mv_total', 12, ''), "
+                       "('foreign', 'internal_other', current_timestamp, 0, 'create_mv_total', 20, '')")
+            c=Mock()
+            def execute(sql):
+                if sql.startswith('SET '): return []
+                cursor=db.execute(sql)
+                return Mock(rows=[dict(zip([col[0] for col in cursor.description], row)) for row in cursor.fetchall()])
+            c.execute.side_effect=execute
+            profile=BatchProfile('duckdb-openivm',1,['m'],c)
+            data=profile.finish({'m':0.2})
+            self.assertEqual(data['status'],'ok')
+            exported=list(csv.DictReader(io.StringIO(data['csv']['profile'])))
+            self.assertEqual([(r['view_name'],r['refresh_id']) for r in exported],[('m','create')])
+            summary=db.execute(load_sql('duckdb-openivm','inline',
+                'dbt_server/services_openivm_profile/profile_by_view_step',exported_columns='1 AS exported_after_batch')).fetchall()
+            self.assertEqual({row[1] for row in summary},{'m','other'})
+
     def test_native_and_livy_exports_exclude_previous_refreshes_and_other_namespaces(self):
         for engine in STEP_ENGINES:
             with self.subTest(engine=engine):
@@ -59,6 +84,20 @@ class BatchProfileTest(unittest.TestCase):
                     result=profile.finish({'m':0.1})
                 self.assertEqual(result['status'],'failed')
                 self.assertIn('error',result)
+
+    def test_runtime_full_refresh_is_reported_and_strict_dynamic_fallback_fails(self):
+        rows=[step('runtime','workload.m'),step('static','workload.meta')]
+        for row in rows: row['step_name']='execute_full_refresh_writer'
+        for required,expected in [(set(),'ok'),({'m'},'failed')]:
+            with self.subTest(required=required):
+                c=Mock(namespace='workload');c.execute.return_value=[list(row.values()) for row in rows]
+                profile=BatchProfile('spark-openivm',2,['m','meta'],c)
+                c.execute.return_value=[list({**row,'refresh_id':row['refresh_id']+'new'}.values()) for row in rows]
+                data=profile.finish({'m':1,'meta':.1},incremental_models=required)
+                self.assertEqual(data['status'],expected)
+                self.assertEqual(data['full_refresh_models'],['m','meta'])
+                self.assertEqual(data['row_count'],2)
+                if required:self.assertIn('m',data['error'])
 
     def test_disabled_profiling_does_not_submit_observer_queries(self):
         engines=(*STEP_ENGINES,'duckdb','spark','fabric-jvm-35','databricks-openivm','databricks-enzyme','feldera','dbspnet')

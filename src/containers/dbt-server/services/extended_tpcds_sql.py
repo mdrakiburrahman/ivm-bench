@@ -359,7 +359,9 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
         durations = (build_databricks_openivm(connection, model_queries, manifest, state, batch_num==1) if engine=='databricks-openivm' else build(connection, model_queries, state, initial=batch_num==1, fallback_policy=options.get('fallback_policy','table')))
         model_s = time.monotonic() - started
         connection.phase = 'observer'
-        profiling = profile.finish(durations, statements=connection.statements)
+        incremental_models = {name for name, meta in state['materializations'].items()
+                              if meta['classification'] == 'incremental'} if options.get('fallback_policy') == 'strict' else set()
+        profiling = profile.finish(durations, statements=connection.statements, incremental_models=incremental_models)
         counts = {name:int(connection.execute('SELECT count(*) FROM '+identifier(name))[0][0]) for name in model_queries}
         state.update(batch_num=batch_num, dirty=False, namespace=connection.namespace)
         checkpoint.write_text(json.dumps(state, indent=2))

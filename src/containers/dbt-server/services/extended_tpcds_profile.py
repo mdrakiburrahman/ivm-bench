@@ -40,7 +40,7 @@ class BatchProfile:
             raise RuntimeError('unexpected refresh profile schema')
         return [dict(zip(steps._PROFILE_COLS, row)) for row in rows]
 
-    def finish(self, model_commands, *, statements=()):
+    def finish(self, model_commands, *, statements=(), incremental_models=()):
         payload = {'engine':self.engine, 'batch_num':self.batch_num, 'enabled':self.enabled,
                    'capture_id':self.capture_id,
                    'status':'disabled', 'scope':'batch', 'collection_outside_batch_timer':True,
@@ -60,6 +60,14 @@ class BatchProfile:
                 payload['models_without_steps'] = sorted(self.models-covered)
                 if payload['models_without_steps']:
                     payload['status'] = 'partial'
+                # CREATE eligibility cannot prevent runtime source-replacement
+                # fallbacks. Keep the steps and report the strategy actually run.
+                full = sorted({str(r['view_name']).replace('`','').split('.')[-1] for r in rows
+                               if r['step_name'] == 'execute_full_refresh_writer'})
+                payload['full_refresh_models'] = full
+                unexpected = sorted(set(full) & set(incremental_models))
+                if unexpected:
+                    payload.update(status='failed', error='Incremental models executed a full refresh: '+', '.join(unexpected))
             elif self.engine.startswith('databricks-'):
                 from services.databricks_openivm import statement_metrics
                 payload.update(statement_metrics(statements, self.batch_num), kind='query_history')

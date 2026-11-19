@@ -80,8 +80,23 @@ cleanup. Other workloads retain their existing DBSP.NET defaults.
 This run updates native DuckDB OpenIVM to `f9a49cf1f648ecf8f696c683ee1c61248ae459ff`
 with its DuckDB/CI-tools submodule revisions and DBSP.NET to upstream
 `ffb54826f515f360808fa1b2ce9e9a0344df74ad` (including the validated spill fixes).
-The compatible Spark/Fabric WF wrapper remains `3ac3a55` (which contains PR #62's
-current head plus integration fixes), with its DuckDB 1.5.2 JNI build.
+The compatible Spark/Fabric WF wrapper is `06177883` (which contains PR #62's
+current head plus integration fixes), with its DuckDB 1.5.2 JNI build. It keeps
+whole-window writes as DELETE/INSERT when downstream MVs need their CDF changes,
+avoiding a replacement-triggered full-recompute cascade. Full-refresh writers
+also use the engine's scoped broadcast protection. With profiling enabled,
+strict runs reject runtime full refreshes of models classified as incremental
+and retain their profiles for diagnosis.
+
+Native profile exports resolve internal MV IDs through `openivm_views` before
+matching model names. The three-batch local fixture validated all 96 models in
+each batch and exported profiles for all 96; it is not SF100 acceptance.
+
+Fabric requires `IMDS_RELAY_URL` and `IMDS_RELAY_SENDER_KEY` in the CI
+`BASE64_ENV` secret. The relay now reports unhealthy when either is missing,
+instead of accepting a healthy sidecar and later returning opaque login errors.
+The SF1 run on 2026-11-18 lacked both settings; its Fabric engines did not execute
+the workload. Restoring these credentials is still required for Fabric retries.
 
 The successful SF25 DBSP.NET and Feldera runs each passed 288/288 comparisons;
 their exact timings and source revisions are retained in the acceptance JSON.
@@ -1235,8 +1250,9 @@ refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors
 remain `standard` and `databricks`; `extended-tpcds` selects this workload.
 Native OpenIVM is pinned to main revision `19762672440969f318aca61d7971166759349838`.
 The Spark/Fabric builder uses integration revision
-`3ac3a55f4f27a791cd0710e80aef53fc3addfdee` on
-`bench/extended-tpcds-wf-20261030`, combining WF revision `41e97c48` with
+`061778834ed7cf88feb025ae70f62d672c316db5` on
+`fix/fabricds-cdf-cascade-20261119`, based on the
+`bench/extended-tpcds-wf-20261030` wrapper, combining WF revision `41e97c48` with
 the TPC-DS refresh fixes from Spark PR #85 (`abff19f9`) and the formatted
 timestamp shim from merged Spark PR #92 and interval-cast fix from merged
 Spark PR #94 (`b5193724`). Running-window state,
