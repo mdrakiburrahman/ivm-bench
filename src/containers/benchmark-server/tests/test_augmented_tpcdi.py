@@ -2,6 +2,7 @@ import json
 import re
 import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,8 @@ REPO = BENCHMARK_SERVER.parents[2]
 sys.path.insert(0, str(BENCHMARK_SERVER))
 
 from models.experiments import parse_experiments_json  # noqa: E402
+from services.engine_runner import _preserve_duckdb_openivm_sql  # noqa: E402
+from services.oat_runner import disk_cleanup_after_experiment  # noqa: E402
 
 
 def action_type_expressions(engine):
@@ -47,6 +50,26 @@ def normalized_sql(sql):
 
 
 class AugmentedTpcdiTest(unittest.TestCase):
+    def test_sql_capture_survives_engine_output_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "mount/results/100/duckdb-openivm/compiled-sql"
+            source.mkdir(parents=True)
+            (source / "view.sql").write_text("SELECT 1", encoding="utf-8")
+            archive = [f"compiled-sql/openivm_compiled_{table}-batch2.csv"
+                       for table in ("programs", "statements")]
+            for path in archive:
+                (source / Path(path).name).write_text("full SQL", encoding="utf-8")
+            preserved = _preserve_duckdb_openivm_sql(directory, 100, 2, archive)
+            self.assertEqual(preserved, "mount/results/100/dbt-server/compiled-sql/batch2")
+            target = root / "mount/results/100/dbt-server/compiled-sql/batch2"
+            for name in ["view.sql"] + [Path(path).name for path in archive]:
+                self.assertEqual((target / name).read_text(encoding="utf-8"),
+                                 "SELECT 1" if name.endswith(".sql") else "full SQL")
+            disk_cleanup_after_experiment(directory, 100, ["duckdb-openivm"], emit=lambda _: None)
+            self.assertFalse(source.exists())
+            self.assertEqual((target / "view.sql").read_text(encoding="utf-8"), "SELECT 1")
+
     def test_duckdb_sql_capture_is_opt_in_and_preserves_figure_one_inputs(self):
         config = (BENCHMARK_SERVER / "experiments" /
                   "duckdb-openivm-sf100-sql-capture.json")
