@@ -106,7 +106,7 @@ class BatchProfile:
                                reason='pipeline statistics are not per-model refresh step timings')
             else:
                 payload.update(status='not_supported', kind='model_commands',
-                               reason='full-recompute baseline has no OpenIVM refresh-step profiler; model command times retained')
+                               reason='engine has no OpenIVM refresh-step exporter; available model command times retained')
         except Exception as error:
             logging.exception('Fabric-DS %s batch %s profiling failed', self.engine, self.batch_num)
             payload.update(status='failed', error=str(error))

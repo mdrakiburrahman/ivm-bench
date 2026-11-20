@@ -73,26 +73,30 @@ class FelderaDialect(DuckDB):
             return f"CAST(PARSE_JSON({self.sql(expression, 'this')})[{key}] AS VARCHAR)"
 
 
+def lower_first_value_nulls(tree, engine):
+    for window in tree.find_all(exp.Window):
+        nulls = window.this
+        if not isinstance(nulls, exp.IgnoreNulls) or not isinstance(nulls.this, exp.FirstValue):
+            continue
+        frame = window.args.get('spec')
+        if frame is None or frame.args.get('exclude') or any(frame.args.get(k) != v for k, v in {
+            'start':'UNBOUNDED', 'start_side':'PRECEDING',
+            'end':'UNBOUNDED', 'end_side':'FOLLOWING',
+        }.items()):
+            raise ValueError(engine+' FIRST_VALUE IGNORE NULLS requires a whole-partition frame')
+        # With the complete partition as the frame, sorting null values last
+        # selects the same first nonnull row while retaining the original
+        # order among nonnull rows. All-null partitions still return NULL.
+        order = window.args.get('order')
+        nonnull_first = exp.Ordered(this=exp.Is(this=nulls.this.this.copy(), expression=exp.Null()))
+        window.set('order', exp.Order(expressions=[nonnull_first, *([] if order is None else [e.copy() for e in order.expressions])]))
+        window.set('this', nulls.this.copy())
+
+
 def render(sql, engine):
     tree=sqlglot.parse_one(sql,read='duckdb')
     if engine == 'feldera':
-        for window in tree.find_all(exp.Window):
-            nulls = window.this
-            if not isinstance(nulls, exp.IgnoreNulls) or not isinstance(nulls.this, exp.FirstValue):
-                continue
-            frame = window.args.get('spec')
-            if frame is None or frame.args.get('exclude') or any(frame.args.get(k) != v for k, v in {
-                'start':'UNBOUNDED', 'start_side':'PRECEDING',
-                'end':'UNBOUNDED', 'end_side':'FOLLOWING',
-            }.items()):
-                raise ValueError('Feldera FIRST_VALUE IGNORE NULLS requires a whole-partition frame')
-            # With the complete partition as the frame, sorting null values last
-            # selects the same first nonnull row while retaining the original
-            # order among nonnull rows. All-null partitions still return NULL.
-            order = window.args.get('order')
-            nonnull_first = exp.Ordered(this=exp.Is(this=nulls.this.this.copy(), expression=exp.Null()))
-            window.set('order', exp.Order(expressions=[nonnull_first, *([] if order is None else [e.copy() for e in order.expressions])]))
-            window.set('this', nulls.this.copy())
+        lower_first_value_nulls(tree, 'Feldera')
     if engine == 'dbspnet':
         from sqlglot.optimizer.simplify import simplify
         # Cohort bindings are constants: prune their inactive OR branch before

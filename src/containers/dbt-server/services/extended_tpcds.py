@@ -17,6 +17,7 @@ from datetime import date
 from pathlib import Path
 
 from services.compiler_bench.engines import _DuckDBSession, _verify_probe, QueryFailed
+from services.extended_tpcds_postgres import ENGINES as PG_ENGINES
 
 
 _ROOT = Path(os.environ.get("EXTENDED_TPCDS_WORKLOAD_DIR", "/data/workloads/extended-tpcds"))
@@ -197,7 +198,7 @@ def validate(connection, manifest, directory, batch_num, cohort):
 def context(engine, manifest_path=None, work_dir=None, binary=None, options=None):
     from services.extended_tpcds_sql import SQL_ENGINES
     from services.extended_tpcds_streaming import STREAM_ENGINES
-    if engine not in ("duckdb", "duckdb-openivm", *SQL_ENGINES, *STREAM_ENGINES):
+    if engine not in ("duckdb", "duckdb-openivm", *SQL_ENGINES, *STREAM_ENGINES, *PG_ENGINES):
         raise ValueError("unsupported Extended TPC-DS engine")
     options = options or json.loads(os.environ["EXTENDED_TPCDS_OPTIONS"])
     manifest_path = Path(manifest_path or (Path("/data/raw/extended-tpcds") / os.environ["EXTENDED_TPCDS_CACHE_KEY"] / "plan/manifest.json"))
@@ -210,6 +211,9 @@ def context(engine, manifest_path=None, work_dir=None, binary=None, options=None
 
 def validate_batch(engine, batch_num, **kwargs):
     manifest_path, manifest, work_dir, binary, options, prefix = context(engine, **kwargs)
+    if engine in PG_ENGINES:
+        from services.extended_tpcds_postgres import validate_batch as validate_pg_batch
+        return validate_pg_batch(engine,batch_num,manifest_path,work_dir,options)
     from services.extended_tpcds_sql import SQL_ENGINES
     from services.extended_tpcds_streaming import STREAM_ENGINES
     if engine in STREAM_ENGINES:
@@ -240,6 +244,13 @@ def run_batch(engine, batch_num, *, manifest_path=None, work_dir=None, binary=No
     manifest_path, manifest, work_dir, binary, options, prefix = context(engine, manifest_path, work_dir, binary, options)
     if batch_num < 1 or batch_num > len(manifest["batches"]) + 1:
         raise ValueError("batch is outside the prepared plan")
+    if engine in PG_ENGINES:
+        from services.extended_tpcds_postgres import run_batch as run_pg_batch
+        result=run_pg_batch(engine,batch_num,manifest_path,work_dir,options)
+        if validate_results:
+            result['validation']=validate_batch(engine,batch_num,manifest_path=manifest_path,work_dir=work_dir.parent,options=options)
+            if result['validation']['status']!='passed':result['status']='failed'
+        return result
     from services.extended_tpcds_sql import SQL_ENGINES
     from services.extended_tpcds_streaming import STREAM_ENGINES
     if engine in STREAM_ENGINES:

@@ -12,6 +12,10 @@
     "reason": "Fabric-DS translates its standalone query catalog and constructs engine-specific replay statements from typed mutation manifests. These are generated workload statements, not static TPC-DI templates."
   },
   {
+    "path": "src/containers/dbt-server/services/extended_tpcds_postgres.py",
+    "reason": "Fabric-DS translates its standalone 96-model catalog for PostgreSQL-wire engines and builds native source/replay and independent bag-comparison statements from the typed manifest. It does not generate TPC-DI dbt project SQL."
+  },
+  {
     "path": "src/containers/dbt-server/services/extended_tpcds_streaming.py",
     "reason": "Fabric-DS constructs a streaming program from its standalone SQL catalog and typed manifest; output CDC reconstruction and independent reference validation operate on dynamically discovered schemas."
   }

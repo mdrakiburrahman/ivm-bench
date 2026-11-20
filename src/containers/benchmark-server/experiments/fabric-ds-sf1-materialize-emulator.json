@@ -1,0 +1,41 @@
+{
+  "baseline": {
+    "workload": "extended-tpcds",
+    "scale_factor": 1,
+    "engines": [
+      "materialize-emulator"
+    ],
+    "schedule": "serial",
+    "parallel": false,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "extended_tpcds": {
+      "source_size_gb": 1,
+      "profile": "calibrated",
+      "mode": "insertion",
+      "report_date": "2002-12-31",
+      "batches": 3,
+      "statement_timeout_s": 3600,
+      "fallback_policy": "strict",
+      "validation_timeout_s": 14400
+    },
+    "feature_flags": {
+      "openivm_validate": true,
+      "storage_metrics": false,
+      "preserve_raw": true,
+      "spark_metrics_capture": false,
+      "openivm_profile_refresh": true
+    },
+    "spark_tunables": {}
+  },
+  "experiments": [
+    {
+      "label": "Fabric-DS SF1 materialize-emulator, native maintained 96-model DAG, 100/1/0.01, validation ON"
+    }
+  ]
+}

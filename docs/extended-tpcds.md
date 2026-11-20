@@ -92,11 +92,11 @@ Native profile exports resolve internal MV IDs through `openivm_views` before
 matching model names. The three-batch local fixture validated all 96 models in
 each batch and exported profiles for all 96; it is not SF100 acceptance.
 
-Fabric requires `IMDS_RELAY_URL` and `IMDS_RELAY_SENDER_KEY` in the CI
-`BASE64_ENV` secret. The relay now reports unhealthy when either is missing,
-instead of accepting a healthy sidecar and later returning opaque login errors.
-The SF1 run on 2026-11-18 lacked both settings; its Fabric engines did not execute
-the workload. Restoring these credentials is still required for Fabric retries.
+Merged main's relay fix (#105) uses `IMDS_RELAY_TEMPORARY_SAS_URL` in the CI
+environment. The readiness check follows this new contract and reports missing
+configuration without exposing the signed URL. The earlier SF1 run on
+2026-11-18 lacked the then-required relay credentials and did not execute Fabric;
+acceptance of the replacement authentication path still requires a fresh run.
 
 The successful SF25 DBSP.NET and Feldera runs each passed 288/288 comparisons;
 their exact timings and source revisions are retained in the acceptance JSON.
@@ -1274,6 +1274,26 @@ significance. There is no combined engine pass or reversed-order experiment.
 CI serializes these two configuration files against the shared SQL warehouse
 without cancelling the active run. Dispatch each file independently; no extra
 queue input is required.
+
+### Materialize Emulator and RisingWave SF1 acceptance
+
+The single-engine `fabric-ds-sf1-materialize-emulator.json` and
+`fabric-ds-sf1-risingwave.json` presets retain all 96 models and the shared
+100/1/0.01 source plan, with validation enabled. PostgreSQL-wire execution
+creates native source tables once and maintains native materialized views;
+there is no model-table fallback. Initial Materialize ingestion uses bounded
+COPY chunks; RisingWave uses bounded INSERT groups to respect parser limits.
+UUID source identities retain their canonical textual form for replay guards.
+These initial integrations accept insert-only plans and reject other mutations.
+
+Refresh completion uses strict-serializable reads of every Materialize output
+or a RisingWave FLUSH followed by output reads. Source insertion, MV creation
+and completion fences are measured; row counts and independent validation are
+excluded. Native per-model refresh-step timings are unavailable and explicitly
+reported as unsupported. Validation replays sources independently into DuckDB,
+rebuilds the complete DAG, and compares complete output bags with the existing
+float normalization. Unsupported SQL fails the engine with its model query;
+the SQL rendering checks alone do not establish native engine acceptance.
 
 PR #84 now includes the current benchmark harness, including repeated TPC-DI
 refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors
