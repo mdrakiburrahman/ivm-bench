@@ -81,7 +81,6 @@ class PresetCoverageTest(unittest.TestCase):
         gci = (WORKFLOWS / "gci.yaml").read_text(encoding="utf-8")
         self.assertIn("uses: ./.github/workflows/ci.yaml", gci)
         self.assertIn(f"experiments_file: {GCI_PRESET}", gci)
-        self.assertNotIn("workflow_dispatch", gci)
         self.assertNotIn("inputs.", gci)
 
     def test_ci_inline_default_engines_cover_every_engine(self):
@@ -113,12 +112,15 @@ class PresetCoverageTest(unittest.TestCase):
     def test_workflow_triggers_keep_pr_and_manual_paths_separate(self):
         gci = yaml.load((WORKFLOWS / "gci.yaml").read_text(), Loader=yaml.BaseLoader)
         ci = yaml.load((WORKFLOWS / "ci.yaml").read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(set(gci["on"]), {"pull_request"})
+        self.assertEqual(set(gci["on"]), {"pull_request", "workflow_dispatch"})
+        self.assertEqual(gci["on"]["workflow_dispatch"], "")
         self.assertIn("synchronize", gci["on"]["pull_request"]["types"])
         self.assertIn("ready_for_review", gci["on"]["pull_request"]["types"])
         self.assertEqual(set(ci["on"]), {"workflow_dispatch", "workflow_call"})
         self.assertEqual(len(ci["on"]["workflow_dispatch"]["inputs"]), 25)
-        self.assertEqual(set(gci["jobs"]["benchmark"]["with"]), {"experiments_file", "pr_number"})
+        gci_inputs = gci["jobs"]["benchmark"]["with"]
+        self.assertEqual(set(gci_inputs), {"experiments_file", "pr_number", "publish_dashboard"})
+        self.assertEqual(gci_inputs["publish_dashboard"], "true")
 
 
 if __name__ == "__main__":
