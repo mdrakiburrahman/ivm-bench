@@ -25,10 +25,6 @@ on:
         type: string
   workflow_dispatch:
     inputs:
-      resource_group:
-        description: "Shared compute queue; runs in this group wait without cancelling each other"
-        default: ""
-        type: string
       pr_number:
         description: "PR to post the results comment on (empty: job summary only)"
         default: ""
@@ -131,8 +127,9 @@ on:
         type: string
 
 concurrency:
-  group: ci-${{ inputs.resource_group || format('{0}-{1}-{2}', github.ref, inputs.experiments_file || 'inline', inputs.experiments_engines || 'default') }}
-  cancel-in-progress: ${{ !inputs.resource_group && github.ref != 'refs/heads/main' }}
+  # The two independent Databricks benchmarks share a remote SQL warehouse.
+  group: ci-${{ startsWith(inputs.experiments_file, 'src/containers/benchmark-server/experiments/fabric-ds-sf1-databricks-') && 'fabric-ds-databricks-shared-warehouse' || format('{0}-{1}-{2}', github.ref, inputs.experiments_file || 'inline', inputs.experiments_engines || 'default') }}
+  cancel-in-progress: ${{ !startsWith(inputs.experiments_file, 'src/containers/benchmark-server/experiments/fabric-ds-sf1-databricks-') && github.ref != 'refs/heads/main' }}
 
 permissions:
   pull-requests: write

@@ -1271,9 +1271,9 @@ silently substituted for AUTO to manufacture a timing comparison.
 Complete source/model times retain orchestration overhead. These separate runs
 do not establish identical cache state, fixed resources or statistical
 significance. There is no combined engine pass or reversed-order experiment.
-Dispatch these as separate CI runs with the same `resource_group` value so
-their use of the shared SQL warehouse does not overlap; the queue does not
-cancel the earlier run.
+CI serializes these two configuration files against the shared SQL warehouse
+without cancelling the active run. Dispatch each file independently; no extra
+queue input is required.
 
 PR #84 now includes the current benchmark harness, including repeated TPC-DI
 refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors
