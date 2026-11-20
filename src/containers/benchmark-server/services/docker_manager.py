@@ -340,6 +340,29 @@ class DockerManager:
         result = self._run(args, check=False)
         return result.stdout
 
+    def published_port(self, service: str, container_port: int) -> int:
+        """Return the host port Docker assigned to a published container port."""
+        result = self._run(["port", service, str(container_port)])
+        ports = set()
+        for endpoint in result.stdout.splitlines():
+            _, separator, port = endpoint.strip().rpartition(":")
+            if not separator or not port.isdigit() or not 1 <= int(port) <= 65535:
+                raise RuntimeError(
+                    f"Docker Compose returned an invalid published port for "
+                    f"{service}:{container_port}: {endpoint!r}"
+                )
+            ports.add(int(port))
+        if len(ports) != 1:
+            raise RuntimeError(
+                f"Docker Compose returned {len(ports)} distinct published ports "
+                f"for {service}:{container_port}"
+            )
+        host_port = ports.pop()
+        logger.info(
+            "Published %s:%d on host port %d", service, container_port, host_port
+        )
+        return host_port
+
     def is_healthy(self, service: str) -> bool:
         """Check if a service container reports healthy."""
         output = self.ps(service)

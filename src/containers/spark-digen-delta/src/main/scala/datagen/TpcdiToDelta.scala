@@ -4,7 +4,17 @@ import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.functions._
+import com.amazonaws.auth.{AWSStaticCredentialsProvider, BasicAWSCredentials}
+import com.amazonaws.AmazonClientException
+import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration
+import com.amazonaws.services.s3.AmazonS3ClientBuilder
+import io.delta.tables.DeltaTable
+import org.apache.iceberg.spark.Spark3Util
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import java.io.File
+import java.nio.file.{Files, StandardCopyOption}
+import scala.collection.mutable
 import java.time.LocalDate
 
 object TpcdiToDelta {
@@ -81,6 +91,15 @@ object TpcdiToDelta {
     val digenRoot = sys.env.getOrElse("DIGEN_PATH", "/data/digen")
     val digenPath = if (repeated) s"$digenRoot/horizon-$horizon" else digenRoot
     val deltaPath = sys.env.getOrElse("DELTA_PATH", "/data/delta")
+    val formats = sys.env.getOrElse("DATAGEN_OUTPUT_FORMATS", "delta")
+      .split(",").map(_.trim.toLowerCase).filter(_.nonEmpty).toSet
+    require(formats == Set("delta") || formats == Set("delta", "iceberg"),
+      "DATAGEN_OUTPUT_FORMATS must be delta or delta,iceberg")
+    val iceberg = formats.contains("iceberg")
+    val icebergBucket = sys.env.getOrElse("ICEBERG_S3_BUCKET", "ivm-bench")
+    val icebergEndpoint = sys.env.getOrElse("ICEBERG_S3_ENDPOINT", "http://minio:9000")
+    val icebergAccessKey = sys.env.getOrElse("ICEBERG_S3_ACCESS_KEY", "ivmbench")
+    val icebergSecretKey = sys.env.getOrElse("ICEBERG_S3_SECRET_KEY", "ivmbench-secret")
     val workload = sys.env.getOrElse("TPCDI_WORKLOAD", "standard")
     require(!repeated || Set("standard", "databricks")(workload), "TPCDI_WORKLOAD must be standard or databricks")
     val batch2Days = if (repeated) { if (workload == "databricks") 1 else 0 }
@@ -113,12 +132,24 @@ object TpcdiToDelta {
     else
       println(s"=== Batch limits: B1=${batchPct(1)}%, B2=${batchPct(2)}%, B3=${batchPct(3)}% ===")
 
-    val spark = SparkSession.builder()
+    val sparkBuilder = SparkSession.builder()
       .appName("TpcdiToDelta")
       .master("local[*]")
       .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
       .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-      .getOrCreate()
+    if (iceberg) {
+      sparkBuilder
+        .config("spark.sql.catalog.ivm", "org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.ivm.type", "hadoop")
+        .config("spark.sql.catalog.ivm.warehouse", s"s3a://$icebergBucket/warehouse")
+        .config("spark.sql.catalog.ivm.hadoop.fs.s3a.endpoint", icebergEndpoint)
+        .config("spark.sql.catalog.ivm.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.sql.catalog.ivm.hadoop.fs.s3a.access.key", icebergAccessKey)
+        .config("spark.sql.catalog.ivm.hadoop.fs.s3a.secret.key", icebergSecretKey)
+        .config("spark.sql.catalog.ivm.hadoop.fs.s3a.aws.credentials.provider",
+          "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    }
+    val spark = sparkBuilder.getOrCreate()
 
     val refresh = if (repeated) Some(new RepeatedRefresh(
       spark, deltaPath, augmented, horizon,
@@ -797,6 +828,95 @@ object TpcdiToDelta {
     println(s"=== Complete: $written tables written, $skipped tables skipped (already existed) ===")
 
     refresh.foreach(_.write())
+    if (iceberg) {
+      val client = AmazonS3ClientBuilder.standard()
+        .withEndpointConfiguration(new EndpointConfiguration(icebergEndpoint, "us-east-1"))
+        .withPathStyleAccessEnabled(true)
+        .withCredentials(new AWSStaticCredentialsProvider(
+          new BasicAWSCredentials(icebergAccessKey, icebergSecretKey)))
+        .build()
+      var ready = false
+      var attempts = 0
+      while (!ready) {
+        try {
+          if (!client.doesBucketExistV2(icebergBucket)) client.createBucket(icebergBucket)
+          ready = true
+        } catch {
+          case ex: AmazonClientException =>
+            attempts += 1
+            if (attempts >= 30) throw ex
+            Thread.sleep(2000)
+        }
+      }
+      val mapper = new ObjectMapper().registerModule(DefaultScalaModule)
+      val manifestFile = new File(deltaPath, ".iceberg-snapshots.json")
+      val previous = if (manifestFile.isFile) Some(mapper.readTree(manifestFile)) else None
+      val manifest = mutable.LinkedHashMap.empty[String, Map[String, String]]
+
+      def writeIceberg(path: File, namespace: String, table: String): Unit = {
+        require(namespace.matches("[a-z][a-z0-9_]*") && table.matches("[a-z][a-z0-9_]*"),
+          s"invalid Iceberg table name: $namespace.$table")
+        val delta = DeltaTable.forPath(spark, path.getAbsolutePath)
+        val id = delta.detail().select("id").head().getString(0)
+        val version = delta.history(1).select("version").head().getLong(0).toString
+        val name = s"ivm.$namespace.$table"
+        spark.sql(s"CREATE NAMESPACE IF NOT EXISTS ivm.$namespace")
+        val existed = spark.catalog.tableExists(name)
+        if (existed) {
+          val properties = Spark3Util.loadIcebergTable(spark, name).properties()
+          require(properties.get("ivm.delta.id") == id &&
+            properties.get("ivm.delta.version") == version,
+            s"Iceberg cache $name does not match Delta snapshot $id@$version")
+          println(s"  SKIP: $name matches Delta snapshot $id@$version")
+        } else {
+          spark.read.format("delta").option("versionAsOf", version).load(path.getAbsolutePath).writeTo(name)
+            .tableProperty("ivm.delta.id", id)
+            .tableProperty("ivm.delta.version", version)
+            .create()
+          println(s"  WRITE: $name from Delta snapshot $id@$version")
+        }
+        val metadataDir = s"warehouse/$namespace/$table/metadata"
+        def objectText(key: String): String = {
+          val stream = client.getObject(icebergBucket, key).getObjectContent
+          try scala.io.Source.fromInputStream(stream, "UTF-8").mkString finally stream.close()
+        }
+        val metadataVersion = objectText(s"$metadataDir/version-hint.text").trim
+        val metadata = mapper.readTree(objectText(s"$metadataDir/v$metadataVersion.metadata.json"))
+        val identity = Map(
+          "delta_id" -> id,
+          "delta_version" -> version,
+          "table_uuid" -> metadata.get("table-uuid").asText(),
+          "snapshot_id" -> metadata.path("current-snapshot-id").asText(),
+          "schema_id" -> metadata.get("current-schema-id").asText(),
+        )
+        val key = s"$namespace.$table"
+        if (existed) previous.flatMap(p => Option(p.get(key))).foreach { old =>
+          identity.foreach { case (field, value) =>
+            require(old.path(field).asText() == value,
+              s"Iceberg snapshot identity changed for $key ($field)")
+          }
+        }
+        manifest(key) = identity
+      }
+
+      val root = new File(deltaPath)
+      Option(root.listFiles()).getOrElse(Array.empty[File])
+        .filter(f => f.isDirectory && f.getName.matches("batch[0-9]+"))
+        .sortBy(_.getName)
+        .foreach { batch =>
+          Option(batch.listFiles()).getOrElse(Array.empty[File])
+            .filter(f => f.isDirectory && deltaExists(f.getAbsolutePath))
+            .sortBy(_.getName)
+            .foreach(f => writeIceberg(f, batch.getName, f.getName))
+        }
+      val audit = new File(root, "audit")
+      if (deltaExists(audit.getAbsolutePath)) writeIceberg(audit, "common", "audit")
+      val tempManifest = new File(deltaPath, ".iceberg-snapshots.json.tmp")
+      mapper.writeValue(tempManifest, manifest.toMap)
+      Files.move(tempManifest.toPath, manifestFile.toPath,
+        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+      client.shutdown()
+    }
     spark.stop()
   }
 }

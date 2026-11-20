@@ -1,5 +1,24 @@
 [
   {
+    "engine": "materialize-emulator",
+    "category": "inline",
+    "reason": "Compiler-bench and Spark OpenIVM validation probes are not used by Materialize Emulator.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns",
+      "compiler_bench/engines/verify_projection_float",
+      "dbt_server/services_spark_openivm_validation/projection_continuous"
+    ]
+  },
+  {
+    "engine": "materialize-emulator",
+    "category": "inline",
+    "reason": "Materialize Emulator does not use DuckLake parquet reads or Spark formatted explain.",
+    "paths": [
+      "dbt_server/services_ducklake_sources/read_parquet",
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
     "engine": "databricks-enzyme",
     "category": "inline",
     "reason": "not used by databricks-enzyme; only duckdb and duckdb-openivm use the DuckLake source loader.",
@@ -393,6 +412,46 @@
       "dbt_server/services_spark_openivm_validation/projection_numeric",
       "dbt_server/services_spark_openivm_validation/raw_subquery",
       "dbt_server/services_spark_openivm_validation/sample_rows"
+    ]
+  },
+  {
+    "engine": "risingwave",
+    "category": "inline",
+    "reason": "RisingWave query plans do not use Spark EXPLAIN FORMATTED",
+    "paths": [
+      "dbt_server/services_query_plans/explain_formatted"
+    ]
+  },
+  {
+    "engine": "risingwave",
+    "category": "inline",
+    "reason": "Spark OpenIVM-only continuous projection validation is not executed by RisingWave.",
+    "paths": [
+      "dbt_server/services_spark_openivm_validation/projection_continuous"
+    ]
+  },
+  {
+    "engine": "risingwave",
+    "category": "inline",
+    "reason": "RisingWave uses its dedicated DuckDB staging loader, not DuckLake source loading",
+    "paths": [
+      "dbt_server/services_ducklake_sources/read_parquet"
+    ]
+  },
+  {
+    "engine": "risingwave",
+    "category": "inline",
+    "reason": "RisingWave verifies compiler-bench results with a Python multiset because it does not support EXCEPT ALL; the shared SQL diff probe is unused.",
+    "paths": [
+      "compiler_bench/engines/verify_probe_columns"
+    ]
+  },
+  {
+    "engine": "risingwave",
+    "category": "inline",
+    "reason": "RisingWave verifies compiler-bench results with a Python multiset because it does not use the shared SQL float projection probe.",
+    "paths": [
+      "compiler_bench/engines/verify_projection_float"
     ]
   },
   {

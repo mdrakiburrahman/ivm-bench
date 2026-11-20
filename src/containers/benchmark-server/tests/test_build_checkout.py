@@ -36,6 +36,28 @@ class BuildCheckoutTest(unittest.TestCase):
             self.assertEqual(first, _spark_builder_source_hash(str(dockerfile)))
             dockerfile.write_text("FROM busybox\n")
             self.assertNotEqual(first, _spark_builder_source_hash(str(dockerfile)))
+    def test_published_port_accepts_ipv4_and_ipv6_bindings(self):
+        manager = DockerManager("docker-compose.yml")
+        with patch.object(
+            manager,
+            "_run",
+            return_value=subprocess.CompletedProcess(
+                [], 0, "0.0.0.0:32768\n[::]:32768\n", ""
+            ),
+        ) as run:
+            self.assertEqual(manager.published_port("dbt-server", 5000), 32768)
+        run.assert_called_once_with(["port", "dbt-server", "5000"])
+
+    def test_published_port_rejects_missing_or_ambiguous_mappings(self):
+        manager = DockerManager("docker-compose.yml")
+        for output in ("", "0.0.0.0:0\n", "0.0.0.0:32768\n[::]:32769\n"):
+            with self.subTest(output=output), patch.object(
+                manager,
+                "_run",
+                return_value=subprocess.CompletedProcess([], 0, output, ""),
+            ):
+                with self.assertRaises(RuntimeError):
+                    manager.published_port("dbt-server", 5000)
 
     def test_run_scoped_compose_overlay(self):
         run_id = "a" * 32
