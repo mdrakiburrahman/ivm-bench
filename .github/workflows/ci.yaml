@@ -25,6 +25,10 @@ on:
         type: string
   workflow_dispatch:
     inputs:
+      resource_group:
+        description: "Shared compute queue; runs in this group wait without cancelling each other"
+        default: ""
+        type: string
       pr_number:
         description: "PR to post the results comment on (empty: job summary only)"
         default: ""
@@ -127,8 +131,8 @@ on:
         type: string
 
 concurrency:
-  group: ci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ inputs.resource_group || format('{0}-{1}-{2}', github.ref, inputs.experiments_file || 'inline', inputs.experiments_engines || 'default') }}
+  cancel-in-progress: ${{ !inputs.resource_group && github.ref != 'refs/heads/main' }}
 
 permissions:
   pull-requests: write
