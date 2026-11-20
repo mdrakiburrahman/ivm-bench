@@ -68,9 +68,16 @@ class Connection:
         self.schema = 'xt_' + manifest['plan_id'] + '_' + engine.replace('-', '_') + '_' + str(os.environ.get('DATABRICKS_EXPERIMENT_ID') or os.environ.get('FABRIC_RUN_ID') or 'local').replace('-', '_')
         self.remote_root = str(directory)
         self.statements = []
+        self.compute = {'status':'not_applicable'}
         if engine.startswith('databricks-'):
             from services import databricks_enzyme_sources as src
             self.catalog = src.CATALOG
+            try:
+                self.compute = src.warehouse_settings()
+            except Exception as error:
+                self.compute = {'status':'unavailable', 'error_type':type(error).__name__}
+            if options.get('databricks_require_serverless') and self.compute.get('enable_serverless_compute') is not True:
+                raise ValueError('Verified serverless SQL warehouse required for the paired Databricks comparison: '+str(self.compute))
             self.handle = src.open_connection(self.timeout)
             if initialize:
                 ws = src._workspace_client()
@@ -250,6 +257,9 @@ def full_recompute_query(query):
 
 
 def build(connection, model_queries, state, *, initial=False, reference=False, fallback_policy='table'):
+    policy = ' '.join(os.environ.get('DATABRICKS_REFRESH_POLICY','AUTO').upper().split())
+    if connection.engine == 'databricks-enzyme' and policy not in ('AUTO','INCREMENTAL','INCREMENTAL STRICT','FULL'):
+        raise ValueError('invalid Databricks refresh policy')
     materializations = state.setdefault('materializations', {})
     durations = {}
     for name, query in model_queries.items():
@@ -277,11 +287,15 @@ def build(connection, model_queries, state, *, initial=False, reference=False, f
                     if not verdict['eligible'] and not static:
                         raise ValueError(f"{name} is not incrementalizable: {verdict['refresh_type_name']} ({verdict['reason']})")
                     previous = {'preflight':verdict,'classification':'incremental' if verdict['eligible'] else 'static'}
-                policy = ' REFRESH POLICY AUTO' if connection.engine == 'databricks-enzyme' else ''
-                connection.execute(f'CREATE MATERIALIZED VIEW {target}{policy} AS {query}')
+                clause = ' REFRESH POLICY '+policy if connection.engine == 'databricks-enzyme' else ''
+                connection.execute(f'CREATE MATERIALIZED VIEW {target}{clause} AS {query}')
             else:
+                if connection.engine == 'databricks-enzyme' and previous.get('refresh_policy',policy) != policy:
+                    raise ValueError('Databricks refresh policy changed during the run')
                 connection.execute(f'REFRESH MATERIALIZED VIEW {target}')
             classification = previous.get('classification','unknown')
+            if connection.engine == 'databricks-enzyme':
+                previous['refresh_policy'] = policy
         else:
             # Full materializations and independent validation use the same
             # strategy; compiler input and incremental helper joins stay intact.
@@ -341,6 +355,9 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
         raise ValueError('SQL engine checkpoint is dirty or does not match the requested batch/plan/options')
     connection = Connection(engine, manifest_path.parent, manifest, options, initialize=batch_num==1)
     try:
+        if batch_num > 1 and state.get('compute') != connection.compute:
+            raise ValueError('compute configuration changed during the run')
+        state['compute'] = connection.compute
         model_queries = queries(manifest, options, connection.namespace)
         from services.extended_tpcds_profile import BatchProfile
         profile = BatchProfile(engine, batch_num, model_queries, connection)
@@ -369,6 +386,7 @@ def run_batch(engine, batch_num, manifest_path, work_dir, options):
                   'duration_s':source_s+model_s, 'model_concurrency':1, 'source_replay_wall_s_including_guards':source_s,
                   'model_wall_s_including_cli':model_s, 'model_sql_duration_s':durations, 'model_rows':counts,
                   'profiling':profiling,
+                  'compute':connection.compute,
                   'materializations':state['materializations'], 'classification_counts':{kind:sum(m['classification']==kind for m in state['materializations'].values()) for kind in {m['classification'] for m in state['materializations'].values()}},
                   'model_queries':model_queries, 'sql_statements':connection.statements,
                   'source_storage':'delta', 'timing_semantics':'source replay and complete SQL commands; setup, row counts and validation excluded',

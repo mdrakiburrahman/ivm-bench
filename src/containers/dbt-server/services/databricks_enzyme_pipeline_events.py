@@ -122,8 +122,20 @@ def _discover_mv_pipelines(ws: WorkspaceClient, *, schemas=None, connection=None
                 "schema": mv["schema"],
                 "table": mv["table"],
                 "state": "",
+                "compute": _pipeline_compute(ws, pid),
             })
     return out
+
+
+def _pipeline_compute(ws, pipeline_id):
+    """Read supported settings; serverless does not expose fixed worker sizes."""
+    try:
+        spec = ws.pipelines.get(pipeline_id=pipeline_id).spec.as_dict()
+        return {'status':'ok', **{key:spec.get(key) for key in
+                ('serverless','photon','channel','edition','continuous')},
+                'fixed_worker_allocation':'not_exposed_for_serverless'}
+    except Exception as error:
+        return {'status':'unavailable', 'error_type':type(error).__name__}
 
 
 def _list_all_updates(
@@ -272,6 +284,7 @@ def collect_pipeline_events(batch_num: int, *, schemas=None, connection=None) ->
             "schema": p["schema"],
             "table": p["table"],
             "state": p["state"],
+            "compute": p.get('compute', {'status':'unavailable'}),
             "updates": per_update,
             "pipeline_level_events": pipeline_level_events,
             "events_truncated": any(ev.get('_truncated') for ev in events),

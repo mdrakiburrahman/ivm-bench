@@ -43,6 +43,9 @@ class DatabricksStorageMetricsTest(unittest.TestCase):
             "services.databricks_enzyme_sources"
         ] = fake_sources
         cls.fake_sources = fake_sources
+        cls.sources_patch = patch.object(sys.modules['services'], 'databricks_enzyme_sources', fake_sources, create=True)
+        cls.sources_patch.start()
+        cls.addClassCleanup(cls.sources_patch.stop)
         cls.metrics = importlib.import_module(
             "services.databricks_enzyme_metrics"
         )

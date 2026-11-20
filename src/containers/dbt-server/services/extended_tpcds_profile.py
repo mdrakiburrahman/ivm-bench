@@ -88,7 +88,8 @@ class BatchProfile:
                     events['event_count'] = sum(u['event_count'] for p in events['pipelines'] for u in p['updates'])
                     payload['pipeline_events'] = events
                     if (events['pipeline_count'] != len(self.models) or not events['update_count']
-                            or any(not p['updates'] or p['updates_without_timestamp'] or p.get('events_truncated')
+                            or any(p.get('compute',{}).get('status') != 'ok'
+                                   or not p['updates'] or p['updates_without_timestamp'] or p.get('events_truncated')
                                    or p.get('updates_truncated') for p in events['pipelines'])):
                         payload['status'] = 'partial'
             elif self.engine in ('feldera', 'dbspnet'):

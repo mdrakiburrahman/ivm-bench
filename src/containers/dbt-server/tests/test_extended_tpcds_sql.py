@@ -15,6 +15,54 @@ spec.loader.exec_module(module)
 
 
 class ExtendedTPCDSSqlTest(unittest.TestCase):
+    def test_warehouse_configuration_drift_fails_before_source_replay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);manifest=root/'manifest.json';manifest.write_text(json.dumps({'plan_id':'p'}))
+            (root/'sql-checkpoint.json').write_text(json.dumps({'plan_id':'p','batch_num':1,'dirty':False,
+                'options':{},'compute':{'id':'w','cluster_size':'Small'}}))
+            c=Mock(compute={'id':'w','cluster_size':'Large'},statements=[])
+            with patch.object(module,'Connection',return_value=c),patch.object(module,'replay') as replay:
+                with self.assertRaisesRegex(ValueError,'compute configuration changed'):
+                    module.run_batch('databricks-openivm',2,manifest,root,{})
+                replay.assert_not_called()
+                c.close.assert_called_once()
+
+    def test_enzyme_policy_is_configurable_validated_and_cannot_change_mid_run(self):
+        for policy in ('AUTO','INCREMENTAL','INCREMENTAL STRICT','FULL'):
+            with self.subTest(policy=policy),patch.dict(os.environ,{'DATABRICKS_REFRESH_POLICY':policy}):
+                c=Mock(engine='databricks-enzyme',namespace='cat.work')
+                state={}
+                module.build(c,{'m':'SELECT 1 AS x'},state,initial=True)
+                c.execute.assert_called_once_with(f'CREATE MATERIALIZED VIEW `cat`.`work`.`m` REFRESH POLICY {policy} AS SELECT 1 AS x')
+                module.build(c,{'m':'SELECT 1 AS x'},state)
+                self.assertEqual(state['materializations']['m']['refresh_policy'],policy)
+                with patch.dict(os.environ,{'DATABRICKS_REFRESH_POLICY':'FULL' if policy!='FULL' else 'AUTO'}):
+                    with self.assertRaisesRegex(ValueError,'policy changed'):
+                        module.build(c,{'m':'SELECT 1 AS x'},state)
+        with patch.dict(os.environ,{'DATABRICKS_REFRESH_POLICY':'AUTO; DROP TABLE m'}):
+            c=Mock(engine='databricks-enzyme',namespace='cat.work')
+            with self.assertRaisesRegex(ValueError,'invalid Databricks refresh policy'):
+                module.build(c,{'m':'SELECT 1'}, {}, initial=True)
+            c.execute.assert_not_called()
+
+    def test_paired_databricks_preflight_requires_verified_serverless_before_opening_sql(self):
+        from services import databricks_enzyme_sources as src
+        for engine in ('databricks-enzyme','databricks-openivm'):
+            for enabled in (True,False,None):
+                with self.subTest(engine=engine,enabled=enabled),patch.object(src,'warehouse_settings',return_value={
+                         'status':'ok','id':'w','enable_serverless_compute':enabled}), \
+                     patch.object(src,'open_connection') as opened:
+                    options={'statement_timeout_s':123,'databricks_require_serverless':True}
+                    if enabled is not True:
+                        with self.assertRaisesRegex(ValueError,'serverless SQL warehouse required'):
+                            module.Connection(engine,Path('/plan'),{'plan_id':'p'},options)
+                        opened.assert_not_called()
+                    else:
+                        opened.return_value.cursor.return_value.description=None
+                        c=module.Connection(engine,Path('/plan'),{'plan_id':'p'},options)
+                        self.assertEqual(c.compute['id'],'w')
+                        c.close()
+
     def test_relation_rewrite_preserves_ctes_literals_and_aliases(self):
         sql = "WITH s AS (SELECT a FROM source) SELECT s.a, 'source' AS label FROM s JOIN model m ON s.a=m.a"
         actual = module.translate(sql, {'source':'cat.xt.source', 'model':'cat.xt.model', 's':'cat.xt.wrong'})
@@ -321,7 +369,7 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
             root = Path(folder)
             manifest = root/'manifest.json'
             manifest.write_text(json.dumps({'plan_id':'p'}))
-            connection = Mock(engine='databricks-enzyme', namespace='cat.xt', statements=[])
+            connection = Mock(engine='databricks-enzyme', namespace='cat.xt', statements=[],compute={'status':'unavailable'})
             diagnose = module.Connection.diagnose_failure
             connection.diagnose_failure.side_effect = lambda: diagnose(connection)
             connection.execute.return_value = [['xt', 'stg_customer_policy_history', False]]

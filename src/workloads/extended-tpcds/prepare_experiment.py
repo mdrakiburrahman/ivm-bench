@@ -91,6 +91,7 @@ def prepare(directory, scale_factor, options, initial_pct, steps):
 
 
 def preparation_recipe(scale_factor, options, initial_pct, steps):
+    options = {key:value for key,value in options.items() if key != 'databricks_require_serverless'}
     return {"preparation_version": 8, "scale_factor": scale_factor, "options": options, "initial_pct": initial_pct,
             "steps": steps, "duckdb_generator_version": duckdb.__version__}
 

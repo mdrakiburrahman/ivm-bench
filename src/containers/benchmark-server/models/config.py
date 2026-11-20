@@ -189,8 +189,11 @@ class ExtendedTPCDSOptions:
     statement_timeout_s: float = 300.0
     validation_timeout_s: float = 14400.0
     source_size_gb: Optional[float] = None  # initial Parquet bytes before compression, decimal GB
+    databricks_require_serverless: bool = False
 
     def __post_init__(self):
+        if type(self.databricks_require_serverless) is not bool:
+            raise ValueError('databricks_require_serverless must be a boolean')
         if self.profile not in ("native", "calibrated", "jcc_stress"):
             raise ValueError("unknown Extended TPC-DS profile")
         if self.mode not in ("insertion", "updates", "deletes", "days", "repeated_insertions", "mixed"):
@@ -231,6 +234,7 @@ def workload_cache_key(config):
     options = asdict(config.extended_tpcds)
     # Validation policy does not change the immutable source/mutation plan.
     options.pop('validation_timeout_s')
+    options.pop('databricks_require_serverless')
     payload = {"workload": config.workload, "scale_factor": config.scale_factor,
                "options": options, "initial_pct": config.batch_1_pct,
                "steps": config.extended_tpcds.steps(config)}

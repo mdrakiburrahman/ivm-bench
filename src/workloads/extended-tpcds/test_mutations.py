@@ -19,6 +19,13 @@ from test_workload import fixture
 
 
 class MutationTests(unittest.TestCase):
+    def test_compute_requirement_does_not_change_preparation_recipe(self):
+        from prepare_experiment import preparation_recipe
+        a=preparation_recipe(1,{'profile':'calibrated'},100,[])
+        for enabled in (False,True):
+            b=preparation_recipe(1,{'profile':'calibrated','databricks_require_serverless':enabled},100,[])
+            self.assertEqual(a,b)
+
     def test_export_compression_preserves_types_nulls_and_duplicates(self):
         with tempfile.TemporaryDirectory() as folder, duckdb.connect() as connection:
             root = Path(folder)
