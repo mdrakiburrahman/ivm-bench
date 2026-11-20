@@ -22,6 +22,8 @@ const icons = {
   sun: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-6v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2',
   search: 'M15 15l5 5M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',
   pulse: 'M2 12h5l3-7 4 14 3-7h5',
+  back: 'M20 12H4m7-7-7 7 7 7',
+  forward: 'M4 12h16m-7-7 7 7-7 7',
 };
 function Icon({ name, size = 17 }: { name: keyof typeof icons; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icons[name]} /></svg>;
@@ -43,8 +45,35 @@ function href(page: Page, params: URLSearchParams, change: Record<string, string
 function setFilter(page: Page, params: URLSearchParams, change: Record<string, string>, replace = false) {
   const next = href(page, params, change);
   if (next === location.hash) return;
-  if (replace) { history.replaceState(null, '', next); window.dispatchEvent(new Event('hashchange')); }
+  if (replace) { history.replaceState(history.state, '', next); window.dispatchEvent(new Event('hashchange')); }
   else location.hash = next;
+}
+type NavigationEntry = { trail: string; index: number };
+const navigationEntry = (): NavigationEntry | undefined => history.state?.ivmNavigation;
+function usePageHistory(onLocation: () => void) {
+  const cursor = useRef(navigationEntry() ?? { trail: `ivm-nav-${performance.timeOrigin}`, index: 0 });
+  const limit = useRef(Math.max(cursor.current.index, Number(sessionStorage.getItem(cursor.current.trail)) || 0));
+  const [bounds, setBounds] = useState({ back: cursor.current.index > 0, forward: cursor.current.index < limit.current });
+  function sync() {
+    const entry = navigationEntry();
+    if (entry?.trail === cursor.current.trail) cursor.current = entry;
+    else {
+      // Native hash links create entries without state. Stamp them before a traversal can revisit them.
+      cursor.current = { ...cursor.current, index: cursor.current.index + 1 };
+      history.replaceState({ ...history.state, ivmNavigation: cursor.current }, '');
+      limit.current = cursor.current.index;
+      sessionStorage.setItem(cursor.current.trail, String(limit.current));
+    }
+    setBounds({ back: cursor.current.index > 0, forward: cursor.current.index < limit.current });
+    onLocation();
+  }
+  useEffect(() => {
+    history.replaceState({ ...history.state, ivmNavigation: cursor.current }, '');
+    window.addEventListener('hashchange', sync);
+    window.addEventListener('popstate', sync);
+    return () => { window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
+  }, []);
+  return { ...bounds, sync };
 }
 function Spark({ points, color, dashed }: { points: Point[]; color: string; dashed?: boolean }) {
   if (!points.length) return null;
@@ -123,11 +152,18 @@ function App() {
   const selected = filters.get('commit') ?? undefined;
   const engine = filters.get('engine') ?? '';
   const below = filters.get('heat') === 'slow';
+  const navigation = usePageHistory(() => {
+    setRoute(route());
+    if (searchVersion.current !== location.search) {
+      searchVersion.current = location.search;
+      setSource(locationSource());
+    }
+  });
   function choose(next: string | File, reset = false) {
     const url = new URL(location.href);
     if (typeof next === 'string' && !reset) url.searchParams.set('data', next);
     else url.searchParams.delete('data');
-    if (url.href !== location.href) history.pushState(null, '', url);
+    if (url.href !== location.href) { history.pushState(null, '', url); navigation.sync(); }
     searchVersion.current = location.search;
     if (next === source) retry(n => n + 1);
     setSource(next);
@@ -136,17 +172,9 @@ function App() {
   const end = latest ? Date.parse(`${dateKey(latest.committed_at)}T00:00:00Z`) + DAY - 1 : 0;
   const from = end - range * DAY + 1;
   useEffect(() => {
-    const onHash = () => setRoute(route());
-    const onHistory = () => {
-      if (searchVersion.current === location.search) return;
-      searchVersion.current = location.search;
-      setSource(locationSource());
-    };
     const onKey = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); search.current?.focus(); } };
-    window.addEventListener('hashchange', onHash);
     window.addEventListener('keydown', onKey);
-    window.addEventListener('popstate', onHistory);
-    return () => { window.removeEventListener('hashchange', onHash); window.removeEventListener('keydown', onKey); window.removeEventListener('popstate', onHistory); };
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('ivm-theme', theme); }, [theme]);
   useEffect(() => {
@@ -203,7 +231,13 @@ function App() {
     </aside>
     <main>
       <header class="topbar">
-        <div><div class="eyebrow">IVM BENCH <span> / </span> {page.toUpperCase()}</div><h1>{page === 'Overview' ? 'Performance overview' : page === 'Signals' ? 'Performance signals' : page}</h1></div>
+        <div class="page-heading">
+          <nav class="page-history" aria-label="Page history">
+            <button type="button" class="control" disabled={!navigation.back} title="Back" aria-label="Back" onClick={() => history.back()}><Icon name="back" /></button>
+            <button type="button" class="control" disabled={!navigation.forward} title="Forward" aria-label="Forward" onClick={() => history.forward()}><Icon name="forward" /></button>
+          </nav>
+          <div><div class="eyebrow">IVM BENCH <span> / </span> {page.toUpperCase()}</div><h1>{page === 'Overview' ? 'Performance overview' : page === 'Signals' ? 'Performance signals' : page}</h1></div>
+        </div>
         <div class="controls">{page !== 'Data' && <>
           <label class="search"><Icon name="search" size={15} /><input ref={search} aria-label="Search engines and commits" placeholder="Search engine or commit" value={q}
             onInput={e => setFilter(page, filters, { q: e.currentTarget.value }, true)} /><kbd>Ctrl K</kbd></label>

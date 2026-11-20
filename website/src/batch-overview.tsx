@@ -23,7 +23,7 @@ export function BatchOverview({ history, chosen, chosenBatch, select, detail }: 
   const [hover, setHover] = useState<{ index: number; batch: number }>();
   const [focus, setFocus] = useState<{ index: number; batch: number }>();
   const [lead, setLead] = useState<string>();
-  const [pinned, setPinned] = useState<string>();
+  const [pinned, setPinned] = useState<string[]>([]);
   useEffect(() => {
     const node = stack.current;
     if (!node) return;
@@ -43,17 +43,23 @@ export function BatchOverview({ history, chosen, chosenBatch, select, detail }: 
   const maxTicks = Math.max(2, Math.floor(plotWidth / 106));
   const tickCount = Math.min(maxTicks, domain.length);
   const ticks = Array.from({ length: tickCount }, (_, i) => Math.round(i * (domain.length - 1) / Math.max(1, tickCount - 1)));
-  const highlight = lead ?? pinned;
+  const highlighted = pinned.length > 1 || !lead ? pinned : [lead];
 
   return <div class="batch-overview" ref={stack}>
     <section class="panel batch-intro">
       <div class="panel-head"><div class="panel-title"><h2>Elapsed time by commit</h2><span class="muted">Wall clock · lower is better</span></div></div>
-      <div class="legend" aria-label="Highlight an engine across all batches">{engines.map(engine => {
+      <div class="legend" role="group" aria-label="Highlight engines across all batches"
+        aria-describedby="batch-legend-hint">{engines.map(engine => {
         const [label, , color, dash] = engineInfo(engine);
-        return <button key={engine} aria-pressed={pinned === engine} onMouseEnter={() => setLead(engine)} onMouseLeave={() => setLead(undefined)}
-          onFocus={() => setLead(engine)} onBlur={() => setLead(undefined)} onClick={() => setPinned(pinned === engine ? undefined : engine)}>
+        return <button key={engine} aria-pressed={pinned.includes(engine)} onMouseEnter={() => setLead(engine)} onMouseLeave={() => setLead(undefined)}
+          onFocus={() => setLead(engine)} onBlur={() => setLead(undefined)} onClick={e => setPinned(current => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey) {
+              return current.includes(engine) ? current.filter(id => id !== engine) : [...current, engine];
+            }
+            return current.length === 1 && current[0] === engine ? [] : [engine];
+          })}>
           <i class={dash ? 'dash' : ''} style={{ color }} />{label}</button>;
-      })}</div>
+      })}<span id="batch-legend-hint">Ctrl, Cmd, or Shift + click to compare</span></div>
     </section>
     {charts.map(({ batch, insert, series }) => {
       const max = Math.max(1, ...series.flatMap(s => s.durations).filter(v => v !== undefined));
@@ -88,7 +94,7 @@ export function BatchOverview({ history, chosen, chosenBatch, select, detail }: 
                 drawing = true;
                 return point;
               }).join('');
-              return <g key={engine} data-engine={engine} opacity={highlight && highlight !== engine ? .16 : 1}>
+              return <g key={engine} data-engine={engine} opacity={highlighted.length && !highlighted.includes(engine) ? .16 : 1}>
                 <path d={path} class="plot-line" fill="none" stroke={color} stroke-dasharray={dash ? '5 3' : undefined} />
                 {durations.map((v, i) => v !== undefined && (i === index || (durations[i - 1] === undefined && durations[i + 1] === undefined))
                   ? <circle key={i} cx={x(i)} cy={y(v)} r="2.8" fill={color} class="batch-point" /> : null)}
