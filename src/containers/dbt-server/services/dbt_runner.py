@@ -148,7 +148,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
             stdout_buf.append(message)
             parse_log_line(run_id, line)
 
-        proc.wait(timeout=7200)
+        proc.wait(timeout=14400)
         t_err.join(timeout=5)
         elapsed = time.monotonic() - start_ts
         diagnostics = "\n".join(stdout_buf)[-8000:] + "\n" + "".join(stderr_buf)[-2000:]
@@ -192,7 +192,7 @@ def run_dbt(run_id: str, engine: str, scale_factor: int, full_refresh: bool, bat
 
     except subprocess.TimeoutExpired:
         proc.kill()
-        _fail_run(run_id, "dbt timed out after 7200s", time.monotonic() - start_ts)
+        _fail_run(run_id, "dbt timed out after 14400s", time.monotonic() - start_ts)
         cleanup_progress(run_id)
     except Exception as e:
         _fail_run(run_id, str(e), time.monotonic() - start_ts)

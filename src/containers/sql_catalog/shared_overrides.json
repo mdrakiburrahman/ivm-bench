@@ -88,8 +88,6 @@
       "duckdb-openivm"
     ],
     "paths": [
-      "bronze/brokerage/brokerage_trade",
-      "bronze/brokerage/brokerage_trade_history",
       "bronze/crm/crm_customer_mgmt",
       "bronze/finwire/finwire_company",
       "bronze/finwire/finwire_financial",
@@ -112,6 +110,18 @@
       "silver/financials",
       "silver/securities",
       "silver/trades_history"
+    ]
+  },
+  {
+    "category": "models",
+    "engines": [
+      "duckdb",
+      "duckdb-openivm",
+      "materialize-emulator"
+    ],
+    "paths": [
+      "bronze/brokerage/brokerage_trade",
+      "bronze/brokerage/brokerage_trade_history"
     ]
   }
 ]

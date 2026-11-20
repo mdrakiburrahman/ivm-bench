@@ -12,7 +12,48 @@
 | DuckDB         | `docker/docker-compose.benchmark.duckdb.yml`         | Batch SQL            | In-process, initializes DuckLake source tables from generated Parquet files, then full-refreshes the dbt model DAG on each batch                                                                                                                                                              |
 | DuckDB-OpenIVM | `docker/docker-compose.benchmark.duckdb-openivm.yml` | DuckLake IVM         | Built from source in a container (`docker/docker-compose.duckdb-openivm-build.yml`), creates DuckLake-backed materialized views, refreshes with `PRAGMA refresh`, validates with `EXCEPT ALL` after timing when `OPENIVM_VALIDATE=1`                                                          |
 | Feldera        | `docker/docker-compose.benchmark.feldera.yml`        | Streaming IVM (DBSP) | `pipeline-manager` + Delta input connectors                                                                                                                                                                                                                                                   |
+| RisingWave     | `docker/docker-compose.benchmark.risingwave.yml`     | Streaming IVM        | Native materialized views; immutable Iceberg snapshots are copied into RisingWave-owned mutable tables through its Iceberg connector                                                                                                                                                            |
 | Spark-OpenIVM  | `docker/docker-compose.benchmark.spark-openivm.yml`  | Spark IVM            | Spark + MSSQL metastore + the openivm-spark SQL extension. Built from source in a container (`docker/docker-compose.spark-openivm-build.yml`) at a pinned `mdrakiburrahman/openivm-spark` commit. dbt issues `CREATE MATERIALIZED VIEW` (batch 1) / `REFRESH MATERIALIZED VIEW` (batches 2-3) |
+| Materialize Emulator | `docker/docker-compose.benchmark.materialize-emulator.yml` | Streaming IVM | Pinned non-production Emulator, not production Materialize. Native tables receive Delta snapshots via bounded COPY; one set of materialized views is maintained across all batches. |
+
+Materialize Emulator results are explicitly labeled and are **not representative
+of production Materialize performance**. The Emulator image is subject to its
+non-production license and limits. Its cluster size is chosen within the local
+engine's CPU and memory allocation and the effective replica is recorded.
+Batch timings include native source writes and a strict-serializable read of every
+maintained output; same-engine compiled-definition multiset checks and storage
+collection run after timing. These consistency checks do not replace independent
+cross-engine result comparisons.
+Storage includes persistent blobs and compute scratch; shard catalog ownership
+separates source and output blobs from helper data and metadata. Temporary
+compaction files count as helper data; scans retry if files disappear and fail
+if a complete scan cannot be obtained. Counts are approximate: a live scan is
+not an atomic snapshot and concurrent compaction can change attribution.
+Compiler-bench, repeated refresh and the Databricks workload are unsupported.
+
+Materialize truncates floating-point aggregate inputs to multiples of 2^-24
+([aggregate precision](https://materialize.com/docs/sql/types/float/#aggregate-precision)).
+Selected SQL overrides accumulate as `NUMERIC` before casting back to `DOUBLE`;
+this improves accuracy but is not bitwise equivalent to IEEE floating-point
+aggregation. Cross-engine checks use the repository's six-decimal float comparison.
+Even at that precision, four-decimal model rounding can expose aggregation-order
+differences: an SF3 Spark comparison found two `market_volatility` groups with
+different rounded standard deviations. This remains a known parity discrepancy.
+Materialize accepts `NUMERIC(29,4)` for Spark percentage expressions but
+[ignores the precision](https://materialize.com/docs/sql/types/numeric/#precision):
+the scale is retained, while Spark's 29-digit overflow limit is not enforced.
+Timezone-aware Delta timestamps use Materialize `TIMESTAMPTZ`; Spark reports
+these columns as `TIMESTAMP`. Value comparisons normalize them to UTC.
+
+Use `src/containers/benchmark-server/experiments/materialize-emulator-smoke.json`
+for a standalone three-batch TPC-DI run.
+
+The existing Spark data generator defaults to Delta output. When RisingWave is
+selected, the orchestrator configures `DATAGEN_OUTPUT_FORMATS=delta,iceberg`:
+Spark writes batch-scoped Iceberg tables from the committed Delta snapshots to
+MinIO, so other engines keep their existing Delta input. Snapshot IDs are
+recorded alongside the Delta data and pinned during RisingWave loads. Later
+batches mutate the owned tables before appending their batch-specific snapshots.
 
 ### Compiler bench (incrementalizability survey)
 

@@ -281,7 +281,7 @@ class ReporterTest(unittest.TestCase):
             env = {
                 **{k: v for k, v in os.environ.items() if k != "PR_NUMBER"},
                 "GITHUB_REPOSITORY": "o/r", "GITHUB_SERVER_URL": "https://github.com",
-                "GITHUB_RUN_ID": "1", "GITHUB_STEP_SUMMARY": str(summary),
+                "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_STEP_SUMMARY": str(summary),
                 "ENGINE_COVERAGE_FILE": str(coverage_file), "BENCHMARK_OUTCOME": outcome,
             }
             if extra_env:

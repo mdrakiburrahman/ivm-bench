@@ -20,7 +20,7 @@ relay = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(relay)
 result = {"probe": "fabric-relay-from-runner"}
 started = time.monotonic()
-if not relay.RELAY_URL or not relay.RELAY_SENDER_KEY:
+if not relay.RELAY_TEMPORARY_SAS_URL:
     result["status"] = "not_configured"
 else:
     try:

@@ -1,4 +1,16 @@
 services:
+  iceberg-minio:
+    profiles: ["iceberg"]
+    image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}
+      MINIO_ROOT_PASSWORD: ${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}
+    volumes:
+      - ../mount/raw/${SCALE_FACTOR:-3}/iceberg:/data
+    cpus: ${MINIO_CPUS:-4}
+    mem_limit: ${MINIO_MEM:-4g}
+
   tpc-di-gen:
     build:
       context: ../src/containers/tpc-di-gen
@@ -31,6 +43,11 @@ services:
       JAVA_TOOL_OPTIONS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xmx${DATAGEN_HEAP:-80g} -Xms${DATAGEN_HEAP:-80g} -XX:G1HeapRegionSize=16m -XX:ParallelGCThreads=8 -XX:ConcGCThreads=4"
       DIGEN_PATH: /data/digen
       DELTA_PATH: /data/delta
+      DATAGEN_OUTPUT_FORMATS: "${DATAGEN_OUTPUT_FORMATS:-delta}"
+      ICEBERG_S3_ENDPOINT: http://iceberg-minio:9000
+      ICEBERG_S3_ACCESS_KEY: "${RISINGWAVE_S3_ACCESS_KEY:-ivmbench}"
+      ICEBERG_S3_SECRET_KEY: "${RISINGWAVE_S3_SECRET_KEY:-ivmbench-secret}"
+      ICEBERG_S3_BUCKET: ivm-bench
       TPCDI_BATCH_2_DAYS: "${TPCDI_BATCH_2_DAYS:-0}"
       REPEATED_REFRESH: "${REPEATED_REFRESH:-0}"
       TPCDI_WORKLOAD: "${TPCDI_WORKLOAD:-standard}"

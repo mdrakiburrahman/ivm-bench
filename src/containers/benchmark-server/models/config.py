@@ -63,6 +63,9 @@ class EngineConfig:
             "DBT_SERVER_MEM": self.dbt_server_resources.mem_str,
             "DBT_SERVER_PORT": str(self.port),
         }
+        if self.name == "risingwave":
+            env["MINIO_CPUS"] = "4"
+            env["MINIO_MEM"] = "4g"
         # MSSQL for Spark — must match defaults in
         # docker/docker-compose.benchmark.spark{,-openivm}.yml. At SF=400+
         # cpus=4/mem=8g triggered SQL Server's SOS scheduler ASSERT
@@ -77,6 +80,21 @@ class EngineConfig:
         # in profiles.yml and forwards it to runtime_config.max_rss_mb.
         if self.name == "feldera":
             env["FELDERA_MAX_RSS_MB"] = str(int(self.main_resources.memory_gb * 1024 * 0.95))
+        if self.name == "materialize-emulator":
+            sizes = (
+                (1, "50cc"), (2, "100cc"), (4, "200cc"), (6, "300cc"),
+                (8, "400cc"), (12, "600cc"), (16, "800cc"), (24, "1200cc"),
+                (31, "1600cc"), (62, "3200cc"),
+            )
+            eligible = [
+                (workers, size) for workers, size in sizes
+                if workers <= self.main_resources.cpus and workers * 8 <= self.main_resources.memory_gb
+            ]
+            if not eligible:
+                raise ValueError("Materialize Emulator requires at least one CPU and 8 GiB for its cluster")
+            workers, size = eligible[-1]
+            env["MATERIALIZE_EMULATOR_CLUSTER_SIZE"] = size
+            env["MATERIALIZE_EMULATOR_WORKERS"] = str(workers)
         # DuckDB / DuckDB-OpenIVM run in-process inside the dbt-server
         # container, so size their memory_limit and threads from the
         # engine's resource budget. Leave 20 % headroom for the Python
@@ -111,6 +129,8 @@ ENGINE_PORTS = {
     "fabric-jvm-35": 5008,
     "databricks-openivm": 5010,
     "dbspnet": 5009,
+    "risingwave": 5011,
+    "materialize-emulator": 5012,
 }
 
 ENGINE_COMPOSE_FILES = {
@@ -124,6 +144,8 @@ ENGINE_COMPOSE_FILES = {
     "fabric-jvm-35": "docker/docker-compose.benchmark.fabric-jvm-35.yml",
     "databricks-openivm": "docker/docker-compose.benchmark.databricks-openivm.yml",
     "dbspnet": "docker/docker-compose.benchmark.dbspnet.yml",
+    "risingwave": "docker/docker-compose.benchmark.risingwave.yml",
+    "materialize-emulator": "docker/docker-compose.benchmark.materialize-emulator.yml",
 }
 
 # Engine's primary service (None if dbt-server IS the engine).
@@ -141,6 +163,8 @@ ENGINE_MAIN_SERVICES = {
     "fabric-jvm-35": None,
     "databricks-openivm": None,  # The schema-only compiler is a helper; execution is remote.
     "dbspnet": "dbspnet-server",
+    "risingwave": "risingwave",
+    "materialize-emulator": "materialize-emulator",
 }
 
 # Containers whose CPU contributes to the controlled local-system metric.
@@ -153,6 +177,8 @@ ENGINE_COMPUTE_SERVICES = {
     "feldera": ("pipeline-manager",),
     "spark-openivm": ("spark-openivm", "mssql-metastore"),
     "dbspnet": ("dbspnet-server",),
+    "risingwave": ("risingwave",),
+    "materialize-emulator": ("materialize-emulator",),
 }
 
 # Cloud-consuming engines: the heavy query compute is offloaded to a remote
@@ -272,6 +298,7 @@ class BenchmarkConfig:
             "duckdb-openivm",
             "feldera",
             "spark-openivm",
+            "risingwave",
         ]
     )
     host_cores: Optional[int] = None

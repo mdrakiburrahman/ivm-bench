@@ -18,6 +18,67 @@ from services.storage_sync import storage_snapshot_barrier  # noqa: E402
 
 
 class EngineFailureIsolationTest(unittest.TestCase):
+    def test_dynamic_dbt_port_updates_the_health_check_url(self):
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._dynamic_dbt_port = True
+        runner._docker_host = "host.docker.internal"
+        runner._dbt_url = "http://host.docker.internal:5000"
+        runner._engine = SimpleNamespace(name="spark")
+        runner._engine_mgr = Mock()
+        runner._engine_mgr.published_port.return_value = 32768
+        runner._emit = Mock()
+
+        runner._resolve_dbt_server_port()
+
+        runner._engine_mgr.published_port.assert_called_once_with("dbt-server", 5000)
+        self.assertEqual(runner._dbt_url, "http://host.docker.internal:32768")
+
+    def test_materialize_fence_timeout_fails_batch_and_tears_down(self):
+        import requests
+
+        runner = EngineRunner.__new__(EngineRunner)
+        runner._engine = SimpleNamespace(name="materialize-emulator")
+        runner._config = SimpleNamespace(
+            repeated_refresh=False, workload="standard", batch_count=3, scale_factor=3,
+        )
+        runner._result = EngineResult(engine="materialize-emulator")
+        runner._parallel = False
+        runner._storage_barrier = None
+        runner._override_file = None
+        runner._batch_override_file = None
+        runner._engine_mgr = Mock()
+        runner._compiler_bench_enabled = Mock(return_value=False)
+        runner._run_materialize_emulator = Mock(side_effect=requests.Timeout("fence timed out"))
+        for name in (
+            "_emit", "_batch_loader_init", "_up_with_retry", "_wait_for_dbt_health",
+            "_start_stats", "_capture_delta_stats", "_start_cpu_measurement",
+            "_ensure_cpu_measurement_status", "_persist_batch_result", "_stop_stats",
+            "_collect_feldera_debug", "_capture_logs", "_databricks_enzyme_drop_mvs",
+            "_fabric_cleanup", "_cleanup_staging",
+        ):
+            setattr(runner, name, Mock())
+        response = Mock()
+        response.json.return_value = {"size": "50cc", "processes": 1, "workers": 1}
+        with patch("services.engine_runner.requests.post", return_value=response):
+            runner._result.extra["materialize_emulator"] = {"cluster_workers": 1}
+            runner._dbt_url = "http://dbt"
+            result = runner.run()
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.batches[0].status, "failed")
+        self.assertEqual([batch.status for batch in result.batches[1:]], ["pending", "pending"])
+        runner._run_materialize_emulator.assert_called_once_with(1)
+        runner._engine_mgr.down.assert_called_once_with(volumes=True)
+
+        runner._result = EngineResult(engine="materialize-emulator")
+        runner._result.extra["materialize_emulator"] = {"cluster_workers": 1}
+        runner._run_materialize_emulator.reset_mock()
+        response.json.return_value = {"size": "50cc", "processes": 1, "workers": 2}
+        with patch("services.engine_runner.requests.post", return_value=response):
+            result = runner.run()
+        self.assertEqual(result.status, "failed")
+        self.assertIn("2 workers, expected 1", result.error)
+        runner._run_materialize_emulator.assert_not_called()
+
     def test_broken_storage_barrier_does_not_fail_surviving_engine(self):
         barrier = Barrier(2)
         barrier.abort()

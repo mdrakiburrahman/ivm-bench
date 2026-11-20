@@ -8,6 +8,8 @@
         "fabric-jvm-35",
         "fabric-openivm-jvm-35",
         "feldera",
+        "risingwave",
+        "materialize-emulator",
         "spark",
         "spark-openivm"
       ],
@@ -70,6 +72,8 @@
         "duckdb-openivm",
         "fabric-jvm-35",
         "fabric-openivm-jvm-35",
+        "risingwave",
+        "materialize-emulator",
         "spark",
         "spark-openivm"
       ],
@@ -104,9 +108,26 @@
         "sources/staging_trade",
         "sources/staging_watch_history"
       ]
+    },
+    {
+      "engines": [
+        "risingwave"
+      ],
+      "paths": [
+        "gold/analytics/market_volatility_by_symbol"
+      ]
     }
   ],
   "macros": [
+    {
+      "engines": [
+        "materialize-emulator"
+      ],
+      "paths": [
+        "materialize_finwire_date",
+        "materialize_forward_fill"
+      ]
+    },
     {
       "engines": [
         "databricks-enzyme",
@@ -116,11 +137,21 @@
         "fabric-jvm-35",
         "fabric-openivm-jvm-35",
         "feldera",
+        "risingwave",
+        "materialize-emulator",
         "spark",
         "spark-openivm"
       ],
       "paths": [
         "generate_schema_name"
+      ]
+    },
+    {
+      "engines": [
+        "risingwave"
+      ],
+      "paths": [
+        "generate_surrogate_key"
       ]
     },
     {

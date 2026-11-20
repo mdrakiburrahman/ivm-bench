@@ -8,6 +8,7 @@ returned as structured errors.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -21,10 +22,11 @@ from sql_catalog import load_sql
 
 
 CATEGORIES = ("visible_output", "helper_data", "metadata", "source")
-LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "databricks-openivm"}
+LOCAL_ENGINES = {"spark", "spark-openivm", "feldera", "dbspnet", "databricks-enzyme", "databricks-openivm", "materialize-emulator"}
 DUCKLAKE_ENGINES = {"duckdb", "duckdb-openivm"}
 FABRIC_ENGINES = {"fabric-jvm-35", "fabric-openivm-jvm-35"}
-SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES
+RISINGWAVE_ENGINES = {"risingwave"}
+SUPPORTED_ENGINES = LOCAL_ENGINES | DUCKLAKE_ENGINES | FABRIC_ENGINES | RISINGWAVE_ENGINES
 
 PROCESSED_ROOTS = {
     "spark": Path("/data/processed/spark"),
@@ -33,8 +35,10 @@ PROCESSED_ROOTS = {
     "duckdb-openivm": Path("/data/processed/duckdb-openivm"),
     "feldera": Path("/data/processed/feldera"),
     "dbspnet": Path("/data/processed/dbspnet"),
+    "risingwave": Path("/data/processed/risingwave"),
     "databricks-enzyme": Path("/data/processed/databricks-enzyme"),
     "databricks-openivm": Path("/data/processed/databricks-openivm"),
+    "materialize-emulator": Path("/data/processed/materialize-emulator"),
 }
 RAW_DELTA_ROOT = Path(os.environ.get("RAW_DELTA_DIR", "/data/raw/delta"))
 # DbspNet, like Feldera, reads its inputs straight from the shared raw Delta tables
@@ -326,6 +330,50 @@ def _collect_local_root(
             kind=kind,
         )
     return items, totals, errors
+
+
+def _collect_physical_root(
+    root: Path, *, deadline: float
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Return actual allocated blocks and apparent bytes beneath ``root``.
+
+    Unlike RisingWave's logical ``rw_table_stats``, allocated blocks measure
+    the host volume consumption that can make a benchmark run out of disk.
+    Directory blocks are included to match ``du``.
+    """
+    summary: Dict[str, Any] = {
+        "path": str(root),
+        "allocated_bytes": 0,
+        "measurement": "filesystem_st_blocks",
+    }
+    if not root.is_dir():
+        return summary, [f"physical storage root does not exist: {root}"]
+
+    errors: List[str] = []
+    stack = [root]
+    while stack:
+        expired = _deadline_error(deadline)
+        if expired:
+            errors.append(expired)
+            break
+        current = stack.pop()
+        try:
+            current_stat = current.stat(follow_symlinks=False)
+            summary["allocated_bytes"] += int(current_stat.st_blocks) * 512
+            entries = list(os.scandir(current))
+        except OSError as exc:
+            errors.append(f"cannot scan physical storage path {current}: {exc}")
+            continue
+        for entry in entries:
+            try:
+                entry_stat = entry.stat(follow_symlinks=False)
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                summary["allocated_bytes"] += int(entry_stat.st_blocks) * 512
+            except OSError as exc:
+                errors.append(f"cannot stat physical storage path {entry.path}: {exc}")
+    return summary, errors
 
 
 def _collect_feldera_helper_data(
@@ -864,6 +912,253 @@ def _fabric_storage(
     return items, totals, errors
 
 
+def _collect_risingwave_storage(
+    *, deadline: float
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[str]]:
+    """Measure RisingWave's state through its own catalog, not the filesystem.
+
+    Walking /root/.risingwave would only give one opaque Hummock blob total, and
+    the interesting split is inside it. RisingWave names every state table in
+    `rw_catalog`, and `rw_table_stats` carries per-table key/value bytes, so the
+    three categories fall out directly:
+
+      visible_output — the MV result tables (`rw_materialized_views`)
+      helper_data    — the streaming operator state backing those MVs
+                       (`rw_internal_tables`: join/agg/window state). This is the
+                       IVM overhead the benchmark is trying to price.
+      source         — the loaded TPC-DI base tables (`rw_tables`)
+
+    Hummock counts logical bytes before compression, so these are an upper bound
+    on what the object store actually holds; the ratio between them is the
+    comparable number, not the absolute size.
+    """
+    from services import risingwave_sources
+
+    items: List[Dict[str, Any]] = []
+    totals = _empty_totals()
+    errors: List[str] = []
+
+    expired = _deadline_error(deadline)
+    if expired:
+        return items, totals, [expired]
+
+    # (catalog view, storage category, kind) — each row becomes one item.
+    sources = (
+        ("rw_materialized_views", "visible_output", "materialized_view"),
+        ("rw_internal_tables", "helper_data", "operator_state"),
+        ("rw_tables", "source", "table"),
+    )
+    try:
+        conn = risingwave_sources._connect()
+    except Exception as exc:
+        return items, totals, [f"RisingWave storage unavailable: {exc}"]
+    try:
+        cur = conn.cursor()
+        for view, category, kind in sources:
+            if _deadline_error(deadline):
+                errors.append(f"deadline reached before reading {view}")
+                break
+            try:
+                cur.execute(load_sql(
+                    "risingwave", "inline", "dbt_server/services_storage_metrics/risingwave_table_bytes",
+                    view=view,
+                ))
+                rows = cur.fetchall()
+            except Exception as exc:
+                errors.append(f"cannot read rw_catalog.{view}: {exc}")
+                continue
+            for relation_id, name, bytes_, row_count in rows:
+                _add_item(
+                    items,
+                    totals,
+                    engine="risingwave",
+                    name=str(name),
+                    category=category,
+                    bytes_=_safe_int(bytes_),
+                    file_count=0,
+                    path=f"hummock://{view}/{name}",
+                    kind=kind,
+                )
+                items[-1]["relation_id"] = _safe_int(relation_id)
+                del row_count
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # The meta store is a local SQLite file, not part of Hummock.
+    meta_root = PROCESSED_ROOTS["risingwave"] / "state" / "meta_store"
+    if meta_root.is_dir():
+        meta_items, meta_totals, meta_errors = _collect_local_root(
+            "risingwave", meta_root, root_category="metadata", deadline=deadline
+        )
+        items.extend(meta_items)
+        _merge_totals(totals, meta_totals)
+        errors.extend(meta_errors)
+
+    return items, totals, errors
+
+
+def _collect_risingwave_current_ssts(
+    *, deadline: float
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Measure the compressed SSTs referenced by the current Hummock version.
+
+    The filesystem footprint also contains obsolete SSTs waiting for GC. Keeping
+    the two numbers separate tells us whether shorter retention can recover the
+    space or whether the live streaming state itself is the limiting factor.
+    """
+    from services import risingwave_sources
+
+    expired = _deadline_error(deadline)
+    if expired:
+        return None, [expired]
+    try:
+        conn = risingwave_sources._connect()
+    except Exception as exc:
+        return None, [f"RisingWave SST storage unavailable: {exc}"]
+    try:
+        cur = conn.cursor()
+        cur.execute(load_sql(
+            "risingwave", "inline", "dbt_server/services_storage_metrics/risingwave_sstables"
+        ))
+        rows = cur.fetchall()
+        if not rows:
+            return None, ["rw_catalog.rw_hummock_sstables returned no rows"]
+        groups = []
+        for raw_table_ids, file_bytes, uncompressed_bytes, key_count, sst_count in rows:
+            try:
+                parsed_table_ids = json.loads(str(raw_table_ids))
+            except (TypeError, ValueError):
+                parsed_table_ids = []
+            if not isinstance(parsed_table_ids, list):
+                parsed_table_ids = []
+            groups.append(
+                {
+                    "table_ids": [_safe_int(value) for value in parsed_table_ids],
+                    "file_bytes": _safe_int(file_bytes),
+                    "uncompressed_bytes": _safe_int(uncompressed_bytes),
+                    "key_count": _safe_int(key_count),
+                    "file_count": _safe_int(sst_count),
+                }
+            )
+        return {
+            "file_bytes": sum(group["file_bytes"] for group in groups),
+            "uncompressed_bytes": sum(
+                group["uncompressed_bytes"] for group in groups
+            ),
+            "key_count": sum(group["key_count"] for group in groups),
+            "file_count": sum(group["file_count"] for group in groups),
+            "groups": groups,
+        }, []
+    except Exception as exc:
+        return None, [f"cannot read rw_catalog.rw_hummock_sstables: {exc}"]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _materialize_storage(deadline: float):
+    import psycopg2
+    from services.materialize_fence import expected_models
+
+    engine = "materialize-emulator"
+    items, totals, errors = [], _empty_totals(), []
+    run_id = os.environ.get("MATERIALIZE_EMULATOR_RUN_ID", "")
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        return items, totals, ["Invalid or missing Materialize Emulator instance id"]
+    root = PROCESSED_ROOTS[engine] / run_id
+    blobs = root / "mzdata" / "persist" / "blob"
+    scratch = root / "scratch"
+    if not blobs.is_dir() or not scratch.is_dir():
+        return items, totals, [f"Materialize persistent blob or scratch root missing under {root}"]
+    try:
+        connection = psycopg2.connect(
+            host=os.environ.get("MATERIALIZE_HOST", "materialize-emulator"),
+            port=int(os.environ.get("MATERIALIZE_PORT", "6875")),
+            user=os.environ.get("MATERIALIZE_USER", "materialize"),
+            dbname=os.environ.get("MATERIALIZE_DATABASE", "materialize"),
+            connect_timeout=10,
+        )
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(load_sql(engine, "inline", "dbt_server/services_storage_metrics/materialize_shards"))
+                records = cursor.fetchall()
+        finally:
+            connection.close()
+    except Exception as exc:
+        return items, totals, [f"Materialize shard catalog unavailable: {exc}"]
+    shards = {}
+    output_relations = set()
+    for object_id, name, kind, schema, shard_id in records:
+        if shard_id in shards:
+            return items, totals, [f"Materialize shard belongs to multiple objects: {shard_id}"]
+        if object_id.startswith("s"):
+            category = "metadata"
+        elif kind == "materialized-view":
+            category = "visible_output"
+            output_relations.add((schema, name))
+        elif kind == "table" and schema == "tpcdi" and not name.startswith("_benchmark_"):
+            category = "source"
+        else:
+            category = "helper_data"
+        shards[shard_id] = (category, f"{schema}.{name}" if schema else name)
+    expected = {(node["schema"], node["alias"]) for node in expected_models()}
+    missing = expected - output_relations
+    if missing:
+        return items, totals, [f"Materialize catalog is missing output shards: {sorted(missing)}"]
+
+    for attempt in range(3):
+        grouped, scan_errors = {}, []
+        disappeared = 0
+        for directory, _, filenames in os.walk(root, onerror=lambda exc: scan_errors.append(str(exc))):
+            for filename in filenames:
+                if time.monotonic() >= deadline:
+                    scan_errors.append("storage collection deadline exceeded")
+                    break
+                path = Path(directory) / filename
+                try:
+                    size = path.stat().st_size
+                except FileNotFoundError as exc:
+                    disappeared += 1
+                    scan_errors.append(f"cannot stat Materialize file {path}: {exc}")
+                    continue
+                except OSError as exc:
+                    scan_errors.append(f"cannot stat Materialize file {path}: {exc}")
+                    continue
+                relative = path.relative_to(root)
+                if path.parent == blobs:
+                    if filename.endswith(".tmp"):
+                        category, name = "helper_data", "persist_temporary_files"
+                    else:
+                        shard = filename.split("\u2215", 1)[0]
+                        category, name = shards.get(shard, ("helper_data", "unmapped_persist_shards"))
+                    kind = "persist_blob"
+                elif relative.parts[0] == "scratch":
+                    category, name, kind = "helper_data", "compute_scratch", "scratch_file"
+                else:
+                    category, name, kind = "metadata", "emulator_metadata", "metadata_file"
+                pair = grouped.setdefault((category, name, kind), [0, 0])
+                pair[0] += size
+                pair[1] += 1
+            if time.monotonic() >= deadline:
+                break
+        if time.monotonic() >= deadline and "storage collection deadline exceeded" not in scan_errors:
+            scan_errors.append("storage collection deadline exceeded")
+        if not disappeared or len(scan_errors) != disappeared or attempt == 2 or time.monotonic() >= deadline:
+            errors.extend(scan_errors)
+            break
+    for (category, name, kind), (size, count) in grouped.items():
+        _add_item(items, totals, engine=engine, name=name, category=category, bytes_=size,
+                  file_count=count, path=str(root), kind=kind)
+    if totals["source_bytes"] == 0:
+        errors.append("Materialize collector found no source shard bytes")
+    return items, totals, errors
+
+
 def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     totals = _empty_totals()
@@ -887,7 +1182,9 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
         else default_timeout_s,
     )
     deadline = time.monotonic() + timeout_s
-    if engine in DUCKLAKE_ENGINES:
+    if engine == "materialize-emulator":
+        local_items, local_totals, local_errors = _materialize_storage(deadline)
+    elif engine in DUCKLAKE_ENGINES:
         local_items, local_totals, local_errors = _collect_ducklake_storage(
             engine, PROCESSED_ROOTS[engine], deadline=deadline
         )
@@ -902,6 +1199,23 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
     items.extend(local_items)
     _merge_totals(totals, local_totals)
     errors.extend(local_errors)
+
+    physical_state: Optional[Dict[str, Any]] = None
+    if engine in RISINGWAVE_ENGINES:
+        physical_state, physical_errors = _collect_physical_root(
+            PROCESSED_ROOTS[engine] / "state", deadline=deadline
+        )
+        errors.extend(physical_errors)
+        current_ssts, sst_errors = _collect_risingwave_current_ssts(
+            deadline=deadline
+        )
+        errors.extend(sst_errors)
+        if physical_state is not None and current_ssts is not None:
+            physical_state["current_ssts"] = current_ssts
+            physical_state["non_current_sst_allocated_bytes"] = max(
+                0,
+                physical_state["allocated_bytes"] - current_ssts["file_bytes"],
+            )
 
     if engine == "feldera" and time.monotonic() < deadline:
         helper_items, helper_totals, helper_errors = _collect_feldera_helper_data(
@@ -951,8 +1265,15 @@ def collect_storage_metrics(engine: str, batch_num: Optional[int] = None) -> Dic
             key=lambda item: (item["category"], item["name"], item["kind"]),
         ),
     }
+    if physical_state is not None:
+        result["physical_state"] = physical_state
     if engine in PROCESSED_ROOTS:
         result["roots"] = {"processed": str(PROCESSED_ROOTS[engine])}
+    if engine == "materialize-emulator":
+        result["measurement_semantics"] = (
+            "Approximate non-atomic live scan of persistent files and compute scratch; "
+            "concurrent compaction can change per-object attribution."
+        )
     result.setdefault("roots", {})["raw_base_reference"] = str(RAW_DELTA_ROOT)
     if errors:
         result["errors"] = errors

@@ -5,7 +5,7 @@
     "batch_1_pct": "100",
     "batch_2_pct": "1",
     "batch_3_pct": "2",
-    "engines": ["spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "dbspnet"],
+    "engines": ["spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera", "dbspnet", "risingwave", "materialize-emulator"],
     "schedule": "serial",
     "spark_tunables": {"dbt_threads": 4},
     "feature_flags": {

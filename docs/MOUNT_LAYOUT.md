@@ -9,6 +9,8 @@
 | Path                                                                              | Description                                              |
 | --------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `mount/raw/<SF>/delta/batch{1,2,3}/`                                              | Source Delta tables per batch                            |
+| `mount/raw/<SF>/delta/.iceberg-snapshots.json`                                    | Delta and Iceberg snapshot identities for RisingWave    |
+| `mount/raw/<SF>/iceberg/`                                                        | MinIO data for RisingWave's batch-scoped Iceberg inputs |
 | `mount/raw/<SF>/delta/staging/`                                                   | Unified staging (grows via `spark-batch-loader`)         |
 | `mount/results/<SF>/<engine>/`                                                    | Engine output and engine-local state                     |
 | `mount/results/<SF>/dbt-server/run-<engine>-batch<N>.json`                        | Per-batch benchmark results                              |

@@ -12,6 +12,8 @@ lazy val root = (project in file("."))
     libraryDependencies ++= Seq(
       "org.apache.spark"  %% "spark-sql"    % sparkVersion,
       "io.delta"          %% "delta-spark"  % deltaVersion,
+      "org.apache.iceberg" %% "iceberg-spark-runtime-3.5" % "1.10.1",
+      "org.apache.hadoop" % "hadoop-aws" % hadoopVersion,
       "com.databricks"    %% "spark-xml"    % "0.18.0",
       "org.scalatest"     %% "scalatest"    % "3.2.19" % Test,
     ),

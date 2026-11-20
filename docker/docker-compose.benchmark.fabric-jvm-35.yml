@@ -5,9 +5,7 @@ services:
       context: ../src/containers/imds-router
     environment:
       IMDS_ROUTER_PORT: "${IMDS_ROUTER_PORT:-8080}"
-      IMDS_RELAY_URL: "${IMDS_RELAY_URL}"
-      IMDS_RELAY_SENDER_KEY: "${IMDS_RELAY_SENDER_KEY}"
-      IMDS_RELAY_KEY_NAME: "${IMDS_RELAY_KEY_NAME:-Send}"
+      IMDS_RELAY_TEMPORARY_SAS_URL: "${IMDS_RELAY_TEMPORARY_SAS_URL:?Set a temporary Relay HTTPS sender URL}"
       IDENTITY_HEADER: "${IDENTITY_HEADER:-local-dev-secret}"
       IMDS_SUBSCRIPTION_ID: "${UAMI_SUBSCRIPTION:-}"
     healthcheck:

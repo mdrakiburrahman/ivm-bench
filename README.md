@@ -24,6 +24,12 @@ dbt across local Docker engines and managed cloud services.
 
 ![Docker, cloud, CI and GCI benchmark architecture](imgs/ivm-bench-architecture.drawio.png)
 
+### Benchmark dashboard
+
+The [IVM Bench dashboard](https://ivmbench.z9.web.core.windows.net/) visualizes published benchmark telemetry per commit: batch timings, engine resources, model coverage, and signals.
+
+[![IVM Bench dashboard showing per-commit durations across three batches](imgs/ivm-bench-live-dashboard.jpg)](https://ivmbench.z9.web.core.windows.net/)
+
 ### Run a smoke benchmark
 
 ```bash
@@ -38,6 +44,7 @@ See [Quickstart](docs/QUICKSTART.md) for setup and benchmark options.
 
 - [Quickstart](docs/QUICKSTART.md)
 - [Docker, cloud, CI and GCI](docs/CI_VS_GCI.md)
+- [Manual cloud CI](docs/CI.md)
 - [Benchmark workloads](docs/WORKLOADS.md)
 - [Engines and compiler benchmark](docs/ENGINES.md)
 - [Mount layout](docs/MOUNT_LAYOUT.md)

@@ -25,12 +25,14 @@ from handlers.feldera import FelderaHandler
 from handlers.extended_tpcds import ExtendedTPCDSHandler
 from handlers.health import HealthHandler
 from handlers.lineage import LineageHandler
+from handlers.materialize_emulator import MaterializeEmulatorHandler
 from handlers.duckdb_openivm import DuckDBOpenIVMHandler
 from handlers.query_plans import QueryPlansHandler
 from handlers.compiler_bench import CompilerBenchHandler
 from handlers.spark_openivm import SparkOpenIVMHandler
 from handlers.storage_metrics import StorageMetricsHandler
 from handlers.runs import RunsHandler
+from handlers.risingwave import RisingWaveHandler
 from handlers.sql_analysis import SQLAnalysisHandler
 from services.db import init_db
 
@@ -72,12 +74,14 @@ def register_handlers(flask_app: Flask) -> None:
     handlers = [
         HealthHandler(),
         ExtendedTPCDSHandler(),
+        MaterializeEmulatorHandler(),
         DuckDBOpenIVMHandler(),
         SparkOpenIVMHandler(),
         DatabricksEnzymeHandler(),
         FabricHandler(),
         RunsHandler(),
         FelderaHandler(),
+        RisingWaveHandler(),
         DbspNetHandler(),
         ChartHandler(),
         LineageHandler(),

@@ -94,25 +94,37 @@ class RepeatedRefreshTest(unittest.TestCase):
 
     def test_datagen_failure_keeps_generator_logs_and_stops_containers(self):
         from contextlib import nullcontext
-        with tempfile.TemporaryDirectory() as root:
-            orchestrator = Orchestrator.__new__(Orchestrator)
-            orchestrator._config = BenchmarkConfig(repo_dir=root, repeated_refresh=True)
-            orchestrator.emit = Mock()
-            orchestrator._heartbeat = Mock(side_effect=lambda _: nullcontext())
-            manager = Mock()
-            manager.logs.return_value = "generator thread failed writing HoldingHistory"
-            def fail(**kwargs):
-                self.assertEqual(kwargs["services"], ["tpc-di-gen", "spark-digen-delta"])
-                kwargs["stream_callback"]("generator started")
-                raise RuntimeError("compose timed out")
-            manager.up.side_effect = fail
-            with patch("services.orchestrator.DockerManager", return_value=manager):
-                with self.assertRaisesRegex(RuntimeError, "generator thread failed"):
-                    orchestrator._run_datagen()
-            manager.down.assert_called_once()
-            log = Path(root, "mount/logs/3/datagen/horizon-2.log").read_text()
-            self.assertIn("generator started", log)
-            self.assertIn("HoldingHistory", log)
+        for engine in ("duckdb", "risingwave"):
+            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as root:
+                orchestrator = Orchestrator.__new__(Orchestrator)
+                orchestrator._config = BenchmarkConfig(
+                    repo_dir=root, repeated_refresh=True, engines=[engine],
+                )
+                orchestrator.emit = Mock()
+                orchestrator._heartbeat = Mock(side_effect=lambda _: nullcontext())
+                manager = Mock()
+                manager.logs.return_value = "generator thread failed writing HoldingHistory"
+                def fail(**kwargs):
+                    if kwargs["services"] == ["iceberg-minio"]:
+                        self.assertTrue(kwargs["detach"])
+                        return
+                    self.assertEqual(kwargs["services"], ["tpc-di-gen", "spark-digen-delta"])
+                    kwargs["stream_callback"]("generator started")
+                    raise RuntimeError("compose timed out")
+                manager.up.side_effect = fail
+                with patch("services.orchestrator.DockerManager", return_value=manager):
+                    with self.assertRaisesRegex(RuntimeError, "generator thread failed"):
+                        orchestrator._run_datagen()
+                expected_services = [["tpc-di-gen", "spark-digen-delta"]]
+                if engine == "risingwave":
+                    expected_services.insert(0, ["iceberg-minio"])
+                self.assertEqual(
+                    [call.kwargs["services"] for call in manager.up.call_args_list], expected_services,
+                )
+                manager.down.assert_called_once()
+                log = Path(root, "mount/logs/3/datagen/horizon-2.log").read_text()
+                self.assertIn("generator started", log)
+                self.assertIn("HoldingHistory", log)
 
     def test_legacy_defaults_and_both_repeated_workloads(self):
         self.assertEqual(BenchmarkConfig().batch_count, 3)
@@ -180,41 +192,62 @@ class RepeatedRefreshTest(unittest.TestCase):
         self.assertEqual(rows[-1]["source_rows_after"], "107")
 
     def test_generator_sizing_remeasures_horizon_and_preserves_initial_counts(self):
-        with tempfile.TemporaryDirectory() as root:
-            delta = Path(root, "mount/raw/3/delta")
-            delta.mkdir(parents=True)
-            orchestrator = Orchestrator.__new__(Orchestrator)
-            orchestrator._config = BenchmarkConfig(repo_dir=root, repeated_refresh=True)
-            orchestrator.emit = Mock()
-            from contextlib import nullcontext
-            orchestrator._heartbeat = Mock(side_effect=lambda _: nullcontext())
-            manager = Mock()
-            manager.get_exit_code.return_value = "0"
-            def generate(**kwargs):
-                plan = ({"status": "needs_more_data", "next_horizon": 80,
-                         "available_insert_rows": 500, "required_insert_rows": 20000, "initial_tables": {"trade": 100}}
-                        if manager.up.call_count == 1 else {"status": "ready", "initial_tables": {"trade": 100}})
-                (delta / "refresh-plan.json").write_text(json.dumps(plan))
-            manager.up.side_effect = generate
-            with patch("services.orchestrator.DockerManager", return_value=manager), patch("os.system"):
-                orchestrator._run_datagen()
-            self.assertEqual([call.args[0] for call in manager.update_env.call_args_list], [
-                {"DIGEN_INCREMENTAL_BATCHES": "2"}, {"DIGEN_INCREMENTAL_BATCHES": "80"},
-            ])
-            self.assertEqual(manager.up.call_count, 2)
-            manager.reset_mock()
-            def changed_initial(**kwargs):
-                plan = ({"status": "needs_more_data", "next_horizon": 80,
-                         "available_insert_rows": 500, "required_insert_rows": 20000,
-                         "initial_tables": {"trade": 100}}
-                        if manager.up.call_count == 1 else {
-                            "status": "ready", "initial_tables": {"trade": 101},
-                        })
-                (delta / "refresh-plan.json").write_text(json.dumps(plan))
-            manager.up.side_effect = changed_initial
-            with patch("services.orchestrator.DockerManager", return_value=manager), patch("os.system"):
-                with self.assertRaisesRegex(RuntimeError, "changed the requested initial"):
+        for engine in ("duckdb", "risingwave"):
+            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as root:
+                delta = Path(root, "mount/raw/3/delta")
+                delta.mkdir(parents=True)
+                orchestrator = Orchestrator.__new__(Orchestrator)
+                orchestrator._config = BenchmarkConfig(
+                    repo_dir=root, repeated_refresh=True, engines=[engine],
+                )
+                orchestrator.emit = Mock()
+                from contextlib import nullcontext
+                orchestrator._heartbeat = Mock(side_effect=lambda _: nullcontext())
+                manager = Mock()
+                manager.get_exit_code.return_value = "0"
+                generations = []
+                def generate(**kwargs):
+                    if kwargs["services"] == ["iceberg-minio"]:
+                        self.assertTrue(kwargs["detach"])
+                        return
+                    self.assertEqual(kwargs["services"], ["tpc-di-gen", "spark-digen-delta"])
+                    generations.append(kwargs)
+                    plan = ({"status": "needs_more_data", "next_horizon": 80,
+                             "available_insert_rows": 500, "required_insert_rows": 20000,
+                             "initial_tables": {"trade": 100}}
+                            if len(generations) == 1 else {
+                                "status": "ready", "initial_tables": {"trade": 100},
+                            })
+                    (delta / "refresh-plan.json").write_text(json.dumps(plan))
+                manager.up.side_effect = generate
+                with patch("services.orchestrator.DockerManager", return_value=manager), patch("os.system"):
                     orchestrator._run_datagen()
+                expected_env = [
+                    {"DIGEN_INCREMENTAL_BATCHES": "2"}, {"DIGEN_INCREMENTAL_BATCHES": "80"},
+                ]
+                expected_services = [["tpc-di-gen", "spark-digen-delta"]]
+                if engine == "risingwave":
+                    expected_env.insert(0, {
+                        "DATAGEN_OUTPUT_FORMATS": "delta,iceberg", "COMPOSE_PROFILES": "iceberg",
+                    })
+                    expected_services.insert(0, ["iceberg-minio"])
+                self.assertEqual([call.args[0] for call in manager.update_env.call_args_list], expected_env)
+                self.assertEqual(
+                    [call.kwargs["services"] for call in manager.up.call_args_list], expected_services * 2,
+                )
+                self.assertEqual(manager.down.call_count, 2)
+                manager.reset_mock()
+                generations.clear()
+                def changed_initial(**kwargs):
+                    generate(**kwargs)
+                    if kwargs["services"] == ["tpc-di-gen", "spark-digen-delta"] and len(generations) == 2:
+                        (delta / "refresh-plan.json").write_text(json.dumps({
+                            "status": "ready", "initial_tables": {"trade": 101},
+                        }))
+                manager.up.side_effect = changed_initial
+                with patch("services.orchestrator.DockerManager", return_value=manager), patch("os.system"):
+                    with self.assertRaisesRegex(RuntimeError, "changed the requested initial"):
+                        orchestrator._run_datagen()
 
 
 
