@@ -33,7 +33,7 @@ class EngineFailureIsolationTest(unittest.TestCase):
         runner._engine_mgr.published_port.assert_called_once_with("dbt-server", 5000)
         self.assertEqual(runner._dbt_url, "http://host.docker.internal:32768")
 
-    def test_materialize_fence_timeout_fails_batch_and_tears_down(self):
+    def test_materialize_runner_checks_fences_resources_and_fabric_ds_dispatch(self):
         import requests
 
         runner = EngineRunner.__new__(EngineRunner)
@@ -78,6 +78,27 @@ class EngineFailureIsolationTest(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertIn("2 workers, expected 1", result.error)
         runner._run_materialize_emulator.assert_not_called()
+
+        runner._config.workload = 'extended-tpcds'
+        runner._result = EngineResult(engine='materialize-emulator')
+        runner._result.extra['materialize_emulator'] = {'cluster_workers':1}
+        response.json.return_value = {'size':'50cc','processes':1,'workers':1}
+        runner._batch_loader_init.reset_mock()
+        runner._run_extended_tpcds_batch = Mock(side_effect=lambda n: setattr(runner._result.batches[n-1],'status','completed'))
+        with patch('services.engine_runner.requests.post',return_value=response):
+            result = runner.run()
+        self.assertEqual(result.status,'completed',result.error)
+        self.assertEqual([c.args[0] for c in runner._run_extended_tpcds_batch.call_args_list],[1,2,3])
+        runner._run_materialize_emulator.assert_not_called()
+        runner._batch_loader_init.assert_not_called()
+
+        runner._config.workload = 'standard'
+        runner._config.repeated_refresh = True
+        runner._engine_mgr.build.reset_mock()
+        result = runner.run()
+        self.assertEqual(result.status,'failed')
+        self.assertIn('repeated TPC-DI refreshes are unsupported',result.error)
+        runner._engine_mgr.build.assert_not_called()
 
     def test_broken_storage_barrier_does_not_fail_surviving_engine(self):
         barrier = Barrier(2)

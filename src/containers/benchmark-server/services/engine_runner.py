@@ -337,9 +337,9 @@ class EngineRunner:
             # waste time.
             compiler_bench = self._compiler_bench_enabled()
             if name == "materialize-emulator" and (
-                compiler_bench or self._config.repeated_refresh or self._config.workload != "standard"
+                compiler_bench or self._config.repeated_refresh or self._config.workload not in ("standard", "extended-tpcds")
             ):
-                raise ValueError("Materialize Emulator supports only the standard TPC-DI three-batch workload")
+                raise ValueError("Materialize Emulator requires standard TPC-DI or Fabric-DS; compiler-bench and repeated TPC-DI refreshes are unsupported")
             if (
                 self._config.workload != "extended-tpcds"
                 and name not in ("duckdb", "duckdb-openivm")
