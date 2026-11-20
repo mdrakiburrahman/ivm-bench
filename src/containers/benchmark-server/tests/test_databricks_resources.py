@@ -12,17 +12,23 @@ from services.resource_calc import compute_engine_configs
 
 
 class DatabricksResourcesTest(unittest.TestCase):
-    def test_paired_preset_reverses_order_and_requires_serverless_without_changing_sources(self):
+    def test_separate_presets_run_one_engine_each_with_matching_inputs_and_checks(self):
         from models.config import ExtendedTPCDSOptions, workload_cache_key
         from models.experiments import parse_experiments_json
         root=Path(__file__).parents[1]
-        first,second=parse_experiments_json((root/'experiments/fabric-ds-databricks-paired-sf1.json').read_text())
-        self.assertEqual(first.engines,list(reversed(second.engines)))
-        for experiment in (first,second):
+        experiments=[]
+        for engine in ('databricks-enzyme','databricks-openivm'):
+            experiment,=parse_experiments_json((root/f'experiments/fabric-ds-sf1-{engine}.json').read_text())
+            experiments.append(experiment)
+            self.assertEqual(experiment.engines,[engine])
             self.assertTrue(experiment.extended_tpcds.databricks_require_serverless)
             self.assertEqual(experiment.databricks_refresh_policy,'AUTO')
             self.assertEqual(experiment.schedule,'serial')
             self.assertTrue(experiment.feature_flags.openivm_validate)
+            self.assertTrue(experiment.feature_flags.openivm_profile_refresh)
+        self.assertEqual(experiments[0].extended_tpcds,experiments[1].extended_tpcds)
+        for field in ('batch_1_pct','batch_2_pct','batch_3_pct'):
+            self.assertEqual(getattr(experiments[0],field),getattr(experiments[1],field))
         a=BenchmarkConfig(workload='extended-tpcds')
         b=BenchmarkConfig(workload='extended-tpcds',extended_tpcds=ExtendedTPCDSOptions(databricks_require_serverless=True))
         self.assertEqual(workload_cache_key(a),workload_cache_key(b))

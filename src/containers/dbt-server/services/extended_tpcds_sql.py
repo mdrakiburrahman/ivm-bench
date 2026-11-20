@@ -77,7 +77,7 @@ class Connection:
             except Exception as error:
                 self.compute = {'status':'unavailable', 'error_type':type(error).__name__}
             if options.get('databricks_require_serverless') and self.compute.get('enable_serverless_compute') is not True:
-                raise ValueError('Verified serverless SQL warehouse required for the paired Databricks comparison: '+str(self.compute))
+                raise ValueError('Verified serverless SQL warehouse required for this Databricks benchmark: '+str(self.compute))
             self.handle = src.open_connection(self.timeout)
             if initialize:
                 ws = src._workspace_client()

@@ -1245,13 +1245,14 @@ open.
 
 ## All-engine integration work (2026-10-30)
 
-### Paired Databricks comparison
+### Separate Databricks benchmarks
 
-`src/containers/benchmark-server/experiments/fabric-ds-databricks-paired-sf1.json`
-runs the same complete workload through Enzyme then OpenIVM, followed by
-OpenIVM then Enzyme. Both engines execute one model at a time, with independent
+`src/containers/benchmark-server/experiments/fabric-ds-sf1-databricks-enzyme.json`
+and `fabric-ds-sf1-databricks-openivm.json` are independent single-engine
+benchmarks, each with its own CI run and one initialization plus two refreshes.
+Both execute the same complete workload one model at a time, with independent
 state, the same immutable sources, validation and profiling enabled, and the
-same configured SQL endpoint. The preset requires API verification that this
+same configured SQL endpoint. Each preset requires API verification that this
 endpoint is a serverless SQL warehouse. It does not resize a shared warehouse.
 
 Batch artifacts record warehouse size, Photon/serverless flags, scaling bounds
@@ -1262,15 +1263,14 @@ allocations cannot be equated to warehouse size, so this remains a comparison
 of the two product execution paths, not an equal-core engine experiment.
 
 Enzyme now honors the existing `databricks_refresh_policy` setting instead of
-always using AUTO. The paired preset retains AUTO, including its real refresh
+always using AUTO. The Enzyme preset retains AUTO, including its real refresh
 decisions in the pipeline events. `INCREMENTAL STRICT` can be used separately
 to test support; it can reject the workload's unpartitioned windows. It is not
 silently substituted for AUTO to manufacture a timing comparison.
 
-Complete source/model times retain orchestration overhead. Reverse ordering
-reduces order bias but does not guarantee identical cache state or compute.
-Two observations per engine are exploratory; no fixed-resource speedup or
-statistical significance is established by this preset.
+Complete source/model times retain orchestration overhead. These separate runs
+do not establish identical cache state, fixed resources or statistical
+significance. There is no combined engine pass or reversed-order experiment.
 
 PR #84 now includes the current benchmark harness, including repeated TPC-DI
 refreshes and the Databricks OpenIVM compiler bridge. Existing TPC-DI selectors

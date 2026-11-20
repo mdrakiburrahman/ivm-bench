@@ -45,7 +45,7 @@ class ExtendedTPCDSSqlTest(unittest.TestCase):
                 module.build(c,{'m':'SELECT 1'}, {}, initial=True)
             c.execute.assert_not_called()
 
-    def test_paired_databricks_preflight_requires_verified_serverless_before_opening_sql(self):
+    def test_databricks_preflight_requires_verified_serverless_before_opening_sql(self):
         from services import databricks_enzyme_sources as src
         for engine in ('databricks-enzyme','databricks-openivm'):
             for enabled in (True,False,None):

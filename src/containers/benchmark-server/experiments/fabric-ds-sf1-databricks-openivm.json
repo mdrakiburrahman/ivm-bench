@@ -2,7 +2,9 @@
   "baseline": {
     "workload": "extended-tpcds",
     "scale_factor": 1,
-    "engines": ["databricks-enzyme", "databricks-openivm"],
+    "engines": [
+      "databricks-openivm"
+    ],
     "schedule": "serial",
     "parallel": false,
     "batch_1_pct": "100",
@@ -33,10 +35,8 @@
     }
   },
   "experiments": [
-    {"label": "Fabric-DS paired SF1: Enzyme then OpenIVM, AUTO, validation ON"},
     {
-      "label": "Fabric-DS paired SF1: OpenIVM then Enzyme, AUTO, validation ON",
-      "engines": ["databricks-openivm", "databricks-enzyme"]
+      "label": "Fabric-DS SF1 databricks-openivm, 100/1/0.01, serverless verified, validation ON"
     }
   ]
 }
