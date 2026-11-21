@@ -1,0 +1,499 @@
+{
+  "workload": "extended-tpcds",
+  "source_size_gb_target": 25,
+  "percentages": [
+    "100",
+    "1",
+    "0.01"
+  ],
+  "metric": "harness source replay plus complete model commands; excludes preparation, row counts and independent validation",
+  "repetitions": 1,
+  "engines": {
+    "duckdb": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 450.12585675902665,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 278.1265547936782,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 283.5491285454482,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 1011.801540098153,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "duckdb-openivm": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 820.3262206399813,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 121.39659677445889,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 113.35278233513236,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 1055.0755997495726,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "spark": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 686.1312823947519,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 530.9523292277008,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 534.4006938869134,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 1751.484305509366,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "databricks-enzyme": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 4693.391830886714,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 5327.320135383867,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 5561.459251799621,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 15582.171218070202,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "databricks-openivm": {
+      "run_id": 43073736234,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43073736234",
+      "bench_commit": "24012dd954282b1f29ad5c4277f3d4e82bb74cb1",
+      "raw_outputs_sha256": "a3caf7e4eeffafcdd2e6b5365fc26f2b2b076f315646fe32a97467a01c7ef022",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 822.092700060457,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 1178.7823272105306,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 1403.7903961008415,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3404.665423371829,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "spark-openivm": {
+      "run_id": 42997087685,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/42997087685",
+      "bench_commit": "a77210b8227392c455e43141a75e0a9a804ea3dd",
+      "raw_outputs_sha256": "22989908ec53a9ba55f0a89f39f7a492ddf54fbcda66772c369138590be2b329",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 1378.3550763633102,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 983.87902663555,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 905.4697139896452,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3267.7038169885054,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "fabric-jvm-35": {
+      "run_id": 43200988469,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43200988469",
+      "bench_commit": "393302288b65cd3745e787f03e20dfd35b7512e3",
+      "raw_outputs_sha256": "57b5f0add5a93f2a05517749407a57acb00826a507a35f00d0cdee0e2a203fac",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 1517.042464836035,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 961.5028308006003,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 910.7895368258469,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3389.334832462482,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "fabric-openivm-jvm-35": {
+      "run_id": 43200988469,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43200988469",
+      "bench_commit": "393302288b65cd3745e787f03e20dfd35b7512e3",
+      "raw_outputs_sha256": "57b5f0add5a93f2a05517749407a57acb00826a507a35f00d0cdee0e2a203fac",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 1845.995674135629,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 1158.1296282410622,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 1175.3905375846662,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 4179.515839961357,
+      "spark_tunables": {
+        "driver_pct_ram": null,
+        "executor_pct_ram": null,
+        "shuffle_partitions": 256,
+        "default_parallelism": null,
+        "dbt_threads": null
+      }
+    },
+    "dbspnet": {
+      "run_id": 43848083647,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43848083647",
+      "bench_commit": "b48525331a7a267fa231aaede41ea85a54e284c4",
+      "raw_outputs_sha256": "d40cf00547a347831b2232cd44be9cea7743a4355d542bc9bbbdff73679babf4",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 4711.394454174675,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 30.960093270987272,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 4.04980041179806,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 4746.40434785746,
+      "timing_semantics": "source mutation plus whole-pipeline resume-to-drain; compilation, output row counts and validation excluded; per-model SQL time unavailable",
+      "plan_id": "69589bd87ec0e895",
+      "dataset_id": "c2724495535a6f94",
+      "revision_scope": "isolated upstream-fix retry, before main merge and final decimal rounding",
+      "host_budget": {
+        "cores": 32,
+        "memory_gib": 251
+      },
+      "engine_budget": {
+        "cores": 27,
+        "memory_gib": 210
+      },
+      "dbt_budget": {
+        "cores": 5,
+        "memory_gib": 41
+      }
+    },
+    "feldera": {
+      "run_id": 43859313436,
+      "run_url": "https://github.com/mdrakiburrahman/ivm-bench/actions/runs/43859313436",
+      "bench_commit": "d84dd80e66a33ee36eec1c920c46b719d80b891a",
+      "raw_outputs_sha256": "1618d782a28799ef8ece8e27a69885e0b348464c8619786e7bfd74058c0c9c1b",
+      "batches": [
+        {
+          "batch": 1,
+          "duration_s": 3629.5067580314353,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 2,
+          "duration_s": 30.545274089090526,
+          "models_checked": 96,
+          "total_differences": 0
+        },
+        {
+          "batch": 3,
+          "duration_s": 10.516496978700161,
+          "models_checked": 96,
+          "total_differences": 0
+        }
+      ],
+      "total_duration_s": 3670.568529099226,
+      "timing_semantics": "source mutation plus whole-pipeline resume-to-drain; compilation, output row counts and validation excluded; per-model SQL time unavailable",
+      "plan_id": "69589bd87ec0e895",
+      "dataset_id": "c2724495535a6f94",
+      "revision_scope": "PR after main merge and final decimal rounding",
+      "host_budget": {
+        "cores": 32,
+        "memory_gib": 251
+      },
+      "engine_budget": {
+        "cores": 27,
+        "memory_gib": 210
+      },
+      "dbt_budget": {
+        "cores": 5,
+        "memory_gib": 41
+      }
+    }
+  },
+  "failed_engines": {
+    "fabric-jvm-35": {
+      "status": "failed",
+      "run_id": 43073736234,
+      "stage": "initialization",
+      "reason": "identity relay timeout",
+      "resolved_in_run": 43200988469
+    },
+    "fabric-openivm-jvm-35": {
+      "status": "failed",
+      "run_id": 43073736234,
+      "stage": "initialization",
+      "reason": "identity relay timeout",
+      "resolved_in_run": 43200988469
+    },
+    "feldera": {
+      "status": "failed",
+      "run_id": 43073736234,
+      "stage": "initialization",
+      "reason": "output-directory permissions",
+      "followup": {
+        "run_id": 43200965698,
+        "bench_commit": "393302288b65cd3745e787f03e20dfd35b7512e3",
+        "stage": "initial model validation",
+        "models_checked": 96,
+        "models_matched": 92,
+        "differences": {
+          "dim_household": 2,
+          "fact_engagement_status_channel_eligibility_28d_rolling_hist_12m": 11564,
+          "fact_engagement_status_monthly_snapshot": 32028,
+          "stg_entity_registry": 1149
+        },
+        "interpretation": "Output-directory access was fixed; initialization finished but four model comparisons failed. No refresh or validated performance result."
+      },
+      "validator_followup": {
+        "run_id": 43235024115,
+        "bench_commit": "9134cf66c804d6e700fcc2f70b5d77926e42e11a",
+        "stage": "full bag comparison",
+        "error": "Corrupted uncompressed string segment: offset table overlaps the dictionary",
+        "interpretation": "Validator crashed during comparison; no passing or complete failed comparison set available."
+      },
+      "snapshot_followup": {
+        "run_id": 43328052708,
+        "bench_commit": "8a04d87d7c324191e2182650bf9eedb8314ded0a",
+        "stage": "initial model validation",
+        "duckdb_version": "2.0.0",
+        "models_checked": 96,
+        "models_matched": 95,
+        "output_encoding": "feldera_cdc",
+        "nonzero_differences": {
+          "fact_engagement_status_monthly_snapshot": 32028
+        },
+        "remaining_model_rows": {
+          "actual": 15159841,
+          "reference": 15159841
+        },
+        "remaining_model_delta_versions": {
+          "before": 1,
+          "after": 1
+        },
+        "interpretation": "Disk-backed snapshot validation completed. Household, registry and 28-day eligibility history pass. Only monthly units differ; Feldera unary decimal ROUND uses ties-to-even. Explicit precision adapter fix requires acceptance. Refreshes did not execute."
+      },
+      "round_followup": {
+        "run_id": 43412683862,
+        "bench_commit": "275c9641b58f6740daeae696bbfc7003ac897e42",
+        "stage": "initial model validation",
+        "models_checked": 96,
+        "models_matched": 95,
+        "nonzero_differences": {
+          "fact_engagement_status_monthly_snapshot": 32028
+        },
+        "interpretation": "Explicit final ROUND precision did not resolve the monthly count differences. Refreshes did not execute. Feldera also truncates DOUBLE-to-DECIMAL casts; the model now rounds explicitly before that cast.",
+        "local_cast_reproduction": {
+          "source_transactions": 339195,
+          "monthly_rows": 165616,
+          "bag_differences_with_truncating_cast": 370,
+          "bag_differences_after_explicit_round": 0,
+          "duckdb_before_after_bag_differences": 0,
+          "scope": "Local DuckDB query with Python Decimal emulation of Feldera cast semantics; not an actual Feldera run."
+        }
+      },
+      "decimal_round_followup": {
+        "run_id": 43514997770,
+        "bench_commit": "b56c88050c990b590f1b6a982cb71f7370780168",
+        "stage": "initial model validation",
+        "models_checked": 96,
+        "models_matched": 95,
+        "nonzero_differences": {
+          "fact_engagement_status_monthly_snapshot": 14
+        },
+        "remaining_model_rows": {
+          "actual": 15159841,
+          "reference": 15159841
+        },
+        "interpretation": "Rounding before decimal conversion reduced differences from 32028 to 14. Remaining samples have eleven engagements and units 1 versus 2. No refresh executed.",
+        "next_fix": {
+          "method": "Convert to DECIMAL(38,20), round in decimal arithmetic to 10 places, then narrow to DECIMAL(28,10) before summation.",
+          "regression": "Eleven positive or negative 3/22 values; ROUND(double,10)*1e10 falls just below the intended integer before a truncating scaled cast.",
+          "local_reference_rows": 165616,
+          "local_reference_before_after_bag_differences": 0,
+          "acceptance": "SF25 end-to-end validation pending"
+        }
+      },
+      "resolved_in_run": 43859313436
+    },
+    "dbspnet": {
+      "resolved_in_run": 43848083647
+    }
+  },
+  "source_identity": {
+    "plan_id": "69589bd87ec0e895",
+    "dataset_id": "c2724495535a6f94",
+    "initial_rows": 201620651,
+    "base_scale_factor": 2.0,
+    "verified_matching": [
+      "source configuration",
+      "preparation recipe",
+      "base row counts and checksum XORs",
+      "achieved source statistics",
+      "per-table initial and per-batch source counts"
+    ],
+    "files": "Parquet encoding/order and byte sizes can differ; byte-identical files are not claimed.",
+    "verified_runs": [
+      42997087685,
+      43073736234,
+      43200988469
+    ]
+  }
+}

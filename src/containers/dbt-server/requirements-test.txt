@@ -1,0 +1,11 @@
+-r ../../workloads/extended-tpcds/requirements-test.txt
+PyYAML>=6.0
+databricks-sdk>=0.40
+databricks-sql-connector>=4.0
+dbt-core~=1.11
+dbt-duckdb>=1.9
+https://rakirahman.blob.core.windows.net/public/whls/dbt_fabricspark-1.9.5-py3-none-any.whl
+deltalake>=1.0,<2
+pyarrow>=19
+psycopg2-binary>=2.9
+boto3>=1.35

@@ -15,6 +15,8 @@ Benchmarking engine-specific IVM implementations using a TPC-DI dbt project, <em
 Benchmarks Incremental View Maintenance capabilities on various Open Source engines with [the TPC-DI-based data model](https://www.tpc.org/tpcdi/) for **educational purposes**.
 
 
+The experimental [Extended TPC-DS workload](docs/extended-tpcds.md) adds a retail metadata extension and a 96-model, Fabric-inspired pipeline. All engines replay the same mutation plan and retain state across refreshes.
+
 ## Benchmark at a glance
 
 TPC-DI data is generated and converted to Delta Lake, then materialized through

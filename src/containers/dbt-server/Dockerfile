@@ -27,6 +27,11 @@ ENV PYTHONPATH=/app
 COPY dbt-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Spark optimizer hints use block-comment syntax and must survive Livy transport.
+COPY dbt-server/patches/livy-preserve-optimizer-hints.patch /tmp/livy-preserve-optimizer-hints.patch
+RUN LIVY_DIR=$(python -c "import dbt.adapters.fabricspark as m,os;print(os.path.dirname(m.__file__))") && \
+    git -C "$LIVY_DIR" apply /tmp/livy-preserve-optimizer-hints.patch
+
 # Install the custom dbt-duckdb-openivm adapter
 COPY dbt-server/adapters/dbt-duckdb-openivm /tmp/dbt-duckdb-openivm
 RUN pip install --no-cache-dir /tmp/dbt-duckdb-openivm && rm -rf /tmp/dbt-duckdb-openivm

@@ -20,7 +20,7 @@ from pathlib import Path
 import requests
 import sqlglot
 from sqlglot import exp
-from sqlglot.dialects.databricks import Databricks
+from services.spark_compiler_dialect import CompilerDatabricks
 
 from sql_catalog import load_sql
 from services.db import DB_LOCK, get_db
@@ -31,21 +31,6 @@ from services.progress import LIVE_PROGRESS, PROGRESS_LOCK, cleanup_progress, in
 WORK_DIR = Path(os.environ.get("DATABRICKS_OPENIVM_WORK_DIR", "/data/processed/databricks-openivm"))
 COMPILER_URL = os.environ.get("OPENIVM_SQL_COMPILER_URL", "http://openivm-sql-compiler:8998")
 _RUN_LOCK = threading.Lock()
-
-
-class _CompilerDialect(Databricks):
-    """Keep the window null-treatment syntax understood by the Spark bridge."""
-
-    class Generator(Databricks.Generator):
-        def ignorenulls_sql(self, expression):
-            if isinstance(expression.this, (exp.FirstValue, exp.LastValue)):
-                return self.func(expression.this.sql_name(), expression.this.this, exp.true())
-            return super().ignorenulls_sql(expression)
-
-        def respectnulls_sql(self, expression):
-            if isinstance(expression.this, (exp.FirstValue, exp.LastValue)):
-                return self.sql(expression, "this")
-            return super().respectnulls_sql(expression)
 
 
 def quote(name):
@@ -110,7 +95,7 @@ def remap_sql(sql, mapping, paths=None, snapshots=None, *, for_compiler=False):
                 if snapshot.get("predicate"):
                     query = query.where(snapshot["predicate"], dialect="databricks")
                 table.replace(query.subquery(alias=alias))
-    return tree.sql(dialect=_CompilerDialect if for_compiler else "databricks")
+    return tree.sql(dialect=CompilerDatabricks if for_compiler else "databricks")
 
 
 def _save(path, payload):
@@ -615,18 +600,30 @@ def validate(batch_num):
 
 def photon_metrics(batch_num):
     """Collect observed Photon task time outside the measured refresh."""
+    sql = json.loads((WORK_DIR / f"sql-batch{batch_num}.json").read_text())
+    payload = statement_metrics(sql['statements'], batch_num)
+    payload['client_timing'] = sql.get('timing', {})
+    run_timing = WORK_DIR / f"timing-batch{batch_num}.json"
+    if run_timing.exists():
+        payload["run_timing"] = json.loads(run_timing.read_text())
+    _save(WORK_DIR / f"photon-batch{batch_num}.json", payload)
+    return payload
+
+
+def statement_metrics(statements, batch_num):
+    """Collect query-history metrics for the exact submitted statement IDs."""
     from services import databricks_enzyme_sources as sources
     from databricks.sdk.service.sql import QueryFilter
-    sql = json.loads((WORK_DIR / f"sql-batch{batch_num}.json").read_text())
-    ids = list(dict.fromkeys(s["query_id"] for s in sql["statements"] if s.get("query_id")))
-    by_id = {s["query_id"]: s for s in sql["statements"] if s.get("query_id")}
-    maintenance_ids = {q for q, s in by_id.items() if s.get("phase") != "metadata"}
+    ids = list(dict.fromkeys(s["query_id"] for s in statements if s.get("query_id")))
+    by_id = {s["query_id"]: s for s in statements if s.get("query_id")}
+    maintenance_ids = {q for q, s in by_id.items() if s.get("phase", "maintenance") == "maintenance"}
     client = sources._workspace_client()
     results = []
     for offset in range(0, len(ids), 100):
         response = client.query_history.list(filter_by=QueryFilter(statement_ids=ids[offset:offset + 100]),
                                              include_metrics=True, max_results=100)
         results.extend(q.as_dict() for q in (response.res or []))
+    results = list({q['query_id']:q for q in results if q.get('query_id') in by_id}.values())
     for q in results:
         entry = by_id.get(q.get("query_id"), {})
         q.update(model_id=entry.get("model_id"), phase=entry.get("phase", "maintenance"),
@@ -636,13 +633,9 @@ def photon_metrics(batch_num):
                    (q.get("metrics") or {}).get("photon_total_time_ms") is not None for q in results)
     payload = {"status": "ok" if maintenance_ids and maintenance_ids <= observed and measured == len(maintenance_ids) else "partial", "batch_num": batch_num,
                "statement_count": len(maintenance_ids), "observed_statement_count": len(observed), "queries": results,
-               "metadata_statement_count": len(set(ids) - maintenance_ids),
-               "client_timing": sql.get("timing", {}),
+               "metadata_statement_count": sum(s.get('phase') == 'metadata' for s in by_id.values()),
+               "other_statement_count": sum(s.get('phase', 'maintenance') not in ('maintenance','metadata') for s in by_id.values()),
                "metrics_statement_count": measured,
                "photon_total_time_ms": sum((q.get("metrics") or {}).get("photon_total_time_ms") or 0 for q in results if q.get("query_id") in maintenance_ids),
                "task_total_time_ms": sum((q.get("metrics") or {}).get("task_total_time_ms") or 0 for q in results if q.get("query_id") in maintenance_ids)}
-    run_timing = WORK_DIR / f"timing-batch{batch_num}.json"
-    if run_timing.exists():
-        payload["run_timing"] = json.loads(run_timing.read_text())
-    _save(WORK_DIR / f"photon-batch{batch_num}.json", payload)
     return payload

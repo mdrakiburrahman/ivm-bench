@@ -23,8 +23,9 @@ class FabricProfileExportTest(unittest.TestCase):
 
     def runner(self, root, engine="fabric-openivm-jvm-35"):
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._engine = SimpleNamespace(name=engine)
-        runner._config = SimpleNamespace(repo_dir=root, scale_factor=100)
+        runner._config = SimpleNamespace(workload="standard", repo_dir=root, scale_factor=100)
         runner._dbt_url = "http://dbt"
         runner._emit = Mock()
         runner._result = EngineResult(engine=engine)

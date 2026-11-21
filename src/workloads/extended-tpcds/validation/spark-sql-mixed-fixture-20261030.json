@@ -1,0 +1,1862 @@
+{
+  "status": "passed",
+  "scope": "Execute all translated Spark queries against an independent DuckDB replay.\n\nThis checks SQL translation on a tiny synthetic fixture. It does not exercise\nOpenIVM maintenance, Delta source replay or a remote engine connection.",
+  "spark": "3.5.7",
+  "duckdb": "2.0.0",
+  "sqlglot": "30.25.0",
+  "java": "17.0.20.1",
+  "workers": 2,
+  "shuffle_partitions": 2,
+  "timezone": "UTC",
+  "mode": "mixed",
+  "comparison": "row multisets; numbers rounded half away from zero to 10 decimals; aware timestamps normalized to naive UTC",
+  "source_sha256": {
+    "src/workloads/extended-tpcds/verify_spark.py": "c30e5495b6ad7d5e43baccb8ab247d1e596577cc5fca672f22f4ef24349169bd",
+    "src/containers/dbt-server/services/extended_tpcds_sql.py": "91a169219628ef4d21c11dd8bcc2d4aa0d8f0d53c4fafdfac39fd1ab5ecbf3c7",
+    "src/workloads/extended-tpcds/generate.py": "01b3ede2c1003af1e42f31f45adefcc593c80a616a93b9a0487b610ac628593c",
+    "src/workloads/extended-tpcds/mutations.py": "519e14c9000c17441ada34adaa9917057ace0946abae098af7358513fda68122",
+    "src/workloads/extended-tpcds/test_workload.py": "5a611377bd025be1c39383021e965b24a2497c92dbcef6fbaf9ccd796d615fba",
+    "src/workloads/extended-tpcds/models/dim_account_offer.sql": "a3a12afe57f4a7f5e1b881a9b01121208fa42f026264ac70d56b989e288894ad",
+    "src/workloads/extended-tpcds/models/dim_account_usage.sql": "26737fc255fb54c1847eb9d17fc2a10e0d927bdff4d931907dd028f8f058d326",
+    "src/workloads/extended-tpcds/models/dim_calendar.sql": "5b3788407580cc96ae5f5dbaf425b8f30986c741dbd590c235f948de7695cc5d",
+    "src/workloads/extended-tpcds/models/dim_customer_platform.sql": "266ed23c05b3e6583639710edc352865d24b81b9056d17a5b6e73776a0e004ff",
+    "src/workloads/extended-tpcds/models/dim_customer_preference.sql": "acba860b958e99ed44c381a36a6768c5335ae9666c69d2377c0e9be8395b75bc",
+    "src/workloads/extended-tpcds/models/dim_engagement_mode.sql": "5a5e60090f93c32f2d9bdaf3122f6ce7a25e354f1ac0813c1b26392d671ae423",
+    "src/workloads/extended-tpcds/models/dim_engagement_type.sql": "ac186c33f22d6258176aafc5b66b788b0f808182e574f4050bc174518f18be85",
+    "src/workloads/extended-tpcds/models/dim_household.sql": "fad34f2f46d4a2b4a2d8d182f6d71c86168366a2e343c7e3c736a57004181cb3",
+    "src/workloads/extended-tpcds/models/dim_price_catalog.sql": "d408f246b1ace4e5e0fc463f34e121b6d06069d4bfc75a99114ab09ac9d87e35",
+    "src/workloads/extended-tpcds/models/dim_product_tier.sql": "b8cd8a65cfa9fb0a019bbae94d9ca9b58d354c0492da9107bbb402f3a5edbc37",
+    "src/workloads/extended-tpcds/models/dim_product_version.sql": "30bde5b876fbd29fabb644609b2f89b9705fc9b24006fb19244666f32b075f74",
+    "src/workloads/extended-tpcds/models/fact_channel_eligible_units_hist_12m.sql": "5c56021d2b2afa00f2e15fd2fd675db98e0df5b3cb2a5d112d8b7b452db1a91a",
+    "src/workloads/extended-tpcds/models/fact_customer_status_monthly_snapshot.sql": "3fd3ae12dea745ef96fe23766a98e23a52a81c402320ae89cb97f75b369ab980",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_active_28d_rolling.sql": "45a2272b57e46e25babff4c4735ded745c2afe77688d1ed85b433dae11240b73",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_active_28d_rolling_hist_12m.sql": "603fb6036d95e4a1c1579399c805cd21b17691299e6f4586be1ae14c12371eb0",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_active_7d_rolling.sql": "026b0f6b33d5baf7e705da3d3a9bb5870d4d25a25c8130dda93e5804d85f5f96",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_active_7d_rolling_hist_12m.sql": "1a7509140d8940c78d1be0d3381479ccfdb0fef2cee7dfc454ffb4541b3f7d4a",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_active_daily.sql": "face01b63154cb49cd41fcd178d4a06a43e0771537904ae6770fca506983b934",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_active_daily_hist_12m.sql": "245545092ec3a4e529291ff8e2c9b19aa60f7950db57fa83c99175403f2909f0",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_channel_eligibility_28d_rolling.sql": "30ce818daf01ecdf4aedf709c8151ca4867acee6c7d11925aa5830f22abdb721",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_channel_eligibility_28d_rolling_hist_12m.sql": "dc2bf71bb40106928a36774087cade683f298f3ccc04a4f8f6ed9f8f2da4602a",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_channel_eligibility_7d_rolling.sql": "3af7360f6f217299728e870ad4c6a12bf95b2a88330a4be1dd9b7784f76d8555",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_channel_eligibility_7d_rolling_hist_12m.sql": "ec01203e6213950668df5578d9d3077db9b715362e4d05210b6a47f84d5a2b89",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_channel_eligibility_daily.sql": "a8a4da2c63e8b7406d5d6adc92f03126aaf7b5ccffe54b0d1d993cbe702af731",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_channel_eligibility_daily_hist_12m.sql": "15d387644a00d1e14c8e1bdc3bdf7f946254f75c7e4889a63273d77c87095527",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_evaluated_28d_rolling.sql": "f723bc6ef90d3251463b0104a863b47af98865a8531ca3600bb378bdff6d80dd",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_evaluated_28d_rolling_hist_12m.sql": "489f3acc152ecfdf6d22d49a5eb4ba692f2670623272e82d704b2c0adb9bd550",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_evaluated_7d_rolling.sql": "eadfc8d2a5d21e04679b9757567bc49074e2704fcd6ac0dcda016ae3fbed665e",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_evaluated_7d_rolling_hist_12m.sql": "afe321df497ae92abbc0618bbfae17d5b331e9cb241d315720ef046c48f166e9",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_evaluated_daily.sql": "7de3ee6cba2822471475f75986031654668e62c2f40d275912c35a391abb8331",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_evaluated_daily_hist_12m.sql": "68af913e00417509aa17b52918488ee5b8b142f82f276b5d54496399e8642616",
+    "src/workloads/extended-tpcds/models/fact_engagement_status_monthly_snapshot.sql": "896025708adfea62e6d5219c0824c90738a9f1f66d41c0129c3a7fd8586c10e2",
+    "src/workloads/extended-tpcds/models/fact_purchase_activity_monthly_snapshot.sql": "737dda6825bcd84dd891a088722bf623b7074ed7b8e43a977c6dfd0a4ac54055",
+    "src/workloads/extended-tpcds/models/fact_purchase_quantity_monthly_snapshot.sql": "74088a951aff84a9c743e7eb1d14d5963f72b47687c10af5e1126fe1def74c9d",
+    "src/workloads/extended-tpcds/models/int_account.sql": "38ea7957f46da49018a837cdbf31c50d2fa60b15e1829b4c06d77e40152c2a5b",
+    "src/workloads/extended-tpcds/models/int_channel_status_latest.sql": "5c2e7b5dde53435f270ab0b6b8952eef4087f87fa4a9ae759ac42f0dec41644f",
+    "src/workloads/extended-tpcds/models/int_customer_channel_flags.sql": "a1488a9fccc965a7e51bb3ea7a4876ef194a76348da9168c57a7eb6e0f5adebf",
+    "src/workloads/extended-tpcds/models/int_customer_policy_latest.sql": "0aca30518b3e9c1ba2fef8be1c27b2f673929882343ade43b612bede356b8b28",
+    "src/workloads/extended-tpcds/models/int_customer_profile.sql": "8090620a3448098b9d94cb19e656c6a561ac3d4e63e23a285690e88f51419fc8",
+    "src/workloads/extended-tpcds/models/int_customer_status_transaction.sql": "39219598beb805125d31b9cdffd5d8ae999b99414e525762366d2878b3dd2a33",
+    "src/workloads/extended-tpcds/models/int_engagement_allocated_units.sql": "7ade93a43e8fab3916dad7e033a4452c7465f0b5b6b937413d62e0a6ee3a353b",
+    "src/workloads/extended-tpcds/models/int_engagement_assessment_key_latest.sql": "7097b7a031e2840bc87ce3cf3ee1db0774456d0d8d10751ef1c9b1e5ccaa0312",
+    "src/workloads/extended-tpcds/models/int_engagement_channel_assessment.sql": "251202c9c348627fc6ac1d4067c26d972240059ec68a2a876f919edf64723fc1",
+    "src/workloads/extended-tpcds/models/int_engagement_customer_lookup.sql": "bb3f48a53bbe86944ab39dbb71717593361c46646797a250844a0c60b15c1586",
+    "src/workloads/extended-tpcds/models/int_engagement_customer_registry.sql": "5318488060ceb3a57c4a2824ffed09e31700c770a59edfadb5f16098ae417731",
+    "src/workloads/extended-tpcds/models/int_engagement_dimension_lookup.sql": "933c95c9059ee33409df25d2365577f7fb5b50aaa6e5fa040dbc70e18072434e",
+    "src/workloads/extended-tpcds/models/int_engagement_effective_units.sql": "bc22a14f18ef496030f4d1b6d5d9d09f8ebc450f59c69a38d33ee7260eefe21c",
+    "src/workloads/extended-tpcds/models/int_engagement_eligible_active.sql": "6e592fd5cf16d71392e102f2a99aa2581d9686c31325d0497a4a11b9d5d2937d",
+    "src/workloads/extended-tpcds/models/int_engagement_observation_latest.sql": "030cd0b8f5b01309917ef65d4b25c75b94063ad7a2dc498c063b520d8a17e0a8",
+    "src/workloads/extended-tpcds/models/int_engagement_order_line_counts.sql": "d549f358e28a244d1fa5de88f7e701d842817f2e7a029b75e12b2efe01fdf6d4",
+    "src/workloads/extended-tpcds/models/int_engagement_primary_units.sql": "ecd6f73930d71702a90f00eaa2b94ad96142770b66367158859b181b520cd89c",
+    "src/workloads/extended-tpcds/models/int_engagement_receipt_latest.sql": "763d98d126e7acaaeb01e1b76f44c489185c5f024b70561b7ad4891447c6b991",
+    "src/workloads/extended-tpcds/models/int_engagement_status_transaction.sql": "13907752cc854ee55d46f5cdf065097c19b77532c58ea0ec63c72fab28593472",
+    "src/workloads/extended-tpcds/models/int_engagement_version_latest.sql": "4e606df92decf558c414b469e7621cca2f7bff3b96a30ff4e42373b1821eb2fa",
+    "src/workloads/extended-tpcds/models/int_hist_active_28d.sql": "f68efcc9356b93b8503229d10b89c7170558190e689c153a8eabdc10a73a75dc",
+    "src/workloads/extended-tpcds/models/int_hist_active_7d.sql": "c7ce7ffb4cad0f2a8e1edd6e2a086c852d7e0f362edfde9ff600d2da79134dc4",
+    "src/workloads/extended-tpcds/models/int_hist_active_candidates_28d.sql": "9668845507362f7da135ae4178cc405c42cfa2e31d55d3ff9152b99da413dd32",
+    "src/workloads/extended-tpcds/models/int_hist_active_candidates_7d.sql": "00b941761b23cd234b6f2f7c2615eca61a8490ea3518e40adf35da4a23f17119",
+    "src/workloads/extended-tpcds/models/int_hist_active_candidates_daily.sql": "ddebf15d6fe966e933c8b557301f85c9cccf187f6f8f13284394fcc5cacd8171",
+    "src/workloads/extended-tpcds/models/int_hist_active_daily.sql": "8bf049385925893e5e4dc43115c01db91b2f97fbda4cc2fc0da0bc1f6e777f10",
+    "src/workloads/extended-tpcds/models/int_hist_date_spine.sql": "4d021023e78ccf64d3a6e483ce8aad052df36b3d0a23f20514db28b94705874d",
+    "src/workloads/extended-tpcds/models/int_hist_eligible_status.sql": "292c404dc24d7497d42349219d543ee4bc79e410152b05c0a258d11662a969ac",
+    "src/workloads/extended-tpcds/models/int_hist_raw_engagement_status.sql": "22dc99d83f5a32deb7f9cffd96f42def6928a3bcbdd89abacd5f275b89f1bfd6",
+    "src/workloads/extended-tpcds/models/int_hist_report_window_dates.sql": "6a0de2ca1bbdd1ef40563184197917d57b3504fd84995bc80933d7211bbb45f4",
+    "src/workloads/extended-tpcds/models/int_hist_unpivoted_28d.sql": "b81f03a7e9ad09ac1f70f440c911d0f68ebb622071aaf588c3cd3ecbfcb762f2",
+    "src/workloads/extended-tpcds/models/int_hist_unpivoted_7d.sql": "bb8d34b4b102b6c8edaf86c12ab8c6c174ed2683a32a98cf175aa713b7ecb128",
+    "src/workloads/extended-tpcds/models/int_hist_unpivoted_daily.sql": "8ef63f6c92765b3d9a50cc88d01f24e2c5d5e432160ab96bfb654fbe623e7a95",
+    "src/workloads/extended-tpcds/models/int_household_best_match.sql": "024b042f456124cf8737b7e662ec45626f668948c7735dd65dcf3d21876aee9a",
+    "src/workloads/extended-tpcds/models/int_pit_active_28d.sql": "4d72954006ac12c8abf150253a79a1e7665733d526af4f7959f4e1e04fcf2c26",
+    "src/workloads/extended-tpcds/models/int_pit_active_7d.sql": "847ef782fa2ed04c9d04f29fd225e6593ec1420f16afe7067c0d212bd698232b",
+    "src/workloads/extended-tpcds/models/int_pit_active_daily.sql": "f1357218115247727a47428476c0f22cd1f4a761bde50242b26741d428cf0338",
+    "src/workloads/extended-tpcds/models/int_pit_unpivoted_28d.sql": "a147136e139b1798684ba5f0beca3ca104ed6db4c482b5d04667ed7179a4544d",
+    "src/workloads/extended-tpcds/models/int_pit_unpivoted_7d.sql": "9730cb4a897c2b078944f849c0943cd471bf55a74444cd98fc2950162baed848",
+    "src/workloads/extended-tpcds/models/int_pit_unpivoted_daily.sql": "5597b31a00b853c5e3c29451170444d9a5d6bb7d4caa3090e7ecb3d4549bc44e",
+    "src/workloads/extended-tpcds/models/int_purchase_activity_monthly_distinct.sql": "4c2bb9450347a8ffa7c28ccbea31c15ff1c322a8358b9080d0270fa36dae0f17",
+    "src/workloads/extended-tpcds/models/int_purchase_usage_transaction.sql": "47acfee3fb880947799bb182f45c9bbf3f243cba5a0a508aa13c06f07b89d91e",
+    "src/workloads/extended-tpcds/models/int_target_engagements.sql": "c63cc71d8be1f83b6bf1b3cbefed50c36dac0289ba62a0e1e84193f9722308d8",
+    "src/workloads/extended-tpcds/models/meta_ingestion.sql": "0a0ab51e28ca58cdd430ff7f07fc372dc95bbefe9e23345970d9a457d5a37a54",
+    "src/workloads/extended-tpcds/models/stg_account_household.sql": "c12dc420e894f97be3eed70460199391fedcdeb8a6636cc9adfbcaf725b128d0",
+    "src/workloads/extended-tpcds/models/stg_account_profile.sql": "b14dc5a3da5ef27f4d0d50c93f2a5849384385d09883bc35bac8f8e74235003c",
+    "src/workloads/extended-tpcds/models/stg_calendar.sql": "bd3028f9abfe0e72067c285be24b6a52a8ce97ad1e3a435577754d760fcdaa67",
+    "src/workloads/extended-tpcds/models/stg_customer_policy_history.sql": "e3a7c1f757f538e1a70ad5a6981363ac0586e1dd6879d76497263069289a24d5",
+    "src/workloads/extended-tpcds/models/stg_customer_preference_history.sql": "586476c066c7f667137fb7ffcd429d8c59f2017e88d4058b912adac5b35a6e6f",
+    "src/workloads/extended-tpcds/models/stg_customer_profile_history.sql": "82e0ca179933a6c59e36f1e373ac08c38d997dba79aee610505f5914a5a478c2",
+    "src/workloads/extended-tpcds/models/stg_customer_status_events.sql": "33ddab0194d3a9d0301b0c39f34b996800abf22c5d524c7b651d32b5aa5d0fdd",
+    "src/workloads/extended-tpcds/models/stg_engagement_activity_history.sql": "91bfe7b26f728325daa8d327979678946e054aaf2ce0340d8a61e8bc4eac292d",
+    "src/workloads/extended-tpcds/models/stg_engagement_capacity_history.sql": "5c8a3693906bd82743a2175aa39949b3315ea0a73c4472055efaae82eb4b00b7",
+    "src/workloads/extended-tpcds/models/stg_engagement_channel_history.sql": "60b31e1345ad855a33de1ddc1d5499857319bfd2cf34080038d0c99f1c343cb9",
+    "src/workloads/extended-tpcds/models/stg_engagement_observation_events.sql": "56a9b0c584d7e4fef8c1060055042a3c3e30e9b1885e1b3a34858a6098947015",
+    "src/workloads/extended-tpcds/models/stg_engagement_product_history.sql": "9d31a03f256a37653b839cbcffa32237f9a796eec05ec325e7599ef83b2d42bf",
+    "src/workloads/extended-tpcds/models/stg_engagement_service_history.sql": "2910f41be6e9e9d5b20776443febda7203c8118317a202a29428cfdb06bad096",
+    "src/workloads/extended-tpcds/models/stg_engagement_status_events.sql": "4cdcf288902cc1089ea61f67a7026f88da4a05df97ebc33eb25c25768a87c202",
+    "src/workloads/extended-tpcds/models/stg_entity_registry.sql": "5a58c3f91a7651b94ca54b9191aaa58d96053d9b4ecf9536e7bdc01444d7e3a0",
+    "src/workloads/extended-tpcds/models/stg_price_catalog.sql": "3a27bde75beeb084cdbc4026e1903a03181efcb70cf94f950d117f6f44341780",
+    "src/workloads/extended-tpcds/models/stg_purchase_receipt_events.sql": "024d5f8796cd383158f126e37096de34b4f15e4c27b565889f2c4917f29914a4",
+    "src/workloads/extended-tpcds/models/stg_purchase_usage_events.sql": "4e528d92dcba6dcac7a641e1af19bda6ea57834f7f2ec0d0291a2050bebb9372"
+  },
+  "snapshots": [
+    {
+      "batch_num": 1,
+      "models": [
+        {
+          "model": "stg_account_household",
+          "rows": 22,
+          "differences": 0,
+          "spark_sql_sha256": "2f41944ef7941d1f218314d7d7dfdb877823e2643b1bc4bc1926562a6102dbca"
+        },
+        {
+          "model": "stg_account_profile",
+          "rows": 22,
+          "differences": 0,
+          "spark_sql_sha256": "683f9e4cdc6117b9fdb5c5c1a6fd465b75c30fe3a04831e3a7cf8d9e39f9f110"
+        },
+        {
+          "model": "stg_calendar",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "58ac2ceb321572cc81f8cb7fd4a78ac99fc942f3e7f7cc4fe119db12a8d82ec2"
+        },
+        {
+          "model": "stg_customer_policy_history",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "e7d8dc1566eb0b466d85aac29e21c779d3c2e7f3951fed921e38fc9b77749fa1"
+        },
+        {
+          "model": "stg_customer_preference_history",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "cbec1720561a7b57ba1b53c0fda58233c3c549b4683fdadd352b3832987bd715"
+        },
+        {
+          "model": "stg_customer_profile_history",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "d0cc854e5317cff2ad82bfd9e0a152539f440b15384805209066d9a2edddd34f"
+        },
+        {
+          "model": "stg_customer_status_events",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "d31a7962eea92b2b0e4ce7667f4f3f37d7ace6e0c46e9b680239606eab2e8892"
+        },
+        {
+          "model": "stg_engagement_activity_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "187a98de1c1de57a9f179172c83ed241886781bb444c8381c0f455d448a75397"
+        },
+        {
+          "model": "stg_engagement_capacity_history",
+          "rows": 55,
+          "differences": 0,
+          "spark_sql_sha256": "a52c997fe9233d369428c69564ce5ab86e01215f8e8ca1e3b07c04500f4b1c01"
+        },
+        {
+          "model": "stg_engagement_channel_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "48218cf5ba5d6aa3cf01e402fb586aef86abaf3ad6006ca79628c40b81fe6fea"
+        },
+        {
+          "model": "stg_engagement_observation_events",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "350279dfb985b28205527cc2b5e7f561738e9722f41b6bc6b4037152e46a2efe"
+        },
+        {
+          "model": "stg_engagement_product_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "b809ba036aca560ff82a69ad352a8f628f7f0254c5994cf53919f69c6d293884"
+        },
+        {
+          "model": "stg_engagement_service_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "78589d6277ed91c6b6a3b9453fb76a328a6bf1a80d6706ed3ea296cb1fc3e67a"
+        },
+        {
+          "model": "stg_engagement_status_events",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "9128c3e97ac77c5978176fae262c7f12c2b81003c611275977df1acb863ac060"
+        },
+        {
+          "model": "stg_entity_registry",
+          "rows": 685,
+          "differences": 0,
+          "spark_sql_sha256": "55e618294db5ca26110381c35af4c7efed2bc14ac6ffdf8f2a394f804f37a6e7"
+        },
+        {
+          "model": "stg_price_catalog",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "a9a6d3e495dcc3ef777ade0488008bcc085c6bca97aafca2e8aa034491fe988b"
+        },
+        {
+          "model": "stg_purchase_receipt_events",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "726fd18e9e0ea45c80144c52f0c303cc5a5eb4901c974999904beed8516c1e65"
+        },
+        {
+          "model": "stg_purchase_usage_events",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "90c8ef75f0a9f8446d38085a06052abf2c04c92e11b202872d9ab11c8dd87fb2"
+        },
+        {
+          "model": "dim_calendar",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "7e9a91e721dc0d803dd9ca8e15c615873560a2859552e233df0a744d7e49f4ce"
+        },
+        {
+          "model": "dim_customer_platform",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "7182d4bf907e5cf9399d37c10869a0355875a2c247419181e988a7af8dd6c4e1"
+        },
+        {
+          "model": "dim_customer_preference",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "1179642779ac340ecf61ce746820458c34f4b216e39f9c08d31a188ac4acd8e4"
+        },
+        {
+          "model": "dim_engagement_mode",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "1ad06f6a50322b705d917da7b28e6ebcc0503edad1e7d1b211e08422af8499d5"
+        },
+        {
+          "model": "dim_engagement_type",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "d358eb1a2e4136c7064bf2d84982e55951106f492b16e44c738c5a50f5d02527"
+        },
+        {
+          "model": "dim_household",
+          "rows": 7,
+          "differences": 0,
+          "spark_sql_sha256": "d809adcb1f55f2d2894c6c1431513cfe476f90b14f3718dd6c463b77bdf6eb86"
+        },
+        {
+          "model": "dim_price_catalog",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "f9571effbc8cb5c9c279155a2bbe8e26a7528c577522f70a918ffc3c82a98b58"
+        },
+        {
+          "model": "dim_product_tier",
+          "rows": 4,
+          "differences": 0,
+          "spark_sql_sha256": "e9a99a28be8370fa3ab8c6ae0fed98b3c4509f2b9f62cdd4e7231027d35ea948"
+        },
+        {
+          "model": "dim_product_version",
+          "rows": 4,
+          "differences": 0,
+          "spark_sql_sha256": "1cf4f142fdf29fb893241e6e52005b0bd68d51b03d6b2f5e66ba2edcd5ba0a80"
+        },
+        {
+          "model": "int_account",
+          "rows": 23,
+          "differences": 0,
+          "spark_sql_sha256": "f00cff6c4ffa495f0b8811b24841444596b8938f0a372d010b7de4cf2b638a41"
+        },
+        {
+          "model": "int_channel_status_latest",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "f6fe77433b9246e23a7cac8c07b6a21d6ee57e9b11ac98a31af1118fd25da031"
+        },
+        {
+          "model": "int_customer_channel_flags",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "685b9f9d2c440e8a526985311d6dd12eb6f8869dc83b4cbc235310ca3199eccd"
+        },
+        {
+          "model": "int_customer_policy_latest",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "483771658191684becd4888e5d6d64857866b54fc8d18c3faa222cfc15e6f437"
+        },
+        {
+          "model": "int_customer_profile",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "7a88f64f6c8372caf94ff3571cd950ac4cdbd0e710ad29a5dcff141a959004e4"
+        },
+        {
+          "model": "int_engagement_allocated_units",
+          "rows": 55,
+          "differences": 0,
+          "spark_sql_sha256": "9acd93e36cb7e90cd265ca4b04b9e1e56e29935220b2bf651b0374f5c48aac3f"
+        },
+        {
+          "model": "int_engagement_assessment_key_latest",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "66829ba674ef29b2907592e2fc145ad286c0aedfd8e6e8a17c0b584bae7fe660"
+        },
+        {
+          "model": "int_engagement_dimension_lookup",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "c29cabceb8992eeb04303fecd92b732fa4b0977ad150cffcaf339d186683c766"
+        },
+        {
+          "model": "int_engagement_order_line_counts",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "7a2f5dd5971ecce9558b9207c794388c74186210fad872e6e0b7ffcbcee5ab7f"
+        },
+        {
+          "model": "int_engagement_receipt_latest",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "79c6db9ac173286397f9e09731bf95031aacf982aaff485cd5783c6c928a722d"
+        },
+        {
+          "model": "int_engagement_version_latest",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "bc93851ec2d92585e4a75f3739838f13cebfda4b9316839eed9e36d3c5e808fb"
+        },
+        {
+          "model": "int_hist_raw_engagement_status",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "4089e99a7b753485a323099bdebe45a479ee07ee5e9355b9a670c0313341d23f"
+        },
+        {
+          "model": "int_household_best_match",
+          "rows": 22,
+          "differences": 0,
+          "spark_sql_sha256": "c9aa5bfdc66d7fbdbb190da1bca797b4a8ea43bfc3a82eca9574f0608faaba11"
+        },
+        {
+          "model": "dim_account_offer",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "dc1d959bb06e68937117c979ac8659f4b951c749dbc93dbef300098487f42d74"
+        },
+        {
+          "model": "dim_account_usage",
+          "rows": 2,
+          "differences": 0,
+          "spark_sql_sha256": "f3cbe1aea16fc031ddf37776aaaebd7d0f1096f06f41592aabb16c27fd817d96"
+        },
+        {
+          "model": "int_engagement_channel_assessment",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "6d6df90c5ead33acec83acc93473fe4c2f9982f19ee46a2d729d005d29eb6e5a"
+        },
+        {
+          "model": "int_engagement_customer_lookup",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "fe42a8dc5d3b7ae8e86508517c499a26d243a25bfeeb3f1e77135a97d3005ce3"
+        },
+        {
+          "model": "int_engagement_primary_units",
+          "rows": 55,
+          "differences": 0,
+          "spark_sql_sha256": "28b546691edefbb9a881116df4f5c631a778b39aa93ba2fb130fdaff27631589"
+        },
+        {
+          "model": "int_hist_date_spine",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "09c05d1255999ac7e399345cf641fb2d82b9b01a6aa4a54ead613f9a36cf6358"
+        },
+        {
+          "model": "int_target_engagements",
+          "rows": 55,
+          "differences": 0,
+          "spark_sql_sha256": "fd42124c808a24d5ed4bea041b15bd905483cdb4dc8c83928cbabacf411da86a"
+        },
+        {
+          "model": "int_customer_status_transaction",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "3fb09e2f3f8112f2727e6c84fe7bdc10e1338584d65ac2dc8a1d4f403bc038ea"
+        },
+        {
+          "model": "int_engagement_customer_registry",
+          "rows": 55,
+          "differences": 0,
+          "spark_sql_sha256": "fe0d6d42a5545588ab29fcbe58017fbe4c2ed7a7e6211de7d34e1520cb2029c5"
+        },
+        {
+          "model": "int_engagement_observation_latest",
+          "rows": 6,
+          "differences": 0,
+          "spark_sql_sha256": "dd1b7b5c96bbb83298c7f26291d85270589ff438c99b6418ea9f17680b8fac88"
+        },
+        {
+          "model": "int_hist_report_window_dates",
+          "rows": 1708,
+          "differences": 0,
+          "spark_sql_sha256": "bece2f5e0b6b458dd0afde20666378213aa6c9ca3b675ff39a56e4c818fcfd2f"
+        },
+        {
+          "model": "int_purchase_usage_transaction",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "7b2346e62733fb98508f098ef198f29123de2093b65a1e9cf867027faba06984"
+        },
+        {
+          "model": "fact_customer_status_monthly_snapshot",
+          "rows": 21,
+          "differences": 0,
+          "spark_sql_sha256": "b0126ccb279ebfb2182490658373f84cd4c7acf37d1eea4c9a28b0ca7688c898"
+        },
+        {
+          "model": "fact_purchase_quantity_monthly_snapshot",
+          "rows": 112,
+          "differences": 0,
+          "spark_sql_sha256": "a00009452c4e6ab0ca5b6d7da8a16f4a0f6cb7fd1076b26c95789eb986b90978"
+        },
+        {
+          "model": "int_engagement_effective_units",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "3d4b8224d97006ded3baddebfa11ba2bc534d147d3f3dc658c0739d51a744f37"
+        },
+        {
+          "model": "int_engagement_eligible_active",
+          "rows": 55,
+          "differences": 0,
+          "spark_sql_sha256": "aa5aff699fde98c7f9f8a8d90f7e21e3e607df7ccc7e9bf4f515e1b6e46abd1a"
+        },
+        {
+          "model": "int_purchase_activity_monthly_distinct",
+          "rows": 112,
+          "differences": 0,
+          "spark_sql_sha256": "faa249245490f58c4e0b7519eae96982a851cd493a8b49eb85b4226bc2348dd2"
+        },
+        {
+          "model": "fact_purchase_activity_monthly_snapshot",
+          "rows": 54,
+          "differences": 0,
+          "spark_sql_sha256": "a63cb9faefe9d2e35060da344805f591919040e4a9ed254af66317ee165340ec"
+        },
+        {
+          "model": "int_engagement_status_transaction",
+          "rows": 541,
+          "differences": 0,
+          "spark_sql_sha256": "0a73cd5cae7d3185484d74ca8f42f535d6029b789ee2e3f9a1f8fa385f1a5921"
+        },
+        {
+          "model": "int_hist_eligible_status",
+          "rows": 495,
+          "differences": 0,
+          "spark_sql_sha256": "9f9b70d8df6aa4421208b7d90925a948c3cc6194c42b4574304fc23d1a7834f5"
+        },
+        {
+          "model": "int_pit_active_28d",
+          "rows": 47,
+          "differences": 0,
+          "spark_sql_sha256": "971df45c703bc7a90dcadb8853d2087b9cceaec3cbddd63cce9da79c3cf34bf0"
+        },
+        {
+          "model": "int_pit_active_7d",
+          "rows": 47,
+          "differences": 0,
+          "spark_sql_sha256": "3318a88d466b05dbb86cb0836d45b89e6ecf78ddf5915962194e623d173e942c"
+        },
+        {
+          "model": "int_pit_active_daily",
+          "rows": 47,
+          "differences": 0,
+          "spark_sql_sha256": "cd7bc8a157765ebe39be6a7d4e463a650f09afa9d023c3fb99a4e9514212e556"
+        },
+        {
+          "model": "fact_engagement_status_active_28d_rolling",
+          "rows": 26,
+          "differences": 0,
+          "spark_sql_sha256": "54a7432caf93b6d8b7fe6d8815c9ae32a3c853849d74886c6fbee5d860389d82"
+        },
+        {
+          "model": "fact_engagement_status_active_7d_rolling",
+          "rows": 26,
+          "differences": 0,
+          "spark_sql_sha256": "7ec3f9118b41d602cd23d5d77d19b2dc80654751b0fdc66f40702d840aa3bfbe"
+        },
+        {
+          "model": "fact_engagement_status_active_daily",
+          "rows": 26,
+          "differences": 0,
+          "spark_sql_sha256": "564fe344e4fe44c9345072f8c6ef3695e1628d9c4fbdbdedadfb7c2f5857ba7f"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_28d_rolling",
+          "rows": 26,
+          "differences": 0,
+          "spark_sql_sha256": "929ff843457e8bd7f6d77806eca3ee10ee0e034da3ac0a0a043e63c612782491"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_7d_rolling",
+          "rows": 26,
+          "differences": 0,
+          "spark_sql_sha256": "6883c31c321176c57b64b5fcebc89ad2983f21e2d6ddaadc29c6c0c777f548df"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_daily",
+          "rows": 26,
+          "differences": 0,
+          "spark_sql_sha256": "e299e312558d6449d6cb9f14640f44c24cbe04d0de9905041582d85cccdfdc15"
+        },
+        {
+          "model": "fact_engagement_status_monthly_snapshot",
+          "rows": 77,
+          "differences": 0,
+          "spark_sql_sha256": "510a8a55c595014d8c1fc17ffd4687c31f1bf4915085fc5f1e52b3f0bb11b3fb"
+        },
+        {
+          "model": "int_hist_active_candidates_28d",
+          "rows": 9405,
+          "differences": 0,
+          "spark_sql_sha256": "2cd6c208a32fb9084a31c06d0d1fada3c5a507358087c3eedafc530febbdc9ef"
+        },
+        {
+          "model": "int_hist_active_candidates_7d",
+          "rows": 2475,
+          "differences": 0,
+          "spark_sql_sha256": "85078ec4b8856f63889aad1e3cdb60ec9a7c46729c8e7785afdb9cc189b30d8a"
+        },
+        {
+          "model": "int_hist_active_candidates_daily",
+          "rows": 495,
+          "differences": 0,
+          "spark_sql_sha256": "41d5c3446ebb8cc88e7c0c3b8ae2b0382f19891081ba13c72b07a884644174c5"
+        },
+        {
+          "model": "int_pit_unpivoted_28d",
+          "rows": 141,
+          "differences": 0,
+          "spark_sql_sha256": "728d7ee9447fb4dad7227b732c4e3feddda9720642fa72290491b3ae35a5442e"
+        },
+        {
+          "model": "int_pit_unpivoted_7d",
+          "rows": 141,
+          "differences": 0,
+          "spark_sql_sha256": "b3ed4b17e7712b79ffca9ba582fa145f4423d0b2e460319097f6c61a4f74eca3"
+        },
+        {
+          "model": "int_pit_unpivoted_daily",
+          "rows": 141,
+          "differences": 0,
+          "spark_sql_sha256": "2b185324af87fca2b2851956f151b9afc5285aa0bb9e1946234cbd3f90d7b56b"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_28d_rolling",
+          "rows": 101,
+          "differences": 0,
+          "spark_sql_sha256": "03a4ddf4ba270e77f26960d50a664eba7a9288a79e9479940d727055fa1ce2b0"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_7d_rolling",
+          "rows": 101,
+          "differences": 0,
+          "spark_sql_sha256": "eb6dd9aa536dfecb33aeb2be9f7881e7636091431aae7896ace6cd40aabaf86e"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_daily",
+          "rows": 101,
+          "differences": 0,
+          "spark_sql_sha256": "dd0d0f0b3cf4267ec32a152235fd184304e3f93b02a3563f02a6eb5717fc781b"
+        },
+        {
+          "model": "int_hist_active_28d",
+          "rows": 2133,
+          "differences": 0,
+          "spark_sql_sha256": "fc9f0c6866a7a95d20a6ac75fe20b28182eb7500613bcff2565ff9f399a61093"
+        },
+        {
+          "model": "int_hist_active_7d",
+          "rows": 712,
+          "differences": 0,
+          "spark_sql_sha256": "e5f30b9e0b43a12b0f8ad8d0328f9b4f5ec85dff21f32130eb3023e67b1132ae"
+        },
+        {
+          "model": "int_hist_active_daily",
+          "rows": 142,
+          "differences": 0,
+          "spark_sql_sha256": "9a97c2b39de7c557f201a04c6c4080ee4e55bc80b9de3330812c07d9d6efdf1c"
+        },
+        {
+          "model": "meta_ingestion",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "7a6fe1344355759f05de1fe666ded66b346d9e6c1c40c77c98f89e8b224b9fbc"
+        },
+        {
+          "model": "fact_channel_eligible_units_hist_12m",
+          "rows": 259,
+          "differences": 0,
+          "spark_sql_sha256": "95d7f2368126eec68ce7d3477ccd8a55c549bbd55103a1eb5c63c3da18344307"
+        },
+        {
+          "model": "fact_engagement_status_active_28d_rolling_hist_12m",
+          "rows": 1160,
+          "differences": 0,
+          "spark_sql_sha256": "fe2ad1fafc884f0c4689e220ab32ed532dab397d88d80269241f8de9f39eacde"
+        },
+        {
+          "model": "fact_engagement_status_active_7d_rolling_hist_12m",
+          "rows": 397,
+          "differences": 0,
+          "spark_sql_sha256": "6c56fe48eedffb29f5f73446dcffb0ac0a70227b0eb05e58b6a2d771813d4c0c"
+        },
+        {
+          "model": "fact_engagement_status_active_daily_hist_12m",
+          "rows": 79,
+          "differences": 0,
+          "spark_sql_sha256": "0a147fb2460cd4156d523398363d71745b0827e5b10519bab96096b255a0cc71"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_28d_rolling_hist_12m",
+          "rows": 1160,
+          "differences": 0,
+          "spark_sql_sha256": "db01e602358d981a9a50ef38552ed45ab945195e26b24eb1ed7f62ca86030dd5"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_7d_rolling_hist_12m",
+          "rows": 397,
+          "differences": 0,
+          "spark_sql_sha256": "771fda27f1fd7ba317e8fc2e68cfc4e95770e29d74361175bf51d346c7753c81"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_daily_hist_12m",
+          "rows": 79,
+          "differences": 0,
+          "spark_sql_sha256": "6027d089be69350a5706183235dc105773d3af55befb6d39fa84b0402433e1bb"
+        },
+        {
+          "model": "int_hist_unpivoted_28d",
+          "rows": 6399,
+          "differences": 0,
+          "spark_sql_sha256": "64e052b0becee9f539d356a2f130959bb404de1c207c146c85aa9994553829cc"
+        },
+        {
+          "model": "int_hist_unpivoted_7d",
+          "rows": 2136,
+          "differences": 0,
+          "spark_sql_sha256": "94a64f6a20531ff0ce72fb26a97a2b1ba22639cbb209bf7b1d786025cddf0369"
+        },
+        {
+          "model": "int_hist_unpivoted_daily",
+          "rows": 426,
+          "differences": 0,
+          "spark_sql_sha256": "03c1664166fa23b4e05032130aa2cbf0fe7285f9902d362e94a71a574177d115"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_28d_rolling_hist_12m",
+          "rows": 4497,
+          "differences": 0,
+          "spark_sql_sha256": "05841203130a47877139eeb3eb7fdd34837d2450036eed77b054ea8f33d4e15d"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_7d_rolling_hist_12m",
+          "rows": 1508,
+          "differences": 0,
+          "spark_sql_sha256": "b174826247727693c23afde8af410df621ccf2fdceabd76663437a1484bf3400"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_daily_hist_12m",
+          "rows": 302,
+          "differences": 0,
+          "spark_sql_sha256": "815e30e1524bd8d8f9e5b91d878db5eebd2cff5aefdea09807ade68cb30bf53e"
+        }
+      ]
+    },
+    {
+      "batch_num": 2,
+      "models": [
+        {
+          "model": "stg_account_household",
+          "rows": 22,
+          "differences": 0,
+          "spark_sql_sha256": "2f41944ef7941d1f218314d7d7dfdb877823e2643b1bc4bc1926562a6102dbca"
+        },
+        {
+          "model": "stg_account_profile",
+          "rows": 17,
+          "differences": 0,
+          "spark_sql_sha256": "683f9e4cdc6117b9fdb5c5c1a6fd465b75c30fe3a04831e3a7cf8d9e39f9f110"
+        },
+        {
+          "model": "stg_calendar",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "58ac2ceb321572cc81f8cb7fd4a78ac99fc942f3e7f7cc4fe119db12a8d82ec2"
+        },
+        {
+          "model": "stg_customer_policy_history",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "e7d8dc1566eb0b466d85aac29e21c779d3c2e7f3951fed921e38fc9b77749fa1"
+        },
+        {
+          "model": "stg_customer_preference_history",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "cbec1720561a7b57ba1b53c0fda58233c3c549b4683fdadd352b3832987bd715"
+        },
+        {
+          "model": "stg_customer_profile_history",
+          "rows": 8,
+          "differences": 0,
+          "spark_sql_sha256": "d0cc854e5317cff2ad82bfd9e0a152539f440b15384805209066d9a2edddd34f"
+        },
+        {
+          "model": "stg_customer_status_events",
+          "rows": 539,
+          "differences": 0,
+          "spark_sql_sha256": "d31a7962eea92b2b0e4ce7667f4f3f37d7ace6e0c46e9b680239606eab2e8892"
+        },
+        {
+          "model": "stg_engagement_activity_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "187a98de1c1de57a9f179172c83ed241886781bb444c8381c0f455d448a75397"
+        },
+        {
+          "model": "stg_engagement_capacity_history",
+          "rows": 41,
+          "differences": 0,
+          "spark_sql_sha256": "a52c997fe9233d369428c69564ce5ab86e01215f8e8ca1e3b07c04500f4b1c01"
+        },
+        {
+          "model": "stg_engagement_channel_history",
+          "rows": 50,
+          "differences": 0,
+          "spark_sql_sha256": "48218cf5ba5d6aa3cf01e402fb586aef86abaf3ad6006ca79628c40b81fe6fea"
+        },
+        {
+          "model": "stg_engagement_observation_events",
+          "rows": 549,
+          "differences": 0,
+          "spark_sql_sha256": "350279dfb985b28205527cc2b5e7f561738e9722f41b6bc6b4037152e46a2efe"
+        },
+        {
+          "model": "stg_engagement_product_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "b809ba036aca560ff82a69ad352a8f628f7f0254c5994cf53919f69c6d293884"
+        },
+        {
+          "model": "stg_engagement_service_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "78589d6277ed91c6b6a3b9453fb76a328a6bf1a80d6706ed3ea296cb1fc3e67a"
+        },
+        {
+          "model": "stg_engagement_status_events",
+          "rows": 528,
+          "differences": 0,
+          "spark_sql_sha256": "9128c3e97ac77c5978176fae262c7f12c2b81003c611275977df1acb863ac060"
+        },
+        {
+          "model": "stg_entity_registry",
+          "rows": 685,
+          "differences": 0,
+          "spark_sql_sha256": "55e618294db5ca26110381c35af4c7efed2bc14ac6ffdf8f2a394f804f37a6e7"
+        },
+        {
+          "model": "stg_price_catalog",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "a9a6d3e495dcc3ef777ade0488008bcc085c6bca97aafca2e8aa034491fe988b"
+        },
+        {
+          "model": "stg_purchase_receipt_events",
+          "rows": 527,
+          "differences": 0,
+          "spark_sql_sha256": "726fd18e9e0ea45c80144c52f0c303cc5a5eb4901c974999904beed8516c1e65"
+        },
+        {
+          "model": "stg_purchase_usage_events",
+          "rows": 532,
+          "differences": 0,
+          "spark_sql_sha256": "90c8ef75f0a9f8446d38085a06052abf2c04c92e11b202872d9ab11c8dd87fb2"
+        },
+        {
+          "model": "dim_calendar",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "7e9a91e721dc0d803dd9ca8e15c615873560a2859552e233df0a744d7e49f4ce"
+        },
+        {
+          "model": "dim_customer_platform",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "7182d4bf907e5cf9399d37c10869a0355875a2c247419181e988a7af8dd6c4e1"
+        },
+        {
+          "model": "dim_customer_preference",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "1179642779ac340ecf61ce746820458c34f4b216e39f9c08d31a188ac4acd8e4"
+        },
+        {
+          "model": "dim_engagement_mode",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "1ad06f6a50322b705d917da7b28e6ebcc0503edad1e7d1b211e08422af8499d5"
+        },
+        {
+          "model": "dim_engagement_type",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "d358eb1a2e4136c7064bf2d84982e55951106f492b16e44c738c5a50f5d02527"
+        },
+        {
+          "model": "dim_household",
+          "rows": 6,
+          "differences": 0,
+          "spark_sql_sha256": "d809adcb1f55f2d2894c6c1431513cfe476f90b14f3718dd6c463b77bdf6eb86"
+        },
+        {
+          "model": "dim_price_catalog",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "f9571effbc8cb5c9c279155a2bbe8e26a7528c577522f70a918ffc3c82a98b58"
+        },
+        {
+          "model": "dim_product_tier",
+          "rows": 4,
+          "differences": 0,
+          "spark_sql_sha256": "e9a99a28be8370fa3ab8c6ae0fed98b3c4509f2b9f62cdd4e7231027d35ea948"
+        },
+        {
+          "model": "dim_product_version",
+          "rows": 4,
+          "differences": 0,
+          "spark_sql_sha256": "1cf4f142fdf29fb893241e6e52005b0bd68d51b03d6b2f5e66ba2edcd5ba0a80"
+        },
+        {
+          "model": "int_account",
+          "rows": 23,
+          "differences": 0,
+          "spark_sql_sha256": "f00cff6c4ffa495f0b8811b24841444596b8938f0a372d010b7de4cf2b638a41"
+        },
+        {
+          "model": "int_channel_status_latest",
+          "rows": 50,
+          "differences": 0,
+          "spark_sql_sha256": "f6fe77433b9246e23a7cac8c07b6a21d6ee57e9b11ac98a31af1118fd25da031"
+        },
+        {
+          "model": "int_customer_channel_flags",
+          "rows": 8,
+          "differences": 0,
+          "spark_sql_sha256": "685b9f9d2c440e8a526985311d6dd12eb6f8869dc83b4cbc235310ca3199eccd"
+        },
+        {
+          "model": "int_customer_policy_latest",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "483771658191684becd4888e5d6d64857866b54fc8d18c3faa222cfc15e6f437"
+        },
+        {
+          "model": "int_customer_profile",
+          "rows": 8,
+          "differences": 0,
+          "spark_sql_sha256": "7a88f64f6c8372caf94ff3571cd950ac4cdbd0e710ad29a5dcff141a959004e4"
+        },
+        {
+          "model": "int_engagement_allocated_units",
+          "rows": 41,
+          "differences": 0,
+          "spark_sql_sha256": "9acd93e36cb7e90cd265ca4b04b9e1e56e29935220b2bf651b0374f5c48aac3f"
+        },
+        {
+          "model": "int_engagement_assessment_key_latest",
+          "rows": 60,
+          "differences": 0,
+          "spark_sql_sha256": "66829ba674ef29b2907592e2fc145ad286c0aedfd8e6e8a17c0b584bae7fe660"
+        },
+        {
+          "model": "int_engagement_dimension_lookup",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "c29cabceb8992eeb04303fecd92b732fa4b0977ad150cffcaf339d186683c766"
+        },
+        {
+          "model": "int_engagement_order_line_counts",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "7a2f5dd5971ecce9558b9207c794388c74186210fad872e6e0b7ffcbcee5ab7f"
+        },
+        {
+          "model": "int_engagement_receipt_latest",
+          "rows": 60,
+          "differences": 0,
+          "spark_sql_sha256": "79c6db9ac173286397f9e09731bf95031aacf982aaff485cd5783c6c928a722d"
+        },
+        {
+          "model": "int_engagement_version_latest",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "bc93851ec2d92585e4a75f3739838f13cebfda4b9316839eed9e36d3c5e808fb"
+        },
+        {
+          "model": "int_hist_raw_engagement_status",
+          "rows": 528,
+          "differences": 0,
+          "spark_sql_sha256": "4089e99a7b753485a323099bdebe45a479ee07ee5e9355b9a670c0313341d23f"
+        },
+        {
+          "model": "int_household_best_match",
+          "rows": 22,
+          "differences": 0,
+          "spark_sql_sha256": "c9aa5bfdc66d7fbdbb190da1bca797b4a8ea43bfc3a82eca9574f0608faaba11"
+        },
+        {
+          "model": "dim_account_offer",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "dc1d959bb06e68937117c979ac8659f4b951c749dbc93dbef300098487f42d74"
+        },
+        {
+          "model": "dim_account_usage",
+          "rows": 2,
+          "differences": 0,
+          "spark_sql_sha256": "f3cbe1aea16fc031ddf37776aaaebd7d0f1096f06f41592aabb16c27fd817d96"
+        },
+        {
+          "model": "int_engagement_channel_assessment",
+          "rows": 60,
+          "differences": 0,
+          "spark_sql_sha256": "6d6df90c5ead33acec83acc93473fe4c2f9982f19ee46a2d729d005d29eb6e5a"
+        },
+        {
+          "model": "int_engagement_customer_lookup",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "fe42a8dc5d3b7ae8e86508517c499a26d243a25bfeeb3f1e77135a97d3005ce3"
+        },
+        {
+          "model": "int_engagement_primary_units",
+          "rows": 41,
+          "differences": 0,
+          "spark_sql_sha256": "28b546691edefbb9a881116df4f5c631a778b39aa93ba2fb130fdaff27631589"
+        },
+        {
+          "model": "int_hist_date_spine",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "09c05d1255999ac7e399345cf641fb2d82b9b01a6aa4a54ead613f9a36cf6358"
+        },
+        {
+          "model": "int_target_engagements",
+          "rows": 41,
+          "differences": 0,
+          "spark_sql_sha256": "fd42124c808a24d5ed4bea041b15bd905483cdb4dc8c83928cbabacf411da86a"
+        },
+        {
+          "model": "int_customer_status_transaction",
+          "rows": 539,
+          "differences": 0,
+          "spark_sql_sha256": "3fb09e2f3f8112f2727e6c84fe7bdc10e1338584d65ac2dc8a1d4f403bc038ea"
+        },
+        {
+          "model": "int_engagement_customer_registry",
+          "rows": 41,
+          "differences": 0,
+          "spark_sql_sha256": "fe0d6d42a5545588ab29fcbe58017fbe4c2ed7a7e6211de7d34e1520cb2029c5"
+        },
+        {
+          "model": "int_engagement_observation_latest",
+          "rows": 20,
+          "differences": 0,
+          "spark_sql_sha256": "dd1b7b5c96bbb83298c7f26291d85270589ff438c99b6418ea9f17680b8fac88"
+        },
+        {
+          "model": "int_hist_report_window_dates",
+          "rows": 1708,
+          "differences": 0,
+          "spark_sql_sha256": "bece2f5e0b6b458dd0afde20666378213aa6c9ca3b675ff39a56e4c818fcfd2f"
+        },
+        {
+          "model": "int_purchase_usage_transaction",
+          "rows": 532,
+          "differences": 0,
+          "spark_sql_sha256": "7b2346e62733fb98508f098ef198f29123de2093b65a1e9cf867027faba06984"
+        },
+        {
+          "model": "fact_customer_status_monthly_snapshot",
+          "rows": 21,
+          "differences": 0,
+          "spark_sql_sha256": "b0126ccb279ebfb2182490658373f84cd4c7acf37d1eea4c9a28b0ca7688c898"
+        },
+        {
+          "model": "fact_purchase_quantity_monthly_snapshot",
+          "rows": 111,
+          "differences": 0,
+          "spark_sql_sha256": "a00009452c4e6ab0ca5b6d7da8a16f4a0f6cb7fd1076b26c95789eb986b90978"
+        },
+        {
+          "model": "int_engagement_effective_units",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "3d4b8224d97006ded3baddebfa11ba2bc534d147d3f3dc658c0739d51a744f37"
+        },
+        {
+          "model": "int_engagement_eligible_active",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "aa5aff699fde98c7f9f8a8d90f7e21e3e607df7ccc7e9bf4f515e1b6e46abd1a"
+        },
+        {
+          "model": "int_purchase_activity_monthly_distinct",
+          "rows": 111,
+          "differences": 0,
+          "spark_sql_sha256": "faa249245490f58c4e0b7519eae96982a851cd493a8b49eb85b4226bc2348dd2"
+        },
+        {
+          "model": "fact_purchase_activity_monthly_snapshot",
+          "rows": 63,
+          "differences": 0,
+          "spark_sql_sha256": "a63cb9faefe9d2e35060da344805f591919040e4a9ed254af66317ee165340ec"
+        },
+        {
+          "model": "int_engagement_status_transaction",
+          "rows": 528,
+          "differences": 0,
+          "spark_sql_sha256": "0a73cd5cae7d3185484d74ca8f42f535d6029b789ee2e3f9a1f8fa385f1a5921"
+        },
+        {
+          "model": "int_hist_eligible_status",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "9f9b70d8df6aa4421208b7d90925a948c3cc6194c42b4574304fc23d1a7834f5"
+        },
+        {
+          "model": "int_pit_active_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "971df45c703bc7a90dcadb8853d2087b9cceaec3cbddd63cce9da79c3cf34bf0"
+        },
+        {
+          "model": "int_pit_active_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "3318a88d466b05dbb86cb0836d45b89e6ecf78ddf5915962194e623d173e942c"
+        },
+        {
+          "model": "int_pit_active_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "cd7bc8a157765ebe39be6a7d4e463a650f09afa9d023c3fb99a4e9514212e556"
+        },
+        {
+          "model": "fact_engagement_status_active_28d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "54a7432caf93b6d8b7fe6d8815c9ae32a3c853849d74886c6fbee5d860389d82"
+        },
+        {
+          "model": "fact_engagement_status_active_7d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "7ec3f9118b41d602cd23d5d77d19b2dc80654751b0fdc66f40702d840aa3bfbe"
+        },
+        {
+          "model": "fact_engagement_status_active_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "564fe344e4fe44c9345072f8c6ef3695e1628d9c4fbdbdedadfb7c2f5857ba7f"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_28d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "929ff843457e8bd7f6d77806eca3ee10ee0e034da3ac0a0a043e63c612782491"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_7d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "6883c31c321176c57b64b5fcebc89ad2983f21e2d6ddaadc29c6c0c777f548df"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "e299e312558d6449d6cb9f14640f44c24cbe04d0de9905041582d85cccdfdc15"
+        },
+        {
+          "model": "fact_engagement_status_monthly_snapshot",
+          "rows": 81,
+          "differences": 0,
+          "spark_sql_sha256": "510a8a55c595014d8c1fc17ffd4687c31f1bf4915085fc5f1e52b3f0bb11b3fb"
+        },
+        {
+          "model": "int_hist_active_candidates_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "2cd6c208a32fb9084a31c06d0d1fada3c5a507358087c3eedafc530febbdc9ef"
+        },
+        {
+          "model": "int_hist_active_candidates_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "85078ec4b8856f63889aad1e3cdb60ec9a7c46729c8e7785afdb9cc189b30d8a"
+        },
+        {
+          "model": "int_hist_active_candidates_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "41d5c3446ebb8cc88e7c0c3b8ae2b0382f19891081ba13c72b07a884644174c5"
+        },
+        {
+          "model": "int_pit_unpivoted_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "728d7ee9447fb4dad7227b732c4e3feddda9720642fa72290491b3ae35a5442e"
+        },
+        {
+          "model": "int_pit_unpivoted_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "b3ed4b17e7712b79ffca9ba582fa145f4423d0b2e460319097f6c61a4f74eca3"
+        },
+        {
+          "model": "int_pit_unpivoted_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "2b185324af87fca2b2851956f151b9afc5285aa0bb9e1946234cbd3f90d7b56b"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_28d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "03a4ddf4ba270e77f26960d50a664eba7a9288a79e9479940d727055fa1ce2b0"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_7d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "eb6dd9aa536dfecb33aeb2be9f7881e7636091431aae7896ace6cd40aabaf86e"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "dd0d0f0b3cf4267ec32a152235fd184304e3f93b02a3563f02a6eb5717fc781b"
+        },
+        {
+          "model": "int_hist_active_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "fc9f0c6866a7a95d20a6ac75fe20b28182eb7500613bcff2565ff9f399a61093"
+        },
+        {
+          "model": "int_hist_active_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "e5f30b9e0b43a12b0f8ad8d0328f9b4f5ec85dff21f32130eb3023e67b1132ae"
+        },
+        {
+          "model": "int_hist_active_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "9a97c2b39de7c557f201a04c6c4080ee4e55bc80b9de3330812c07d9d6efdf1c"
+        },
+        {
+          "model": "meta_ingestion",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "7a6fe1344355759f05de1fe666ded66b346d9e6c1c40c77c98f89e8b224b9fbc"
+        },
+        {
+          "model": "fact_channel_eligible_units_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "95d7f2368126eec68ce7d3477ccd8a55c549bbd55103a1eb5c63c3da18344307"
+        },
+        {
+          "model": "fact_engagement_status_active_28d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "fe2ad1fafc884f0c4689e220ab32ed532dab397d88d80269241f8de9f39eacde"
+        },
+        {
+          "model": "fact_engagement_status_active_7d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "6c56fe48eedffb29f5f73446dcffb0ac0a70227b0eb05e58b6a2d771813d4c0c"
+        },
+        {
+          "model": "fact_engagement_status_active_daily_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "0a147fb2460cd4156d523398363d71745b0827e5b10519bab96096b255a0cc71"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_28d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "db01e602358d981a9a50ef38552ed45ab945195e26b24eb1ed7f62ca86030dd5"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_7d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "771fda27f1fd7ba317e8fc2e68cfc4e95770e29d74361175bf51d346c7753c81"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_daily_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "6027d089be69350a5706183235dc105773d3af55befb6d39fa84b0402433e1bb"
+        },
+        {
+          "model": "int_hist_unpivoted_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "64e052b0becee9f539d356a2f130959bb404de1c207c146c85aa9994553829cc"
+        },
+        {
+          "model": "int_hist_unpivoted_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "94a64f6a20531ff0ce72fb26a97a2b1ba22639cbb209bf7b1d786025cddf0369"
+        },
+        {
+          "model": "int_hist_unpivoted_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "03c1664166fa23b4e05032130aa2cbf0fe7285f9902d362e94a71a574177d115"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_28d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "05841203130a47877139eeb3eb7fdd34837d2450036eed77b054ea8f33d4e15d"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_7d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "b174826247727693c23afde8af410df621ccf2fdceabd76663437a1484bf3400"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_daily_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "815e30e1524bd8d8f9e5b91d878db5eebd2cff5aefdea09807ade68cb30bf53e"
+        }
+      ]
+    },
+    {
+      "batch_num": 3,
+      "models": [
+        {
+          "model": "stg_account_household",
+          "rows": 22,
+          "differences": 0,
+          "spark_sql_sha256": "2f41944ef7941d1f218314d7d7dfdb877823e2643b1bc4bc1926562a6102dbca"
+        },
+        {
+          "model": "stg_account_profile",
+          "rows": 13,
+          "differences": 0,
+          "spark_sql_sha256": "683f9e4cdc6117b9fdb5c5c1a6fd465b75c30fe3a04831e3a7cf8d9e39f9f110"
+        },
+        {
+          "model": "stg_calendar",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "58ac2ceb321572cc81f8cb7fd4a78ac99fc942f3e7f7cc4fe119db12a8d82ec2"
+        },
+        {
+          "model": "stg_customer_policy_history",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "e7d8dc1566eb0b466d85aac29e21c779d3c2e7f3951fed921e38fc9b77749fa1"
+        },
+        {
+          "model": "stg_customer_preference_history",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "cbec1720561a7b57ba1b53c0fda58233c3c549b4683fdadd352b3832987bd715"
+        },
+        {
+          "model": "stg_customer_profile_history",
+          "rows": 6,
+          "differences": 0,
+          "spark_sql_sha256": "d0cc854e5317cff2ad82bfd9e0a152539f440b15384805209066d9a2edddd34f"
+        },
+        {
+          "model": "stg_customer_status_events",
+          "rows": 532,
+          "differences": 0,
+          "spark_sql_sha256": "d31a7962eea92b2b0e4ce7667f4f3f37d7ace6e0c46e9b680239606eab2e8892"
+        },
+        {
+          "model": "stg_engagement_activity_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "187a98de1c1de57a9f179172c83ed241886781bb444c8381c0f455d448a75397"
+        },
+        {
+          "model": "stg_engagement_capacity_history",
+          "rows": 34,
+          "differences": 0,
+          "spark_sql_sha256": "a52c997fe9233d369428c69564ce5ab86e01215f8e8ca1e3b07c04500f4b1c01"
+        },
+        {
+          "model": "stg_engagement_channel_history",
+          "rows": 39,
+          "differences": 0,
+          "spark_sql_sha256": "48218cf5ba5d6aa3cf01e402fb586aef86abaf3ad6006ca79628c40b81fe6fea"
+        },
+        {
+          "model": "stg_engagement_observation_events",
+          "rows": 563,
+          "differences": 0,
+          "spark_sql_sha256": "350279dfb985b28205527cc2b5e7f561738e9722f41b6bc6b4037152e46a2efe"
+        },
+        {
+          "model": "stg_engagement_product_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "b809ba036aca560ff82a69ad352a8f628f7f0254c5994cf53919f69c6d293884"
+        },
+        {
+          "model": "stg_engagement_service_history",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "78589d6277ed91c6b6a3b9453fb76a328a6bf1a80d6706ed3ea296cb1fc3e67a"
+        },
+        {
+          "model": "stg_engagement_status_events",
+          "rows": 522,
+          "differences": 0,
+          "spark_sql_sha256": "9128c3e97ac77c5978176fae262c7f12c2b81003c611275977df1acb863ac060"
+        },
+        {
+          "model": "stg_entity_registry",
+          "rows": 685,
+          "differences": 0,
+          "spark_sql_sha256": "55e618294db5ca26110381c35af4c7efed2bc14ac6ffdf8f2a394f804f37a6e7"
+        },
+        {
+          "model": "stg_price_catalog",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "a9a6d3e495dcc3ef777ade0488008bcc085c6bca97aafca2e8aa034491fe988b"
+        },
+        {
+          "model": "stg_purchase_receipt_events",
+          "rows": 536,
+          "differences": 0,
+          "spark_sql_sha256": "726fd18e9e0ea45c80144c52f0c303cc5a5eb4901c974999904beed8516c1e65"
+        },
+        {
+          "model": "stg_purchase_usage_events",
+          "rows": 517,
+          "differences": 0,
+          "spark_sql_sha256": "90c8ef75f0a9f8446d38085a06052abf2c04c92e11b202872d9ab11c8dd87fb2"
+        },
+        {
+          "model": "dim_calendar",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "7e9a91e721dc0d803dd9ca8e15c615873560a2859552e233df0a744d7e49f4ce"
+        },
+        {
+          "model": "dim_customer_platform",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "7182d4bf907e5cf9399d37c10869a0355875a2c247419181e988a7af8dd6c4e1"
+        },
+        {
+          "model": "dim_customer_preference",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "1179642779ac340ecf61ce746820458c34f4b216e39f9c08d31a188ac4acd8e4"
+        },
+        {
+          "model": "dim_engagement_mode",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "1ad06f6a50322b705d917da7b28e6ebcc0503edad1e7d1b211e08422af8499d5"
+        },
+        {
+          "model": "dim_engagement_type",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "d358eb1a2e4136c7064bf2d84982e55951106f492b16e44c738c5a50f5d02527"
+        },
+        {
+          "model": "dim_household",
+          "rows": 6,
+          "differences": 0,
+          "spark_sql_sha256": "d809adcb1f55f2d2894c6c1431513cfe476f90b14f3718dd6c463b77bdf6eb86"
+        },
+        {
+          "model": "dim_price_catalog",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "f9571effbc8cb5c9c279155a2bbe8e26a7528c577522f70a918ffc3c82a98b58"
+        },
+        {
+          "model": "dim_product_tier",
+          "rows": 4,
+          "differences": 0,
+          "spark_sql_sha256": "e9a99a28be8370fa3ab8c6ae0fed98b3c4509f2b9f62cdd4e7231027d35ea948"
+        },
+        {
+          "model": "dim_product_version",
+          "rows": 4,
+          "differences": 0,
+          "spark_sql_sha256": "1cf4f142fdf29fb893241e6e52005b0bd68d51b03d6b2f5e66ba2edcd5ba0a80"
+        },
+        {
+          "model": "int_account",
+          "rows": 23,
+          "differences": 0,
+          "spark_sql_sha256": "f00cff6c4ffa495f0b8811b24841444596b8938f0a372d010b7de4cf2b638a41"
+        },
+        {
+          "model": "int_channel_status_latest",
+          "rows": 39,
+          "differences": 0,
+          "spark_sql_sha256": "f6fe77433b9246e23a7cac8c07b6a21d6ee57e9b11ac98a31af1118fd25da031"
+        },
+        {
+          "model": "int_customer_channel_flags",
+          "rows": 6,
+          "differences": 0,
+          "spark_sql_sha256": "685b9f9d2c440e8a526985311d6dd12eb6f8869dc83b4cbc235310ca3199eccd"
+        },
+        {
+          "model": "int_customer_policy_latest",
+          "rows": 11,
+          "differences": 0,
+          "spark_sql_sha256": "483771658191684becd4888e5d6d64857866b54fc8d18c3faa222cfc15e6f437"
+        },
+        {
+          "model": "int_customer_profile",
+          "rows": 6,
+          "differences": 0,
+          "spark_sql_sha256": "7a88f64f6c8372caf94ff3571cd950ac4cdbd0e710ad29a5dcff141a959004e4"
+        },
+        {
+          "model": "int_engagement_allocated_units",
+          "rows": 34,
+          "differences": 0,
+          "spark_sql_sha256": "9acd93e36cb7e90cd265ca4b04b9e1e56e29935220b2bf651b0374f5c48aac3f"
+        },
+        {
+          "model": "int_engagement_assessment_key_latest",
+          "rows": 60,
+          "differences": 0,
+          "spark_sql_sha256": "66829ba674ef29b2907592e2fc145ad286c0aedfd8e6e8a17c0b584bae7fe660"
+        },
+        {
+          "model": "int_engagement_dimension_lookup",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "c29cabceb8992eeb04303fecd92b732fa4b0977ad150cffcaf339d186683c766"
+        },
+        {
+          "model": "int_engagement_order_line_counts",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "7a2f5dd5971ecce9558b9207c794388c74186210fad872e6e0b7ffcbcee5ab7f"
+        },
+        {
+          "model": "int_engagement_receipt_latest",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "79c6db9ac173286397f9e09731bf95031aacf982aaff485cd5783c6c928a722d"
+        },
+        {
+          "model": "int_engagement_version_latest",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "bc93851ec2d92585e4a75f3739838f13cebfda4b9316839eed9e36d3c5e808fb"
+        },
+        {
+          "model": "int_hist_raw_engagement_status",
+          "rows": 522,
+          "differences": 0,
+          "spark_sql_sha256": "4089e99a7b753485a323099bdebe45a479ee07ee5e9355b9a670c0313341d23f"
+        },
+        {
+          "model": "int_household_best_match",
+          "rows": 22,
+          "differences": 0,
+          "spark_sql_sha256": "c9aa5bfdc66d7fbdbb190da1bca797b4a8ea43bfc3a82eca9574f0608faaba11"
+        },
+        {
+          "model": "dim_account_offer",
+          "rows": 3,
+          "differences": 0,
+          "spark_sql_sha256": "dc1d959bb06e68937117c979ac8659f4b951c749dbc93dbef300098487f42d74"
+        },
+        {
+          "model": "dim_account_usage",
+          "rows": 2,
+          "differences": 0,
+          "spark_sql_sha256": "f3cbe1aea16fc031ddf37776aaaebd7d0f1096f06f41592aabb16c27fd817d96"
+        },
+        {
+          "model": "int_engagement_channel_assessment",
+          "rows": 60,
+          "differences": 0,
+          "spark_sql_sha256": "6d6df90c5ead33acec83acc93473fe4c2f9982f19ee46a2d729d005d29eb6e5a"
+        },
+        {
+          "model": "int_engagement_customer_lookup",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "fe42a8dc5d3b7ae8e86508517c499a26d243a25bfeeb3f1e77135a97d3005ce3"
+        },
+        {
+          "model": "int_engagement_primary_units",
+          "rows": 34,
+          "differences": 0,
+          "spark_sql_sha256": "28b546691edefbb9a881116df4f5c631a778b39aa93ba2fb130fdaff27631589"
+        },
+        {
+          "model": "int_hist_date_spine",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "09c05d1255999ac7e399345cf641fb2d82b9b01a6aa4a54ead613f9a36cf6358"
+        },
+        {
+          "model": "int_target_engagements",
+          "rows": 34,
+          "differences": 0,
+          "spark_sql_sha256": "fd42124c808a24d5ed4bea041b15bd905483cdb4dc8c83928cbabacf411da86a"
+        },
+        {
+          "model": "int_customer_status_transaction",
+          "rows": 532,
+          "differences": 0,
+          "spark_sql_sha256": "3fb09e2f3f8112f2727e6c84fe7bdc10e1338584d65ac2dc8a1d4f403bc038ea"
+        },
+        {
+          "model": "int_engagement_customer_registry",
+          "rows": 34,
+          "differences": 0,
+          "spark_sql_sha256": "fe0d6d42a5545588ab29fcbe58017fbe4c2ed7a7e6211de7d34e1520cb2029c5"
+        },
+        {
+          "model": "int_engagement_observation_latest",
+          "rows": 27,
+          "differences": 0,
+          "spark_sql_sha256": "dd1b7b5c96bbb83298c7f26291d85270589ff438c99b6418ea9f17680b8fac88"
+        },
+        {
+          "model": "int_hist_report_window_dates",
+          "rows": 1708,
+          "differences": 0,
+          "spark_sql_sha256": "bece2f5e0b6b458dd0afde20666378213aa6c9ca3b675ff39a56e4c818fcfd2f"
+        },
+        {
+          "model": "int_purchase_usage_transaction",
+          "rows": 517,
+          "differences": 0,
+          "spark_sql_sha256": "7b2346e62733fb98508f098ef198f29123de2093b65a1e9cf867027faba06984"
+        },
+        {
+          "model": "fact_customer_status_monthly_snapshot",
+          "rows": 21,
+          "differences": 0,
+          "spark_sql_sha256": "b0126ccb279ebfb2182490658373f84cd4c7acf37d1eea4c9a28b0ca7688c898"
+        },
+        {
+          "model": "fact_purchase_quantity_monthly_snapshot",
+          "rows": 109,
+          "differences": 0,
+          "spark_sql_sha256": "a00009452c4e6ab0ca5b6d7da8a16f4a0f6cb7fd1076b26c95789eb986b90978"
+        },
+        {
+          "model": "int_engagement_effective_units",
+          "rows": 61,
+          "differences": 0,
+          "spark_sql_sha256": "3d4b8224d97006ded3baddebfa11ba2bc534d147d3f3dc658c0739d51a744f37"
+        },
+        {
+          "model": "int_engagement_eligible_active",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "aa5aff699fde98c7f9f8a8d90f7e21e3e607df7ccc7e9bf4f515e1b6e46abd1a"
+        },
+        {
+          "model": "int_purchase_activity_monthly_distinct",
+          "rows": 109,
+          "differences": 0,
+          "spark_sql_sha256": "faa249245490f58c4e0b7519eae96982a851cd493a8b49eb85b4226bc2348dd2"
+        },
+        {
+          "model": "fact_purchase_activity_monthly_snapshot",
+          "rows": 69,
+          "differences": 0,
+          "spark_sql_sha256": "a63cb9faefe9d2e35060da344805f591919040e4a9ed254af66317ee165340ec"
+        },
+        {
+          "model": "int_engagement_status_transaction",
+          "rows": 522,
+          "differences": 0,
+          "spark_sql_sha256": "0a73cd5cae7d3185484d74ca8f42f535d6029b789ee2e3f9a1f8fa385f1a5921"
+        },
+        {
+          "model": "int_hist_eligible_status",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "9f9b70d8df6aa4421208b7d90925a948c3cc6194c42b4574304fc23d1a7834f5"
+        },
+        {
+          "model": "int_pit_active_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "971df45c703bc7a90dcadb8853d2087b9cceaec3cbddd63cce9da79c3cf34bf0"
+        },
+        {
+          "model": "int_pit_active_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "3318a88d466b05dbb86cb0836d45b89e6ecf78ddf5915962194e623d173e942c"
+        },
+        {
+          "model": "int_pit_active_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "cd7bc8a157765ebe39be6a7d4e463a650f09afa9d023c3fb99a4e9514212e556"
+        },
+        {
+          "model": "fact_engagement_status_active_28d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "54a7432caf93b6d8b7fe6d8815c9ae32a3c853849d74886c6fbee5d860389d82"
+        },
+        {
+          "model": "fact_engagement_status_active_7d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "7ec3f9118b41d602cd23d5d77d19b2dc80654751b0fdc66f40702d840aa3bfbe"
+        },
+        {
+          "model": "fact_engagement_status_active_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "564fe344e4fe44c9345072f8c6ef3695e1628d9c4fbdbdedadfb7c2f5857ba7f"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_28d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "929ff843457e8bd7f6d77806eca3ee10ee0e034da3ac0a0a043e63c612782491"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_7d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "6883c31c321176c57b64b5fcebc89ad2983f21e2d6ddaadc29c6c0c777f548df"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "e299e312558d6449d6cb9f14640f44c24cbe04d0de9905041582d85cccdfdc15"
+        },
+        {
+          "model": "fact_engagement_status_monthly_snapshot",
+          "rows": 86,
+          "differences": 0,
+          "spark_sql_sha256": "510a8a55c595014d8c1fc17ffd4687c31f1bf4915085fc5f1e52b3f0bb11b3fb"
+        },
+        {
+          "model": "int_hist_active_candidates_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "2cd6c208a32fb9084a31c06d0d1fada3c5a507358087c3eedafc530febbdc9ef"
+        },
+        {
+          "model": "int_hist_active_candidates_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "85078ec4b8856f63889aad1e3cdb60ec9a7c46729c8e7785afdb9cc189b30d8a"
+        },
+        {
+          "model": "int_hist_active_candidates_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "41d5c3446ebb8cc88e7c0c3b8ae2b0382f19891081ba13c72b07a884644174c5"
+        },
+        {
+          "model": "int_pit_unpivoted_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "728d7ee9447fb4dad7227b732c4e3feddda9720642fa72290491b3ae35a5442e"
+        },
+        {
+          "model": "int_pit_unpivoted_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "b3ed4b17e7712b79ffca9ba582fa145f4423d0b2e460319097f6c61a4f74eca3"
+        },
+        {
+          "model": "int_pit_unpivoted_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "2b185324af87fca2b2851956f151b9afc5285aa0bb9e1946234cbd3f90d7b56b"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_28d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "03a4ddf4ba270e77f26960d50a664eba7a9288a79e9479940d727055fa1ce2b0"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_7d_rolling",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "eb6dd9aa536dfecb33aeb2be9f7881e7636091431aae7896ace6cd40aabaf86e"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "dd0d0f0b3cf4267ec32a152235fd184304e3f93b02a3563f02a6eb5717fc781b"
+        },
+        {
+          "model": "int_hist_active_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "fc9f0c6866a7a95d20a6ac75fe20b28182eb7500613bcff2565ff9f399a61093"
+        },
+        {
+          "model": "int_hist_active_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "e5f30b9e0b43a12b0f8ad8d0328f9b4f5ec85dff21f32130eb3023e67b1132ae"
+        },
+        {
+          "model": "int_hist_active_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "9a97c2b39de7c557f201a04c6c4080ee4e55bc80b9de3330812c07d9d6efdf1c"
+        },
+        {
+          "model": "meta_ingestion",
+          "rows": 1,
+          "differences": 0,
+          "spark_sql_sha256": "7a6fe1344355759f05de1fe666ded66b346d9e6c1c40c77c98f89e8b224b9fbc"
+        },
+        {
+          "model": "fact_channel_eligible_units_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "95d7f2368126eec68ce7d3477ccd8a55c549bbd55103a1eb5c63c3da18344307"
+        },
+        {
+          "model": "fact_engagement_status_active_28d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "fe2ad1fafc884f0c4689e220ab32ed532dab397d88d80269241f8de9f39eacde"
+        },
+        {
+          "model": "fact_engagement_status_active_7d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "6c56fe48eedffb29f5f73446dcffb0ac0a70227b0eb05e58b6a2d771813d4c0c"
+        },
+        {
+          "model": "fact_engagement_status_active_daily_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "0a147fb2460cd4156d523398363d71745b0827e5b10519bab96096b255a0cc71"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_28d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "db01e602358d981a9a50ef38552ed45ab945195e26b24eb1ed7f62ca86030dd5"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_7d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "771fda27f1fd7ba317e8fc2e68cfc4e95770e29d74361175bf51d346c7753c81"
+        },
+        {
+          "model": "fact_engagement_status_evaluated_daily_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "6027d089be69350a5706183235dc105773d3af55befb6d39fa84b0402433e1bb"
+        },
+        {
+          "model": "int_hist_unpivoted_28d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "64e052b0becee9f539d356a2f130959bb404de1c207c146c85aa9994553829cc"
+        },
+        {
+          "model": "int_hist_unpivoted_7d",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "94a64f6a20531ff0ce72fb26a97a2b1ba22639cbb209bf7b1d786025cddf0369"
+        },
+        {
+          "model": "int_hist_unpivoted_daily",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "03c1664166fa23b4e05032130aa2cbf0fe7285f9902d362e94a71a574177d115"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_28d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "05841203130a47877139eeb3eb7fdd34837d2450036eed77b054ea8f33d4e15d"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_7d_rolling_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "b174826247727693c23afde8af410df621ccf2fdceabd76663437a1484bf3400"
+        },
+        {
+          "model": "fact_engagement_status_channel_eligibility_daily_hist_12m",
+          "rows": 0,
+          "differences": 0,
+          "spark_sql_sha256": "815e30e1524bd8d8f9e5b91d878db5eebd2cff5aefdea09807ade68cb30bf53e"
+        }
+      ]
+    }
+  ],
+  "models_checked": 288
+}

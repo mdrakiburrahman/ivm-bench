@@ -187,6 +187,7 @@ class EngineRunner:
         # Build engine compose args — may include an override file for parallel staging
         engine_compose = os.path.join(config.repo_dir, engine_config.compose_file)
         engine_env = {**config.base_env(), **engine_config.env_dict()}
+        compose_overrides = [os.path.join(config.repo_dir, path) for path in engine_config.compose_overrides]
         if self._dynamic_dbt_port:
             engine_env["DBT_SERVER_PORT"] = "0"
         if engine_config.name == "materialize-emulator":
@@ -205,26 +206,20 @@ class EngineRunner:
             # Enzyme and OpenIVM may run together in one experiment wave.
             engine_env["DATABRICKS_EXPERIMENT_ID"] = str(time.time_ns() // 1000)
 
-        if engine_config.staging_dir and engine_config.staging_dir != "staging":
+        if config.workload != "extended-tpcds" and engine_config.staging_dir and engine_config.staging_dir != "staging":
             # Parallel mode: create compose overrides for staging isolation
             self._override_file = self._create_staging_override()
-            self._engine_mgr = DockerManager(
-                compose_file=engine_compose,
-                project_name=engine_config.project_name,
-                env=engine_env,
-                cwd=config.repo_dir,
-                extra_compose_files=[self._override_file],
-            )
+            compose_overrides.append(self._override_file)
             # Also create a batch-loader override so appends go to per-engine staging
             if engine_config.name not in ("duckdb-openivm",):
                 self._batch_override_file = self._create_batch_staging_override()
-        else:
-            self._engine_mgr = DockerManager(
-                compose_file=engine_compose,
-                project_name=engine_config.project_name,
-                env=engine_env,
-                cwd=config.repo_dir,
-            )
+        self._engine_mgr = DockerManager(
+            compose_file=engine_compose,
+            project_name=engine_config.project_name,
+            env=engine_env,
+            cwd=config.repo_dir,
+            extra_compose_files=compose_overrides,
+        )
 
         # Calculate JVM heap for batch_loader (60% of available memory, min 4g).
         # This is the INIT heap, used while the engine stack is still down.
@@ -342,11 +337,12 @@ class EngineRunner:
             # waste time.
             compiler_bench = self._compiler_bench_enabled()
             if name == "materialize-emulator" and (
-                compiler_bench or self._config.repeated_refresh or self._config.workload != "standard"
+                compiler_bench or self._config.repeated_refresh or self._config.workload not in ("standard", "extended-tpcds")
             ):
-                raise ValueError("Materialize Emulator supports only the standard TPC-DI three-batch workload")
+                raise ValueError("Materialize Emulator requires standard TPC-DI or Fabric-DS; compiler-bench and repeated TPC-DI refreshes are unsupported")
             if (
-                name not in ("duckdb", "duckdb-openivm")
+                self._config.workload != "extended-tpcds"
+                and name not in ("duckdb", "duckdb-openivm")
                 and not self._parallel
                 and not compiler_bench
             ):
@@ -376,7 +372,7 @@ class EngineRunner:
 
             # Start container stats
             self._start_stats()
-            if not compiler_bench:
+            if not compiler_bench and self._config.workload != "extended-tpcds":
                 # Also TPC-DI-only: nothing to measure when those tables are
                 # neither generated nor read.
                 self._capture_delta_stats(1)
@@ -401,8 +397,9 @@ class EngineRunner:
 
             # Post-run: lineage and sql analysis. Stats are stopped in finally
             # so completed batch telemetry survives later failures.
-            self._fetch_sql_analysis()
-            self._fetch_lineage()
+            if self._config.workload != "extended-tpcds":
+                self._fetch_sql_analysis()
+                self._fetch_lineage()
 
             self._result.status = "completed"
             self._emit(f"[{name}] Benchmark completed successfully")
@@ -436,6 +433,7 @@ class EngineRunner:
                 ("stop_stats", self._stop_stats),
                 ("collect_feldera_debug", self._collect_feldera_debug),
                 ("capture_logs", self._capture_logs),
+                ("extended_tpcds_cleanup", self._cleanup_extended_tpcds),
                 ("databricks_enzyme_drop_mvs", self._databricks_enzyme_drop_mvs),
                 ("fabric_cleanup", self._fabric_cleanup),
                 ("engine_mgr.down", lambda: self._engine_mgr.down(volumes=name == "materialize-emulator")),
@@ -851,6 +849,8 @@ class EngineRunner:
 
     def _run_batch(self, batch_num: int) -> None:
         """Run a single batch for this engine."""
+        if self._config.workload == "extended-tpcds":
+            return self._run_extended_tpcds_batch(batch_num)
         name = self._engine.name
         batch = self._result.batches[batch_num - 1]
         batch.status = "running"
@@ -1000,6 +1000,74 @@ class EngineRunner:
             self._ensure_cpu_measurement_status(batch_num)
             # Always persist batch result to benchmark-server DB
             self._persist_batch_result(batch_num, batch)
+
+    def _cleanup_extended_tpcds(self):
+        if self._config.workload != "extended-tpcds":
+            return
+        response = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{self._engine.name}/cleanup", timeout=1800)
+        response.raise_for_status()
+
+    def _run_extended_tpcds_batch(self, batch_num):
+        name = self._engine.name
+        batch = self._result.batches[batch_num-1]
+        batch.status = "running"
+        self._persist_batch_result(batch_num, batch)
+        try:
+            self._start_cpu_measurement(batch_num)
+            response = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{name}/batch/{batch_num}", timeout=86400)
+            if response.status_code != 200:
+                raise RuntimeError(f"{name} Extended TPC-DS batch {batch_num}: {response.json()}")
+            data = response.json()
+            batch.duration_s = data["duration_s"]
+            self._finish_cpu_measurement(batch_num)
+            batch.extra.update({"workload":"extended-tpcds", "plan_id":data["plan_id"],
+                                "classification_counts":data["classification_counts"],
+                                "engine_result":data, "source_storage":data.get("source_storage", "duckdb_native"),
+                                "storage_metrics":{"status":"not_supported", "errors":["Extended TPC-DS native storage accounting is not integrated"]}})
+            results_dir = os.path.join(self._config.repo_dir,"mount","results",str(self._config.scale_factor),"dbt-server")
+            os.makedirs(results_dir,exist_ok=True)
+            path = os.path.join(results_dir,f"run-{name}-batch{batch_num}.json")
+            # Preserve the established per-model chart envelope.
+            artifact = {**data, "engine":name, "nodes":[{"name":model,"unique_id":"model.extended_tpcds."+model,
+                        "resource_type":"model", "status":"success", "execution_time_s":seconds, "compiled_sql":data.get("model_queries",{}).get(model, "")} for model,seconds in data["model_sql_duration_s"].items()]}
+            with open(path,"w") as handle:
+                json.dump(artifact,handle,indent=2)
+            profile = data.get('profiling') or {'status':'not_collected'}
+            profile['plan_id'] = data['plan_id']
+            if name == 'feldera' and profile.get('enabled'):
+                profile['support_bundle'] = self._collect_feldera_debug(batch_num=batch_num)
+                if profile['support_bundle']['status'] != 'ok' and profile['status'] != 'failed':
+                    profile['status'] = 'partial'
+            batch.extra['profiling'] = {k:v for k,v in profile.items() if k != 'csv'}
+            with open(os.path.join(results_dir,f'{name}-profile-batch{batch_num}.json'),'w') as handle:
+                json.dump(batch.extra['profiling'],handle,indent=2)
+            for kind, content in profile.get('csv',{}).items():
+                if kind not in ('profile','by_step','by_view_step'):
+                    raise RuntimeError('unexpected profiling CSV kind: '+kind)
+                suffix = '' if kind == 'profile' else '-'+kind.replace('_','-')
+                with open(os.path.join(results_dir,f'{name}-profile{suffix}-batch{batch_num}.csv'),'w') as handle:
+                    handle.write(content)
+            self._emit(f"[{name}] Fabric-DS profiling: {profile['status']}")
+            if profile['status'] == 'failed' or (os.environ.get('OPENIVM_PROFILE_REFRESH','0') == '1'
+                                               and profile['status'] in ('not_collected','disabled')):
+                raise RuntimeError(f"{name} profiling failed: {profile.get('error','no profiling result returned')}")
+            if os.environ.get("OPENIVM_VALIDATE", "1") != "0":
+                validation = requests.post(f"{self._dbt_url}/workloads/extended-tpcds/{name}/validate/{batch_num}", timeout=86400)
+                details = validation.json()
+                data["validation"] = artifact['validation'] = details
+                with open(path,'w') as handle:
+                    json.dump(artifact,handle,indent=2)
+                if details.get("status") != "passed":
+                    raise OpenIvmValidationError(f"{name} Extended TPC-DS batch {batch_num} validation failed: {details}")
+            batch.status = "completed"
+            self._emit(f"[{name}] Extended TPC-DS batch {batch_num}: {data['classification_counts']}")
+        except Exception as error:
+            batch.status = "failed"
+            batch.error = str(error)
+            raise
+        finally:
+            self._ensure_cpu_measurement_status(batch_num)
+            self._persist_batch_result(batch_num,batch)
 
     def _save_openivm_ops_chart(self, name: str, batch_num: int) -> None:
         if name not in ("spark-openivm", "duckdb-openivm"):
@@ -3312,7 +3380,7 @@ class EngineRunner:
         except Exception as e:
             logger.warning("Failed to fetch sql analysis for %s: %s", name, e)
 
-    def _collect_feldera_debug(self) -> None:
+    def _collect_feldera_debug(self, batch_num=None):
         """Download Feldera support bundle (circuit profile, heap, metrics, etc.).
 
         Only runs for the feldera engine. The bundle includes a fresh snapshot
@@ -3332,7 +3400,8 @@ class EngineRunner:
             "mount", "debug", str(self._config.scale_factor), "feldera",
         )
         os.makedirs(debug_dir, exist_ok=True)
-        bundle_path = os.path.join(debug_dir, "support-bundle.zip")
+        filename = 'support-bundle.zip' if batch_num is None else f'support-bundle-batch{batch_num}.zip'
+        bundle_path = os.path.join(debug_dir, filename)
         part_path = bundle_path + ".part"
 
         try:
@@ -3346,12 +3415,15 @@ class EngineRunner:
             os.replace(part_path, bundle_path)
             size_mb = os.path.getsize(bundle_path) / (1024 * 1024)
             self._emit(f"[feldera] Support bundle saved ({size_mb:.1f} MB): {bundle_path}")
+            return {'status':'ok','path':os.path.relpath(bundle_path,self._config.repo_dir),
+                    'scope':'cumulative circuit/heap snapshots after batch'}
         except Exception as e:
             # Clean up partial download
             if os.path.exists(part_path):
                 os.unlink(part_path)
             logger.warning("Failed to collect Feldera debug bundle: %s", e)
             self._emit(f"[feldera] WARNING: Failed to collect debug bundle: {e}")
+            return {'status':'failed','error':str(e)}
 
     def _save_run_result(
         self, run_id: str, batch_num: int, suffix: str = ""

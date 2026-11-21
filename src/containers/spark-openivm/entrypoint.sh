@@ -68,6 +68,12 @@ case "${OPENIVM_PROFILE_REFRESH:-0}" in
   *) export OPENIVM_PROFILE_REFRESH_BOOL=false ;;
 esac
 
+# Control AQE broadcast promotion inside the engine's heavy refresh scopes.
+case "${OPENIVM_REFRESH_ADAPTIVE_BROADCAST:-1}" in
+  1|true|TRUE|True) export OPENIVM_REFRESH_ADAPTIVE_BROADCAST_BOOL=true ;;
+  *) export OPENIVM_REFRESH_ADAPTIVE_BROADCAST_BOOL=false ;;
+esac
+
 # Translate OPENIVM_QUERY_LOG (`0`/`1` or unset) the same way. Default OFF
 # when unset; the bench script flips this ON by default.
 case "${OPENIVM_QUERY_LOG:-0}" in

@@ -1,0 +1,6 @@
+--- a/livysession.py
++++ b/livysession.py
+@@ -831,2 +831,2 @@
+-        code = re.sub(r"\s*/\*(.|\n)*?\*/\s*", "\n", sql, re.DOTALL).strip()
++        code = re.sub(r"\s*/\*(?!\+)(.|\n)*?\*/\s*", "\n", sql, re.DOTALL).strip()
+         return code

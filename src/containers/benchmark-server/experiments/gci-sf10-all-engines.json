@@ -1,0 +1,25 @@
+{
+  "baseline": {
+    "scale_factor": 10,
+    "workload": "standard",
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "2",
+    "engines": [
+      "spark", "spark-openivm", "duckdb", "duckdb-openivm", "feldera",
+      "databricks-enzyme", "databricks-openivm", "fabric-jvm-35", "fabric-openivm-jvm-35"
+    ],
+    "databricks_dbt_threads": 8,
+    "schedule": "serial",
+    "spark_tunables": {"dbt_threads": 4},
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "storage_metrics": true,
+      "preserve_raw": true,
+      "spark_metrics_capture": true
+    }
+  },
+  "experiments": [{"label": "GCI SF10 standard TPC-DI: all engines"}]
+}

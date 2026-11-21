@@ -191,7 +191,7 @@ class _DuckDBSession:
     #: trail its closing stdout marker by a hair.
     _STDERR_GRACE_S = 0.05
 
-    def __init__(self, binary: str, db_path: str, preamble: Sequence[str], engine: str) -> None:
+    def __init__(self, binary: str, db_path: str, preamble: Sequence[str], engine: str, *, capture_sql_timing: bool = False) -> None:
         self._binary = binary
         self._db_path = db_path
         self._engine = engine
@@ -200,6 +200,8 @@ class _DuckDBSession:
         self._stdout: "queue.Queue" = queue.Queue()
         self._stderr: "queue.Queue" = queue.Queue()
         self._seq = 0
+        self._capture_sql_timing = capture_sql_timing
+        self.last_sql_time_s = None
 
     def start(self) -> None:
         self.close()
@@ -225,6 +227,8 @@ class _DuckDBSession:
         # `.bail off` keeps one bad query from ending the session; markers plus the
         # error stream say what happened. JSON mode makes results parseable.
         self._write(".bail off\n.mode json\n")
+        if self._capture_sql_timing:
+            self._write(".timer on\n")
         for statement in self._preamble:
             self._write(statement.rstrip(";") + ";\n")
         # Preamble errors are tolerated (icu may be unavailable) and its output is
@@ -232,19 +236,21 @@ class _DuckDBSession:
         self.execute(_sql(self._engine, "duckdb_ready"), timeout_s=300, tolerate_errors=True)
 
     def close(self) -> None:
-        proc, self._proc = self._proc, None
+        proc = self._proc
         if proc is None:
             return
         try:
             if proc.stdin:
                 proc.stdin.close()
             proc.wait(timeout=5)
-        except Exception:
+        except (BrokenPipeError, subprocess.TimeoutExpired):
+            logger.warning('DuckDB CLI worker %s did not close cleanly; killing and waiting for exit', proc.pid)
             proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
+            # SIGKILL can return before the kernel finishes tearing down a
+            # large address space. Do not reopen its database until it exits
+            # and releases the file lock; retain the handle if waiting fails.
+            proc.wait()
+        self._proc = None
 
     @property
     def alive(self) -> bool:
@@ -315,7 +321,7 @@ class _DuckDBSession:
                 continue
             if line is None:
                 error = self._take_stderr()
-                self._proc = None
+                self.close()
                 raise EngineCrashed(f"session died: {error[:800] or 'no output'}")
             if end in line:
                 break
@@ -326,6 +332,19 @@ class _DuckDBSession:
                 out.append(line)
 
         time.sleep(self._STDERR_GRACE_S)
+        self.last_sql_time_s = None
+        if self._capture_sql_timing:
+            timings = []
+            clean = []
+            for line in out:
+                match = re.match(r"Run Time \(s\): real ([0-9.]+)", line)
+                if match:
+                    timings.append(float(match.group(1)))
+                else:
+                    clean.append(line)
+            # The first timing is the opening marker SELECT, outside the SQL.
+            self.last_sql_time_s = sum(timings[1:]) if len(timings) > 1 else None
+            out = clean
         error = self._take_stderr()
         if error and not tolerate_errors:
             if _is_fatal(error):

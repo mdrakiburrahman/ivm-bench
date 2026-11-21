@@ -1,0 +1,459 @@
+"""SQL-engine execution of the immutable Extended TPC-DS row-image plan.
+
+The workload owns ordering, checkpoints and validation. Connections own dialect,
+remote file placement and engine materialization commands.
+"""
+import json
+import logging
+import hashlib
+import os
+import time
+from pathlib import Path
+
+import sqlglot
+from sqlglot import exp
+from services.spark_compiler_dialect import CompilerSpark
+
+from services.compiler_bench.engines import _verify_probe
+
+SQL_ENGINES = ("spark", "spark-openivm", "fabric-jvm-35", "fabric-openivm-jvm-35",
+               "databricks-enzyme", "databricks-openivm")
+
+
+def identifier(name):
+    return '.'.join('`' + part.replace('`', '``') + '`' for part in name.split('.'))
+
+
+def translate(sql, relations=None):
+    tree = sqlglot.parse_one(sql, read='duckdb')
+    # Spark requires a literal interval and has a separate null-on-error parser.
+    for interval in tree.find_all(exp.Interval):
+        value = interval.this
+        sign = 1
+        while isinstance(value, (exp.Paren, exp.Neg)):
+            if isinstance(value, exp.Neg):
+                sign *= -1
+            value = value.this
+        if isinstance(value, exp.Literal) and not value.is_string:
+            interval.set('this', exp.Literal.string(str(sign*int(value.this))))
+        elif not isinstance(value, exp.Literal):
+            interval.replace(exp.Mul(this=interval.this.copy(), expression=exp.Interval(this=exp.Literal.string('1'), unit=interval.args['unit'].copy())))
+    for function in list(tree.find_all(exp.Anonymous)):
+        if function.name.upper() == 'TRY_STRPTIME':
+            source, pattern = function.expressions
+            if not isinstance(pattern, exp.Literal) or pattern.this != '%Y%m%d':
+                raise ValueError('unsupported workload timestamp format')
+            function.replace(exp.Anonymous(this='TRY_TO_TIMESTAMP', expressions=[source.copy(), exp.Literal.string('yyyyMMdd')]))
+    for kind in tree.find_all(exp.DataType):
+        if kind.this in (exp.DataType.Type.TIMESTAMP, exp.DataType.Type.TIMESTAMPNTZ):
+            # The workload uses one UTC clock and LTZ source timestamps. Keep
+            # casts on that same representation instead of emitting Spark NTZ.
+            kind.set('this', exp.DataType.Type.TIMESTAMPTZ)
+    # Scope-aware traversal keeps CTE names and aliases local to their query.
+    from sqlglot.optimizer.scope import traverse_scope
+    for scope in traverse_scope(tree):
+        for _, source in scope.sources.items():
+            if isinstance(source, exp.Table) and source.name in (relations or {}):
+                replacement = sqlglot.to_table(identifier(relations[source.name]), dialect='spark')
+                for key in ('this', 'db', 'catalog'):
+                    source.set(key, replacement.args.get(key))
+    return tree.sql(dialect=CompilerSpark)
+
+
+class Connection:
+    def __init__(self, engine, directory, manifest, options, *, initialize=False, validation=False):
+        self.engine = engine
+        self.schemas = manifest.get('schemas', {})
+        self.timeout = options.get('validation_timeout_s',14400) if validation else options['statement_timeout_s']
+        self.schema = 'xt_' + manifest['plan_id'] + '_' + engine.replace('-', '_') + '_' + str(os.environ.get('DATABRICKS_EXPERIMENT_ID') or os.environ.get('FABRIC_RUN_ID') or 'local').replace('-', '_')
+        self.remote_root = str(directory)
+        self.statements = []
+        self.compute = {'status':'not_applicable'}
+        if engine.startswith('databricks-'):
+            from services import databricks_enzyme_sources as src
+            self.catalog = src.CATALOG
+            try:
+                self.compute = src.warehouse_settings()
+            except Exception as error:
+                self.compute = {'status':'unavailable', 'error_type':type(error).__name__}
+            if options.get('databricks_require_serverless') and self.compute.get('enable_serverless_compute') is not True:
+                raise ValueError('Verified serverless SQL warehouse required for this Databricks benchmark: '+str(self.compute))
+            self.handle = src.open_connection(self.timeout)
+            if initialize:
+                ws = src._workspace_client()
+                src._ensure_cache_schema(ws)
+                self.remote_root = src._cache_volume_root() + '/extended-tpcds/' + manifest['plan_id']
+                src._sync_dir(ws, directory, self.remote_root)
+            else:
+                self.remote_root = src._cache_volume_root() + '/extended-tpcds/' + manifest['plan_id']
+        else:
+            from dbt.adapters.fabricspark.credentials import FabricSparkCredentials
+            from dbt.adapters.fabricspark.connections import FabricSparkConnectionManager
+            from dbt.adapters.contracts.connection import Connection as DbtConnection
+            from services.dbt_runner import _inject_fabric_resolved, load_profile
+            if engine.startswith('fabric-'):
+                from services import fabric
+                if initialize:
+                    fabric.provision_run(openivm='openivm' in engine, enable_schemas=True)
+                    fabric._azcopy(directory, 'Files/extended-tpcds/' + manifest['plan_id'] + '/plan', fabric.resolve_cache_lakehouse())
+                self.remote_root = fabric.onelake_abfss('Files/extended-tpcds/' + manifest['plan_id'] + '/plan', fabric.resolve_cache_lakehouse())
+            env = os.environ.copy()
+            _inject_fabric_resolved(env)
+            values = load_profile(engine, env)
+            values = {k:v for k,v in values.items() if k not in ('type','threads')}
+            values.update(statement_timeout=int(self.timeout), reuse_session=True)
+            if engine.startswith('fabric-'):
+                # Bootstrap in the existing default schema before creating the
+                # isolated workload namespace on this schema-enabled lakehouse.
+                values['schema'] = 'dbo'
+            credentials = FabricSparkCredentials.from_dict(values)
+            dbt_connection = DbtConnection(type='fabricspark', name='extended-tpcds', credentials=credentials)
+            self.handle = FabricSparkConnectionManager.open(dbt_connection).handle
+            self.catalog = values['lakehouse'] if engine.startswith('fabric-') else None
+        self.execute("SET TIME ZONE 'UTC'")
+        if initialize:
+            self.execute('CREATE SCHEMA ' + identifier(self.namespace))
+        self.use(self.namespace)
+        if engine == 'fabric-openivm-jvm-35':
+            # Fabric owns the catalog location under Tables/<schema>. The
+            # unqualified MV commands must write that same managed Delta path.
+            from services import fabric
+            self.execute('SET spark.openivm.managedTablesRoot='+fabric.onelake_abfss('Tables/'+self.schema))
+            self.execute('SET spark.openivm.catalogPreservesColumnCase=true')
+
+    @property
+    def namespace(self):
+        return (self.catalog + '.' if self.catalog else '') + self.schema
+
+    def use(self, schema):
+        self.execute('USE ' + identifier(schema))
+
+    def execute(self, sql):
+        start = time.monotonic()
+        record = {'sql':sql, 'status':'failed', 'phase':getattr(self,'phase','setup'),
+                  'model_id':getattr(self,'model_id',None), 'started_at_ms':time.time()*1000}
+        try:
+            cursor = self.handle.cursor()
+            try:
+                cursor.execute(sql)
+                if self.engine.startswith('databricks-'):
+                    record['query_id'] = cursor.query_id
+                rows = [list(r) for r in cursor.fetchall()] if cursor.description else []
+            finally:
+                # The Livy adapter returns its connection wrapper as the cursor;
+                # only independent DB-API cursors are owned by this statement.
+                if cursor is not self.handle:
+                    cursor.close()
+            record['status'] = 'completed'
+            return rows
+        except Exception as error:
+            record['error'] = str(error)
+            logging.exception('Extended TPC-DS %s SQL failed: %s', self.engine, sql)
+            raise
+        finally:
+            record['duration_s'] = time.monotonic() - start
+            self.statements.append(record)
+
+    def diagnose_failure(self):
+        diagnostics = {'catalog': 'SHOW TABLES IN '+identifier(self.namespace)}
+        if self.engine == 'databricks-enzyme':
+            namespace = self.namespace.replace("'", "''")
+            diagnostics['deletion audit'] = (
+                "SELECT CAST(event_time AS STRING), service_name, action_name, user_identity.email, "
+                "request_params['full_name_arg'], user_agent FROM system.access.audit "
+                "WHERE event_date >= date_sub(current_date(), 1) "
+                "AND event_time >= current_timestamp() - INTERVAL 2 HOURS "
+                f"AND contains(to_json(request_params), '{namespace}') "
+                "AND lower(action_name) RLIKE 'delete|drop|create' ORDER BY event_time"
+            )
+        for label, sql in diagnostics.items():
+            try:
+                logging.error('Extended TPC-DS %s %s after failure: %s', self.engine, label, self.execute(sql))
+            except Exception:
+                logging.exception('Could not inspect workload %s', label)
+
+    def parquet(self, image, table):
+        # Paths come from the checksum-verified local manifest, never SQL text.
+        path = self.remote_root.rstrip('/') + '/' + image['path']
+        relation = 'parquet.`' + path.replace('`','``') + '`'
+        # DuckDB's unzoned Parquet timestamps infer as Spark TIMESTAMP_NTZ.
+        # The workload clock is UTC; normalize the representation on every read
+        # so sources, mutation guards and references use the supported LTZ type.
+        columns = [f'CAST({identifier(name)} AS TIMESTAMP_LTZ) AS {identifier(name)}'
+                   if kind.startswith('TIMESTAMP') else identifier(name)
+                   for name, kind in self.schemas[table].items()]
+        return '(SELECT ' + ', '.join(columns) + ' FROM ' + relation + ')'
+
+    def close(self):
+        self.handle.close()
+
+
+def replay(connection, manifest, directory, batch_num):
+    from services.extended_tpcds import mutations
+    images = manifest['initial'].values() if batch_num == 1 else (
+        image for op in manifest['batches'][batch_num-2]['operations']
+        for image in (op['before'], op['after']) if image)
+    for image in images:
+        if mutations.file_checksum(directory / image['path']) != image['sha256']:
+            raise ValueError('source image checksum mismatch: ' + image['path'])
+    if batch_num == 1:
+        for table, image in manifest['initial'].items():
+            properties = "'delta.enableChangeDataFeed'='true'"
+            if connection.engine.startswith("databricks-"):
+                properties += ", 'delta.enableRowTracking'='true'"
+            connection.execute(f"CREATE TABLE {identifier(table)} USING DELTA TBLPROPERTIES ({properties}) AS SELECT * FROM {connection.parquet(image, table)}")
+        return
+    for operation in manifest['batches'][batch_num-2]['operations']:
+        table = operation['table']
+        if table not in manifest['schemas']:
+            raise ValueError('unknown source: ' + table)
+        target = identifier(table)
+        before, after = operation['before'], operation['after']
+        if before:
+            expected = connection.parquet(before, table)
+            actual = f'SELECT * FROM {target} WHERE _source_row_id IN (SELECT _source_row_id FROM {expected})'
+            mismatch = int(connection.execute(f'SELECT count(*) FROM ((SELECT * FROM {expected} EXCEPT ALL {actual}) UNION ALL ({actual} EXCEPT ALL SELECT * FROM {expected}))')[0][0])
+            if mismatch:
+                raise ValueError('before-image mismatch: ' + table)
+        if operation['kind'] == 'delete':
+            connection.execute(f'DELETE FROM {target} WHERE _source_row_id IN (SELECT _source_row_id FROM {connection.parquet(before, table)})')
+        elif operation['kind'] == 'update':
+            connection.execute(f'MERGE INTO {target} t USING {connection.parquet(after, table)} a ON t._source_row_id=a._source_row_id WHEN MATCHED THEN UPDATE SET *')
+        elif operation['kind'] == 'insert':
+            connection.execute(f'INSERT INTO {target} SELECT * FROM {connection.parquet(after, table)}')
+        else:
+            raise ValueError('unknown source operation')
+        duplicates = int(connection.execute(f'SELECT count(*)-count(DISTINCT _source_row_id) FROM {target}')[0][0])
+        if duplicates:
+            raise ValueError('duplicate source IDs: ' + table)
+
+
+def queries(manifest, options, namespace):
+    from services.extended_tpcds import pipeline
+    names = pipeline.selected_models()
+    relations = {name:namespace+'.'+name for name in [*manifest['schemas'], *names]}
+    return {name:translate(pipeline.render_model(name, manifest['source_configuration'], options['query_cohort']), relations) for name in names}
+
+
+def full_recompute_query(query):
+    """Keep the two grouped fact branches out of Spark's broadcast exchange."""
+    tree = sqlglot.parse_one(query, read='spark')
+    for select in tree.find_all(exp.Select):
+        source = select.args.get('from_')
+        if not (source and isinstance(source.this, exp.Subquery)
+                and isinstance(source.this.this, exp.Select)
+                and source.this.this.args.get('group')):
+            continue
+        for join in select.args.get('joins', []):
+            right = join.this
+            if (isinstance(right, exp.Subquery) and isinstance(right.this, exp.Select)
+                    and right.this.args.get('group') and right.alias):
+                # These aggregates exceed Spark's 8 GiB broadcast limit at
+                # SF100. Leave small lookup/affected-partition joins alone.
+                hint = select.args.get('hint') or exp.Hint(expressions=[])
+                hint.append('expressions', exp.JoinHint(this='MERGE', expressions=[exp.to_table(right.alias)]))
+                select.set('hint', hint)
+    return tree.sql(dialect=CompilerSpark)
+
+
+def build(connection, model_queries, state, *, initial=False, reference=False, fallback_policy='table'):
+    policy = ' '.join(os.environ.get('DATABRICKS_REFRESH_POLICY','AUTO').upper().split())
+    if connection.engine == 'databricks-enzyme' and policy not in ('AUTO','INCREMENTAL','INCREMENTAL STRICT','FULL'):
+        raise ValueError('invalid Databricks refresh policy')
+    materializations = state.setdefault('materializations', {})
+    durations = {}
+    for name, query in model_queries.items():
+        connection.model_id = name
+        started = time.monotonic()
+        target = identifier(connection.namespace+'.'+name) if connection.engine.startswith('databricks-') and not reference else identifier(name)
+        maintained = not reference and ('openivm' in connection.engine or connection.engine == 'databricks-enzyme')
+        previous = materializations.get(name,{})
+        if maintained:
+            if connection.engine == 'databricks-openivm':
+                raise ValueError('Databricks OpenIVM must use the compiled SQL maintenance path')
+            if initial:
+                if connection.engine in ('spark-openivm','fabric-openivm-jvm-35') and fallback_policy == 'strict':
+                    raw = connection.execute(f'EXPLAIN CREATE MATERIALIZED VIEW {target} AS {query}')[0][0]
+                    # The pinned EXPLAIN registers an empty cold-DAG table.
+                    # Initialization owns a fresh namespace; remove that stub
+                    # before registering the actual MV under the same name.
+                    connection.execute(f'DROP TABLE IF EXISTS {target}')
+                    verdict = json.loads(raw)
+                    required = {'eligible','source_tables','refresh_type_name','compile_refresh_type_name','reason'}
+                    if (not required <= verdict.keys() or not isinstance(verdict.get('eligible'),bool)
+                            or not isinstance(verdict.get('source_tables'),list)):
+                        raise ValueError('incomplete incremental eligibility verdict for '+name)
+                    static = not verdict['source_tables'] and verdict['compile_refresh_type_name'] not in ('COMPILE_FAILED','UNKNOWN','',None)
+                    if not verdict['eligible'] and not static:
+                        raise ValueError(f"{name} is not incrementalizable: {verdict['refresh_type_name']} ({verdict['reason']})")
+                    previous = {'preflight':verdict,'classification':'incremental' if verdict['eligible'] else 'static'}
+                clause = ' REFRESH POLICY '+policy if connection.engine == 'databricks-enzyme' else ''
+                connection.execute(f'CREATE MATERIALIZED VIEW {target}{clause} AS {query}')
+            else:
+                if connection.engine == 'databricks-enzyme' and previous.get('refresh_policy',policy) != policy:
+                    raise ValueError('Databricks refresh policy changed during the run')
+                connection.execute(f'REFRESH MATERIALIZED VIEW {target}')
+            classification = previous.get('classification','unknown')
+            if connection.engine == 'databricks-enzyme':
+                previous['refresh_policy'] = policy
+        else:
+            # Full materializations and independent validation use the same
+            # strategy; compiler input and incremental helper joins stay intact.
+            query = full_recompute_query(query)
+            if initial:
+                connection.execute(f"CREATE TABLE {target} USING DELTA TBLPROPERTIES ('delta.enableChangeDataFeed'='true') AS {query}")
+            else:
+                # Keep identity so maintained consumers see source changes.
+                connection.execute(f'INSERT OVERWRITE {target} {query}')
+            classification = 'full'
+        durations[name] = time.monotonic() - started
+        materializations[name] = {**previous,'kind':'materialized_view' if maintained else 'table', 'classification':classification}
+    connection.model_id = None
+    return durations
+
+
+def build_databricks_openivm(connection, model_queries, manifest, state, initial):
+    from services import databricks_openivm as ivm
+    from services.db import DB_LOCK, get_db
+    run_id = 'extended-tpcds-' + manifest['plan_id']
+    with DB_LOCK:
+        db = get_db()
+        db.execute("INSERT OR IGNORE INTO runs(run_id,engine,scale_factor,created_at) VALUES (?,?,?,datetime('now'))", (run_id,connection.engine,manifest['source_configuration'].get('base_scale_factor',0)))
+        db.commit()
+        db.close()
+    known = {connection.namespace+'.'+name:ivm.physical(connection.namespace+'.'+name) for name in model_queries}
+    known.update({connection.namespace+'.'+name:connection.namespace+'.'+name for name in manifest['schemas']})
+    by_relation = {connection.namespace+'.'+name:'model.extended_tpcds.'+name for name in model_queries}
+    models = state.setdefault('models', {})
+    materializations = state.setdefault('materializations', {})
+    metadata = ivm.BatchMetadata()
+    executor = ivm.SqlExecutor()
+    durations = {}
+    try:
+        for name, query in model_queries.items():
+            uid = by_relation[connection.namespace+'.'+name]
+            parts = connection.namespace.split('.')
+            node = {'name':name, 'database':parts[0], 'schema':parts[1], 'compiled_code':query}
+            started = time.monotonic()
+            executor.model_id = uid
+            models[uid] = ivm._build_model(executor, metadata, uid, node, known, models, by_relation, run_id, initial, {'compiler_client_s':0})
+            metadata.invalidate_version(known[connection.namespace+'.'+name])
+            durations[name] = time.monotonic()-started
+            materializations[name] = {'kind':'compiled_sql', 'classification':'full' if models[uid]['refresh_type']==3 else 'incremental', 'refresh_type_name':models[uid].get('refresh_type_name')}
+        return durations
+    finally:
+        connection.statements.extend(executor.statements)
+        executor.close()
+
+
+def run_batch(engine, batch_num, manifest_path, work_dir, options):
+    manifest = json.loads(manifest_path.read_text())
+    work_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = work_dir / 'sql-checkpoint.json'
+    state = {'batch_num':0, 'plan_id':manifest['plan_id'], 'options':options, 'dirty':False} if not checkpoint.exists() else json.loads(checkpoint.read_text())
+    if state['dirty'] or state['batch_num'] != batch_num-1 or state['plan_id'] != manifest['plan_id'] or state['options'] != options:
+        raise ValueError('SQL engine checkpoint is dirty or does not match the requested batch/plan/options')
+    connection = Connection(engine, manifest_path.parent, manifest, options, initialize=batch_num==1)
+    try:
+        if batch_num > 1 and state.get('compute') != connection.compute:
+            raise ValueError('compute configuration changed during the run')
+        state['compute'] = connection.compute
+        model_queries = queries(manifest, options, connection.namespace)
+        from services.extended_tpcds_profile import BatchProfile
+        profile = BatchProfile(engine, batch_num, model_queries, connection)
+        sql_identity = hashlib.sha256(json.dumps(model_queries,sort_keys=True).encode()).hexdigest()
+        if batch_num>1 and state.get('sql_identity') != sql_identity:
+            raise ValueError('model definitions changed after initialization')
+        state['sql_identity'] = sql_identity
+        state['dirty'] = True
+        checkpoint.write_text(json.dumps(state))
+        connection.phase = 'source'
+        started = time.monotonic()
+        replay(connection, manifest, manifest_path.parent, batch_num)
+        source_s = time.monotonic() - started
+        connection.phase = 'maintenance'
+        started = time.monotonic()
+        durations = (build_databricks_openivm(connection, model_queries, manifest, state, batch_num==1) if engine=='databricks-openivm' else build(connection, model_queries, state, initial=batch_num==1, fallback_policy=options.get('fallback_policy','table')))
+        model_s = time.monotonic() - started
+        connection.phase = 'observer'
+        incremental_models = {name for name, meta in state['materializations'].items()
+                              if meta['classification'] == 'incremental'} if options.get('fallback_policy') == 'strict' else set()
+        profiling = profile.finish(durations, statements=connection.statements, incremental_models=incremental_models)
+        counts = {name:int(connection.execute('SELECT count(*) FROM '+identifier(name))[0][0]) for name in model_queries}
+        state.update(batch_num=batch_num, dirty=False, namespace=connection.namespace)
+        checkpoint.write_text(json.dumps(state, indent=2))
+        result = {'status':'completed', 'engine':engine, 'batch_num':batch_num, 'plan_id':manifest['plan_id'],
+                  'duration_s':source_s+model_s, 'model_concurrency':1, 'source_replay_wall_s_including_guards':source_s,
+                  'model_wall_s_including_cli':model_s, 'model_sql_duration_s':durations, 'model_rows':counts,
+                  'profiling':profiling,
+                  'compute':connection.compute,
+                  'materializations':state['materializations'], 'classification_counts':{kind:sum(m['classification']==kind for m in state['materializations'].values()) for kind in {m['classification'] for m in state['materializations'].values()}},
+                  'model_queries':model_queries, 'sql_statements':connection.statements,
+                  'source_storage':'delta', 'timing_semantics':'source replay and complete SQL commands; setup, row counts and validation excluded',
+                  'configuration':manifest['source_configuration'], 'options':options}
+        (work_dir/f'batch{batch_num}.json').write_text(json.dumps(result, indent=2))
+        return result
+    except Exception:
+        # Diagnostics cannot replace the original error or replay a dirty batch.
+        connection.diagnose_failure()
+        raise
+    finally:
+        (work_dir/f'sql-batch{batch_num}.json').write_text(json.dumps(connection.statements, indent=2))
+        connection.close()
+
+
+def validate_batch(engine, batch_num, manifest_path, work_dir, options):
+    manifest = json.loads(manifest_path.read_text())
+    state = json.loads((work_dir/'sql-checkpoint.json').read_text())
+    if state['dirty'] or state['batch_num'] != batch_num or state['plan_id'] != manifest['plan_id']:
+        raise ValueError('validation snapshot does not match the committed batch')
+    connection = Connection(engine, manifest_path.parent, manifest, options, validation=True)
+    reference = state['namespace'] + '_reference'
+    compared = False
+    try:
+        connection.execute('CREATE SCHEMA '+identifier(reference))
+        connection.use(reference)
+        for n in range(1,batch_num+1):
+            replay(connection, manifest, manifest_path.parent, n)
+        model_queries = queries(manifest, options, reference)
+        build(connection, model_queries, {}, initial=True, reference=True)
+        checks = {}
+        for name in model_queries:
+            actual = identifier(state['namespace']+'.'+name)
+            expected = identifier(reference+'.'+name)
+            columns = [(r[0],r[1]) for r in connection.execute('DESCRIBE '+actual) if r[0] and not str(r[0]).startswith('#')]
+            # Spark, Fabric and Photon all execute the Spark SQL comparison form.
+            probe = _verify_probe(actual, 'SELECT * FROM '+expected, columns,engine='spark')
+            checks[name] = int(connection.execute(probe)[0][0])
+        compared = True
+        return {'status':'passed' if not any(checks.values()) else 'failed', 'models_checked':len(checks),
+                'differences':checks, 'comparison':'independent source replay and full DAG recomputation; EXCEPT ALL; floats rounded to 10 decimals'}
+    finally:
+        try:
+            # A timed-out Livy statement may still be executing. Do not queue
+            # cleanup SQL behind it and obscure the original failure. Engine
+            # teardown owns abandoned reference schemas.
+            if compared:
+                connection.use(state['namespace'])
+                connection.execute('DROP SCHEMA '+identifier(reference)+' CASCADE')
+        finally:
+            connection.close()
+
+
+def cleanup(engine, manifest_path, work_dir, options):
+    """Drop this engine's isolated schema, including failed partial builds."""
+    manifest = json.loads(manifest_path.read_text())
+    if engine.startswith('fabric-'):
+        from services import fabric
+        return fabric.teardown_run()
+    connection = Connection(engine, manifest_path.parent, manifest, options)
+    try:
+        connection.execute('DROP SCHEMA IF EXISTS '+identifier(connection.namespace+'_reference')+' CASCADE')
+        if engine == 'spark-openivm':
+            from services.extended_tpcds import pipeline
+            for name in reversed(pipeline.selected_models()):
+                connection.execute('DROP MATERIALIZED VIEW IF EXISTS '+identifier(name))
+        connection.execute('DROP SCHEMA IF EXISTS '+identifier(connection.namespace)+' CASCADE')
+        return {'status':'ok'}
+    finally:
+        connection.close()

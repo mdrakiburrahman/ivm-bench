@@ -1,0 +1,18 @@
+# Fabric-DS needs bounded-memory state; keep spilling opt-in for other workloads.
+services:
+  dbspnet-server:
+    build:
+      network: host
+      args:
+        DBSPNET_REPO: "https://github.com/clast-project/dbsp-net.git"
+        DBSPNET_COMMIT: "ffb54826f515f360808fa1b2ce9e9a0344df74ad"
+    environment:
+      DBSPNET_WORKERS: "12"
+      DBSPNET_SPILL: "on"
+      DBSPNET_STEP_SPILL_ROWS: "262144"
+      DBSPNET_BLOCK_SPILL_DIR: "/spill"
+      DBSPNET_BLOCK_CACHE_MIB: "1024"
+      DOTNET_gcServer: "1"
+      DOTNET_gcConcurrent: "0"
+    volumes:
+      - ../mount/spill/${SCALE_FACTOR:-3}/dbspnet:/spill

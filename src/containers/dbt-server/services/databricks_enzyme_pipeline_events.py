@@ -102,15 +102,15 @@ def _extract_pipeline_id(conn, schema: str, table: str) -> Optional[str]:
     return None
 
 
-def _discover_mv_pipelines(ws: WorkspaceClient) -> List[Dict[str, Any]]:
+def _discover_mv_pipelines(ws: WorkspaceClient, *, schemas=None, connection=None) -> List[Dict[str, Any]]:
     """For each MV currently in our catalog's tracked schemas, resolve its
     backing pipeline ID via DESCRIBE EXTENDED Table Properties. (We avoid
     ``list_pipelines`` because MV-backing pipelines are not enumerable by
     the SP — they must be addressed by ID.)"""
     catalog = src.CATALOG
-    conn = src._get_connection()
+    conn = connection if connection is not None else src._get_connection()
     out: List[Dict[str, Any]] = []
-    for schema in _candidate_mv_schemas():
+    for schema in schemas if schemas is not None else _candidate_mv_schemas():
         mvs = _list_mvs_in_schema(conn, schema)
         for mv in mvs:
             pid = _extract_pipeline_id(conn, mv["schema"], mv["table"])
@@ -122,8 +122,20 @@ def _discover_mv_pipelines(ws: WorkspaceClient) -> List[Dict[str, Any]]:
                 "schema": mv["schema"],
                 "table": mv["table"],
                 "state": "",
+                "compute": _pipeline_compute(ws, pid),
             })
     return out
+
+
+def _pipeline_compute(ws, pipeline_id):
+    """Read supported settings; serverless does not expose fixed worker sizes."""
+    try:
+        spec = ws.pipelines.get(pipeline_id=pipeline_id).spec.as_dict()
+        return {'status':'ok', **{key:spec.get(key) for key in
+                ('serverless','photon','channel','edition','continuous')},
+                'fixed_worker_allocation':'not_exposed_for_serverless'}
+    except Exception as error:
+        return {'status':'unavailable', 'error_type':type(error).__name__}
 
 
 def _list_all_updates(
@@ -225,13 +237,14 @@ def _group_events_by_update(events: List[Dict[str, Any]]) -> Dict[str, List[Dict
     return out
 
 
-def collect_pipeline_events(batch_num: int) -> dict:
+def collect_pipeline_events(batch_num: int, *, schemas=None, connection=None) -> dict:
     """For every ``MV-<catalog>.*`` pipeline in the workspace, list every
     update and group every event by update_id. Returns a JSON-ready payload
     the benchmark-server writes to disk one-file-per-update."""
     ws = src._workspace_client()
     catalog = src.CATALOG
-    pipelines = _discover_mv_pipelines(ws)
+    pipelines = (_discover_mv_pipelines(ws) if schemas is None and connection is None
+                 else _discover_mv_pipelines(ws, schemas=schemas, connection=connection))
 
     out_pipelines: List[Dict[str, Any]] = []
     total_update_count = 0
@@ -271,8 +284,11 @@ def collect_pipeline_events(batch_num: int) -> dict:
             "schema": p["schema"],
             "table": p["table"],
             "state": p["state"],
+            "compute": p.get('compute', {'status':'unavailable'}),
             "updates": per_update,
             "pipeline_level_events": pipeline_level_events,
+            "events_truncated": any(ev.get('_truncated') for ev in events),
+            "updates_truncated": len(updates_meta) >= _MAX_UPDATES_PER_PIPELINE,
         })
 
     return {

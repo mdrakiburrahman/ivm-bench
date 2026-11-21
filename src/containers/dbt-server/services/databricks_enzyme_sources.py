@@ -269,6 +269,17 @@ def _http_path() -> str:
     return os.environ["DATABRICKS_SQL_HTTP_PATH"]
 
 
+def warehouse_settings() -> dict:
+    """Capture configured compute, excluding credentials and connection URLs."""
+    warehouse_id = _http_path().rstrip('/').rsplit('/', 1)[-1]
+    settings = _workspace_client().warehouses.get(id=warehouse_id).as_dict()
+    keys = ('id', 'enable_serverless_compute', 'enable_photon', 'warehouse_type',
+            'cluster_size', 'min_num_clusters', 'max_num_clusters', 'auto_stop_mins')
+    return {'status':'ok', **{key:settings.get(key) for key in keys},
+            'channel':(settings.get('channel') or {}).get('name'),
+            'scope':'SQL warehouse; Enzyme refresh uses separate managed pipeline compute'}
+
+
 def _credentials_provider():
     return oauth_service_principal(_databricks_config())
 

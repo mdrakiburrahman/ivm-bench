@@ -1,0 +1,42 @@
+{
+  "baseline": {
+    "workload": "extended-tpcds",
+    "scale_factor": 1,
+    "engines": [
+      "databricks-enzyme"
+    ],
+    "schedule": "serial",
+    "parallel": false,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "databricks_refresh_policy": "AUTO",
+    "extended_tpcds": {
+      "source_size_gb": 1,
+      "profile": "calibrated",
+      "mode": "insertion",
+      "report_date": "2002-12-31",
+      "batches": 3,
+      "statement_timeout_s": 3600,
+      "validation_timeout_s": 14400,
+      "fallback_policy": "strict",
+      "databricks_require_serverless": true
+    },
+    "feature_flags": {
+      "openivm_validate": true,
+      "openivm_profile_refresh": true,
+      "storage_metrics": false,
+      "preserve_raw": true,
+      "spark_metrics_capture": false
+    }
+  },
+  "experiments": [
+    {
+      "label": "Fabric-DS SF1 databricks-enzyme, 100/1/0.01, serverless verified, validation ON"
+    }
+  ]
+}

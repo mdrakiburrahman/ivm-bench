@@ -89,7 +89,7 @@ def resume_pipeline() -> bool:
 # ─── Stats-based completion polling ───────────────────────────────────────────
 
 
-def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, float, dict]:
+def poll_output_completion(poll_interval: float | None = None, *, baseline_steps: int | None = None) -> tuple[bool, float, dict]:
     """
     Poll /stats until all output connectors have flushed and pipeline is complete.
 
@@ -127,12 +127,9 @@ def poll_output_completion(poll_interval: float | None = None) -> tuple[bool, fl
     per_table_times: dict[str, float] = {}
 
     # Capture baseline steps to detect when new work begins
-    baseline_stats = get_stats()
-    baseline_steps = 0
-    if baseline_stats:
-        baseline_steps = baseline_stats.get("global_metrics", {}).get(
-            "total_initiated_steps", 0
-        )
+    if baseline_steps is None:
+        baseline_stats = get_stats()
+        baseline_steps = (baseline_stats or {}).get("global_metrics", {}).get("total_initiated_steps", 0)
 
     logger.info(
         "Polling Feldera stats for output completion "

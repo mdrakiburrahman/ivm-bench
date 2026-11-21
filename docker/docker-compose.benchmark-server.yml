@@ -4,6 +4,7 @@ services:
     labels:
       org.ivm-bench.run-id: "${IVM_BENCH_RUN_ID:-}"
     build:
+      network: host
       context: ../src/containers
       dockerfile: benchmark-server/Dockerfile
     ports:

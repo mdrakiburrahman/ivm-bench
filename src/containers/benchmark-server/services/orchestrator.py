@@ -20,11 +20,11 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
 
-from models.config import BenchmarkConfig, is_cloud_engine
+from models.config import BenchmarkConfig, is_cloud_engine, workload_cache_key
 from models.experiments import ExperimentInputs, parse_experiments_json
 from models.result import BatchResult, BenchmarkResult, EngineResult
 from services import oat_runner
-from services.source_row_counts import collect_source_row_counts
+from services.source_row_counts import collect_source_row_counts, collect_extended_source_row_counts
 from services.db import DB_LOCK, get_db
 from services.docker_manager import DockerManager
 from services.engine_runner import EngineRunner, OpenIvmValidationError
@@ -106,11 +106,11 @@ class Orchestrator:
         self._oat_run_id: Optional[str] = None
         self._oat_started_at: Optional[str] = None
         self._oat_per_exp_dicts: List[dict] = []
-        # Set by _run_one_oat_experiment when it catches OpenIvmValidationError.
-        # _run_oat checks this after every experiment and aborts the sweep
-        # immediately — a single MV-correctness diff is unrecoverable.
-        self._oat_fatal_validation_error: Optional[str] = None
+        # Validation failures and all Extended TPC-DS failures stop the sweep.
+        # A failed small acceptance experiment must never advance to SF100.
+        self._oat_fatal_error: Optional[str] = None
         self._current_source_row_counts: Optional[Dict[str, Any]] = None
+        self._engine_build_errors: Dict[str, str] = {}
 
     @property
     def config(self) -> BenchmarkConfig:
@@ -197,7 +197,7 @@ class Orchestrator:
             self._experiments = []
             self._oat_run_id = None
             self._oat_per_exp_dicts = []
-            self._oat_fatal_validation_error = None
+            self._oat_fatal_error = None
             self._benchmark_id = None
 
             if not os.path.exists(experiments_file):
@@ -233,6 +233,8 @@ class Orchestrator:
         config_json = json.dumps({
             "scale_factor": self._config.scale_factor,
             "benchmark_runs": self._config.benchmark_runs,
+            "workload": self._config.workload,
+            "extended_tpcds": self._config.base_env()["EXTENDED_TPCDS_OPTIONS"],
             "engines": self._config.engines,
             "parallel": self._config.parallel,
             "repeated_refresh": self._config.repeated_refresh,
@@ -453,6 +455,7 @@ class Orchestrator:
         include_datagen: bool = True,
         compiler_bench: Optional[bool] = None,
         cost_model_bench: Optional[bool] = None,
+        extended_tpcds: bool = False,
     ) -> None:
         """Phase 1: datagen + duckdb-openivm-build + spark-openivm-build + batch-loader build (parallel).
 
@@ -462,6 +465,7 @@ class Orchestrator:
         """
         self.emit("")
         self.emit("=== Phase 1: Data generation & build ===")
+        self._engine_build_errors = {}
 
         # Build the callable list first so the pool's max_workers can match
         # the actual number of submitted tasks. Otherwise adding a 5th build
@@ -469,7 +473,8 @@ class Orchestrator:
         callables = []
         if include_datagen:
             callables.append(self._run_datagen)
-        callables.append(self._build_batch_loader)
+        if self._config.workload != "extended-tpcds":
+            callables.append(self._build_batch_loader)
         # At phase 0 the per-experiment env is not applied yet, so the caller
         # passes the decision in from the experiments list; None means "read env".
         if compiler_bench is None:
@@ -482,7 +487,7 @@ class Orchestrator:
         # Read from the passed-in decision rather than the environment: at phase 0 the per-experiment
         # flags have not been applied yet, so an experiment enabling the sweep without also listing
         # duckdb-openivm would skip the build it depends on.
-        if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench:
+        if "duckdb-openivm" in self._config.engines or compiler_bench or cost_model_bench or extended_tpcds:
             callables.append(self._run_duckdb_openivm_build)
         if set(self._config.engines) & {"spark-openivm", "fabric-openivm-jvm-35", "databricks-openivm"}:
             callables.append(self._run_spark_openivm_build)
@@ -490,14 +495,40 @@ class Orchestrator:
             callables.append(self._run_lpts_build)
 
         with ThreadPoolExecutor(max_workers=len(callables)) as pool:
-            tasks = [pool.submit(fn) for fn in callables]
+            tasks = {pool.submit(fn): fn for fn in callables}
             for future in as_completed(tasks):
-                future.result()  # Raise any exceptions
+                try:
+                    future.result()
+                except Exception as error:
+                    dependencies = {
+                        self._run_duckdb_openivm_build: {'duckdb', 'duckdb-openivm'},
+                        self._run_spark_openivm_build: {'spark-openivm', 'fabric-openivm-jvm-35', 'databricks-openivm'},
+                    }
+                    affected = dependencies.get(tasks[future])
+                    if self._config.workload != 'extended-tpcds' or affected is None:
+                        raise
+                    for engine in affected.intersection(self._config.engines):
+                        self._engine_build_errors[engine] = f'{type(error).__name__}: {error}'
+                    self.emit(f"  Build failed for {', '.join(sorted(affected))}: {error}; continuing with unaffected engines")
 
         self.emit("=== Phase 1: Complete ===")
 
     def _run_datagen(self) -> None:
-        """Run TPC-DI data generation (idempotent)."""
+        """Prepare the selected workload's shared source artifacts."""
+        if self._config.workload == "extended-tpcds":
+            repo = self._config.repo_dir
+            mgr = DockerManager(os.path.join(repo, "docker/docker-compose.extended-tpcds-datagen.yml"),
+                                project_name="extended-tpcds-datagen", env=self._config.base_env(), cwd=repo)
+            try:
+                with self._heartbeat("extended-tpcds/prepare"):
+                    mgr.build()
+                    mgr.up(detach=False, timeout=86400, stream_callback=self.emit)
+                code = mgr.get_exit_code("extended-tpcds-datagen")
+                if code != "0":
+                    raise RuntimeError(f"Extended TPC-DS preparation failed ({code}): {mgr.logs()[-2000:]}")
+            finally:
+                mgr.down()
+            return
         self.emit("  [datagen] Building images")
         repo = self._config.repo_dir
         mgr = DockerManager(
@@ -584,9 +615,16 @@ class Orchestrator:
         if inputs.repeated_refresh:
             with open(os.path.join(delta_dir, "refresh-plan.json"), encoding="utf-8") as plan_file:
                 refresh_plan = json.load(plan_file)
-        counts = collect_source_row_counts(
-            delta_dir, self._config.batch_count, refresh_plan=refresh_plan,
-        )
+        if inputs.workload == 'extended-tpcds':
+            counts = collect_extended_source_row_counts(os.path.join(
+                repo, 'mount', 'raw', str(inputs.scale_factor), 'extended-tpcds',
+                workload_cache_key(self._config)))
+            self.emit('  [datagen] Initial source storage: ' + json.dumps(
+                counts['preparation']['source_storage']))
+        else:
+            counts = collect_source_row_counts(
+                delta_dir, self._config.batch_count, refresh_plan=refresh_plan,
+            )
         counts.update({
             "scale_factor": inputs.scale_factor,
             "batch_2_days": inputs.batch_2_days,
@@ -1042,7 +1080,7 @@ class Orchestrator:
         if self._config.schedule == "serial-host-parallel-cloud":
             self._run_serial_host_parallel_cloud()
         else:
-            if self._config.parallel:
+            if self._config.parallel and self._config.workload != "extended-tpcds":
                 self._init_parallel_staging(engine_configs)
 
             if self._config.parallel and len(engines) > 1:
@@ -1164,23 +1202,38 @@ class Orchestrator:
         """Run every engine once and return the names that failed."""
         failed = []
         for name in self._config.engines:
+            build_error = getattr(self, '_engine_build_errors', {}).get(name)
+            if build_error:
+                self._result.engines[name] = EngineResult(
+                    engine=name, status='failed', error=f'Engine build failed: {build_error}',
+                    batches=[BatchResult(batch_num=n, status='skipped', error=build_error)
+                             for n in range(1, self._config.batch_count + 1)],
+                )
+                failed.append(name)
+                self.emit(f"  [{name}] build failed; continuing with remaining engines")
+                continue
             ec = engine_configs[name]
-            runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
+            runner = None
             try:
+                runner = EngineRunner(self._config, ec, self.emit, self._benchmark_id)
                 result = runner.run()
-            except OpenIvmValidationError as e:
-                # The runner has already cleaned up (compose-down + log capture
-                # in its finally). Preserve its partial result (batch
-                # statuses, durations, error) — don't build a stripped
-                # replacement — then re-raise so the OAT loop fails fast.
-                er = runner.result
+            except Exception as e:
+                # Preserve partial evidence when execution has started. Fabric-DS
+                # continues after setup, execution or validation errors; other
+                # workloads retain exception propagation.
+                er = runner.result if runner is not None else EngineResult(engine=name)
                 er.status = "failed"
                 er.error = str(e)
                 self._result.engines[name] = er
+                if self._config.workload == "extended-tpcds":
+                    failed.append(name)
+                    self.emit(f"  [{name}] failed: {e}; continuing with remaining engines")
+                    continue
                 raise
             self._result.engines[name] = result
             if result.status == "failed":
                 failed.append(name)
+                self.emit(f"  [{name}] failed; continuing with remaining engines")
         return failed
 
     def _run_engines_parallel(self, engine_configs: Dict) -> None:
@@ -1346,18 +1399,18 @@ class Orchestrator:
                 # (the MV definition or refresh path is broken). Abort the
                 # sweep immediately, marking the remaining experiments as
                 # skipped so results.csv / chart-oat.png still render cleanly.
-                if self._oat_fatal_validation_error is not None:
+                if self._oat_fatal_error is not None:
                     remaining = len(self._experiments) - (idx + 1)
                     self.emit("")
                     self.emit("=" * 78)
-                    self.emit("=== OAT SWEEP ABORTED — OpenIVM validation failure is FATAL ===")
-                    self.emit(f"  reason: {self._oat_fatal_validation_error}")
-                    self.emit(f"  experiment [{idx + 1}/{len(self._experiments)}] failed validation")
+                    self.emit("=== OAT SWEEP ABORTED — workload failure is FATAL ===")
+                    self.emit(f"  reason: {self._oat_fatal_error}")
+                    self.emit(f"  experiment [{idx + 1}/{len(self._experiments)}] failed")
                     self.emit(f"  skipping remaining {remaining} experiment(s)")
                     self.emit("=" * 78)
                     self._record_skipped_remaining(
                         from_idx=idx + 1,
-                        reason=f"fail-fast: experiment {idx} had OpenIVM validation failure",
+                        reason=f"fail-fast: experiment {idx} had a fatal workload failure",
                     )
                     # Refresh master outputs + per-exp chart so the on-disk
                     # state reflects the skips immediately — if the process
@@ -1370,7 +1423,7 @@ class Orchestrator:
                         completed_at=None,
                         total_duration_s=time.time() - oat_t0,
                         per_experiment_dicts=self._oat_per_exp_dicts,
-                        error=f"fatal OpenIVM validation failure: {self._oat_fatal_validation_error}",
+                        error=f"fatal workload failure: {self._oat_fatal_error}",
                     )
                     self._phase3_oat_chart(silent=True)
                     break
@@ -1383,9 +1436,9 @@ class Orchestrator:
                 1 for d in self._oat_per_exp_dicts if d.get("status") == "failed"
             )
             final_status = "failed" if failed_count > 0 else "completed"
-            if self._oat_fatal_validation_error is not None:
+            if self._oat_fatal_error is not None:
                 final_error = (
-                    f"fatal OpenIVM validation failure: {self._oat_fatal_validation_error}"
+                    f"fatal workload failure: {self._oat_fatal_error}"
                 )
             elif failed_count:
                 final_error = (
@@ -1447,6 +1500,7 @@ class Orchestrator:
         # Stash original config + temporarily widen engines for the build phase.
         # We restore the per-experiment config inside the loop via _apply_experiment.
         original_engines = list(self._config.engines)
+        self._config.workload = next((e.workload for e in experiments if e.workload != "extended-tpcds"), "extended-tpcds")
         self._config.engines = union_engines
         try:
             self._teardown_existing()
@@ -1465,6 +1519,7 @@ class Orchestrator:
             # per-experiment env is applied later, in the loop.
             self._phase1_prep(
                 include_datagen=False,
+                extended_tpcds=any(inp.workload == "extended-tpcds" for inp in experiments),
                 compiler_bench=any(
                     inp.feature_flags.compiler_bench for inp in experiments
                 ),
@@ -1573,13 +1628,15 @@ class Orchestrator:
             # after marking this experiment failed. _run_oat reads this state.
             status = "failed"
             error = str(e)
-            self._oat_fatal_validation_error = str(e)
+            self._oat_fatal_error = str(e)
             self.emit(f"  [oat] experiment FATALLY FAILED on OpenIVM validation: {e}")
             self.emit(f"  [oat] FAIL-FAST — aborting OAT sweep after this experiment")
             logger.exception("OAT experiment %d had fatal OpenIVM validation failure", exp_idx)
         except Exception as e:
             status = "failed"
             error = str(e)
+            if inputs.workload == "extended-tpcds":
+                self._oat_fatal_error = str(e)
             self.emit(f"  [oat] experiment FAILED: {e}")
             logger.exception("OAT experiment %d failed", exp_idx)
         finally:
@@ -1695,6 +1752,7 @@ class Orchestrator:
         self._config.refresh_pct = inputs.refresh_pct
         self._config.scale_factor = inputs.scale_factor
         self._config.batch_2_days = inputs.batch_2_days
+        self._config.extended_tpcds = inputs.extended_tpcds
         self._config.batch_1_pct = inputs.batch_1_pct
         self._config.batch_2_pct = inputs.batch_2_pct
         self._config.batch_3_pct = inputs.batch_3_pct

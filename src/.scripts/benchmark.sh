@@ -60,7 +60,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 REPO_ROOT="$(pwd)"
 
-if [[ -v IMDS_RELAY_TEMPORARY_SAS_URL ]]; then
+if [[ ${IMDS_RELAY_TEMPORARY_SAS_URL+x} ]]; then
   relay_sas_url="$IMDS_RELAY_TEMPORARY_SAS_URL"
 fi
 if [[ -f "$REPO_ROOT/.env" ]]; then
@@ -68,7 +68,7 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
   source "$REPO_ROOT/.env"
   set +o allexport
 fi
-if [[ -v relay_sas_url ]]; then
+if [[ ${relay_sas_url+x} ]]; then
   export IMDS_RELAY_TEMPORARY_SAS_URL="$relay_sas_url"
   unset relay_sas_url
 fi
@@ -154,8 +154,21 @@ fi
 export OPENIVM_UBUNTU_MIRROR
 
 COMPOSE_FILE="docker/docker-compose.benchmark-server.yml"
+
+# Check the resolver used by build.network before starting expensive CI builds.
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "Runner DNS:"
+  timeout 20s getent ahostsv4 archive.ubuntu.com
+  echo "Default build bridge DNS (diagnostic):"
+  timeout 20s docker run --rm ubuntu:22.04 timeout 10s getent ahostsv4 archive.ubuntu.com || true
+  echo "Host build network DNS:"
+  timeout 30s docker run --rm --network host ubuntu:22.04 timeout 20s getent ahostsv4 archive.ubuntu.com
+  if [[ "${ENGINES:-}" == *fabric* ]]; then
+    python3 tools/scripts/github/check-fabric-relay.py
+  fi
+fi
 HEALTH_RETRIES=60
-IVM_BENCH_RUN_ID="$(tr -d '-' < /proc/sys/kernel/random/uuid)"
+IVM_BENCH_RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 export IVM_BENCH_RUN_ID
 SERVER_PROJECT="ivm-${IVM_BENCH_RUN_ID}"
 if [[ -n "${GITHUB_ENV:-}" ]]; then
@@ -194,6 +207,14 @@ if [[ "$HEALTH_OK" != "1" ]]; then
   exit 1
 fi
 
+# Start explicitly so configuration errors reach CI before opening the SSE stream.
+if ! curl -sS --fail-with-body --request POST "http://localhost:9000/benchmark"; then
+  echo "=== FAILURE — benchmark-server rejected the experiment ==="
+  docker compose -f "$COMPOSE_FILE" -p "$SERVER_PROJECT" logs benchmark-server
+  exit 1
+fi
+
+echo ""
 echo "=== benchmark-server is healthy — streaming progress ==="
 echo ""
 

@@ -16,6 +16,7 @@ echo "DuckDB-OpenIVM binary copied to ${OUTPUT_DIR}/duckdb"
 # the offline dbt-server container can do the same without autoinstalling it.
 cp "${ICU_EXTENSION}" "${OUTPUT_DIR}/icu.duckdb_extension"
 echo "ICU extension copied to ${OUTPUT_DIR}/icu.duckdb_extension"
+cp /opt/duckdb-openivm/json.duckdb_extension "${OUTPUT_DIR}/json.duckdb_extension"
 
 # Internal: cost model sweep binary, pinned to the same OPENIVM_COMMIT.
 COST_MODEL_BENCH="/opt/duckdb-openivm/cost_model_benchmark"

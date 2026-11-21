@@ -1,0 +1,388 @@
+import csv
+import io
+import json
+import os
+import sys
+import unittest
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from models.config import BenchmarkConfig, ExtendedTPCDSOptions, EngineConfig, ResourceAllocation, workload_cache_key
+from models.experiments import parse_experiments_json
+from services.engine_runner import EngineRunner, OpenIvmValidationError
+from services.oat_runner import generate_results_csv
+
+
+class ExtendedTPCDSConfigTests(unittest.TestCase):
+    def test_validation_timeout_is_separate_and_does_not_change_source_cache_identity(self):
+        a=BenchmarkConfig(workload='extended-tpcds',scale_factor=100,
+                          extended_tpcds=ExtendedTPCDSOptions(statement_timeout_s=3600,validation_timeout_s=14400))
+        b=BenchmarkConfig(workload='extended-tpcds',scale_factor=100,
+                          extended_tpcds=ExtendedTPCDSOptions(statement_timeout_s=3600,validation_timeout_s=28800))
+        self.assertEqual(workload_cache_key(a),workload_cache_key(b))
+        self.assertEqual(a.extended_tpcds.statement_timeout_s,3600)
+        for value in (0,-1,True,None,float('inf'),float('nan')):
+            with self.subTest(value=value),self.assertRaisesRegex(ValueError,'validation timeout'):
+                ExtendedTPCDSOptions(validation_timeout_s=value)
+
+    def test_refresh_broadcast_policy_is_optional_and_round_trips_through_experiments(self):
+        from models.experiments import SparkTunables
+        self.assertNotIn('OPENIVM_REFRESH_ADAPTIVE_BROADCAST',SparkTunables().to_compose_env())
+        text=json.dumps({'baseline':{'spark_tunables':{'refresh_adaptive_broadcast':False}},'experiments':[{}]})
+        experiment,=parse_experiments_json(text)
+        self.assertEqual(experiment.spark_tunables.to_compose_env()['OPENIVM_REFRESH_ADAPTIVE_BROADCAST'],'0')
+        self.assertFalse(experiment.to_dict()['spark_tunables']['refresh_adaptive_broadcast'])
+        with self.assertRaisesRegex(ValueError,'must be a boolean'):
+            SparkTunables(refresh_adaptive_broadcast='false')
+
+    def test_dbsp_spill_overlay_applies_only_to_extended_workload_and_reaches_compose(self):
+        from services.resource_calc import compute_engine_configs
+        import yaml
+        repo=Path(__file__).parents[4]
+        for workload in ('standard','extended-tpcds'):
+            config=BenchmarkConfig(workload=workload,scale_factor=100,engines=['dbspnet'],
+                                   repo_dir=str(repo),host_cores=32,host_memory_gb=251)
+            engine=compute_engine_configs(config)['dbspnet']
+            expected=['docker/docker-compose.extended-tpcds-dbspnet.yml'] if workload=='extended-tpcds' else []
+            self.assertEqual(engine.compose_overrides,expected)
+            with patch('services.engine_runner.DockerManager') as manager:
+                EngineRunner(config,engine,lambda _:None)
+            self.assertEqual(manager.call_args_list[0].kwargs['extra_compose_files'],[str(repo/p) for p in expected])
+        overlay=yaml.safe_load((repo/'docker/docker-compose.extended-tpcds-dbspnet.yml').read_text())
+        settings=overlay['services']['dbspnet-server']
+        self.assertEqual(settings['environment']['DBSPNET_WORKERS'],'12')
+        self.assertEqual(settings['environment']['DBSPNET_SPILL'],'on')
+        self.assertTrue(settings['volumes'][0].endswith(':/spill'))
+        for name in ('DOTNET_GCHeapHardLimit','DBSPNET_MEMORY_LIMIT_MIB','DOTNET_GCName','DBSPNET_SNAPSHOT_DIR'):
+            self.assertNotIn(name,settings['environment'])
+
+    def test_build_failures_skip_only_dependent_engines_and_continue_the_rest(self):
+        from services.orchestrator import Orchestrator
+        from models.result import EngineResult
+        cases=[('_run_duckdb_openivm_build',{'duckdb','duckdb-openivm'}),
+               ('_run_spark_openivm_build',{'spark-openivm','fabric-openivm-jvm-35','databricks-openivm'})]
+        engines=['duckdb','duckdb-openivm','spark','spark-openivm','fabric-openivm-jvm-35','databricks-openivm','feldera','dbspnet']
+        for build,affected in cases:
+            with self.subTest(build=build):
+                config=BenchmarkConfig(workload='extended-tpcds',scale_factor=100,engines=engines,
+                                       host_cores=32,host_memory_gb=251,schedule='serial')
+                runner=Orchestrator(config)
+                with patch.object(runner,'_run_duckdb_openivm_build'),patch.object(runner,'_run_spark_openivm_build'):
+                    getattr(runner,build).side_effect=RuntimeError('compiler failed')
+                    runner._phase1_prep(include_datagen=False,extended_tpcds=True,compiler_bench=False,cost_model_bench=False)
+                self.assertEqual(set(runner._engine_build_errors),affected)
+                def execute(config,engine,*args):
+                    result=EngineResult(engine=engine.name,status='completed')
+                    return Mock(run=Mock(return_value=result))
+                with patch('services.orchestrator.EngineRunner',side_effect=execute) as engine_runner:
+                    with self.assertRaisesRegex(RuntimeError,'Engines failed:'):
+                        runner._phase2_benchmark()
+                self.assertEqual(engine_runner.call_count,len(engines)-len(affected))
+                self.assertEqual(set(runner._result.engines),set(engines))
+                for engine in engines:
+                    result=runner._result.engines[engine]
+                    self.assertEqual(result.status,'failed' if engine in affected else 'completed')
+                    if engine in affected:
+                        self.assertTrue(all(b.status=='skipped' for b in result.batches))
+
+    def test_shared_generation_and_standard_build_failures_still_raise(self):
+        from services.orchestrator import Orchestrator
+        for workload in ('standard','extended-tpcds'):
+            runner=Orchestrator(BenchmarkConfig(workload=workload,engines=['duckdb-openivm']))
+            with patch.object(runner,'_run_datagen') as datagen, \
+                 patch.object(runner,'_build_batch_loader'),patch.object(runner,'_run_duckdb_openivm_build') as build:
+                (datagen if workload=='extended-tpcds' else build).side_effect=RuntimeError('shared setup failed')
+                with self.assertRaisesRegex(RuntimeError,'shared setup failed'):
+                    runner._phase1_prep(include_datagen=True,compiler_bench=False,cost_model_bench=False)
+
+    def test_constructor_and_uncaught_runner_errors_continue_to_next_engine(self):
+        from services.orchestrator import Orchestrator
+        from models.result import EngineResult
+        for constructor_error in (False,True):
+            runner=Orchestrator(BenchmarkConfig(workload='extended-tpcds',engines=['duckdb','spark']))
+            failed=Mock(result=EngineResult(engine='duckdb'))
+            failed.run.side_effect=RuntimeError('engine failed')
+            passed=Mock(run=Mock(return_value=EngineResult(engine='spark',status='completed')))
+            first=RuntimeError('engine failed') if constructor_error else failed
+            with patch('services.orchestrator.EngineRunner',side_effect=[first,passed]):
+                failures=runner._run_engines_serial({'duckdb':Mock(),'spark':Mock()})
+            self.assertEqual(failures,['duckdb'])
+            self.assertEqual(runner._result.engines['duckdb'].error,'engine failed')
+            self.assertEqual(runner._result.engines['spark'].status,'completed')
+            passed.run.assert_called_once()
+
+    def test_source_size_target_is_validated_and_forwarded(self):
+        e = self.experiment(scale_factor=25, extended_tpcds={'source_size_gb':25})
+        self.assertEqual(json.loads(e.to_compose_env()['EXTENDED_TPCDS_OPTIONS'])['source_size_gb'],25)
+        for value in (0, -1, float('nan'), float('inf'), True, '25'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError,'source_size_gb'):
+                ExtendedTPCDSOptions(source_size_gb=value)
+        with self.assertRaisesRegex(ValueError,'complete initial'):
+            ExtendedTPCDSOptions(mode='days',source_size_gb=25)
+        with self.assertRaisesRegex(ValueError,'complete initial'):
+            self.experiment(batch_1_pct='50',extended_tpcds={'source_size_gb':25})
+
+    def test_extended_source_reporting_uses_its_plan_and_retains_byte_measurements(self):
+        from services.orchestrator import Orchestrator
+        e = self.experiment(scale_factor=25,extended_tpcds={'source_size_gb':25})
+        runner = Orchestrator.__new__(Orchestrator)
+        runner._config = BenchmarkConfig(workload=e.workload, scale_factor=e.scale_factor,
+                                         extended_tpcds=e.extended_tpcds, batch_1_pct=e.batch_1_pct,
+                                         engines=e.engines, repo_dir='/repo')
+        runner._oat_run_id = None
+        runner.emit = Mock()
+        counts = {'batches':{str(n):{'tables':{'events':n},'total_rows':n} for n in (1,2,3)},
+                  'preparation':{'source_storage':{'parquet_uncompressed_bytes':25_000_000_000}}}
+        with patch('services.orchestrator.collect_extended_source_row_counts',return_value=counts) as collect, \
+             patch('services.orchestrator.collect_source_row_counts') as delta:
+            runner._record_source_row_counts(0,e)
+        delta.assert_not_called()
+        self.assertTrue(collect.call_args.args[0].endswith('/extended-tpcds/'+workload_cache_key(runner._config)))
+        self.assertEqual(runner._current_source_row_counts['batches']['1']['total_rows'],1)
+        self.assertEqual(runner._current_source_row_counts['preparation']['source_storage']['parquet_uncompressed_bytes'],25_000_000_000)
+
+    def test_preparation_streams_progress_and_stops_containers_on_timeout(self):
+        from contextlib import nullcontext
+        from services.orchestrator import Orchestrator
+        from subprocess import TimeoutExpired
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                orchestrator = Orchestrator.__new__(Orchestrator)
+                orchestrator._config = BenchmarkConfig(workload='extended-tpcds', scale_factor=25,
+                                                        engines=['duckdb'])
+                orchestrator.emit = Mock()
+                orchestrator._heartbeat = Mock(return_value=nullcontext())
+                manager = Mock()
+                manager.get_exit_code.return_value = '0'
+                def prepare(**kwargs):
+                    self.assertGreaterEqual(kwargs['timeout'], 86400)
+                    kwargs['stream_callback']('Preparation started: base TPC-DS generation')
+                    if fails:
+                        raise TimeoutExpired('docker compose', kwargs['timeout'])
+                manager.up.side_effect = prepare
+                with patch('services.orchestrator.DockerManager', return_value=manager):
+                    if fails:
+                        with self.assertRaises(TimeoutExpired):
+                            orchestrator._run_datagen()
+                    else:
+                        orchestrator._run_datagen()
+                orchestrator.emit.assert_called_once_with('Preparation started: base TPC-DS generation')
+                manager.down.assert_called_once_with()
+
+    def experiment(self, **overrides):
+        return parse_experiments_json(json.dumps({'experiments':[{'workload':'extended-tpcds','scale_factor':.01,**overrides}]}))[0]
+
+    def test_fractional_scale_and_default_engines(self):
+        e = self.experiment()
+        self.assertEqual(e.scale_factor,.01)
+        self.assertEqual(e.engines,['duckdb','duckdb-openivm'])
+        self.assertEqual(e.to_dict()['extended_tpcds']['profile'],'native')
+        self.assertEqual(json.loads(e.to_compose_env()['EXTENDED_TPCDS_OPTIONS'])['mode'],'mixed')
+        original = parse_experiments_json('{"experiments":[{"scale_factor":3}]}')[0]
+        self.assertEqual(original.workload,'standard')
+        self.assertIs(type(original.scale_factor),int)
+
+    def test_all_registered_engines_accept_sequential_extended_workload(self):
+        from models.config import ENGINE_PORTS
+        engines=list(ENGINE_PORTS)
+        e=self.experiment(engines=engines,schedule='serial',scale_factor=100)
+        self.assertEqual(e.engines,engines)
+        self.assertEqual(e.scale_factor,100)
+        self.assertIs(type(e.scale_factor),int)
+        with self.assertRaisesRegex(ValueError,'TPC-DI only'):
+            self.experiment(repeated_refresh=True)
+
+    def test_oat_bootstrap_reads_fractional_scale_and_batch_knobs_before_validation(self):
+        from services.config_loader import load_config
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'experiment.json'
+            path.write_text(json.dumps({'experiments':[{'workload':'extended-tpcds','scale_factor':.01,'engines':['duckdb'],'batch_2_pct':'0','batch_3_pct':'0','batch_2_update_pct':'1','batch_3_update_pct':'1','extended_tpcds':{'mode':'updates'}}]}))
+            with patch.dict(os.environ,{'SCALE_FACTOR':'.01','BENCHMARK_EXPERIMENTS_FILE':str(path),'ENGINES':'spark','WORKLOAD':'standard','TPCDI_WORKLOAD':'standard'}):
+                config=load_config()
+            self.assertEqual(config.workload,'extended-tpcds')
+            self.assertEqual(config.scale_factor,.01)
+            self.assertEqual(config.engines,['duckdb'])
+            self.assertEqual(config.batch_2_pct,'0')
+            self.assertEqual(config.batch_2_update_pct,'1')
+        with patch.dict(os.environ,{'SCALE_FACTOR':'.01','BENCHMARK_EXPERIMENTS_FILE':'','WORKLOAD':'standard','TPCDI_WORKLOAD':'standard'}):
+            with self.assertRaisesRegex(ValueError,'integer'):
+                load_config()
+
+    def test_days_batch_count_and_zero_insert_percentage(self):
+        e = self.experiment(extended_tpcds={'mode':'days','days':6})
+        self.assertEqual(e.batch_count,7)
+        self.assertEqual(e.batch_2_pct,'0')
+        self.assertEqual(e.batch_3_pct,'0')
+
+    def test_pure_update_defaults_and_invalid_mixed_percentages(self):
+        e=self.experiment(extended_tpcds={'mode':'updates'})
+        self.assertEqual(e.batch_2_pct,'0')
+        self.assertEqual(e.batch_2_update_pct,'1')
+        with self.assertRaisesRegex(ValueError,'percentages'):
+            self.experiment(batch_2_update_pct='60',batch_2_delete_pct='60')
+
+    def test_repeated_batches_reuse_batch_three_settings(self):
+        c = BenchmarkConfig(workload='extended-tpcds',scale_factor=.01,engines=['duckdb'],
+                            extended_tpcds=ExtendedTPCDSOptions(batches=5),batch_3_pct='7',batch_3_update_pct='3')
+        self.assertEqual(c.extended_tpcds.steps(c)[-1],{'insert_pct':'7','update_pct':'3','delete_pct':'0'})
+        self.assertEqual(len(c.extended_tpcds.steps(c)),4)
+
+    def test_cache_identity_changes_for_every_workload_binding(self):
+        keys=[]
+        for changes in [{},{'profile':'calibrated'},{'mode':'days'},{'seed':31},{'query_cohort':'hot'}, {'mutation_cohort':'cold'}]:
+            c=BenchmarkConfig(workload='extended-tpcds',scale_factor=.01,engines=['duckdb'],extended_tpcds=ExtendedTPCDSOptions(**changes),batch_2_pct='0',batch_3_pct='0')
+            keys.append(workload_cache_key(c))
+        self.assertEqual(len(set(keys)),len(keys))
+
+    def test_rejects_unsupported_engine_and_invalid_scale(self):
+        with self.assertRaisesRegex(ValueError,'supports'):
+            self.experiment(engines=['unknown-engine'])
+        for sf in [0,-1,float('nan'),float('inf')]:
+            with self.assertRaises(ValueError):self.experiment(scale_factor=sf)
+        with self.assertRaisesRegex(ValueError,'integer'):
+            BenchmarkConfig(scale_factor=.01)
+
+    def test_csv_includes_all_daily_batches_and_classification(self):
+        e=self.experiment(extended_tpcds={'mode':'days','days':4},engines=['duckdb-openivm'])
+        state={'experiments':[{'inputs':e.to_dict(),'engines':{'duckdb-openivm':{'batches':[{'batch_num':5,'status':'completed','extra':{'plan_id':'plan','classification_counts':{'incremental':18,'full':78}}}]}}}]}
+        rows=list(csv.DictReader(io.StringIO(generate_results_csv(state))))
+        self.assertEqual(len(rows),5)
+        self.assertEqual(rows[-1]['batch_num'],'5')
+        self.assertEqual(rows[-1]['workload'],'extended-tpcds')
+        self.assertEqual(rows[-1]['plan_id'],'plan')
+        self.assertEqual(rows[-1]['incremental_models'],'18')
+        self.assertEqual(rows[-1]['full_refresh_models'],'78')
+
+    def test_runner_sizes_batches_from_workload(self):
+        c=BenchmarkConfig(workload='extended-tpcds',scale_factor=.01,engines=['duckdb'],extended_tpcds=ExtendedTPCDSOptions(mode='days',days=4),batch_2_pct='0',batch_3_pct='0')
+        resources=ResourceAllocation(2,4)
+        e=EngineConfig('duckdb','docker/docker-compose.benchmark.duckdb.yml',5002,None,resources,resources)
+        with patch('services.engine_runner.DockerManager'):
+            runner=EngineRunner(c,e,lambda _:None)
+        self.assertEqual(len(runner.result.batches),5)
+
+    def test_engine_failure_response_retains_its_reason(self):
+        runner=object.__new__(EngineRunner)
+        runner._engine=Mock(name='engine');runner._engine.name='duckdb-openivm'
+        from models.result import EngineResult
+        runner._result=EngineResult('duckdb-openivm')
+        runner._dbt_url='http://local'
+        for name in ['_persist_batch_result','_start_cpu_measurement','_finish_cpu_measurement','_ensure_cpu_measurement_status']:
+            setattr(runner,name,Mock())
+        response=Mock(status_code=500);response.json.return_value={'status':'failed','error':'Binder Error: wrong target column'}
+        with patch('services.engine_runner.requests.post',return_value=response):
+            with self.assertRaisesRegex(RuntimeError,'wrong target column'):
+                runner._run_extended_tpcds_batch(1)
+        self.assertEqual(runner._result.batches[0].status,'failed')
+        self.assertIn('wrong target column',runner._result.batches[0].error)
+
+    def test_correctness_failure_is_fatal_and_keeps_classification(self):
+        runner=object.__new__(EngineRunner)
+        runner._engine=Mock();runner._engine.name='duckdb-openivm'
+        from models.result import EngineResult
+        runner._result=EngineResult('duckdb-openivm')
+        runner._dbt_url='http://local'
+        directory=self.enterContext(tempfile.TemporaryDirectory())
+        runner._config=Mock(repo_dir=directory,scale_factor=100)
+        runner._emit=Mock()
+        for name in ['_persist_batch_result','_start_cpu_measurement','_finish_cpu_measurement','_ensure_cpu_measurement_status']:
+            setattr(runner,name,Mock())
+        execute=Mock(status_code=200)
+        execute.json.return_value={'duration_s':1.0,'plan_id':'p','classification_counts':{'incremental':96},
+                                   'model_sql_duration_s':{'m':1.0},
+                                   'profiling':{'status':'ok','csv':{'profile':'refresh_id\ncurrent\n'}}}
+        validate=Mock(status_code=422)
+        validate.json.return_value={'status':'failed','models_checked':96,'differences':{'m':3}}
+        with patch.dict(os.environ,{'OPENIVM_VALIDATE':'1'}),patch('services.engine_runner.requests.post',side_effect=[execute,validate]):
+            with self.assertRaises(OpenIvmValidationError):runner._run_extended_tpcds_batch(1)
+        batch=runner._result.batches[0]
+        self.assertEqual(batch.status,'failed')
+        self.assertEqual(batch.extra['classification_counts'],{'incremental':96})
+        self.assertEqual(batch.extra['engine_result']['validation']['differences'],{'m':3})
+        root=Path(directory)/'mount/results/100/dbt-server'
+        self.assertEqual((root/'duckdb-openivm-profile-batch1.csv').read_text(),'refresh_id\ncurrent\n')
+        self.assertEqual(json.loads((root/'run-duckdb-openivm-batch1.json').read_text())['validation']['status'],'failed')
+
+    def test_profile_failure_is_archived_and_fails_before_expensive_validation(self):
+        from models.result import EngineResult
+        directory=self.enterContext(tempfile.TemporaryDirectory())
+        runner=object.__new__(EngineRunner)
+        runner._engine=Mock();runner._engine.name='feldera'
+        runner._result=EngineResult('feldera')
+        runner._collect_feldera_debug=Mock(return_value={'status':'failed','error':'bundle unavailable'})
+        runner._config=Mock(repo_dir=directory,scale_factor=100)
+        runner._dbt_url='http://local'
+        for name in ('_persist_batch_result','_start_cpu_measurement','_finish_cpu_measurement',
+                     '_ensure_cpu_measurement_status','_emit'):
+            setattr(runner,name,Mock())
+        response=Mock(status_code=200)
+        response.json.return_value={'duration_s':1.0,'plan_id':'p','classification_counts':{'incremental':1},
+                                    'model_sql_duration_s':{'m':0.5},
+                                    'profiling':{'status':'failed','enabled':True,'error':'empty profile'}}
+        with patch.dict(os.environ,{'OPENIVM_PROFILE_REFRESH':'1','OPENIVM_VALIDATE':'1'}), \
+             patch('services.engine_runner.requests.post',return_value=response) as post:
+            with self.assertRaisesRegex(RuntimeError,'empty profile'):
+                runner._run_extended_tpcds_batch(1)
+        post.assert_called_once()
+        runner._collect_feldera_debug.assert_called_once_with(batch_num=1)
+        path=Path(directory)/'mount/results/100/dbt-server/feldera-profile-batch1.json'
+        self.assertEqual(json.loads(path.read_text())['error'],'empty profile')
+        self.assertEqual(json.loads(path.read_text())['status'],'failed')
+        self.assertEqual(runner._result.batches[0].status,'failed')
+
+
+    def test_serial_extended_workload_keeps_failures_and_checks_remaining_engines(self):
+        from services.orchestrator import Orchestrator
+        from models.result import BenchmarkResult, EngineResult
+        for validation_error in (False, True):
+            with self.subTest(validation_error=validation_error):
+                orchestrator = Orchestrator.__new__(Orchestrator)
+                orchestrator._config = BenchmarkConfig(workload='extended-tpcds', scale_factor=.01,
+                                                        engines=['duckdb', 'duckdb-openivm'], schedule='serial')
+                orchestrator._result = BenchmarkResult()
+                orchestrator._benchmark_id = None
+                orchestrator.emit = Mock()
+                failed = EngineResult(engine='duckdb', status='failed', error='source load failed')
+                failed.batches[0].extra['validation'] = {'differences': {'model': 3}}
+                passed = EngineResult(engine='duckdb-openivm', status='completed')
+                first = Mock(result=failed)
+                if validation_error:
+                    first.run.side_effect = OpenIvmValidationError('validation mismatch')
+                else:
+                    first.run.return_value = failed
+                second = Mock()
+                second.run.return_value = passed
+                configs = {'duckdb': Mock(), 'duckdb-openivm': Mock()}
+                with patch('services.orchestrator.EngineRunner', side_effect=[first, second]) as runner, \
+                     patch('services.orchestrator.compute_engine_configs', return_value=configs):
+                    with self.assertRaisesRegex(RuntimeError, 'Engines failed: duckdb'):
+                        orchestrator._phase2_benchmark()
+                    self.assertEqual(runner.call_count, 2)
+                    second.run.assert_called_once_with()
+                self.assertIs(orchestrator._result.engines['duckdb'], failed)
+                self.assertEqual(failed.status, 'failed')
+                self.assertEqual(failed.batches[0].extra['validation']['differences'], {'model': 3})
+                if validation_error:
+                    self.assertEqual(failed.error, 'validation mismatch')
+                self.assertIs(orchestrator._result.engines['duckdb-openivm'], passed)
+
+    def test_standard_workload_still_stops_on_validation_failure(self):
+        from services.orchestrator import Orchestrator
+        from models.result import BenchmarkResult, EngineResult
+        orchestrator = Orchestrator.__new__(Orchestrator)
+        orchestrator._config = BenchmarkConfig(engines=['duckdb-openivm', 'duckdb'], schedule='serial')
+        orchestrator._result = BenchmarkResult()
+        orchestrator._benchmark_id = None
+        failed = EngineResult(engine='duckdb-openivm', status='failed')
+        first = Mock(result=failed)
+        first.run.side_effect = OpenIvmValidationError('validation mismatch')
+        with patch('services.orchestrator.EngineRunner', return_value=first) as runner:
+            with self.assertRaisesRegex(OpenIvmValidationError, 'validation mismatch'):
+                orchestrator._run_engines_serial({'duckdb-openivm': Mock(), 'duckdb': Mock()})
+            self.assertEqual(runner.call_count, 1)
+        self.assertIs(orchestrator._result.engines['duckdb-openivm'], failed)
+
+
+if __name__=='__main__':unittest.main()

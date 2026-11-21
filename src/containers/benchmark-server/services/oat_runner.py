@@ -56,6 +56,15 @@ RESULTS_CSV_FIELDS = (
     "skip_reason",
     "scale_factor",
     "batch_2_days",
+    "workload",
+    "workload_profile",
+    "workload_mode",
+    "query_cohort",
+    "mutation_cohort",
+    "plan_id",
+    "incremental_models",
+    "full_refresh_models",
+    "unsupported_mv_table_fallback_models",
     "batch_1_pct",
     "batch_2_pct",
     "batch_3_pct",
@@ -193,6 +202,7 @@ def disk_cleanup_after_experiment(
     # correctness (see src/.scripts/compare_outputs.py). Off by default.
     preserve_results = os.environ.get("PRESERVE_RESULTS", "0") == "1"
     for engine in engines_list:
+        targets.append(os.path.join(mount, "spill", sf, engine))
         if not preserve_results:
             targets.append(os.path.join(mount, "results", sf, engine))
         targets.append(os.path.join(mount, "logs", sf, engine))
@@ -260,6 +270,22 @@ def _archive_failure_forensics(
             emit(f"  [oat-archive] saved {os.path.relpath(dst, repo_dir)}")
         except OSError as e:
             emit(f"  [oat-archive] WARN failed to archive {src} → {dst}: {e}")
+
+    # Keep the SQL timeline/checkpoints from partial workload builds, but never
+    # recursively copy the large Delta source/output directories beside them.
+    for engine in engines:
+        source = os.path.join(mount, "results", sf, engine, "extended-tpcds")
+        if not os.path.isdir(source):
+            continue
+        destination = os.path.join(archive_dir, f"{engine}-extended-tpcds")
+        try:
+            for name in os.listdir(source):
+                path = os.path.join(source, name)
+                if name.endswith(".json") and os.path.isfile(path):
+                    os.makedirs(destination, exist_ok=True)
+                    shutil.copy2(path, os.path.join(destination, name))
+        except OSError as error:
+            emit(f"  [oat-archive] WARN failed to archive {source}: {error}")
 
     # dbt-server JSON (small but worth bundling for self-contained forensics).
     dbt_src = os.path.join(mount, "results", sf, "dbt-server")
@@ -685,6 +711,10 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
             ) + 1)
             refresh_plan = source_row_counts.get("refresh_plan") or {}
             refresh_rounds = {r["batch_num"]: r for r in refresh_plan.get("rounds", [])}
+            if inputs.get("workload") == "extended-tpcds":
+                options = inputs.get("extended_tpcds") or {}
+                count = int(options.get("days", 3)) + 1 if options.get("mode") == "days" else int(options.get("batches", 3))
+                batch_numbers = range(1, count + 1)
             for batch_num in batch_numbers:
                 batch = _batch_dict(experiment, engine, batch_num)
                 batch_extra = batch.get("extra") or {}
@@ -729,6 +759,14 @@ def generate_results_csv(state: Dict[str, Any]) -> str:
                             "scale_factor", experiment.get("scale_factor", "")
                         ),
                         "batch_2_days": inputs.get("batch_2_days", ""),
+                        "workload_profile": (inputs.get("extended_tpcds") or {}).get("profile", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "workload_mode": (inputs.get("extended_tpcds") or {}).get("mode", "") if inputs.get("workload") == "extended-tpcds" else "",
+                        "query_cohort": (inputs.get("extended_tpcds") or {}).get("query_cohort", ""),
+                        "mutation_cohort": (inputs.get("extended_tpcds") or {}).get("mutation_cohort", ""),
+                        "plan_id": batch_extra.get("plan_id", ""),
+                        "incremental_models": (batch_extra.get("classification_counts") or {}).get("incremental", ""),
+                        "full_refresh_models": (batch_extra.get("classification_counts") or {}).get("full", ""),
+                        "unsupported_mv_table_fallback_models": (batch_extra.get("classification_counts") or {}).get("unsupported_mv_table_fallback", ""),
                         "batch_1_pct": inputs.get("batch_1_pct", ""),
                         "batch_2_pct": inputs.get("batch_2_pct", ""),
                         "batch_3_pct": inputs.get("batch_3_pct", ""),

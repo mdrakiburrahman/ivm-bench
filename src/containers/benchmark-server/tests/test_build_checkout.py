@@ -97,6 +97,7 @@ fi
             git.write_text('#!/bin/bash\nprintf "%s\\n" "$REPO_ROOT"\n')
             git.chmod(0o755)
             env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}",
+                   "GITHUB_ACTIONS": "false",
                    "CALLS": str(tmp / "calls"), "STREAMING": str(tmp / "streaming"),
                    "RELAY_VALUE": str(tmp / "relay_value"),
                    "IMDS_RELAY_TEMPORARY_SAS_URL": "injected-sender-url",

@@ -129,8 +129,9 @@ on:
         type: string
 
 concurrency:
-  group: ci-${{ github.ref }}-${{ inputs.experiments_file || 'inline' }}-${{ inputs.experiments_engines || 'default' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # The two independent Databricks benchmarks share a remote SQL warehouse.
+  group: ci-${{ startsWith(inputs.experiments_file, 'src/containers/benchmark-server/experiments/fabric-ds-sf1-databricks-') && 'fabric-ds-databricks-shared-warehouse' || format('{0}-{1}-{2}', github.ref, inputs.experiments_file || 'inline', inputs.experiments_engines || 'default') }}
+  cancel-in-progress: ${{ !startsWith(inputs.experiments_file, 'src/containers/benchmark-server/experiments/fabric-ds-sf1-databricks-') && github.ref != 'refs/heads/main' }}
 
 permissions:
   pull-requests: write
@@ -187,7 +188,8 @@ jobs:
             sudo apt-get install -y python3-venv
             python3 -m venv --system-site-packages .runtime/ci-tests
           fi
-          .runtime/ci-tests/bin/python -m pip install -r src/containers/benchmark-server/requirements.txt PyYAML databricks-sdk "deltalake>=0.18" pyarrow psycopg2-binary "boto3>=1.35"
+          .runtime/ci-tests/bin/python -m pip install -r src/containers/benchmark-server/requirements.txt -r src/containers/dbt-server/requirements-test.txt psycopg2-binary "boto3>=1.35"
+          .runtime/ci-tests/bin/python -c "import duckdb; duckdb.connect().execute(\"FORCE INSTALL delta FROM 'https://extensions.duckdb.org'\")"
           export PYTHONPATH="$PWD/src/containers${PYTHONPATH:+:$PYTHONPATH}"
           .runtime/ci-tests/bin/python -m sql_catalog generate --all
           .runtime/ci-tests/bin/python -m sql_catalog check --all
@@ -195,6 +197,7 @@ jobs:
           .runtime/ci-tests/bin/python tools/scripts/check-sql-catalog.py --all
           .runtime/ci-tests/bin/python -m unittest discover -s src/containers/dbt-server/tests -v
           .runtime/ci-tests/bin/python -m unittest discover -s src/containers/benchmark-server/tests -v
+          .runtime/ci-tests/bin/python -m unittest discover -s src/workloads/extended-tpcds -p 'test_*.py' -v
 
       - name: "🧬 Resolve experiments file"
         env:

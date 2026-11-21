@@ -1,0 +1,22 @@
+[
+  {
+    "path": "src/workloads/extended-tpcds/**",
+    "reason": "Fabric-DS owns a standalone 96-model SQL catalog, generator and replay runner under this directory. It does not generate TPC-DI dbt project SQL; moving its canonical queries into the TPC-DI project catalog would break standalone execution."
+  },
+  {
+    "path": "src/containers/dbt-server/services/extended_tpcds.py",
+    "reason": "Fabric-DS dynamically builds execution statements from its standalone workload catalog and typed mutation manifest, rather than the TPC-DI model catalog."
+  },
+  {
+    "path": "src/containers/dbt-server/services/extended_tpcds_sql.py",
+    "reason": "Fabric-DS translates its standalone query catalog and constructs engine-specific replay statements from typed mutation manifests. These are generated workload statements, not static TPC-DI templates."
+  },
+  {
+    "path": "src/containers/dbt-server/services/extended_tpcds_postgres.py",
+    "reason": "Fabric-DS translates its standalone 96-model catalog for PostgreSQL-wire engines and builds native source/replay and independent bag-comparison statements from the typed manifest. It does not generate TPC-DI dbt project SQL."
+  },
+  {
+    "path": "src/containers/dbt-server/services/extended_tpcds_streaming.py",
+    "reason": "Fabric-DS constructs a streaming program from its standalone SQL catalog and typed manifest; output CDC reconstruction and independent reference validation operate on dynamically discovered schemas."
+  }
+]

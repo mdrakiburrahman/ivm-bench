@@ -103,6 +103,8 @@ def compute_engine_configs(config: BenchmarkConfig) -> Dict[str, EngineConfig]:
             main_resources=ResourceAllocation(cpus=main_cpus, memory_gb=main_mem),
             dbt_server_resources=ResourceAllocation(cpus=dbt_cpus, memory_gb=dbt_mem),
             staging_dir=staging,
+            compose_overrides=(['docker/docker-compose.extended-tpcds-dbspnet.yml']
+                               if config.workload == 'extended-tpcds' and engine == 'dbspnet' else []),
         )
         logger.info(
             "Engine %s: main=%d cores/%dg, dbt-server=%d cores/%dg, port=%d, staging=%s",

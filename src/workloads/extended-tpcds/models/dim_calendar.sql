@@ -1,0 +1,30 @@
+SELECT
+  dim_date_id,
+  date,
+  year,
+  month,
+  day,
+  day_suffix,
+  week_day,
+  week_day_name,
+  dow_in_month AS dow_in_month,
+  day_of_year,
+  week_of_month,
+  week_of_year,
+  iso_week_of_year AS iso_week_of_year,
+  month_name,
+  quarter,
+  quarter_name,
+  mmyyyy AS mm_yyyy,
+  month_year,
+  first_day_of_month,
+  last_day_of_month,
+  first_day_of_quarter,
+  last_day_of_quarter,
+  first_day_of_year,
+  last_day_of_year,
+  first_day_of_next_month,
+  first_day_of_next_year
+FROM stg_calendar
+WHERE
+  NOT date IS NULL

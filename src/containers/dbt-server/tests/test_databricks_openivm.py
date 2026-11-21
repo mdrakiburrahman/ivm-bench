@@ -118,6 +118,16 @@ class DatabricksOpenivmTest(unittest.TestCase):
         self.assertNotIn("`", result)
         self.assertIn("'cat.exp.events'", result)
 
+    def test_compiler_uses_shared_string_position_spelling_and_argument_order(self):
+        import duckdb
+        query = "SELECT LOCATE('/order-lines/', entity_path) FROM (VALUES ('x/order-lines/1'), ('none'), (NULL)) t(entity_path)"
+        compiled = backend.remap_sql(query, {}, for_compiler=True)
+        self.assertIn("INSTR(entity_path, '/order-lines/')", compiled)
+        self.assertNotIn('LOCATE(', compiled)
+        with duckdb.connect() as c:
+            self.assertEqual(c.execute(compiled).fetchall(), [(2,), (0,), (None,)])
+        self.assertIn('LOCATE(', backend.remap_sql(query, {}))
+
     def test_compiler_preserves_window_null_treatment_in_bridge_syntax(self):
         import duckdb
 
@@ -267,6 +277,26 @@ class DatabricksOpenivmTest(unittest.TestCase):
             self.assertEqual(history.list.call_args.kwargs["filter_by"].statement_ids, ["q1"])
             query.as_dict.return_value = {"query_id": "q1"}
             self.assertEqual(backend.photon_metrics(2)["status"], "partial")
+
+    def test_statement_metrics_separate_source_and_observer_work_from_maintenance(self):
+        import services
+        sources=types.ModuleType('services.databricks_enzyme_sources')
+        sources._workspace_client=Mock()
+        statements=[{'query_id':q,'phase':phase} for q,phase in
+                    [('source','source'),('refresh','maintenance'),('count','observer'),('lookup','metadata')]]
+        queries=[]
+        for q in ('source','refresh','count','lookup'):
+            query=Mock()
+            query.as_dict.return_value={'query_id':q,'metrics':{'photon_total_time_ms':10,'task_total_time_ms':20}}
+            queries.append(query)
+        with patch.object(services,'databricks_enzyme_sources',sources,create=True):
+            sources._workspace_client.return_value.query_history.list.return_value.res=queries
+            result=backend.statement_metrics(statements,2)
+        self.assertEqual(result['statement_count'],1)
+        self.assertEqual(result['metadata_statement_count'],1)
+        self.assertEqual(result['other_statement_count'],2)
+        self.assertEqual(result['photon_total_time_ms'],10)
+        self.assertEqual(result['task_total_time_ms'],20)
 
     def test_metadata_is_attributed_without_requiring_photon_execution_for_metadata_queries(self):
         fake_sources = types.ModuleType("services.databricks_enzyme_sources")

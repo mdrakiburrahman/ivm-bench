@@ -33,7 +33,7 @@ class EngineFailureIsolationTest(unittest.TestCase):
         runner._engine_mgr.published_port.assert_called_once_with("dbt-server", 5000)
         self.assertEqual(runner._dbt_url, "http://host.docker.internal:32768")
 
-    def test_materialize_fence_timeout_fails_batch_and_tears_down(self):
+    def test_materialize_runner_checks_fences_resources_and_fabric_ds_dispatch(self):
         import requests
 
         runner = EngineRunner.__new__(EngineRunner)
@@ -79,6 +79,27 @@ class EngineFailureIsolationTest(unittest.TestCase):
         self.assertIn("2 workers, expected 1", result.error)
         runner._run_materialize_emulator.assert_not_called()
 
+        runner._config.workload = 'extended-tpcds'
+        runner._result = EngineResult(engine='materialize-emulator')
+        runner._result.extra['materialize_emulator'] = {'cluster_workers':1}
+        response.json.return_value = {'size':'50cc','processes':1,'workers':1}
+        runner._batch_loader_init.reset_mock()
+        runner._run_extended_tpcds_batch = Mock(side_effect=lambda n: setattr(runner._result.batches[n-1],'status','completed'))
+        with patch('services.engine_runner.requests.post',return_value=response):
+            result = runner.run()
+        self.assertEqual(result.status,'completed',result.error)
+        self.assertEqual([c.args[0] for c in runner._run_extended_tpcds_batch.call_args_list],[1,2,3])
+        runner._run_materialize_emulator.assert_not_called()
+        runner._batch_loader_init.assert_not_called()
+
+        runner._config.workload = 'standard'
+        runner._config.repeated_refresh = True
+        runner._engine_mgr.build.reset_mock()
+        result = runner.run()
+        self.assertEqual(result.status,'failed')
+        self.assertIn('repeated TPC-DI refreshes are unsupported',result.error)
+        runner._engine_mgr.build.assert_not_called()
+
     def test_broken_storage_barrier_does_not_fail_surviving_engine(self):
         barrier = Barrier(2)
         barrier.abort()
@@ -118,9 +139,10 @@ class EngineFailureIsolationTest(unittest.TestCase):
         engine_runner.side_effect = [failed_runner, successful_runner]
 
         orchestrator = Orchestrator.__new__(Orchestrator)
-        orchestrator._config = SimpleNamespace(engines=["failed", "successful"])
+        orchestrator._config = SimpleNamespace(workload="standard", engines=["failed", "successful"])
         orchestrator._result = BenchmarkResult()
         orchestrator._benchmark_id = "test"
+        orchestrator.emit = Mock()
 
         failed = orchestrator._run_engines_serial(
             {"failed": Mock(), "successful": Mock()}
@@ -161,7 +183,7 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
             with self.subTest(batch_num=batch_num):
                 runner = EngineRunner.__new__(EngineRunner)
                 runner._engine = SimpleNamespace(name="databricks-enzyme")
-                runner._config = SimpleNamespace(scale_factor=10)
+                runner._config = SimpleNamespace(workload="standard", scale_factor=10)
                 runner._result = EngineResult(engine="databricks-enzyme")
                 batch = runner._result.batches[batch_num - 1]
                 for name in ("_emit", "_persist_batch_result", "_batch_loader_append", "_capture_delta_stats",
@@ -209,6 +231,7 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
 
     def classifier(self, batch_num=2):
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._dbt_url = "http://dbt"
         runner._emit = Mock()
         runner._export_databricks_enzyme_pipeline_events = Mock(return_value=self.events)
@@ -243,7 +266,8 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.requests.post")
     def test_driver_disconnect_retries_refresh_without_reappending_sources(self, post, get, sleep):
         runner = EngineRunner.__new__(EngineRunner)
-        runner._config = SimpleNamespace(scale_factor=10)
+        runner._config = SimpleNamespace(workload="standard")
+        runner._config = SimpleNamespace(workload="standard", scale_factor=10)
         runner._dbt_url = "http://dbt"
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -333,7 +357,8 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.requests.post")
     def test_scale_up_retries_are_bounded_and_preserve_final_error(self, post, sleep):
         runner = EngineRunner.__new__(EngineRunner)
-        runner._config = SimpleNamespace(scale_factor=10)
+        runner._config = SimpleNamespace(workload="standard")
+        runner._config = SimpleNamespace(workload="standard", scale_factor=10)
         runner._dbt_url = "http://dbt"
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -359,7 +384,8 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.requests.post")
     def test_recovery_keeps_refresh_payload_and_archives_attempt(self, post, sleep):
         runner = EngineRunner.__new__(EngineRunner)
-        runner._config = SimpleNamespace(scale_factor=10)
+        runner._config = SimpleNamespace(workload="standard")
+        runner._config = SimpleNamespace(workload="standard", scale_factor=10)
         runner._dbt_url = "http://dbt"
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -387,6 +413,7 @@ class DatabricksFailureDiagnosticsTest(unittest.TestCase):
     @patch("services.engine_runner.time.time", side_effect=[100, 103, 103])
     def test_failed_refresh_captures_events_and_retains_error_and_timing(self, _time):
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._engine = SimpleNamespace(name="databricks-enzyme")
         runner._result = EngineResult(engine="databricks-enzyme")
         batch = runner._result.batches[1]
@@ -427,6 +454,7 @@ class OpenIvmValidationHookTest(unittest.TestCase):
         import requests
 
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._engine = SimpleNamespace(name="databricks-openivm")
         runner._result = EngineResult(engine="databricks-openivm")
         runner._dbt_url = "http://dbt.invalid"
@@ -451,8 +479,9 @@ class OpenIvmValidationHookTest(unittest.TestCase):
     def runner(self, repo_dir, scale_factor):
         from services.engine_runner import EngineRunner
         runner = EngineRunner.__new__(EngineRunner)
+        runner._config = SimpleNamespace(workload="standard")
         runner._engine = SimpleNamespace(name="fabric-openivm-jvm-35")
-        runner._config = SimpleNamespace(repo_dir=repo_dir, scale_factor=scale_factor)
+        runner._config = SimpleNamespace(workload="standard", repo_dir=repo_dir, scale_factor=scale_factor)
         runner._dbt_url = "http://dbt.invalid"
         runner._emit = Mock()
         return runner

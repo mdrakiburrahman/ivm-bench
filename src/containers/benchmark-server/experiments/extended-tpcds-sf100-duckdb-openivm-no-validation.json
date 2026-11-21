@@ -1,0 +1,43 @@
+{
+  "baseline": {
+    "workload": "extended-tpcds",
+    "scale_factor": 100,
+    "engines": [
+      "duckdb-openivm"
+    ],
+    "schedule": "serial",
+    "parallel": false,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "extended_tpcds": {
+      "source_size_gb": 100,
+      "profile": "calibrated",
+      "mode": "insertion",
+      "report_date": "2002-12-31",
+      "batches": 3,
+      "statement_timeout_s": 3600,
+      "fallback_policy": "strict",
+      "validation_timeout_s": 14400
+    },
+    "feature_flags": {
+      "openivm_validate": false,
+      "storage_metrics": false,
+      "preserve_raw": true,
+      "spark_metrics_capture": false,
+      "openivm_profile_refresh": true
+    },
+    "spark_tunables": {
+      "shuffle_partitions": 256
+    }
+  },
+  "experiments": [
+    {
+      "label": "Fabric-DS SF100, calibrated 100 GB source target, insertion 100/1/0.01, DuckDB OpenIVM, validation OFF (performance only)"
+    }
+  ]
+}

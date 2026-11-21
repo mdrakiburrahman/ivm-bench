@@ -23,12 +23,12 @@ FROM toolchain AS builder
 
 WORKDIR /src
 ARG OPENIVM_REPO=https://github.com/ila/openivm.git
-ARG OPENIVM_COMMIT=19762672440969f318aca61d7971166759349838
+ARG OPENIVM_COMMIT=f9a49cf1f648ecf8f696c683ee1c61248ae459ff
 RUN git clone "${OPENIVM_REPO}" . && \
     git checkout "${OPENIVM_COMMIT}" && \
     git submodule update --init --recursive && \
-    (cd duckdb && git fetch --depth 1 origin 08e34c447bae34eaee3723cac61f2878b6bdf787 && git checkout FETCH_HEAD) && \
-    (cd extension-ci-tools && git fetch --depth 1 origin 72e76e99cd7fee45a99739cd118ec2db64e034ec && git checkout FETCH_HEAD)
+    (cd duckdb && git fetch --depth 1 origin d54cbbe3df17e8e5ce68312f483b4155836112aa && git checkout FETCH_HEAD) && \
+    (cd extension-ci-tools && git fetch --depth 1 origin c286b12cee2aa16b714e76d0b46e530fcdb6dc05 && git checkout FETCH_HEAD)
 
 # Statically link libstdc++/libgcc so the binary carries GCC 13's GLIBCXX_3.4.32
 # rather than requiring it at runtime (debian bookworm ships GLIBCXX_3.4.30).
@@ -37,15 +37,13 @@ ENV CC=gcc-13 \
     CXX=g++-13 \
     LDFLAGS="-static-libstdc++ -static-libgcc"
 COPY icu_extension_config.cmake /tmp/icu_extension_config.cmake
-# Build ICU as a loadable-only extension. Linking it statically through
-# CORE_EXTENSIONS changes generated loader symbols for every OpenIVM benchmark
-# helper, whose link lines intentionally contain only OpenIVM's normal static
-# dependencies.
+# Build the revision-matched ICU/JSON artifacts copied below. OpenIVM's pinned
+# config owns static registration, including its benchmark helper executables.
 RUN GEN=ninja EXTRA_EXTENSION_CONFIGS=/tmp/icu_extension_config.cmake make -j$(nproc)
 
 FROM debian:bookworm-slim
 
-ARG OPENIVM_COMMIT=19762672440969f318aca61d7971166759349838
+ARG OPENIVM_COMMIT=f9a49cf1f648ecf8f696c683ee1c61248ae459ff
 LABEL org.openivm.commit="${OPENIVM_COMMIT}"
 
 ARG DUCKDB_OPENIVM_DOCKERFILE_HASH=""
@@ -62,6 +60,7 @@ COPY --from=builder /src/build/release/duckdb /opt/duckdb-openivm/duckdb
 COPY --from=builder /src/build/release/extension/openivm/cost_model_benchmark \
      /opt/duckdb-openivm/cost_model_benchmark
 COPY --from=builder /src/build/release/extension/icu/icu.duckdb_extension /opt/duckdb-openivm/icu.duckdb_extension
+COPY --from=builder /src/build/release/extension/json/json.duckdb_extension /opt/duckdb-openivm/json.duckdb_extension
 
 # The compiler-bench query corpus travels with the binary so the queries are
 # always the ones OPENIVM_COMMIT ships — no submodule in this repo to drift out
