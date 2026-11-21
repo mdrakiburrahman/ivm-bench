@@ -25,9 +25,9 @@ ENGINES = ('materialize-emulator', 'risingwave')
 class NativePostgres(Postgres):
     class Generator(Postgres.Generator):
         TRANSFORMS = {**Postgres.Generator.TRANSFORMS,
-                      exp.TryCast:lambda self,e:self.trycast_sql(e),
+                      exp.TryCast:lambda self,e:self.workload_trycast_sql(e),
                       exp.JSONExtractScalar:lambda self,e:self.jsonextractscalar_sql(e)}
-        def trycast_sql(self, expression):
+        def workload_trycast_sql(self, expression):
             # Never silently turn a nullable conversion into a throwing CAST.
             return f"TRY_CAST({self.sql(expression, 'this')} AS {self.sql(expression, 'to')})"
 
@@ -39,22 +39,75 @@ class NativePostgres(Postgres):
             return f"(CAST({self.sql(expression.this)} AS JSONB) ->> {self.sql(key)})"
 
 
+class RisingWavePostgres(NativePostgres):
+    class Generator(NativePostgres.Generator):
+        # These workload columns contain compact dates, integer IDs/units or
+        # fixed-point price text. Other numeric casts consume typed expressions.
+        TEXT_NUMERIC_COLUMNS = {
+            'dim_date_id', 'event_second_key', 'purchase_second_key', 'reported_units',
+            'catalog_size', 'catalog_price', 'catalog_consumption_multiplier',
+            'catalog_average_revenue_per_unit',
+        }
+
+        def workload_trycast_sql(self, expression):
+            value = self.sql(expression.this)
+            target = self.sql(expression.to)
+            kind = expression.to.this
+            if kind is exp.DataType.Type.BOOLEAN:
+                return f"({value} <> 0)"
+            columns = {col.name for col in expression.this.find_all(exp.Column)}
+            is_text_number = (
+                bool(columns & self.TEXT_NUMERIC_COLUMNS)
+                or isinstance(expression.this, exp.JSONExtractScalar)
+            )
+            # Limit the conversion to values representable as RisingWave
+            # DECIMAL before any narrowing cast. Generated strings fit this
+            # range and never use exponent notation.
+            if is_text_number and kind in (exp.DataType.Type.INT, exp.DataType.Type.FLOAT, exp.DataType.Type.DOUBLE):
+                trimmed = f"TRIM({value})"
+                value = (f"(CASE WHEN {trimmed} ~ '^[+-]?[0-9]{{1,19}}([.][0-9]{{1,8}})?$' "
+                         f"THEN CAST({trimmed} AS DECIMAL) END)")
+            if kind in (exp.DataType.Type.INT, exp.DataType.Type.BIGINT):
+                bits = 32 if kind is exp.DataType.Type.INT else 64
+                return (f"CASE WHEN ROUND({value}) BETWEEN {-2**(bits-1)} AND {2**(bits-1)-1} "
+                        f"THEN CAST(ROUND({value}) AS {target}) END")
+            # Report-date literals are validated in the experiment config.
+            # Remaining casts are typed timestamps/dates, numeric widening,
+            # or scalar-to-text conversions.
+            return f"CAST({value} AS {target})"
+
+
+def compact_date(value, engine):
+    year, month, day = (f"SUBSTRING({value}, {start}, {length})"
+                        for start, length in ((1, 4), (5, 2), (7, 2)))
+    first = f"{year} || '-' || {month} || '-01'"
+    if engine == 'materialize-emulator':
+        return f"CASE WHEN {value} ~ '^[0-9]{{8}}$' THEN TRY_CAST({year} || '-' || {month} || '-' || {day} AS DATE) END"
+    # Build from the first of a valid month. Checking the resulting month
+    # rejects impossible dates, including February 29 in non-leap years.
+    shifted = f"CAST({first} AS DATE) + (CAST({day} AS INT) - 1) * INTERVAL '1 DAY'"
+    return (f"CASE WHEN {value} ~ '^[0-9]{{4}}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$' "
+            f"AND {year} <> '0000' THEN CASE WHEN EXTRACT(MONTH FROM ({shifted})) = CAST({month} AS INT) "
+            f"THEN CAST(({shifted}) AS DATE) END END")
+
+
 def render(query, engine):
     from services.extended_tpcds_streaming import lower_first_value_nulls
     tree = sqlglot.parse_one(query, read='duckdb')
     lower_first_value_nulls(tree, engine)
+    for interval in list(tree.find_all(exp.Interval)):
+        if not isinstance(interval.this, exp.Literal):
+            unit_interval = exp.Interval(this=exp.Literal.string('1'), unit=interval.args['unit'].copy())
+            interval.replace(exp.Paren(this=exp.Mul(this=interval.this.copy(), expression=unit_interval)))
     for function in list(tree.find_all(exp.Anonymous)):
         if function.name.upper() == 'TRY_STRPTIME':
             value, pattern = function.expressions
             if pattern.this != '%Y%m%d':
                 raise ValueError('unsupported workload date format')
-            # Guard the compact format: native date parsers also accept shorter
-            # strings that DuckDB's explicit eight-digit format rejects.
-            text = value.sql(dialect=NativePostgres)
-            replacement = (f"CASE WHEN {text} ~ '^[0-9]{{8}}$' THEN TRY_CAST("
-                           f"SUBSTRING({text},1,4)||'-'||SUBSTRING({text},5,2)||'-'||SUBSTRING({text},7,2) AS DATE) END")
-            function.replace(sqlglot.parse_one(replacement, read='postgres'))
-    query = tree.sql(dialect=NativePostgres, identify=True, unsupported_level=sqlglot.ErrorLevel.RAISE)
+            value_sql = exp.Paren(this=value.copy()).sql(dialect=NativePostgres)
+            function.replace(sqlglot.parse_one(compact_date(value_sql, engine), read='postgres'))
+    dialect = RisingWavePostgres if engine == 'risingwave' else NativePostgres
+    query = tree.sql(dialect=dialect, identify=True, unsupported_level=sqlglot.ErrorLevel.RAISE)
     if engine == 'risingwave':
         from services.compiler_bench.engines_risingwave import to_risingwave_sql
         query = to_risingwave_sql(query)

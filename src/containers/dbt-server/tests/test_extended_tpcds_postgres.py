@@ -24,7 +24,12 @@ class PostgresWorkloadTests(unittest.TestCase):
             queries={n:pg.render(pipeline.render_model(n,{'report_date':'2002-12-31','history_months':12},'all'),engine)
                      for n in pipeline.selected_models()}
             self.assertEqual(len(queries),96)
-            self.assertIn('TRY_CAST(',queries['meta_ingestion'])
+            if engine == 'risingwave':
+                self.assertTrue(all('TRY_CAST(' not in sql for sql in queries.values()))
+            else:
+                self.assertIn('TRY_CAST(',queries['meta_ingestion'])
+            self.assertTrue(all('INTERVAL DAY' not in sql and 'INTERVAL MONTH' not in sql
+                                for sql in queries.values()))
             self.assertNotIn('IGNORE NULLS',queries['int_channel_status_latest'])
             self.assertIn('IS NULL',queries['int_channel_status_latest'])
 
@@ -42,14 +47,24 @@ class PostgresWorkloadTests(unittest.TestCase):
             pg.render('SELECT FIRST_VALUE(v IGNORE NULLS) OVER (ORDER BY t) FROM input','materialize-emulator')
 
     def test_nullable_casts_dates_and_json_keep_the_reference_results(self):
-        source="SELECT TRY_CAST(v AS INT),CAST(TRY_STRPTIME(d,'%Y%m%d') AS DATE),json_extract_string(j,'$.x') FROM input"
+        source="SELECT TRY_CAST(dim_date_id AS INT),CAST(TRY_STRPTIME(d,'%Y%m%d') AS DATE),json_extract_string(j,'$.x') FROM input"
         with duckdb.connect() as db:
-            db.execute('CREATE TABLE input(v VARCHAR,d VARCHAR,j VARCHAR)')
-            db.execute("INSERT INTO input VALUES ('12','20021231','{\"x\":\"café\"}'),('invalid','20020230','{}'),(NULL,'01',NULL),('2',NULL,'{\"x\":null}')")
+            db.execute('CREATE TABLE input(dim_date_id VARCHAR,d VARCHAR,j VARCHAR)')
+            db.execute("INSERT INTO input VALUES ('12','20021231','{\"x\":\"café\"}'),('invalid','20020230','{}'),(NULL,'01',NULL),('2',NULL,'{\"x\":null}'),('2147483648','20000229',NULL),('-2147483648','19000229',NULL)")
             expected=db.execute(source).fetchall()
             for engine in pg.ENGINES:
                 lowered=pg.sqlglot.transpile(pg.render(source,engine),read='postgres',write='duckdb')[0]
                 self.assertCountEqual(db.execute(lowered).fetchall(),expected)
+
+    def test_expression_intervals_keep_sign_units_and_parentheses(self):
+        query = "SELECT DATE '2002-12-31' + INTERVAL (-(n + 27)) DAY, DATE '2002-12-31' + INTERVAL (-n) MONTH FROM (VALUES (1),(2),(NULL)) AS t(n)"
+        with duckdb.connect() as db:
+            expected = db.execute(query).fetchall()
+            for engine in pg.ENGINES:
+                sql = pg.render(query, engine)
+                self.assertIn("INTERVAL '1 DAY'", sql)
+                self.assertIn("INTERVAL '1 MONTH'", sql)
+                self.assertEqual(db.execute(sql).fetchall(), expected)
 
     def test_copy_is_bounded_and_preserves_uuid_nulls_and_escaped_values(self):
         with tempfile.TemporaryDirectory() as folder:
