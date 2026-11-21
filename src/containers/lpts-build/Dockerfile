@@ -22,12 +22,12 @@
 #
 #  ABI: the extension is dlopen'd by the duckdb-openivm CLI, so DUCKDB_COMMIT
 #  and EXTENSION_CI_TOOLS_COMMIT MUST match the submodule pins used in
-#  src/containers/duckdb-openivm/Dockerfile (v1.5.4 / v1.5-variegata). A
+#  OpenIVM's pinned submodules (DuckDB v2.0.0). A
 #  mismatch fails at LOAD with an extension-version error.
 #
-#  LPTS_COMMIT must remain source-compatible with the older LPTS revision
-#  embedded in spark-openivm. This standalone build owns target-SQL corpus
-#  translation; the embedded revision owns OpenIVM's internal refresh rewrite.
+#  LPTS_COMMIT matches the revision embedded in OpenIVM. This standalone build
+#  owns target-SQL corpus translation; OpenIVM uses the same source for its
+#  internal refresh rewrite.
 # =============================================================================
 
 # Build on ubuntu:22.04 (GLIBC 2.35) — NOT 24.04 (GLIBC 2.39). The extension is
@@ -45,10 +45,9 @@ ARG LPTS_REPO=https://github.com/cwida/lpts.git
 #   - dialect-valid aggregates, types, intervals, and virtual-column handling.
 #     DuckDB's count_star(), synthetic rowid, and target-specific syntax are
 #     rejected by Databricks/Spark/Calcite unless rendered for that target.
-# Descends from 13786cbd (the LPTS revision embedded in spark-openivm).
-ARG LPTS_COMMIT=b67f84f173bc8f500ffd8cde799146821fccdc51
-ARG DUCKDB_COMMIT=08e34c447bae34eaee3723cac61f2878b6bdf787
-ARG EXTENSION_CI_TOOLS_COMMIT=72e76e99cd7fee45a99739cd118ec2db64e034ec
+ARG LPTS_COMMIT=84390b1246d229ee584db74dd567a181db071227
+ARG DUCKDB_COMMIT=d54cbbe3df17e8e5ce68312f483b4155836112aa
+ARG EXTENSION_CI_TOOLS_COMMIT=c286b12cee2aa16b714e76d0b46e530fcdb6dc05
 # Must be the tag DUCKDB_COMMIT corresponds to. A loadable extension records the
 # DuckDB version it was built for and refuses to load into any other, and that
 # version comes from `git describe` on the duckdb submodule. The shallow
@@ -56,7 +55,7 @@ ARG EXTENSION_CI_TOOLS_COMMIT=72e76e99cd7fee45a99739cd118ec2db64e034ec
 # silently becomes v0.0.1 — the extension then fails to load with "built
 # specifically for DuckDB version 'v0.0.1'" and every corpus query is reported
 # untranslatable. OVERRIDE_GIT_DESCRIBE is DuckDB's supported way to supply it.
-ARG DUCKDB_VERSION=v1.5.4
+ARG DUCKDB_VERSION=v2.0.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -114,10 +113,13 @@ RUN mkdir -p /artifacts && \
     cp build/release/extension/lpts/lpts.duckdb_extension /artifacts/ && \
     sha256sum /artifacts/lpts.duckdb_extension > /artifacts/SHA256SUMS
 
+RUN build/release/duckdb -unsigned -noheader -list -c \
+    "LOAD '/artifacts/lpts.duckdb_extension'; SELECT 1;" >/dev/null
+
 FROM debian:bookworm-slim
 
 # Keep in step with the builder-stage pin above; this only feeds the label.
-ARG LPTS_COMMIT=b67f84f173bc8f500ffd8cde799146821fccdc51
+ARG LPTS_COMMIT=84390b1246d229ee584db74dd567a181db071227
 LABEL org.lpts.commit="${LPTS_COMMIT}"
 
 # Cache-bust key: hash of the WHOLE Dockerfile, mirroring the duckdb-openivm and

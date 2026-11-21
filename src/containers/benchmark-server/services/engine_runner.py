@@ -39,6 +39,26 @@ _COMPILER_BENCH_SUMMARY_LOCK = Lock()
 _FABRIC_CACHE_LOCK = Lock()
 
 
+def _preserve_duckdb_openivm_sql(repo_dir: str, scale_factor: int, batch_num: int,
+                                 archive_paths: List[str]) -> str:
+    source_dir = os.path.join(repo_dir, "mount", "results", str(scale_factor), "duckdb-openivm", "compiled-sql")
+    if not os.path.isdir(source_dir):
+        raise RuntimeError(f"OpenIVM compiled SQL directory missing: {source_dir}")
+    sql_files = [name for name in os.listdir(source_dir) if name.endswith(".sql")]
+    archive_files = [os.path.basename(path) for path in archive_paths]
+    if not sql_files or len(archive_files) != 2:
+        raise RuntimeError(f"OpenIVM compiled SQL capture incomplete after batch {batch_num}")
+    target_dir = os.path.join(repo_dir, "mount", "results", str(scale_factor), "dbt-server", "compiled-sql",
+                              f"batch{batch_num}")
+    os.makedirs(target_dir, exist_ok=True)
+    for name in sql_files + archive_files:
+        source = os.path.join(source_dir, name)
+        if not os.path.isfile(source):
+            raise RuntimeError(f"OpenIVM compiled SQL file missing: {source}")
+        shutil.copy2(source, os.path.join(target_dir, name))
+    return os.path.relpath(target_dir, repo_dir)
+
+
 def _post_with_retry(
     url: str,
     timeout: int,
@@ -2214,7 +2234,16 @@ class EngineRunner:
             with open(os.path.join(results_dir, filename), "w", encoding="utf-8") as f:
                 f.write(csv_payloads.get(key, ""))
 
-        metadata = {k: v for k, v in data.items() if k != "csv"}
+        diagnostic = data.get("diagnostic")
+        if diagnostic:
+            with open(os.path.join(results_dir, f"openivm-merge-diagnostic-batch{batch_num}.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump(diagnostic, f, indent=2)
+        metadata = {k: v for k, v in data.items() if k not in ("csv", "diagnostic")}
+        if os.environ.get("OPENIVM_CAPTURE_SQL", "0") == "1":
+            metadata["preserved_sql_archive_dir"] = _preserve_duckdb_openivm_sql(
+                self._config.repo_dir, self._config.scale_factor, batch_num,
+                data.get("sql_archive_paths") or [])
         with open(
             os.path.join(results_dir, f"openivm-profile-export-batch{batch_num}.json"),
             "w",

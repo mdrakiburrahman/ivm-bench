@@ -33,6 +33,21 @@ from services.resource_calc import compute_engine_configs
 logger = logging.getLogger(__name__)
 
 
+def _spark_builder_source_hash(dockerfile: str) -> str:
+    """Invalidate the builder whenever its Dockerfile or optional patches change."""
+    digest = hashlib.sha256()
+    with open(dockerfile, "rb") as f:
+        digest.update(f.read())
+    patches = os.path.join(os.path.dirname(dockerfile), "patches")
+    patch_names = sorted(os.listdir(patches)) if os.path.isdir(patches) else ()
+    for name in patch_names:
+        if name.endswith(".patch"):
+            digest.update(name.encode("utf-8"))
+            with open(os.path.join(patches, name), "rb") as f:
+                digest.update(f.read())
+    return digest.hexdigest()
+
+
 def _average_compute_metrics(batch_extras: List[dict]) -> dict:
     metrics = [extra.get("compute_metrics") for extra in batch_extras]
     if not metrics or not all(isinstance(metric, dict) for metric in metrics):
@@ -825,12 +840,8 @@ class Orchestrator:
         dockerfile = os.path.join(
             repo, "src/containers/spark-openivm-build/Dockerfile"
         )
-        # Key the reuse on a hash of the WHOLE Dockerfile (baked into the builder
-        # image as a label), not just OPENIVM_SPARK_COMMIT — so a base-image /
-        # glibc / toolchain change forces a rebuild too. (The pinned commit lives
-        # inside the Dockerfile, so the hash also covers commit bumps.)
-        with open(dockerfile, "r", encoding="utf-8") as f:
-            dockerfile_hash = hashlib.sha256(f.read().encode("utf-8")).hexdigest()
+        # Include optional local patches in the image key when present.
+        dockerfile_hash = _spark_builder_source_hash(dockerfile)
         mgr = DockerManager(
             os.path.join(repo, "docker/docker-compose.spark-openivm-build.yml"),
             project_name="spark-openivm-build",

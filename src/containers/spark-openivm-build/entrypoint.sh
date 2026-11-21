@@ -1,11 +1,12 @@
 #!/bin/bash
-# spark-openivm-build entrypoint — idempotently copy the three runtime
+# spark-openivm-build entrypoint — idempotently copy the runtime
 # artifacts to the bind-mounted output directory.
 #
 # Artifacts:
 #   * openivm-extension.jar      — Spark SQL extension fat jar
 #   * openivm.duckdb_extension   — DuckDB extension loaded by OpenIvmCompiler
 #   * duckdb                     — pinned DuckDB CLI
+#   * libstdc++.so.6, libgcc_s.so.1 — matching GCC 13 runtime for that CLI
 
 set -euo pipefail
 
@@ -40,6 +41,8 @@ copy_if_missing() {
 copy_if_missing openivm-extension.jar
 copy_if_missing openivm.duckdb_extension
 copy_if_missing duckdb
+copy_if_missing libstdc++.so.6
+copy_if_missing libgcc_s.so.1
 chmod +x "${OUTPUT_DIR}/duckdb"
 
 # Drop the SHA256SUMS too, for traceability.

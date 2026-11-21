@@ -4,6 +4,20 @@
 
 ---
 
+### DuckDB OpenIVM pipeline and MERGE probe
+
+Run [`duckdb-openivm-pipeline-merge-probe.json`](../src/containers/benchmark-server/experiments/duckdb-openivm-pipeline-merge-probe.json)
+through `ci.yaml` using `experiments_file`. Its opt-in pipeline refreshes all
+existing MVs once in dependency order, replacing per-model refresh CLI calls
+with one pipeline call. The SF10 experiment validates every MV with
+bidirectional `EXCEPT ALL`; the SF100 experiments compare pipeline timing and
+capture the executed `silver.watches` MERGE and its JSON `EXPLAIN` in
+`openivm-merge-diagnostic-batch<N>.json`. Archive capture is enabled only for
+the diagnostic run. The plan is collected after refresh, when delta sizes may
+have changed. In pipeline mode, dbt attributes the whole pipeline to its first
+model; compare total dbt invocation and OpenIVM per-view profile timings with
+Figure 1 rather than comparing individual dbt model timings.
+
 ### OpenIVM profiling on Fabric and local Spark
 
 `OPENIVM_PROFILE_REFRESH=1` exports refresh-step CSVs after each timed batch

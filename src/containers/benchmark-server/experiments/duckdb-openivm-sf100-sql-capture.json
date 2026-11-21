@@ -1,0 +1,29 @@
+{
+  "_design_notes": [
+    "Diagnostic rerun of DuckDB OpenIVM Figure 1 SF100. SQL archiving and file writes add work, so do not compare its timings directly with ordinary Figure 1 runs."
+  ],
+  "baseline": {
+    "engines": ["duckdb-openivm"],
+    "schedule": "serial-host-parallel-cloud",
+    "feature_flags": {
+      "preserve_raw": true,
+      "openivm_validate": false,
+      "openivm_profile_refresh": true,
+      "openivm_query_log": true,
+      "openivm_capture_sql": true,
+      "storage_metrics": true
+    }
+  },
+  "experiments": [{
+    "label": "duckdb-openivm-sf100-sql-capture",
+    "scale_factor": 100,
+    "batch_1_pct": "100",
+    "batch_2_pct": "1",
+    "batch_3_pct": "0.01",
+    "batch_2_update_pct": "0",
+    "batch_2_delete_pct": "0",
+    "batch_3_update_pct": "0",
+    "batch_3_delete_pct": "0",
+    "spark_tunables": {"dbt_threads": 4}
+  }]
+}

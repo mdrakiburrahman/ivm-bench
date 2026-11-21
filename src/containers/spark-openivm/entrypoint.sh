@@ -111,7 +111,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # Validate openivm-spark runtime artifacts are bind-mounted at /opt/spark-openivm
 # ---------------------------------------------------------------------------
 SPARK_OPENIVM_DIR=/opt/spark-openivm
-for artifact in openivm-extension.jar openivm.duckdb_extension duckdb; do
+for artifact in openivm-extension.jar openivm.duckdb_extension duckdb libstdc++.so.6 libgcc_s.so.1; do
   if [[ ! -f "${SPARK_OPENIVM_DIR}/${artifact}" ]]; then
     echo "FATAL: missing required artifact ${SPARK_OPENIVM_DIR}/${artifact}" >&2
     echo "       (built by spark-openivm-build; bind-mount mount/bin/spark-openivm/)" >&2
@@ -136,6 +136,10 @@ echo "  linked /opt/spark/jars/openivm-extension.jar -> ${SPARK_OPENIVM_DIR}/ope
 mkdir -p /opt/openivm
 ln -sfn "${SPARK_OPENIVM_DIR}/openivm.duckdb_extension" /opt/openivm/openivm.duckdb_extension
 ln -sfn "${SPARK_OPENIVM_DIR}/duckdb" /opt/openivm/duckdb
+ln -sfn "${SPARK_OPENIVM_DIR}/libstdc++.so.6" /opt/openivm/libstdc++.so.6
+ln -sfn "${SPARK_OPENIVM_DIR}/libgcc_s.so.1" /opt/openivm/libgcc_s.so.1
+LD_LIBRARY_PATH="/opt/openivm${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  /opt/openivm/duckdb -unsigned -c "LOAD '/opt/openivm/openivm.duckdb_extension'; SELECT 42;" >/dev/null
 echo "  linked /opt/openivm/ -> ${SPARK_OPENIVM_DIR}/ (compiler defaults)"
 
 # ---------------------------------------------------------------------------
